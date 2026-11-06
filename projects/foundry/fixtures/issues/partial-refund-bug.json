@@ -1,0 +1,14 @@
+{
+  "title": "部分退款返回 500",
+  "description": "申请 30 元退款时接口报错，用户无法完成退款。",
+  "kind": "bug",
+  "source": { "kind": "support", "reference": "TICKET-42" },
+  "severity": "s2",
+  "area": "payments",
+  "labels": ["refund"],
+  "environment": "production",
+  "affected_versions": ["1.4.0"],
+  "reproduction": "1. 创建 100 元订单\n2. 申请退款 30 元\n3. 接口返回 500",
+  "expected": "退款成功，订单余额为 70 元",
+  "actual": "HTTP 500"
+}

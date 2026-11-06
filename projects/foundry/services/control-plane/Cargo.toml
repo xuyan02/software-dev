@@ -1,0 +1,21 @@
+[package]
+name = "foundry-control-plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "foundry-control-plane"
+path = "src/main.rs"
+
+[dependencies]
+foundry-app.workspace = true
+foundry-adapter-postgres.workspace = true
+foundry-adapter-policy.workspace = true
+foundry-api-http.workspace = true
+foundry-shared.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tracing.workspace = true

@@ -1,0 +1,23 @@
+set shell := ["bash", "-c"]
+
+default: check
+
+fmt:
+    cargo fmt --all
+
+lint:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+test:
+    cargo test --workspace
+
+check: fmt lint test
+
+run:
+    cargo run -p foundry-control-plane
+
+db-up:
+    docker compose -f deploy/compose/docker-compose.yml up -d postgres
+
+migrate:
+    sqlx migrate run --source migrations

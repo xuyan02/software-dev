@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "planner", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "implementer", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "any", "min_actors": 0, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "planning",
+  "stages": [
+    {
+      "name": "planning",
+      "active_roles": ["planner"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start planning the iteration.",
+          "roles": ["planner"],
+          "action": ""
+        },
+        {
+          "name": "plan_ready",
+          "display_name": "Plan ready",
+          "description": "The iteration plan is ready; start implementation.",
+          "roles": ["planner"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "implementation"}
+      ]
+    },
+    {
+      "name": "implementation",
+      "active_roles": ["implementer"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start implementing the iteration.",
+          "roles": ["implementer"],
+          "action": ""
+        },
+        {
+          "name": "implementation_complete",
+          "display_name": "Implementation complete",
+          "description": "Implementation is complete; send it to review.",
+          "roles": ["implementer"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "review"}
+      ]
+    },
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "Approve review",
+          "description": "Approve the implementation and send it to acceptance.",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "changes_requested",
+          "display_name": "Request changes",
+          "description": "Request changes and return to implementation.",
+          "roles": ["reviewer"],
+          "action": "decision = 'changes_requested'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "acceptance"},
+        {"on": "decision == 'changes_requested'", "to": "implementation"}
+      ]
+    },
+    {
+      "name": "acceptance",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the iteration and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the iteration and return to implementation.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "implementation"}
+      ]
+    }
+  ]
+}

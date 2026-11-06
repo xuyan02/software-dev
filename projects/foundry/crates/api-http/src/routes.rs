@@ -1,0 +1,2070 @@
+use crate::ApiError;
+use crate::auth::{self, ApiSession, WebAccountSession, WebSession};
+use crate::dto::{
+    AccountUpdateForm, AddMemberForm, AddMemberRequest, CommentIssueForm, CommentIssueRequest,
+    CreateAccountRequest, CreateIssueRequest, CreateProjectRequest, CreateRequirementRequest,
+    CreateWorkflowRequest, IssueListQuery, IssueTransitionForm, ListQuery, LoginForm, LoginQuery,
+    LoginRequest, LoginResponse, MemberRoleForm, NewAccountForm, NewIssueForm, NewProjectForm,
+    NewRequirementForm, NewWorkflowForm, PageQuery, ProjectUpdateForm, PublishWorkflowForm,
+    RenameWorkflowForm, RenameWorkflowRequest, SaveDraftRequest, SelectProjectForm,
+    SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, TaskCommentRequest, TaskListQuery,
+    TaskOperationRequest, TransitionIssueRequest, TransitionRequirementRequest, TriageIssueForm,
+    TriageIssueRequest, UpdateAccountRequest, UpdateProjectRequest, UpdateRequirementRequest,
+    ValidateWorkflowRequest, transition_command,
+};
+use crate::error::workflow_error;
+use axum::Form;
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use foundry_app::{
+    AccountFilter, AccountUseCases, AuthUseCases, IssueFilter, IssueUseCases, ProjectDetail,
+    ProjectUseCases, PublishWorkflow, RemoveProjectMember, RequirementFilter, RequirementUseCases,
+    SaveWorkflowLayout, ServiceError, TaskUseCases, TaskViewer, WorkflowUseCases, hash_token,
+    new_session_token,
+};
+use foundry_domain::{AllowedOperation, OperationName, Project, WorkflowId, WorkflowLayout};
+use foundry_web::MemberInfo;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
+use time::{Duration, OffsetDateTime};
+use tokio::sync::Mutex;
+use uuid::Uuid;
+
+/// Process-local state for the first-run setup flow.
+///
+/// The configured initial account and password are an *authorization identity*,
+/// not an account: signing in with them only proves that the caller holds the
+/// configuration file. A successful initial login issues a short-lived ticket
+/// so the administrator creation step is tied to that browser.
+pub struct SetupState {
+    required: AtomicBool,
+    lock: Mutex<()>,
+    /// Normalized initial account handle from the config file.
+    bootstrap_handle: String,
+    /// Display name prefilled on the new-administrator form.
+    pub bootstrap_name: String,
+    /// SHA-256 of the initial password from the config file.
+    bootstrap_password_hash: Option<[u8; 32]>,
+    ticket: StdMutex<Option<SetupTicket>>,
+}
+
+struct SetupTicket {
+    token_hash: String,
+    expires_at: OffsetDateTime,
+}
+
+impl SetupState {
+    pub fn new(
+        required: bool,
+        bootstrap_handle: String,
+        bootstrap_name: String,
+        bootstrap_password: Option<&str>,
+    ) -> Self {
+        let bootstrap_password_hash = bootstrap_password.map(|value| {
+            let digest = Sha256::digest(value.as_bytes());
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&digest);
+            hash
+        });
+        Self {
+            required: AtomicBool::new(required),
+            lock: Mutex::new(()),
+            bootstrap_handle: bootstrap_handle.trim().to_lowercase(),
+            bootstrap_name,
+            bootstrap_password_hash,
+            ticket: StdMutex::new(None),
+        }
+    }
+
+    pub fn is_required(&self) -> bool {
+        self.required.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_complete(&self) {
+        self.required.store(false, Ordering::Relaxed);
+    }
+
+    /// Checks the initial account and password from the config file. This
+    /// identity is never created as an account; it only authorizes setup.
+    pub fn authorize_initial(&self, handle: &str, password: &str) -> bool {
+        // Evaluate both sides so a wrong handle does not short-circuit the
+        // password comparison.
+        let password_ok = self.check_password(password);
+        let handle_ok = handle.trim().to_lowercase() == self.bootstrap_handle;
+        handle_ok & password_ok
+    }
+
+    fn check_password(&self, candidate: &str) -> bool {
+        let Some(expected) = self.bootstrap_password_hash.as_ref() else {
+            return false;
+        };
+        let actual = Sha256::digest(candidate.as_bytes());
+        constant_time_eq(actual.as_slice(), expected)
+    }
+
+    /// Issues the short-lived ticket that unlocks the administrator creation
+    /// step. Only its hash stays in memory.
+    pub fn issue_ticket(&self) -> Option<String> {
+        self.bootstrap_password_hash.as_ref()?;
+        let token = new_session_token();
+        let token_hash = hash_token(&token);
+        let expires_at =
+            OffsetDateTime::now_utc() + Duration::seconds(auth::SETUP_TICKET_TTL_SECONDS);
+        let mut ticket = self.ticket.lock().ok()?;
+        *ticket = Some(SetupTicket {
+            token_hash,
+            expires_at,
+        });
+        Some(token)
+    }
+
+    pub fn authorize_ticket(&self, token: &str) -> bool {
+        let Ok(mut ticket) = self.ticket.lock() else {
+            return false;
+        };
+        if ticket
+            .as_ref()
+            .is_some_and(|ticket| ticket.expires_at <= OffsetDateTime::now_utc())
+        {
+            *ticket = None;
+            return false;
+        }
+        let Some(ticket) = ticket.as_ref() else {
+            return false;
+        };
+        let actual = hash_token(token);
+        actual.len() == ticket.token_hash.len()
+            && constant_time_eq(actual.as_bytes(), ticket.token_hash.as_bytes())
+    }
+
+    pub fn clear_ticket(&self) {
+        if let Ok(mut ticket) = self.ticket.lock() {
+            *ticket = None;
+        }
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in left.iter().zip(right.iter()) {
+        difference |= *left ^ *right;
+    }
+    difference == 0
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub requirements: Arc<dyn RequirementUseCases>,
+    pub issues: Arc<dyn IssueUseCases>,
+    pub accounts: Arc<dyn AccountUseCases>,
+    pub projects: Arc<dyn ProjectUseCases>,
+    pub tasks: Arc<dyn TaskUseCases>,
+    pub workflows: Arc<dyn WorkflowUseCases>,
+    pub auth: Arc<dyn AuthUseCases>,
+    pub setup: Arc<SetupState>,
+    pub editor: Arc<EditorAssets>,
+}
+
+/// The built workflow-editor SPA served under `/workflows/editor/`.
+#[derive(Debug, Clone)]
+pub struct EditorAssets {
+    pub dir: std::path::PathBuf,
+}
+
+impl EditorAssets {
+    pub fn new(dir: impl Into<std::path::PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+}
+
+/// Answers 503 while the SPA has not been built, so a missing `dist/` never
+/// looks like a broken console or a missing route.
+pub async fn editor_guard(
+    State(state): State<Arc<EditorAssets>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let built = tokio::fs::metadata(&state.dir)
+        .await
+        .is_ok_and(|metadata| metadata.is_dir());
+    if !built {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "workflow editor is not built; run `npm run build` in web/workflow-editor",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+pub async fn health() -> Json<Value> {
+    Json(json!({
+        "status": "ok",
+        "service": "foundry",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// First-run setup
+// ---------------------------------------------------------------------------
+
+/// Blocks every route except the setup page while the account table is empty.
+pub async fn setup_guard(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    if !state.setup.is_required() || path == "/setup" || path == "/setup/admin" || path == "/health"
+    {
+        return next.run(request).await;
+    }
+    if path.starts_with("/api/") || path == "/mcp" {
+        return ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "setup_required",
+            "no accounts exist; complete first-run setup at /setup",
+        )
+        .into_response();
+    }
+    Redirect::to("/setup").into_response()
+}
+
+/// Shows the initial login form, or the administrator creation form once this
+/// browser has completed the initial login.
+pub async fn setup_page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if !state.setup.is_required() {
+        return Redirect::to("/login").into_response();
+    }
+    // The in-memory flag can be stale if accounts were created out of band.
+    // Re-read the account table before offering either form.
+    match state.accounts.setup_required().await {
+        Ok(true) => {
+            let authorized = auth::cookie_value(&headers, auth::SETUP_COOKIE)
+                .as_deref()
+                .is_some_and(|ticket| state.setup.authorize_ticket(ticket));
+            if authorized {
+                Html(foundry_web::setup_admin_page(
+                    "",
+                    &state.setup.bootstrap_name,
+                    None,
+                ))
+                .into_response()
+            } else {
+                Html(foundry_web::setup_login_page("", None)).into_response()
+            }
+        }
+        Ok(false) => {
+            state.setup.mark_complete();
+            state.setup.clear_ticket();
+            Redirect::to("/login").into_response()
+        }
+        Err(error) => auth::web_internal(error.to_string()),
+    }
+}
+
+/// Step one: verify the initial account/password from the config file. This
+/// does not create an account; success only issues a short-lived setup ticket.
+pub async fn setup_login_submit(
+    State(state): State<AppState>,
+    Form(form): Form<SetupLoginForm>,
+) -> Response {
+    if !state.setup.is_required() {
+        return Redirect::to("/login").into_response();
+    }
+    match state.accounts.setup_required().await {
+        Ok(true) => {}
+        Ok(false) => {
+            state.setup.mark_complete();
+            state.setup.clear_ticket();
+            return Redirect::to("/login").into_response();
+        }
+        Err(error) => return auth::web_internal(error.to_string()),
+    }
+
+    let handle = form.handle.trim();
+    if !state.setup.authorize_initial(handle, &form.password) {
+        tracing::warn!("first-run setup rejected: invalid initial account or password");
+        return (
+            StatusCode::UNAUTHORIZED,
+            Html(foundry_web::setup_login_page(
+                handle,
+                Some("初始账号或密码不正确。"),
+            )),
+        )
+            .into_response();
+    }
+
+    let Some(ticket) = state.setup.issue_ticket() else {
+        return auth::web_internal("setup is not configured".to_string());
+    };
+    tracing::info!("first-run setup authorized with the configured initial identity");
+    with_cookie(
+        Redirect::to("/setup").into_response(),
+        &auth::setup_cookie(&ticket),
+    )
+}
+
+/// Step two: create the real administrator account. Requires the ticket issued
+/// by step one, so only the browser that proved it holds the configuration can
+/// create the first account.
+pub async fn setup_admin_submit(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<SetupAdminForm>,
+) -> Response {
+    if !state.setup.is_required() {
+        return Redirect::to("/login").into_response();
+    }
+    let Some(ticket) = auth::cookie_value(&headers, auth::SETUP_COOKIE) else {
+        return Redirect::to("/setup").into_response();
+    };
+    if !state.setup.authorize_ticket(&ticket) {
+        return Redirect::to("/setup").into_response();
+    }
+
+    // One in-flight creation at a time: two concurrent submissions must not
+    // both read an empty account table and create two administrators.
+    let _guard = state.setup.lock.lock().await;
+
+    if !state.setup.is_required() {
+        return Redirect::to("/login").into_response();
+    }
+    match state.accounts.setup_required().await {
+        Ok(true) => {}
+        Ok(false) => {
+            state.setup.mark_complete();
+            state.setup.clear_ticket();
+            return Redirect::to("/login").into_response();
+        }
+        Err(error) => return auth::web_internal(error.to_string()),
+    }
+
+    let handle = form.handle.trim();
+    let display_name = form.display_name.trim();
+    let invalid = |message: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            Html(foundry_web::setup_admin_page(
+                handle,
+                display_name,
+                Some(message),
+            )),
+        )
+            .into_response()
+    };
+    if handle.is_empty() {
+        return invalid("管理员账号不能为空。");
+    }
+    if display_name.is_empty() {
+        return invalid("显示名称不能为空。");
+    }
+    if form.password.is_empty() {
+        return invalid("密码不能为空。");
+    }
+    if form.password != form.confirm_password {
+        return invalid("两次输入的密码不一致。");
+    }
+
+    let admin = match state
+        .accounts
+        .create_first_admin(handle, display_name, &form.password)
+        .await
+    {
+        Ok(account) => account,
+        // The table became non-empty while this request was in flight. Stop
+        // advertising setup so the user is not stuck re-submitting the form.
+        Err(ServiceError::Forbidden(_)) => {
+            state.setup.mark_complete();
+            state.setup.clear_ticket();
+            return Redirect::to("/login").into_response();
+        }
+        Err(ServiceError::Validation(message)) => return invalid(&message),
+        Err(error) => return auth::web_internal(error.to_string()),
+    };
+
+    let login = match state.auth.login(handle, &form.password).await {
+        Ok(result) => result,
+        Err(error) => return auth::web_internal(error.to_string()),
+    };
+
+    tracing::info!(handle = %admin.handle, "first-run setup completed");
+    state.setup.mark_complete();
+    state.setup.clear_ticket();
+    // Setup creates the administrator, not a project. The administrator
+    // chooses the first project explicitly on the projects page.
+    let mut response = Redirect::to("/projects").into_response();
+    response = with_cookie(
+        response,
+        &auth::session_cookie(&login.token, login.expires_at),
+    );
+    with_cookie(response, &auth::clear_setup_cookie())
+}
+
+/// Adds a `Set-Cookie` header without dropping any already present there.
+fn with_cookie(mut response: Response, cookie: &str) -> Response {
+    if let Ok(value) = HeaderValue::from_str(cookie) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+pub async fn login_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<LoginQuery>,
+) -> Response {
+    if auth::authenticated(&state, &headers)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Redirect::to(&auth::safe_next(query.next.as_deref().unwrap_or("/")))
+            .into_response();
+    }
+    Html(foundry_web::login_page(
+        "",
+        &auth::safe_next(query.next.as_deref().unwrap_or("/")),
+        None,
+    ))
+    .into_response()
+}
+
+pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
+    let next = auth::safe_next(&form.next);
+    match state.auth.login(form.handle.trim(), &form.password).await {
+        Ok(result) => {
+            let cookie = auth::session_cookie(&result.token, result.expires_at);
+            let mut response = Redirect::to(&next).into_response();
+            if let Ok(value) = HeaderValue::from_str(&cookie) {
+                response.headers_mut().insert(header::SET_COOKIE, value);
+            }
+            response
+        }
+        Err(ServiceError::Unauthorized(_)) => (
+            StatusCode::UNAUTHORIZED,
+            Html(foundry_web::login_page(
+                &form.handle,
+                &next,
+                Some("账号或密码不正确，或账户已被停用。"),
+            )),
+        )
+            .into_response(),
+        Err(error) => auth::web_internal(error.to_string()),
+    }
+}
+
+pub async fn logout_submit(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(token) = auth::token_from_headers(&headers) {
+        let _ = state.auth.logout(&token).await;
+    }
+    let mut response = Redirect::to("/login").into_response();
+    if let Ok(value) = HeaderValue::from_str(&auth::clear_session_cookie()) {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
+}
+
+pub async fn api_login(
+    State(state): State<AppState>,
+    Json(body): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, ApiError> {
+    let result = state.auth.login(body.handle.trim(), &body.password).await?;
+    Ok(Json(LoginResponse {
+        token: result.token,
+        expires_at: result.expires_at,
+        account: result.account,
+    }))
+}
+
+pub async fn api_logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    if let Some(token) = auth::token_from_headers(&headers) {
+        state.auth.logout(&token).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn api_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<foundry_domain::Account>, ApiError> {
+    Ok(Json(auth::api_account(&state, &headers).await?))
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
+
+pub async fn accounts_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.account.is_admin() {
+        return Redirect::to(&format!("/accounts/{}", session.account.id)).into_response();
+    }
+    match state
+        .accounts
+        .list(session.account.actor(), AccountFilter::default())
+        .await
+    {
+        Ok(accounts) => Html(foundry_web::accounts_page(
+            &session.context,
+            &accounts,
+            None,
+        ))
+        .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn create_account_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<NewAccountForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.account.is_admin() {
+        return auth::web_forbidden("只有全局管理员可以创建账户。");
+    }
+    match state
+        .accounts
+        .create(session.account.actor(), form.into_command())
+        .await
+    {
+        Ok(account) => Redirect::to(&format!("/accounts/{}", account.id)).into_response(),
+        Err(error) => accounts_error(&state, &session, error).await,
+    }
+}
+
+async fn accounts_error(
+    state: &AppState,
+    session: &WebAccountSession,
+    error: ServiceError,
+) -> Response {
+    let message = error.to_string();
+    match state
+        .accounts
+        .list(session.account.actor(), AccountFilter::default())
+        .await
+    {
+        Ok(accounts) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(foundry_web::accounts_page(
+                &session.context,
+                &accounts,
+                Some(&message),
+            )),
+        )
+            .into_response(),
+        Err(_) => auth::web_error(error),
+    }
+}
+
+pub async fn account_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let can_manage = session.account.is_admin();
+    if !can_manage && session.account.id != id {
+        return auth::web_forbidden("只能查看自己的账户。");
+    }
+    match state.accounts.get(session.account.actor(), id).await {
+        Ok(account) => Html(foundry_web::account_page(
+            &session.context,
+            &account,
+            can_manage,
+            None,
+        ))
+        .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn update_account_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<AccountUpdateForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.account.is_admin() {
+        return auth::web_forbidden("只有全局管理员可以修改账户。");
+    }
+    match state
+        .accounts
+        .update(session.account.actor(), form.into_command(id))
+        .await
+    {
+        Ok(account) => Redirect::to(&format!("/accounts/{}", account.id)).into_response(),
+        Err(error) => {
+            let message = error.to_string();
+            match state.accounts.get(session.account.actor(), id).await {
+                Ok(account) => (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Html(foundry_web::account_page(
+                        &session.context,
+                        &account,
+                        true,
+                        Some(&message),
+                    )),
+                )
+                    .into_response(),
+                Err(_) => auth::web_error(error),
+            }
+        }
+    }
+}
+
+pub async fn list_accounts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(_query): Query<Value>,
+) -> Result<Json<Vec<foundry_domain::Account>>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    let accounts = state
+        .accounts
+        .list(session.actor(), AccountFilter::default())
+        .await?;
+    Ok(Json(accounts))
+}
+
+pub async fn create_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateAccountRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    let account = state
+        .accounts
+        .create(session.actor(), body.into_command())
+        .await?;
+    Ok((StatusCode::CREATED, Json(account)))
+}
+
+pub async fn get_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<foundry_domain::Account>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.accounts.get(session.actor(), id).await?))
+}
+
+pub async fn update_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateAccountRequest>,
+) -> Result<Json<foundry_domain::Account>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .accounts
+            .update(session.actor(), body.into_command(id))
+            .await?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+pub async fn projects_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let root_workflows = match state
+        .projects
+        .root_workflow_candidates(session.account.actor())
+        .await
+    {
+        Ok(workflows) => workflows,
+        Err(error) => return auth::web_error(error),
+    };
+    Html(foundry_web::projects_page(
+        &session.context,
+        &session.context.projects,
+        &root_workflows,
+        None,
+    ))
+    .into_response()
+}
+
+pub async fn create_project_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<NewProjectForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .projects
+        .create(session.account.actor(), form.into_command())
+        .await
+    {
+        Ok(project) => Redirect::to(&format!("/projects/{}", project.id)).into_response(),
+        Err(error) => project_form_error(&state, &session, error).await,
+    }
+}
+
+async fn project_form_error(
+    state: &AppState,
+    session: &WebAccountSession,
+    error: ServiceError,
+) -> Response {
+    let message = error.to_string();
+    match state.projects.list_visible(session.account.actor()).await {
+        Ok(projects) => {
+            let root_workflows = state
+                .projects
+                .root_workflow_candidates(session.account.actor())
+                .await
+                .unwrap_or_default();
+            let context = foundry_web::ConsoleContext::new(&session.account, &projects, None);
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Html(foundry_web::projects_page(
+                    &context,
+                    &context.projects,
+                    &root_workflows,
+                    Some(&message),
+                )),
+            )
+                .into_response()
+        }
+        Err(_) => auth::web_error(error),
+    }
+}
+
+pub async fn select_project_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<SelectProjectForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session
+        .projects
+        .iter()
+        .any(|project| project.id.to_string() == form.project.trim())
+    {
+        return Redirect::to("/projects").into_response();
+    }
+    let mut response = Redirect::to("/").into_response();
+    if let Ok(value) = HeaderValue::from_str(&auth::project_cookie(&form.project)) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+pub async fn project_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.projects.detail(session.account.actor(), id).await {
+        Ok(detail) => {
+            let members = member_infos(&detail);
+            Html(foundry_web::project_page(
+                &session.context,
+                &detail.project,
+                &members,
+                account_can_manage(&session.account, &detail.project),
+                None,
+            ))
+            .into_response()
+        }
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn update_project_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ProjectUpdateForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match can_manage_project(&state, &session.account, id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return auth::web_forbidden("只有项目 Owner 或全局管理员可以修改项目。");
+        }
+        Err(error) => return auth::web_error(error),
+    }
+    match state
+        .projects
+        .update(session.account.actor(), form.into_command(id))
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Err(error) => project_detail_error(&state, &session, id, error).await,
+    }
+}
+
+async fn project_detail_error(
+    state: &AppState,
+    session: &WebSession,
+    id: Uuid,
+    error: ServiceError,
+) -> Response {
+    let message = error.to_string();
+    match state.projects.detail(session.account.actor(), id).await {
+        Ok(detail) => {
+            let members = member_infos(&detail);
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Html(foundry_web::project_page(
+                    &session.context,
+                    &detail.project,
+                    &members,
+                    account_can_manage(&session.account, &detail.project),
+                    Some(&message),
+                )),
+            )
+                .into_response()
+        }
+        Err(_) => auth::web_error(error),
+    }
+}
+
+pub async fn add_member_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<AddMemberForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_project_manager(
+        &state,
+        &session,
+        id,
+        "只有项目 Owner 或全局管理员可以添加成员。",
+    )
+    .await
+    {
+        return response;
+    }
+    match state
+        .projects
+        .add_member_by_handle(session.account.actor(), form.into_command(id))
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Err(error) => project_detail_error(&state, &session, id, error).await,
+    }
+}
+
+pub async fn set_member_role_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, account_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<MemberRoleForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_project_manager(
+        &state,
+        &session,
+        id,
+        "只有项目 Owner 或全局管理员可以修改成员角色。",
+    )
+    .await
+    {
+        return response;
+    }
+    match state
+        .projects
+        .set_member_role(session.account.actor(), form.into_command(id, account_id))
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Err(error) => project_detail_error(&state, &session, id, error).await,
+    }
+}
+
+pub async fn remove_member_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, account_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_project_manager(
+        &state,
+        &session,
+        id,
+        "只有项目 Owner 或全局管理员可以移除成员。",
+    )
+    .await
+    {
+        return response;
+    }
+    match state
+        .projects
+        .remove_member(
+            session.account.actor(),
+            RemoveProjectMember {
+                project_id: id,
+                account_id,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Err(error) => project_detail_error(&state, &session, id, error).await,
+    }
+}
+
+pub async fn list_projects(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<Project>>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.projects.list_visible(session.actor()).await?))
+}
+
+pub async fn create_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateProjectRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    let project = state
+        .projects
+        .create(session.actor(), body.into_command())
+        .await?;
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+pub async fn get_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ProjectDetail>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.projects.detail(session.actor(), id).await?))
+}
+
+pub async fn update_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateProjectRequest>,
+) -> Result<Json<Project>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .projects
+            .update(session.actor(), body.into_command(id))
+            .await?,
+    ))
+}
+
+pub async fn add_project_member(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AddMemberRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    let project = state
+        .projects
+        .add_member_by_handle(session.actor(), body.into_command(id))
+        .await?;
+    Ok((StatusCode::CREATED, Json(project)))
+}
+
+pub async fn set_project_member_role(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, account_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<SetMemberRoleRequest>,
+) -> Result<Json<Project>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .projects
+            .set_member_role(session.actor(), body.into_command(id, account_id))
+            .await?,
+    ))
+}
+
+pub async fn remove_project_member(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, account_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    state
+        .projects
+        .remove_member(
+            session.actor(),
+            RemoveProjectMember {
+                project_id: id,
+                account_id,
+            },
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn can_manage_project(
+    state: &AppState,
+    account: &foundry_domain::Account,
+    project_id: Uuid,
+) -> Result<bool, ServiceError> {
+    if account.is_admin() {
+        return Ok(true);
+    }
+    let project = state.projects.get(account.actor(), project_id).await?;
+    Ok(project
+        .role_of(account.id)
+        .is_some_and(foundry_domain::ProjectRole::can_manage_members))
+}
+
+async fn require_project_manager(
+    state: &AppState,
+    session: &WebSession,
+    project_id: Uuid,
+    message: &str,
+) -> Result<(), Response> {
+    match can_manage_project(state, &session.account, project_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(auth::web_forbidden(message)),
+        Err(error) => Err(auth::web_error(error)),
+    }
+}
+
+fn account_can_manage(account: &foundry_domain::Account, project: &Project) -> bool {
+    account.is_admin()
+        || project
+            .role_of(account.id)
+            .is_some_and(foundry_domain::ProjectRole::can_manage_members)
+}
+
+fn member_infos(detail: &ProjectDetail) -> Vec<MemberInfo> {
+    detail
+        .members
+        .iter()
+        .map(|member| MemberInfo {
+            account_id: member.account_id.to_string(),
+            handle: member.handle.clone(),
+            display_name: member.display_name.clone(),
+            kind: member.kind,
+            status: member.status,
+            role: member.role,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Requirements
+// ---------------------------------------------------------------------------
+
+pub async fn new_requirement_form(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许创建需求。");
+    }
+    Html(foundry_web::new_requirement_page(
+        &session.context,
+        &foundry_web::RequirementFormValues::default(),
+        None,
+    ))
+    .into_response()
+}
+
+pub async fn create_requirement_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<NewRequirementForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许创建需求。");
+    }
+    let values = form.values();
+    match state
+        .requirements
+        .create(
+            session.account.actor(),
+            form.into_command(session.project.id),
+        )
+        .await
+    {
+        Ok(requirement) => {
+            Redirect::to(&format!("/requirements/{}", requirement.id)).into_response()
+        }
+        Err(ServiceError::Validation(message)) | Err(ServiceError::Forbidden(message)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(foundry_web::new_requirement_page(
+                &session.context,
+                &values,
+                Some(&message),
+            )),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn create_requirement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateRequirementRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_contribute(&session)?;
+    let requirement = state
+        .requirements
+        .create(session.actor(), body.into_command(session.project.id))
+        .await?;
+    Ok((StatusCode::CREATED, Json(requirement)))
+}
+
+pub async fn get_requirement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<foundry_domain::Requirement>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(state.requirements.get(session.project.id, id).await?))
+}
+
+pub async fn list_requirements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<ListQuery>,
+) -> Result<Json<Vec<foundry_domain::Requirement>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let requirements = state
+        .requirements
+        .list(
+            session.project.id,
+            RequirementFilter {
+                status: query.status,
+                owner: query.owner,
+                text: query.text,
+            },
+        )
+        .await?;
+    Ok(Json(requirements))
+}
+
+pub async fn update_requirement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateRequirementRequest>,
+) -> Result<Json<foundry_domain::Requirement>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_dispose(&session)?;
+    Ok(Json(
+        state
+            .requirements
+            .update(body.into_command(session.project.id, id, session.actor()))
+            .await?,
+    ))
+}
+
+pub async fn transition_requirement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TransitionRequirementRequest>,
+) -> Result<Json<foundry_domain::Requirement>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_dispose(&session)?;
+    let command = transition_command(session.project.id, id, session.actor(), body);
+    Ok(Json(state.requirements.transition(command).await?))
+}
+
+// ---------------------------------------------------------------------------
+// Issues
+// ---------------------------------------------------------------------------
+
+pub async fn create_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateIssueRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_contribute(&session)?;
+    let issue = state
+        .issues
+        .create(session.actor(), body.into_command(session.project.id))
+        .await?;
+    Ok((StatusCode::CREATED, Json(issue)))
+}
+
+pub async fn get_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<foundry_domain::Issue>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(state.issues.get(session.project.id, id).await?))
+}
+
+pub async fn list_issues(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<IssueListQuery>,
+) -> Result<Json<Vec<foundry_domain::Issue>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let issues = state
+        .issues
+        .list(
+            session.project.id,
+            IssueFilter {
+                status: query.status,
+                kind: query.kind,
+                source: query.source,
+                assignee: query.assignee,
+                text: query.text,
+            },
+        )
+        .await?;
+    Ok(Json(issues))
+}
+
+pub async fn comment_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CommentIssueRequest>,
+) -> Result<Json<foundry_domain::Issue>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_contribute(&session)?;
+    Ok(Json(
+        state
+            .issues
+            .comment(body.into_command(session.project.id, id, session.actor()))
+            .await?,
+    ))
+}
+
+pub async fn triage_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TriageIssueRequest>,
+) -> Result<Json<foundry_domain::Issue>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_contribute(&session)?;
+    Ok(Json(
+        state
+            .issues
+            .triage(body.into_command(session.project.id, id, session.actor()))
+            .await?,
+    ))
+}
+
+pub async fn transition_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TransitionIssueRequest>,
+) -> Result<Json<foundry_domain::Issue>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_dispose(&session)?;
+    Ok(Json(
+        state
+            .issues
+            .transition(body.into_command(session.project.id, id, session.actor()))
+            .await?,
+    ))
+}
+
+pub async fn new_issue_form(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许创建议题。");
+    }
+    Html(foundry_web::new_issue_page(
+        &session.context,
+        &foundry_web::IssueFormValues::default(),
+        None,
+    ))
+    .into_response()
+}
+
+pub async fn create_issue_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<NewIssueForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许创建议题。");
+    }
+    let values = form.values();
+    match state
+        .issues
+        .create(
+            session.account.actor(),
+            form.into_command(session.project.id),
+        )
+        .await
+    {
+        Ok(issue) => Redirect::to(&format!("/issues/{}", issue.id)).into_response(),
+        Err(ServiceError::Validation(message)) | Err(ServiceError::Forbidden(message)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Html(foundry_web::new_issue_page(
+                &session.context,
+                &values,
+                Some(&message),
+            )),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn issue_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.issues.get(session.project.id, id).await {
+        Ok(issue) => Html(foundry_web::issue_page(&session.context, &issue)).into_response(),
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn comment_issue_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<CommentIssueForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许评论议题。");
+    }
+    match state
+        .issues
+        .comment(form.into_command(session.project.id, id, session.actor()))
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/issues/{id}")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn triage_issue_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<TriageIssueForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不允许分诊议题。");
+    }
+    match state
+        .issues
+        .triage(form.into_command(session.project.id, id, session.actor()))
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/issues/{id}")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn transition_issue_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<IssueTransitionForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_dispose() {
+        return auth::web_forbidden("当前项目角色不允许处置议题。");
+    }
+    let command = match form.into_command(session.project.id, id, session.actor()) {
+        Ok(command) => command,
+        Err(message) => return (StatusCode::UNPROCESSABLE_ENTITY, message).into_response(),
+    };
+    match state.issues.transition(command).await {
+        Ok(_) => Redirect::to(&format!("/issues/{id}")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Console pages
+// ---------------------------------------------------------------------------
+
+pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let issues = match state
+        .issues
+        .list(session.project.id, IssueFilter::default())
+        .await
+    {
+        Ok(issues) => issues,
+        Err(error) => return auth::web_error(error),
+    };
+    let requirements = match state
+        .requirements
+        .list(session.project.id, RequirementFilter::default())
+        .await
+    {
+        Ok(requirements) => requirements,
+        Err(error) => return auth::web_error(error),
+    };
+    Html(foundry_web::workbench(
+        &session.context,
+        &issues,
+        &requirements,
+    ))
+    .into_response()
+}
+
+pub async fn issue_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .issues
+        .list(session.project.id, IssueFilter::default())
+        .await
+    {
+        Ok(issues) => Html(foundry_web::issue_dashboard(&session.context, &issues)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn requirements_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .requirements
+        .list(session.project.id, RequirementFilter::default())
+        .await
+    {
+        Ok(requirements) => {
+            Html(foundry_web::dashboard(&session.context, &requirements)).into_response()
+        }
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn requirement_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.requirements.get(session.project.id, id).await {
+        Ok(requirement) => Html(foundry_web::requirement_page(
+            &session.context,
+            &requirement,
+        ))
+        .into_response(),
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MCP
+// ---------------------------------------------------------------------------
+
+pub async fn mcp(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    let session = match auth::api_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(error) => return error.into_response(),
+    };
+    let actor = session.actor();
+    let caller = foundry_api_mcp::Caller {
+        actor: &actor,
+        project_id: session.project.id,
+        can_contribute: session.can_contribute(),
+        can_dispose: session.can_dispose(),
+    };
+    let response = foundry_api_mcp::handle(
+        state.requirements.as_ref(),
+        state.issues.as_ref(),
+        state.workflows.as_ref(),
+        &caller,
+        body,
+    )
+    .await;
+    if response.is_null() {
+        StatusCode::ACCEPTED.into_response()
+    } else {
+        Json(response).into_response()
+    }
+}
+
+fn require_contribute(session: &ApiSession) -> Result<(), ApiError> {
+    if session.can_contribute() {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "project role does not allow contributions",
+        ))
+    }
+}
+
+fn require_dispose(session: &ApiSession) -> Result<(), ApiError> {
+    if session.can_dispose() {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "project role does not allow dispositions",
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tasks
+// ---------------------------------------------------------------------------
+
+fn task_viewer(session: &ApiSession) -> TaskViewer {
+    if session.can_manage_members() {
+        TaskViewer::manager(session.account.id)
+    } else {
+        TaskViewer::member(session.account.id)
+    }
+}
+
+pub async fn list_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TaskListQuery>,
+) -> Result<Json<Vec<foundry_domain::Task>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let filter = query
+        .into_filter()
+        .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, "invalid_filter", message))?;
+    Ok(Json(
+        state
+            .tasks
+            .list(session.project.id, filter, task_viewer(&session))
+            .await?,
+    ))
+}
+
+pub async fn get_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<foundry_domain::Task>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(
+        state
+            .tasks
+            .get(session.project.id, id, task_viewer(&session))
+            .await?,
+    ))
+}
+
+pub async fn send_task_operation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TaskOperationRequest>,
+) -> Result<StatusCode, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(body.operation),
+            body.idempotency_key,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn task_allowed_operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<AllowedOperation>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    Ok(Json(task.allowed_operations))
+}
+
+pub async fn list_task_comments(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Vec<foundry_domain::TaskComment>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let (limit, offset) = query.page(50);
+    Ok(Json(
+        state
+            .tasks
+            .comments(session.project.id, id, limit, offset)
+            .await?,
+    ))
+}
+
+pub async fn add_task_comment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TaskCommentRequest>,
+) -> Result<(StatusCode, Json<foundry_domain::Task>), ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let viewer = task_viewer(&session);
+    let task = state
+        .tasks
+        .add_comment(
+            session.project.id,
+            id,
+            session.account.id,
+            body.body,
+            viewer,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(task)))
+}
+
+pub async fn task_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Vec<foundry_domain::TaskOperation>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let (limit, offset) = query.page(50);
+    Ok(Json(
+        state
+            .tasks
+            .history(session.project.id, id, task_viewer(&session), limit, offset)
+            .await?,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Workflows
+// ---------------------------------------------------------------------------
+
+/// Parses `If-Match: "<revision>"`. Missing headers are a precondition error;
+/// anything that is not a single quoted integer is a format error.
+fn if_match(headers: &HeaderMap) -> Result<u64, ApiError> {
+    let Some(value) = headers.get(header::IF_MATCH) else {
+        return Err(ApiError::new(
+            StatusCode::PRECONDITION_REQUIRED,
+            "precondition_required",
+            "If-Match is required",
+        ));
+    };
+    let invalid = || {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_if_match",
+            "If-Match must be a quoted revision, for example \"7\"",
+        )
+    };
+    let text = value.to_str().map_err(|_| invalid())?.trim();
+    let revision = text
+        .strip_prefix('"')
+        .and_then(|text| text.strip_suffix('"'))
+        .ok_or_else(invalid)?;
+    revision.parse().map_err(|_| invalid())
+}
+
+pub async fn list_workflows(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<foundry_domain::WorkflowDefinition>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state.workflows.list(account.actor()).await,
+    )?))
+}
+
+pub async fn create_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateWorkflowRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let (definition, draft) = workflow_error(
+        state
+            .workflows
+            .create(account.actor(), body.into_command())
+            .await,
+    )?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "definition": definition, "draft": draft })),
+    ))
+}
+
+pub async fn get_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<foundry_domain::WorkflowDefinition>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .get(account.actor(), WorkflowId::new(id))
+            .await,
+    )?))
+}
+
+pub async fn rename_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<RenameWorkflowRequest>,
+) -> Result<Json<foundry_domain::WorkflowDefinition>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = body.into_command(WorkflowId::new(id));
+    Ok(Json(workflow_error(
+        state.workflows.rename(account.actor(), command).await,
+    )?))
+}
+
+pub async fn list_workflow_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<foundry_domain::WorkflowVersionInfo>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .versions(account.actor(), WorkflowId::new(id))
+            .await,
+    )?))
+}
+
+pub async fn get_workflow_version(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, version)): Path<(String, u32)>,
+) -> Result<Json<foundry_domain::WorkflowVersion>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .version(account.actor(), WorkflowId::new(id), version)
+            .await,
+    )?))
+}
+
+pub async fn open_workflow_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<foundry_domain::WorkflowDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .open_draft(account.actor(), WorkflowId::new(id))
+            .await,
+    )?))
+}
+
+pub async fn get_workflow_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<foundry_domain::WorkflowDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .get_draft(account.actor(), WorkflowId::new(id))
+            .await,
+    )?))
+}
+
+pub async fn save_workflow_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<SaveDraftRequest>,
+) -> Result<Json<foundry_app::DraftSaved>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let revision = if_match(&headers)?;
+    let command = body.into_command(WorkflowId::new(id), revision);
+    Ok(Json(workflow_error(
+        state.workflows.save_draft(account.actor(), command).await,
+    )?))
+}
+
+pub async fn validate_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<ValidateWorkflowRequest>,
+) -> Result<Json<foundry_domain::Validation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .validate(account.actor(), WorkflowId::new(id), body.body)
+            .await,
+    )?))
+}
+
+pub async fn publish_workflow(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<foundry_app::WorkflowPublished>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = PublishWorkflow {
+        id: WorkflowId::new(id),
+        expected_revision: if_match(&headers)?,
+    };
+    Ok(Json(workflow_error(
+        state.workflows.publish(account.actor(), command).await,
+    )?))
+}
+
+pub async fn get_workflow_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<WorkflowLayout>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(workflow_error(
+        state
+            .workflows
+            .layout(account.actor(), WorkflowId::new(id))
+            .await,
+    )?))
+}
+
+pub async fn save_workflow_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(layout): Json<WorkflowLayout>,
+) -> Result<Json<WorkflowLayout>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = SaveWorkflowLayout {
+        id: WorkflowId::new(id),
+        layout,
+    };
+    Ok(Json(workflow_error(
+        state.workflows.save_layout(account.actor(), command).await,
+    )?))
+}
+
+pub async fn workflows_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    render_workflows(&state, &session, None).await
+}
+
+pub async fn create_workflow_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(form): Form<NewWorkflowForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .workflows
+        .create(session.account.actor(), form.into_command())
+        .await
+    {
+        Ok(_) => Redirect::to("/workflows").into_response(),
+        Err(ServiceError::Forbidden(message)) => auth::web_forbidden(&message),
+        Err(error) => workflow_form_error(&state, &session, error).await,
+    }
+}
+
+pub async fn rename_workflow_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<RenameWorkflowForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let command = foundry_app::RenameWorkflow {
+        id: WorkflowId::new(id),
+        title: form.title,
+    };
+    match state
+        .workflows
+        .rename(session.account.actor(), command)
+        .await
+    {
+        Ok(_) => Redirect::to("/workflows").into_response(),
+        Err(ServiceError::Forbidden(message)) => auth::web_forbidden(&message),
+        Err(error) => workflow_form_error(&state, &session, error).await,
+    }
+}
+
+pub async fn publish_workflow_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Form(form): Form<PublishWorkflowForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Ok(expected_revision) = form.revision.trim().parse::<u64>() else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "草稿版本号无效。").into_response();
+    };
+    let command = PublishWorkflow {
+        id: WorkflowId::new(id),
+        expected_revision,
+    };
+    match state
+        .workflows
+        .publish(session.account.actor(), command)
+        .await
+    {
+        Ok(_) => Redirect::to("/workflows").into_response(),
+        Err(ServiceError::Forbidden(message)) => auth::web_forbidden(&message),
+        Err(error) => workflow_form_error(&state, &session, error).await,
+    }
+}
+
+async fn render_workflows(
+    state: &AppState,
+    session: &WebAccountSession,
+    error: Option<&str>,
+) -> Response {
+    match state.workflows.list(session.account.actor()).await {
+        Ok(workflows) => Html(foundry_web::workflows_page(
+            &session.context,
+            &workflows,
+            error,
+        ))
+        .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+async fn workflow_form_error(
+    state: &AppState,
+    session: &WebAccountSession,
+    error: ServiceError,
+) -> Response {
+    let message = error.to_string();
+    let mut response = render_workflows(state, session, Some(&message)).await;
+    *response.status_mut() = StatusCode::UNPROCESSABLE_ENTITY;
+    response
+}

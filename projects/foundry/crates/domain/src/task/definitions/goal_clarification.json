@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "clarifier", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["clarifier"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start clarifying the goal.",
+          "roles": ["clarifier"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete clarification",
+          "description": "The goal is clarified; submit it for acceptance.",
+          "roles": ["clarifier"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "awaiting_acceptance"}
+      ]
+    },
+    {
+      "name": "awaiting_acceptance",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the clarification and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the clarification and return to work.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    }
+  ]
+}

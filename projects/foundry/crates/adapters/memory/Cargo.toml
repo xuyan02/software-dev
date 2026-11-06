@@ -1,0 +1,17 @@
+[package]
+name = "foundry-adapter-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+foundry-domain.workspace = true
+foundry-app.workspace = true
+uuid.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

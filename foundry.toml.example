@@ -1,0 +1,26 @@
+# Foundry runtime configuration (example).
+#
+# Copy to ~/.foundry/foundry.toml, or point FOUNDRY_CONFIG at a file elsewhere.
+# Precedence: environment variables > config file > built-in defaults.
+# Unknown keys are rejected at startup so typos fail loudly.
+#
+# The config file can contain the database password and the initialization
+# passphrase; keep it readable only by its owner (chmod 600).
+
+addr = "127.0.0.1:8080"
+database_url = "postgres://foundry:foundry@localhost:5432/foundry"
+
+# Initial account used to sign in to the first-run setup flow. This is an
+# authorization identity, not a system account.
+bootstrap_handle = "admin"
+# Display name prefilled on the new-administrator form.
+bootstrap_name = "Administrator"
+
+# Initial password paired with bootstrap_handle. While the account table is
+# empty, this pair signs in to /setup and authorizes creation of the first
+# administrator. It is NOT the administrator's password; the operator chooses
+# that on the setup page. Required while the account table is empty, ignored
+# afterwards.
+bootstrap_password = "change-this-initialization-passphrase"
+
+session_ttl_hours = 168

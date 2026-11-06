@@ -1,0 +1,13 @@
+target/
+**/target/
+.env
+.env.local
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.sqlite
+*.sqlite3
+data/
+dist/
+node_modules/

@@ -1,0 +1,13 @@
+[package]
+name = "foundry-adapter-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+foundry-domain.workspace = true
+foundry-app.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true

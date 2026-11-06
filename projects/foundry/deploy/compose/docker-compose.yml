@@ -1,0 +1,38 @@
+services:
+  control-plane:
+    build:
+      context: ../../../..
+      dockerfile: projects/foundry/deploy/docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      FOUNDRY_ADDR: 0.0.0.0:8080
+      DATABASE_URL: postgres://foundry:foundry@postgres:5432/foundry
+      # Required until the first administrator exists; it gates /setup and is
+      # NOT an administrator password. Ignored once accounts exist.
+      FOUNDRY_BOOTSTRAP_PASSWORD: ${FOUNDRY_BOOTSTRAP_PASSWORD:?set FOUNDRY_BOOTSTRAP_PASSWORD for first-run setup}
+      RUST_LOG: foundry=info,tower_http=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: foundry
+      POSTGRES_PASSWORD: foundry
+      POSTGRES_DB: foundry
+    ports:
+      - "5432:5432"
+    volumes:
+      - foundry-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U foundry -d foundry"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  foundry-pg:

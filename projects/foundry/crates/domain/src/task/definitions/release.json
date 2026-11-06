@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "release_manager", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "verifier", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "approver", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "deployer", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "observer", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "candidate",
+  "stages": [
+    {
+      "name": "candidate",
+      "active_roles": ["release_manager"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start preparing the release candidate.",
+          "roles": ["release_manager"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Candidate ready",
+          "description": "The release candidate is ready; send it to verification.",
+          "roles": ["release_manager"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "verification"}
+      ]
+    },
+    {
+      "name": "verification",
+      "active_roles": ["verifier"],
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "operations": [
+        {
+          "name": "verified",
+          "display_name": "Verified",
+          "description": "The release candidate passed verification; send it to approval.",
+          "roles": ["verifier"],
+          "action": "outcome = 'verified'"
+        },
+        {
+          "name": "verification_failed",
+          "display_name": "Verification failed",
+          "description": "The release candidate failed verification; return to the candidate stage.",
+          "roles": ["verifier"],
+          "action": "outcome = 'failed'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'verified'", "to": "approval"},
+        {"on": "outcome == 'failed'", "to": "candidate"}
+      ]
+    },
+    {
+      "name": "approval",
+      "active_roles": ["approver"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Approve the release; send it to deployment.",
+          "roles": ["approver"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the release; return to the candidate stage.",
+          "roles": ["approver"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "deployment"},
+        {"on": "decision == 'rejected'", "to": "candidate"}
+      ]
+    },
+    {
+      "name": "deployment",
+      "active_roles": ["deployer"],
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "operations": [
+        {
+          "name": "deployed",
+          "display_name": "Deployed",
+          "description": "The release is deployed; start observation.",
+          "roles": ["deployer"],
+          "action": "outcome = 'deployed'"
+        },
+        {
+          "name": "deploy_failed",
+          "display_name": "Deployment failed",
+          "description": "Deployment failed; return to the candidate stage.",
+          "roles": ["deployer"],
+          "action": "outcome = 'failed'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'deployed'", "to": "observation"},
+        {"on": "outcome == 'failed'", "to": "candidate"}
+      ]
+    },
+    {
+      "name": "observation",
+      "active_roles": ["observer"],
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "operations": [
+        {
+          "name": "healthy",
+          "display_name": "Healthy",
+          "description": "The release is healthy; complete the task.",
+          "roles": ["observer"],
+          "action": "outcome = 'healthy'"
+        },
+        {
+          "name": "unhealthy",
+          "display_name": "Unhealthy",
+          "description": "The release is unhealthy; return to the candidate stage.",
+          "roles": ["observer"],
+          "action": "outcome = 'unhealthy'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'healthy'", "action": "result = 'released'", "to": "ended"},
+        {"on": "outcome == 'unhealthy'", "to": "candidate"}
+      ]
+    }
+  ]
+}

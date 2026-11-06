@@ -1,0 +1,16 @@
+[package]
+name = "foundry-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "foundry-worker"
+path = "src/main.rs"
+
+[dependencies]
+foundry-shared.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true

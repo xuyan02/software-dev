@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "architect", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "any", "min_actors": 0, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["architect"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start defining the architecture.",
+          "roles": ["architect"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete design",
+          "description": "Architecture and key ADRs are ready; submit them for review.",
+          "roles": ["architect"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "review"}
+      ]
+    },
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "Approve review",
+          "description": "Approve the architecture and send it to acceptance.",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "review_rejected",
+          "display_name": "Request changes",
+          "description": "Reject the architecture and return to design.",
+          "roles": ["reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "awaiting_acceptance"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "awaiting_acceptance",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the architecture and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the architecture and return to design.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    }
+  ]
+}

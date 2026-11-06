@@ -1,0 +1,74 @@
+[workspace]
+resolver = "2"
+
+# Cargo does not allow nested workspaces, so all Rust projects share this root
+# workspace. Each project owns its crates under projects/<name>/, but there is
+# exactly one Cargo.lock and one target/ directory at the repository root.
+members = [
+    "projects/foundry/crates/domain",
+    "projects/foundry/crates/app",
+    "projects/foundry/crates/adapters/memory",
+    "projects/foundry/crates/adapters/postgres",
+    "projects/foundry/crates/adapters/git",
+    "projects/foundry/crates/adapters/policy",
+    "projects/foundry/crates/adapters/storage",
+    "projects/foundry/crates/api-http",
+    "projects/foundry/crates/api-mcp",
+    "projects/foundry/crates/web",
+    "projects/foundry/crates/cli",
+    "projects/foundry/crates/shared",
+    "projects/foundry/services/control-plane",
+    "projects/foundry/services/worker",
+    "projects/foundry/xtask",
+    # new projects: insert member below this line
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.93"
+
+[workspace.dependencies]
+foundry-domain = { path = "projects/foundry/crates/domain" }
+foundry-app = { path = "projects/foundry/crates/app" }
+foundry-adapter-memory = { path = "projects/foundry/crates/adapters/memory" }
+foundry-adapter-postgres = { path = "projects/foundry/crates/adapters/postgres" }
+foundry-adapter-git = { path = "projects/foundry/crates/adapters/git" }
+foundry-adapter-policy = { path = "projects/foundry/crates/adapters/policy" }
+foundry-adapter-storage = { path = "projects/foundry/crates/adapters/storage" }
+foundry-api-http = { path = "projects/foundry/crates/api-http" }
+foundry-api-mcp = { path = "projects/foundry/crates/api-mcp" }
+foundry-web = { path = "projects/foundry/crates/web" }
+foundry-cli = { path = "projects/foundry/crates/cli" }
+foundry-shared = { path = "projects/foundry/crates/shared" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "request-id", "fs"] }
+http-body-util = "0.1"
+uuid = { version = "1", features = ["v7", "serde"] }
+time = { version = "0.3", features = ["serde", "parsing", "formatting", "macros"] }
+thiserror = "2"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+argon2 = "0.5"
+sha2 = "0.10"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "uuid",
+    "time",
+    "json",
+    "migrate",
+    "macros",
+] }

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "reviewer", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start the project review.",
+          "roles": ["reviewer"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete review",
+          "description": "The project review is complete; submit it for acceptance.",
+          "roles": ["reviewer"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "awaiting_acceptance"}
+      ]
+    },
+    {
+      "name": "awaiting_acceptance",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the review and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the review and return to work.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    }
+  ]
+}
