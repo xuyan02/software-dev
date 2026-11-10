@@ -19,6 +19,16 @@ use foundry_domain::{
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Random suffix for a generated agent handle.
+///
+/// UUID v7 starts with a millisecond timestamp, so its leading bytes repeat for
+/// tens of seconds. Use the random tail instead; otherwise every agent created
+/// in the same time window collides on `accounts.handle`.
+fn agent_handle_suffix() -> String {
+    let suffix = Uuid::now_v7().simple().to_string();
+    suffix[suffix.len() - 8..].to_string()
+}
+
 pub struct PostgresAgentAdmin {
     store: Arc<PostgresStore>,
     supervisor: Arc<AgentSupervisor>,
@@ -155,8 +165,7 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
             )));
         }
 
-        let suffix = Uuid::now_v7().simple().to_string();
-        let short = &suffix[..8];
+        let short = agent_handle_suffix();
         let handle = format!("agent-{short}");
         let password = new_session_token();
         let hash = hash_password(&password)?;
@@ -269,5 +278,20 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
             .restart(id)
             .await
             .map_err(ServiceError::Validation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::agent_handle_suffix;
+
+    #[test]
+    fn agent_handle_suffix_is_random_in_the_same_time_window() {
+        let suffix = agent_handle_suffix();
+        assert_eq!(suffix.len(), 8);
+        assert!(suffix.chars().all(|character| character.is_ascii_hexdigit()));
+
+        let next = agent_handle_suffix();
+        assert_ne!(suffix, next);
     }
 }
