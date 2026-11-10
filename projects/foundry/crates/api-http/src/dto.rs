@@ -1,14 +1,15 @@
 use foundry_app::{
     AddProjectMemberByHandle, CommentIssue, CreateAccount, CreateIssue, CreateProject,
     CreateRequirement, CreateWorkflow, RenameWorkflow, SaveWorkflowDraft, SetProjectMemberRole,
-    TaskFilter, TransitionIssue, TransitionRequirement, TriageIssue, UpdateAccount, UpdateProject,
+    TaskFilter, TransitionIssue, TransitionRequirement, UpdateAccount, UpdateProject,
     UpdateRequirement, WorkflowScope,
 };
 use foundry_domain::{
-    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssueSeverity,
-    IssueSource, IssueSourceKind, IssueStatus, Priority, ProjectRole, ProjectStatus,
-    RequirementStatus, RiskClass, RoleKey, StageKey, TaskDispatchState, TaskState, Triage,
-    WorkflowBody, WorkflowId, WorkflowVersionRef,
+    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, Budget, IssueKind,
+    IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, Priority, ProjectBriefBody,
+    ProjectRole, ProjectScope, ProjectStatus, RequirementStatus, Risk, RiskClass, RiskLevel,
+    RoleKey, StageKey, Stakeholder, SuccessMetric, TaskDispatchState, TaskState, WorkflowBody,
+    WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -661,42 +662,6 @@ impl CommentIssueRequest {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TriageIssueRequest {
-    pub kind: IssueKind,
-    #[serde(default)]
-    pub severity: Option<IssueSeverity>,
-    #[serde(default)]
-    pub assignee: Option<Actor>,
-    #[serde(default)]
-    pub area: Option<String>,
-    #[serde(default)]
-    pub labels: Vec<String>,
-    #[serde(default)]
-    pub impact: Option<String>,
-    #[serde(default)]
-    pub expected_version: Option<u32>,
-}
-
-impl TriageIssueRequest {
-    pub fn into_command(self, project_id: uuid::Uuid, id: uuid::Uuid, actor: Actor) -> TriageIssue {
-        TriageIssue {
-            project_id,
-            id,
-            actor,
-            triage: Triage {
-                kind: self.kind,
-                severity: self.severity,
-                assignee: self.assignee,
-                area: self.area,
-                labels: self.labels,
-                impact: self.impact,
-            },
-            expected_version: self.expected_version,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
 pub struct TransitionIssueRequest {
     pub to: IssueStatus,
     #[serde(default)]
@@ -842,53 +807,6 @@ impl CommentIssueForm {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct TriageIssueForm {
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub severity: String,
-    #[serde(default)]
-    pub assignee_kind: String,
-    #[serde(default)]
-    pub assignee_id: String,
-    #[serde(default)]
-    pub area: String,
-    #[serde(default)]
-    pub labels: String,
-    #[serde(default)]
-    pub impact: String,
-}
-
-impl TriageIssueForm {
-    pub fn into_command(self, project_id: uuid::Uuid, id: uuid::Uuid, actor: Actor) -> TriageIssue {
-        let assignee = {
-            let id = self.assignee_id.trim();
-            if id.is_empty() {
-                None
-            } else if self.assignee_kind == "agent" {
-                Some(Actor::agent(id, "assignee"))
-            } else {
-                Some(Actor::human(id))
-            }
-        };
-        TriageIssue {
-            project_id,
-            id,
-            actor,
-            triage: Triage {
-                kind: parse_issue_kind(&self.kind),
-                severity: parse_issue_severity(&self.severity),
-                assignee,
-                area: optional_text(&self.area),
-                labels: lines(&self.labels),
-                impact: optional_text(&self.impact),
-            },
-            expected_version: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct IssueTransitionForm {
     #[serde(default)]
     pub to: String,
@@ -1001,7 +919,6 @@ pub fn parse_issue_severity(value: &str) -> Option<IssueSeverity> {
 
 pub fn parse_issue_status(value: &str) -> IssueStatus {
     match value {
-        "triaged" => IssueStatus::Triaged,
         "in_progress" => IssueStatus::InProgress,
         "resolved" => IssueStatus::Resolved,
         "closed" => IssueStatus::Closed,
@@ -1198,4 +1115,360 @@ impl SaveDraftRequest {
             client_save_id: self.client_save_id,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Requirements document
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ApplyRequirementsOperationsRequest {
+    #[serde(default)]
+    pub operations: Vec<foundry_domain::RequirementsOperation>,
+}
+
+// ---------------------------------------------------------------------------
+// Project brief
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyProjectBriefDraftOperationRequest {
+    pub op_id: uuid::Uuid,
+    pub base_revision: u64,
+    pub operation: foundry_domain::ProjectBriefDraftOperation,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProjectBriefForm {
+    #[serde(default)]
+    pub draft_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub problem: String,
+    #[serde(default)]
+    pub goals: String,
+    #[serde(default)]
+    pub success_metrics: String,
+    #[serde(default)]
+    pub in_scope: String,
+    #[serde(default)]
+    pub out_of_scope: String,
+    #[serde(default)]
+    pub constraints: String,
+    #[serde(default)]
+    pub risks: String,
+    #[serde(default)]
+    pub stakeholders: String,
+    #[serde(default)]
+    pub budget_amount: String,
+    #[serde(default)]
+    pub budget_currency: String,
+    #[serde(default)]
+    pub budget_note: String,
+    #[serde(default)]
+    pub assumptions: String,
+    #[serde(default)]
+    pub open_questions: String,
+}
+
+impl ProjectBriefForm {
+    /// Parse the text form into the structured brief body.
+    ///
+    /// Lists use one entry per line; structured rows use `|` between fields.
+    pub fn into_parts(
+        self,
+    ) -> Result<(Option<uuid::Uuid>, u64, String, ProjectBriefBody), String> {
+        let metrics = parse_success_metrics(&self.success_metrics)?;
+        let risks = parse_risks(&self.risks)?;
+        let stakeholders = parse_stakeholders(&self.stakeholders)?;
+        let budget = if self.budget_amount.trim().is_empty() {
+            None
+        } else {
+            let amount = self
+                .budget_amount
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| "预算金额必须是数字".to_string())?;
+            Some(Budget {
+                amount,
+                currency: if self.budget_currency.trim().is_empty() {
+                    "CNY".to_string()
+                } else {
+                    self.budget_currency.trim().to_string()
+                },
+                note: optional_text(&self.budget_note),
+            })
+        };
+        Ok((
+            self.draft_id,
+            self.revision,
+            self.action,
+            ProjectBriefBody {
+                schema_version: foundry_domain::PROJECT_BRIEF_SCHEMA_VERSION,
+                problem: self.problem.trim().to_string(),
+                goals: lines(&self.goals),
+                success_metrics: metrics,
+                scope: ProjectScope {
+                    in_scope: lines(&self.in_scope),
+                    out_of_scope: lines(&self.out_of_scope),
+                },
+                constraints: lines(&self.constraints),
+                risks,
+                stakeholders,
+                budget,
+                assumptions: lines(&self.assumptions),
+                open_questions: lines(&self.open_questions),
+            },
+        ))
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProjectBriefApproveForm {
+    #[serde(default)]
+    pub version: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProjectBriefDraftQuery {
+    #[serde(default)]
+    pub draft: Option<uuid::Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnotateProjectBriefRequest {
+    pub target_type: foundry_domain::ProjectBriefAnnotationTarget,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnotateProjectBriefForm {
+    pub target_type: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveProjectBriefAnnotationRequest {
+    pub resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ProjectBriefAnnotationQuery {
+    #[serde(default)]
+    pub include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequirementsRevisionForm {
+    #[serde(default)]
+    pub revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnotateRequirementsRequest {
+    pub target_type: foundry_domain::AnnotationTarget,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnnotateRequirementsForm {
+    pub target_type: String,
+    #[serde(default)]
+    pub target_id: Option<String>,
+    #[serde(default)]
+    pub field: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveRequirementsAnnotationRequest {
+    pub resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RequirementsAnnotationQuery {
+    #[serde(default)]
+    pub include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RejectRequirementsForm {
+    pub reason: String,
+}
+
+fn parse_success_metrics(value: &str) -> Result<Vec<SuccessMetric>, String> {
+    let mut metrics = Vec::new();
+    for (index, line) in lines(value).iter().enumerate() {
+        let parts = split_row(line);
+        if parts.len() < 5 {
+            return Err(format!(
+                "成功指标第 {} 行需要：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选）",
+                index + 1
+            ));
+        }
+        let target = parts[1]
+            .parse::<f64>()
+            .map_err(|_| format!("成功指标第 {} 行的目标值不是数字", index + 1))?;
+        let baseline = parts
+            .get(5)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<f64>()
+                    .map_err(|_| format!("成功指标第 {} 行的基线不是数字", index + 1))
+            })
+            .transpose()?;
+        metrics.push(SuccessMetric {
+            id: format!("m{}", index + 1),
+            name: parts[0].to_string(),
+            baseline,
+            target,
+            unit: parts[2].to_string(),
+            measurement: parts[3].to_string(),
+            window: parts[4].to_string(),
+        });
+    }
+    Ok(metrics)
+}
+
+fn parse_risks(value: &str) -> Result<Vec<Risk>, String> {
+    let mut risks = Vec::new();
+    for (index, line) in lines(value).iter().enumerate() {
+        let parts = split_row(line);
+        if parts.len() < 5 {
+            return Err(format!(
+                "风险第 {} 行需要：描述 | 概率(low/medium/high) | 影响(low/medium/high) | 缓解 | 负责人",
+                index + 1
+            ));
+        }
+        risks.push(Risk {
+            id: format!("r{}", index + 1),
+            description: parts[0].to_string(),
+            probability: parse_risk_level(&parts[1]),
+            impact: parse_risk_level(&parts[2]),
+            mitigation: parts[3].to_string(),
+            owner: parts[4].to_string(),
+        });
+    }
+    Ok(risks)
+}
+
+fn parse_stakeholders(value: &str) -> Result<Vec<Stakeholder>, String> {
+    let mut stakeholders = Vec::new();
+    for (index, line) in lines(value).iter().enumerate() {
+        let parts = split_row(line);
+        if parts.len() < 2 {
+            return Err(format!(
+                "干系人第 {} 行需要：角色 | 账号 | 决策权（逗号分隔，可选）",
+                index + 1
+            ));
+        }
+        stakeholders.push(Stakeholder {
+            id: format!("s{}", index + 1),
+            role: parts[0].to_string(),
+            account: parts[1].to_string(),
+            decision_rights: parts
+                .get(2)
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        });
+    }
+    Ok(stakeholders)
+}
+
+fn split_row(line: &str) -> Vec<String> {
+    line.split('|')
+        .map(|part| part.trim().to_string())
+        .collect()
+}
+
+fn parse_risk_level(value: &str) -> RiskLevel {
+    match value.to_ascii_lowercase().as_str() {
+        "low" => RiskLevel::Low,
+        "high" => RiskLevel::High,
+        _ => RiskLevel::Medium,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Agent dispatch
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateAgentFromTemplateRequest {
+    pub task_id: uuid::Uuid,
+    pub role: String,
+    pub template_id: String,
+}
+
+impl CreateAgentFromTemplateRequest {
+    pub fn into_command(self) -> foundry_domain::CreateAgentFromTemplate {
+        foundry_domain::CreateAgentFromTemplate {
+            task_id: self.task_id,
+            role: self.role,
+            template_id: self.template_id,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AssignAgentRequest {
+    pub task_id: uuid::Uuid,
+    pub role: String,
+    pub agent_definition_id: uuid::Uuid,
+}
+
+impl AssignAgentRequest {
+    pub fn into_command(self) -> foundry_domain::AssignAgentToTask {
+        foundry_domain::AssignAgentToTask {
+            task_id: self.task_id,
+            role: self.role,
+            agent_definition_id: self.agent_definition_id,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct AgentTemplateQuery {
+    #[serde(default)]
+    pub role: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Task links
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AddTaskLinkRequest {
+    pub kind: String,
+    #[serde(default)]
+    pub target_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub title: String,
+    pub relation: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
 }

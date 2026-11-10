@@ -1,7 +1,10 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "analyst", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "analyst", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "requirements_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "feasibility_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
   ],
   "initial_stage": "work",
@@ -22,19 +25,19 @@
         },
         {
           "name": "completed",
-          "display_name": "Complete analysis",
-          "description": "Requirements analysis is complete; submit it for acceptance.",
+          "display_name": "Submit for review",
+          "description": "Submit the requirements draft for review.",
           "roles": ["analyst"],
           "action": "completed = true"
         }
       ],
       "transitions": [
-        {"on": "completed", "to": "awaiting_acceptance"}
+        {"on": "completed", "to": "style_review"}
       ]
     },
     {
-      "name": "awaiting_acceptance",
-      "active_roles": ["acceptor"],
+      "name": "style_review",
+      "active_roles": ["style_reviewer"],
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
@@ -42,14 +45,95 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "Accept the analysis and complete the task.",
+          "description": "The document is clear; move to requirements review.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The wording is unclear or ambiguous; return to the analyst.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "requirements_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "requirements_review",
+      "active_roles": ["requirements_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The requirements are complete and testable; move to feasibility review.",
+          "roles": ["requirements_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The requirements need revision; return to the analyst.",
+          "roles": ["requirements_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "feasibility_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "feasibility_review",
+      "active_roles": ["feasibility_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The requirements are technically feasible; move to human review.",
+          "roles": ["feasibility_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Feasibility concerns; return to the analyst.",
+          "roles": ["feasibility_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve and publish",
+          "description": "The human accepts the requirements document.",
           "roles": ["acceptor"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "Reject the analysis and return to work.",
+          "description": "The human rejects the document; return to the analyst.",
           "roles": ["acceptor"],
           "action": "decision = 'rejected'"
         }

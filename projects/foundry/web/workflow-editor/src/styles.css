@@ -272,41 +272,44 @@ textarea {
   min-height: 0;
 }
 
-/* The object palette sits above the canvas and stays put while the graph
-   pans and zooms. Dragging 阶段 to blank canvas creates a stage; dragging
-   操作 or 子任务 to a stage creates the corresponding AST object there. */
-.object-palette {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
-  min-height: 48px;
+/* The object toolbar sits at the top of the inspector sidebar and stays put
+   while the graph pans and zooms. Dragging 阶段 to blank canvas creates a
+   stage; dragging 操作 or 子任务 to a stage creates the corresponding AST
+   object there. */
+.object-palette-slot {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: -12px -12px 0;
+  padding: 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel);
-  overflow-x: auto;
-  overflow-y: hidden;
 }
 
-.palette-title {
-  flex: none;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--muted);
-  letter-spacing: 0.04em;
+.object-palette-slot:empty {
+  display: none;
+}
+
+.object-palette {
+  display: flex;
+  gap: 8px;
 }
 
 .palette-item {
-  flex: none;
-  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
+  justify-content: center;
+  gap: 5px;
+  min-height: 64px;
+  padding: 8px 6px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-raised);
   color: var(--fg);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: grab;
   touch-action: none;
@@ -330,26 +333,23 @@ textarea {
 }
 
 .palette-icon {
-  width: 14px;
-  height: 14px;
+  width: 24px;
+  height: 24px;
   flex: none;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.4;
+  stroke-width: 1.2;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.palette-item .palette-icon {
+  color: var(--accent);
 }
 
 .palette-icon-fill {
   fill: currentColor;
   stroke: none;
-}
-
-.palette-hint {
-  margin-left: auto;
-  flex: none;
-  font-size: 11px;
-  color: var(--muted);
 }
 
 .palette-armed-hint {

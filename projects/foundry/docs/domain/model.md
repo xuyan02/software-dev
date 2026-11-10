@@ -12,7 +12,7 @@ Foundry 的核心命题：**工作项不是便签，而是可执行契约。**
 | Session | 谁在什么时间内代表账户 | 活跃 → 过期 / 撤销 |
 | Project | 这是哪个隔离边界 | 活跃 → 归档 |
 | Initiative | 为什么现在做这件事 | 提案 → 立项 → 完成 / 取消 |
-| Issue | 世界上发生了什么、谁想要什么、哪里需要讨论 | 待分诊 → 已分诊 → 处理中 → 待确认 → 已关闭 / 不处理 / 重复 |
+| Issue | 世界上发生了什么、谁想要什么、哪里需要讨论 | 待处理 → 处理中 → 待确认 → 已关闭 / 不处理 / 重复 |
 | Requirement | 为谁解决什么问题，怎样算解决 | 草稿 → 评审 → 批准 → 设计 → 开发 → 验证 → 完成 |
 | DesignDoc | 打算怎么实现，权衡是什么 | 草稿 → 评审 → 接受 / 被取代 |
 | ADR | 为什么做出某个长期架构决定 | 提议 → 接受 / 拒绝 → 被取代 / 废弃 |
@@ -55,6 +55,7 @@ actor 由会话账户派生，请求体中的 `actor` 不再是可信输入。
 - `id`：项目标识。机器和 URL 用它定位项目。
 - `name` / `description`：展示信息。`name` 可修改，不要求唯一。
 - `status`：`active` / `archived`。归档项目只读。
+- 删除：Owner 或全局 admin 可以物理删除项目；项目范围内的 Task、需求、议题、简报、成员和事件一并删除，不可恢复。
 - `members`：账户及其项目角色 `viewer < member < maintainer < owner`。
 - 创建者自动成为 Owner；项目必须始终保留至少一个 Owner。
 
@@ -68,26 +69,19 @@ Issue 是问题空间的对象：客户反馈、缺陷、问题、想法、任�
 
 核心字段：
 
-- `kind`：`feedback` / `bug` / `question` / `idea` / `task_request` / `incident`。创建时选最接近的，分诊时可以改。
+- `kind`：`feedback` / `bug` / `question` / `idea` / `task_request` / `incident`。创建时确定。
 - `source`：来源类型（客户、客服、监控、数据分析、内部等）和自由引用（工单号、告警链接、客户名）。
 - `reporter`：谁报告的。人类和智能体都可以。
 - `description`：发生了什么。不要求写成需求。
-- `severity` / `impact` / `area` / `labels` / `assignee`：分诊时补齐。
+- `severity` / `impact` / `area` / `labels` / `assignee`：创建时填写。
 - `comments`：讨论。评论可以标记为 `internal`，不对外部报告人展示。
 - `history`：状态变更及 actor、时间、备注。
 - `resolution` / `duplicate_of`：处置结论。
 - `links`：可以关联需求、任务、设计、决策等。
 
-### 分诊与处置
+### 分类与处置
 
-分诊不是改状态那么简单，它回答四个问题：
-
-1. 这到底是什么？（`kind`）
-2. 有多严重、影响谁？（`severity` / `impact`）
-3. 谁来处理？（`assignee` / `area`）
-4. 接下来去哪？
-
-常见去处：
+分类（`kind`、`severity`、`impact`、`area`、`labels`、`assignee`）在创建议题时确定，没有独立的分诊步骤。处置通过状态转换和链接表达：
 
 | 处置 | 结果 |
 |---|---|
@@ -100,7 +94,7 @@ Issue 是问题空间的对象：客户反馈、缺陷、问题、想法、任�
 
 ### Bug 为什么不再单独建模
 
-Bug 有额外字段（环境、影响版本、复现步骤、预期、实际），但它和反馈、问题共享同一套收集、讨论、分诊、处置流程。把 Bug 做成 Issue 的一种 `kind`，可以避免两套入口、两套权限和两份重复讨论。修复工作本身是 Task，验证证据回到 Issue 上，最后才关闭。
+Bug 有额外字段（环境、影响版本、复现步骤、预期、实际），但它和反馈、问题共享同一套收集、讨论、处置流程。把 Bug 做成 Issue 的一种 `kind`，可以避免两套入口、两套权限和两份重复讨论。修复工作本身是 Task，验证证据回到 Issue 上，最后才关闭。
 
 事故同理，是 `IssueKind::Incident`；响应过程用评论和状态历史记录，复盘结论用 Decision 或文档承载，不再维护第二套事故状态机。
 
@@ -151,3 +145,49 @@ Bug 有额外字段（环境、影响版本、复现步骤、预期、实际）�
 6. 跨项目默认不可见；所有查询都带 `project_id`。
 7. 项目至少保留一个 Owner；系统至少保留一个活跃 admin。
 8. 归档项目只读；会话撤销或账户停用后不能继续操作。
+
+## 生命周期对象（设计目标）
+
+本节是 RFC 0008–0019 定义的生命周期对象索引，不是当前实现。对象按“聚合 / 记录 / 投影”分类，新增对象必须满足“独立状态机、独立权限、独立证据或独立版本”中的至少一个条件。
+
+| 组 | 对象 | 类型 | RFC |
+|---|---|---|---|
+| 贯穿 | Artifact / ArtifactVersion / LineageEdge | 记录 | 0009 |
+| 贯穿 | TaskLink（Task 链接列表） | 记录 | 0008/0009 |
+| 贯穿 | Baseline / BaselineItem / ChangeRequest | 聚合 | 0009 |
+| 贯穿 | AuxiliarySystem / ToolInvocation / Evidence | 记录 | 0010 |
+| 需求 | Requirement / RequirementBaseline | 聚合 | 0011 |
+| 需求 | AcceptanceScenario / Holdout | 记录 | 0011 |
+| 架构 | ArchitectureBaseline / ADR / DesignDoc / Contract | 聚合 | 0012 |
+| 架构 | QualityAttribute / Constraint / ComponentModel / FitnessFunction | 记录/聚合 | 0012 |
+| 架构 | TechDebtItem | 聚合 | 0012 |
+| 实现 | ChangeSet / Review / ReviewFinding | 记录/聚合 | 0013 |
+| 测试 | TestPlan / TestCase | 聚合 | 0013 |
+| 测试 | TestRun / TestResult / CoverageReport | 记录 | 0013 |
+| 质量 | QualityGate / ScanResult / SBOM / Waiver | 记录 | 0013 |
+| 发布 | Release / ReleaseCandidate | 聚合 | 0014 |
+| 发布 | Environment / Deployment / ConfigVersion / HealthSignal | 记录 | 0014 |
+| 运维 | Incident（IssueKind::Incident） / Postmortem | 聚合/记录 | 0014 |
+| 反馈 | Feedback / ImprovementAction | 记录 | 0014 |
+| 退役 | RetirementPlan | 聚合 | 0014 |
+| Agent | AgentDefinition / AgentVersion | 聚合 | 0015 |
+| Agent | ToolDefinition / ModelConfig / PromptVersion / AgentBinding | 记录 | 0015 |
+| Agent | EvaluationSuite / EvaluationRun / AgentTrajectory | 聚合/记录 | 0015 |
+| 度量 | MetricDefinition / MetricSnapshot / CostRecord | 记录 | 0016 |
+| 产品与组合 | Vision / Strategy / Opportunity | 聚合/记录 | 0017 |
+| 立项 | ProjectBrief / SuccessMetric / PortfolioDecision | 聚合 | 0017 |
+| 知识 | KnowledgeItem / Document / KnowledgeLink | 记录 | 0018 |
+| 上下文 | ContextBundle / ContextItem / MemoryEntry | 记录 | 0018 |
+| 治理 | Policy / PolicyDecision / Capability | 记录 | 0019 |
+| 风险 | RiskRegister / RiskAcceptance / Waiver | 聚合/记录 | 0019 |
+| 审计 | AuditRecord / ComplianceEvidence | 记录 | 0019 |
+| 数据 | DataClassification | 记录 | 0019 |
+
+核心原则：
+
+- 内容在 Git 或对象存储，元数据和状态在 Postgres；不产生第二真相。
+- 外部事实（commit、PR、CI run、部署、监控）只存引用和哈希。
+- 图、看板、血缘视图、度量是投影，不是编辑入口。
+- 已批准产物和基线不可变；变更通过 ChangeRequest 和新版本表达。
+
+详见 [RFC 0008](../rfcs/0008-software-lifecycle-model.md) 和各专项 RFC。

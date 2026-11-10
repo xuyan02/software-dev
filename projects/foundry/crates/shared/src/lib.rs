@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 use std::ffi::OsString;
+use std::io::IsTerminal;
+use std::io::{Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -29,6 +31,13 @@ pub struct Config {
     /// password and is required only while the account table is empty.
     pub bootstrap_password: Option<String>,
     pub session_ttl_hours: i64,
+    /// Platform model API key used by managed agents. It is never written to
+    /// the database; env `OPENAI_API_KEY` takes precedence over the file.
+    pub openai_api_key: Option<String>,
+    /// Optional platform model base URL and model name. Managed agent
+    /// definitions are reconciled from these values at startup.
+    pub openai_base_url: Option<String>,
+    pub openai_model: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is
     /// missing.
@@ -55,6 +64,9 @@ struct ConfigFile {
     bootstrap_name: Option<String>,
     bootstrap_password: Option<String>,
     session_ttl_hours: Option<i64>,
+    openai_api_key: Option<String>,
+    openai_base_url: Option<String>,
+    openai_model: Option<String>,
     editor_dir: Option<String>,
 }
 
@@ -147,6 +159,11 @@ impl Config {
             bootstrap_password: pick("FOUNDRY_BOOTSTRAP_PASSWORD", file.bootstrap_password)
                 .filter(|value| !value.is_empty()),
             session_ttl_hours,
+            openai_api_key: pick("OPENAI_API_KEY", file.openai_api_key)
+                .filter(|value| !value.is_empty()),
+            openai_base_url: pick("OPENAI_BASE_URL", file.openai_base_url)
+                .filter(|value| !value.is_empty()),
+            openai_model: pick("OPENAI_MODEL", file.openai_model).filter(|value| !value.is_empty()),
             editor_dir: PathBuf::from(
                 pick("FOUNDRY_EDITOR_DIR", file.editor_dir)
                     .unwrap_or_else(|| "web/workflow-editor/dist".to_string()),
@@ -184,6 +201,75 @@ fn load_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
     })
 }
 
+/// One plain-text log stream per managed agent process.
+///
+/// The control plane captures `foundry-agentd`'s stdout/stderr into these
+/// files; the console tails them. There is no structured record layer: the
+/// existing `tracing` output is the log.
+#[derive(Debug, Clone)]
+pub struct AgentLogFiles {
+    dir: PathBuf,
+}
+
+impl AgentLogFiles {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+
+    /// `~/.foundry/logs/agents`, falling back to `logs/agents`.
+    pub fn default_dir() -> PathBuf {
+        default_config_path()
+            .and_then(|path| path.parent().map(|dir| dir.join("logs").join("agents")))
+            .unwrap_or_else(|| PathBuf::from("logs").join("agents"))
+    }
+
+    pub fn path(&self, agent_id: &str) -> PathBuf {
+        self.dir.join(format!("{agent_id}.log"))
+    }
+
+    pub fn ensure_dir(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.dir)
+    }
+
+    /// Read at most `max_bytes` from the end of the log. A partial first line
+    /// is dropped so the viewer starts on a line boundary.
+    pub fn tail(&self, agent_id: &str, max_bytes: u64) -> std::io::Result<String> {
+        let mut file = match std::fs::File::open(self.path(agent_id)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+            Err(error) => return Err(error),
+        };
+        let len = file.metadata()?.len();
+        let start = len.saturating_sub(max_bytes);
+        if start > 0 {
+            file.seek(SeekFrom::Start(start))?;
+        }
+        let mut buffer = Vec::new();
+        file.take(max_bytes).read_to_end(&mut buffer)?;
+        if start > 0
+            && let Some(index) = buffer.iter().position(|byte| *byte == b'\n')
+        {
+            buffer.drain(..=index);
+        }
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    /// Start each process with a bounded file. The previous file is kept as
+    /// `<id>.log.1`, replacing any older rotation.
+    pub fn rotate_if_larger(&self, agent_id: &str, max_bytes: u64) -> std::io::Result<()> {
+        let path = self.path(agent_id);
+        match std::fs::metadata(&path) {
+            Ok(metadata) if metadata.len() > max_bytes => {
+                std::fs::rename(&path, path.with_extension("log.1"))?;
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 /// Initialize tracing once. Safe to call from tests.
 pub fn init_tracing(default_filter: &str) {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -191,6 +277,7 @@ pub fn init_tracing(default_filter: &str) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
+        .with_ansi(std::io::stdout().is_terminal())
         .try_init();
 }
 
@@ -235,6 +322,28 @@ mod tests {
             Some("file-setup-pass")
         );
         assert!(config.config_file.is_none());
+    }
+
+    #[test]
+    fn model_settings_come_from_the_file_and_env_wins() {
+        let config = resolve(
+            &[("OPENAI_API_KEY", "env-key")],
+            file(
+                r#"
+                database_url = "postgres://foundry@db/foundry"
+                openai_api_key = "file-key"
+                openai_base_url = "https://api.deepseek.com/v1"
+                openai_model = "deepseek-chat"
+                "#,
+            ),
+        )
+        .unwrap();
+        assert_eq!(config.openai_api_key.as_deref(), Some("env-key"));
+        assert_eq!(
+            config.openai_base_url.as_deref(),
+            Some("https://api.deepseek.com/v1")
+        );
+        assert_eq!(config.openai_model.as_deref(), Some("deepseek-chat"));
     }
 
     #[test]
@@ -308,5 +417,28 @@ mod tests {
         );
         assert_eq!(config_home(Some(OsString::new())), None);
         assert_eq!(config_home(None), None);
+    }
+
+    #[test]
+    fn agent_log_files_tail_and_truncate() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "foundry-agent-logs-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let logs = AgentLogFiles::new(dir.clone());
+        logs.ensure_dir().unwrap();
+        let path = logs.path("agent");
+        std::fs::write(&path, "line one\nline two\nline three\n").unwrap();
+
+        assert_eq!(logs.tail("agent", 12).unwrap(), "line three\n");
+        logs.rotate_if_larger("agent", 5).unwrap();
+        assert!(!path.exists());
+        assert!(path.with_extension("log.1").exists());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

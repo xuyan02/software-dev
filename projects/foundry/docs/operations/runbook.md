@@ -6,6 +6,8 @@
 cd projects/foundry
 docker compose -f deploy/compose/docker-compose.yml up -d postgres
 export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
+# 控制平面启动同目录下的 foundry-agentd；只重建控制平面会让 agentd 停留在旧版本
+cargo build --bins
 cargo run -p foundry-control-plane
 ```
 
@@ -78,11 +80,65 @@ cargo xtask check
 1. 打开 `http://127.0.0.1:8080/`，未登录会跳转到 `/login`。
 2. 首次启动先打开 `http://127.0.0.1:8080/setup`，用配置中的初始账号和密码登录初始化流程，再创建管理员；创建完成后进入空的项目页，创建第一个项目。之后用新管理员账号登录（密码由用户在创建页面设置，系统不会覆盖已有账户）。
 3. 左侧菜单进入「议题」收件箱，点「＋ 新建议题」。
-4. 提交后跳转到议题详情；发表评论、保存分诊，再用状态转换表单推进。
+4. 提交后跳转到议题详情；发表评论，再用状态转换表单推进。
 5. 侧边栏可切换项目；「项目」页管理成员和角色，「账户」页创建/停用账户。
 6. 退出会在服务端撤销会话，不只是删除浏览器 Cookie。
 
 校验失败时页面会回填已输入内容并显示原因。按钮会按角色隐藏，但服务端仍会独立校验。
+
+### 查看智能体日志
+
+智能体进程使用普通的 `tracing` 日志（stdout/stderr），控制平面把这些输出原样写入：
+
+```text
+~/.foundry/logs/agents/<agent-definition-id>.log
+```
+
+管理员在「智能体」页点某个智能体的「日志」，或直接打开 `/agents/{id}/logs`，可查看该文件最近 256 KB 的纯文本日志。页面只负责显示，不解析、不分条、不转成 JSON；需要更早的内容或完整文件时直接看上面的路径。
+
+每次启动进程前，如果文件超过 5 MB 会被改名为 `<id>.log.1`，页面只看当前文件，上一份仍保留在磁盘上。
+
+### 任务派发
+
+PM Agent 每次扫描：
+
+1. `tasks_ready_list`：每个任务一行，携带 workflow 中**所有** agent 角色（不只当前阶段）和已分配的 agent；
+2. 对没有 enabled agent 的 agent 角色，分配已有 Agent 或按模板创建后再分配；
+3. 调用 `task_start`（保留操作 `start`）把任务从 `Pending` 置为 `InProgress`。
+
+`task_start` 是平台通用操作，不是 workflow 定义的；它只接受 Ready 任务，且要求所有 agent 角色都已有 enabled 的分配。所有角色在任务启动前一起绑定；之后进入新的 stage 时不会重新走 PM 分配。后续阶段角色的 task actor 先以 inactive 状态绑定，进入对应 stage 时再激活。领域层同样拒绝 `Pending → InProgress`：任一 agent 角色的绑定数低于 `min_actors` 时任务不能进入执行状态。没有 agent 角色的任务不进入 PM 队列。
+
+任务进入 `InProgress` 后，Agent 进程在启动、重连和收到 `foundry_task_changes` 通知时，查询自己是 active actor 的任务，并自行决定是否执行。通知是瞬时的：不写 durable queue、不重试、不补发；通知丢失时，下一次通知或 Agent 重启会重新扫描。`issue_commented` 也走同一通知通道，因此人类在 Issue 回复会唤醒 Agent。
+
+AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只写进程日志，不再写 `agent_runs` / `agent_steps`。
+
+启动时，control-plane 会对所有 `in_progress` Task 执行一次 transition 重算：按当前 stage 变量和 active actors 重新求值，条件满足则推进 stage 或完成任务。正常运行时 transition 只在 TaskEvent 处理过程中检查，这个启动扫描只用于恢复“已持久化的变量满足转移条件、但服务在事件后停止”的任务。
+
+### 项目澄清
+
+项目创建后，根 Task 创建 `goal_clarification` 子 Task 和统一的澄清 Issue：
+
+1. PM 按 `goal_clarification:clarifier` 分配或创建 **Clarifier**；
+2. Clarifier 在澄清 Issue 中与创建者对话；用 `project_brief_draft_create` 创建服务端草稿，用
+   `project_brief_draft_apply` 每次只提交一个结构化 operation（problem/goals/metrics/scope/...），
+   再用 `project_brief_draft_submit` 提交草稿。提交会生成新版本并删除草稿，但**不会推进 Task**；
+   Clarifier 必须紧接着调用 `task_operation(operation = "completed")`；
+3. 简报提交后依次经过 **Brief Style Reviewer** 和 **Brief Content Reviewer**（都是 Agent）；
+   两个 Reviewer 不修改简报，用 `project_brief_annotate` 把意见挂到具体字段或对象上，打回时任务回到 `work`；
+4. Clarifier 用 `project_brief_annotations_list` 读取评审批注，逐条解决后创建新草稿、逐部分修改、重新提交，
+   然后再次发送 `completed`；
+5. 两位 Reviewer 通过后，人类在项目简报页批准；control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`。
+
+### 需求分析
+
+项目简报通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
+
+1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
+2. Analyst 用 `requirements_get` / `requirements_draft` / `requirements_apply_operations` / `requirements_validate` 维护结构化需求文档（users / functions / stories / operations）；
+   人类和 Reviewer 可以在需求文档页按对象/字段添加注释，Analyst 用 `requirements_annotations_list` 读取，用 `requirements_resolve_annotation` 在修改后标记解决；
+3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用注释写具体意见，打回时任务回到 `work`，Analyst 读取注释修改后重新提交；
+4. 人类在 `/projects/{id}/requirements` 做最终 review：发布草稿完成评审，或填写打回原因退回 Analyst；
+5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `architecture`。
 
 ### 通过 API 验收
 
@@ -108,16 +164,11 @@ curl -s localhost:8080/api/v1/issues "${AUTH[@]}" \
   -H 'content-type: application/json' \
   -d @fixtures/issues/partial-refund-bug.json
 
-# 4. 分诊（bug 必须带 severity）
-curl -s -X POST localhost:8080/api/v1/issues/<ID>/triage "${AUTH[@]}" \
-  -H 'content-type: application/json' \
-  -d '{"kind":"bug","severity":"s2","area":"payments"}'
-
-# 5. 推进
+# 4. 推进（Bug 在创建时必须带 severity）
 curl -s -X POST localhost:8080/api/v1/issues/<ID>/transitions "${AUTH[@]}" \
   -H 'content-type: application/json' -d '{"to":"in_progress"}'
 
-# 6. 未登录应返回 401
+# 5. 未登录应返回 401
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/api/v1/issues
 
 # 7. 跨项目读取应返回 404
@@ -174,7 +225,6 @@ cargo run -q -p foundry-cli -- issue list
 cargo run -q -p foundry-cli -- issue get <ID>
 cargo run -q -p foundry-cli -- issue create fixtures/issues/partial-refund-bug.json
 cargo run -q -p foundry-cli -- issue comment <ID> "已复现"
-cargo run -q -p foundry-cli -- issue triage <ID> --kind bug --severity s2 --area payments
 cargo run -q -p foundry-cli -- issue transition <ID> --to in_progress
 
 # 需求（早期实现）
@@ -270,7 +320,7 @@ docker compose -f projects/foundry/deploy/compose/docker-compose.yml up
 | 返回 404 但对象确实存在 | 对象属于另一个项目；检查 `X-Foundry-Project` / 项目 Cookie |
 | 返回 409 `duplicate` | handle 已存在 |
 | 转换返回 409 `invalid_transition` | 查看 `docs/domain/state-machines.md` 的允许转换表 |
-| 分诊返回 409/422 | Bug 缺少 severity，或缺少 resolution / duplicate_of |
+| 创建返回 422 | Bug 缺少 severity；检查请求体 |
 | 转换返回 409 `version_conflict` | 客户端持有的版本过期，重新 GET 后再提交 |
 | MCP 返回 401 | `/mcp` 也需要 `Authorization: Bearer`，不再接受请求体 actor |
 | MCP 返回 `-32601` | 方法名必须完全匹配；当前只支持 initialize/ping/tools/* |

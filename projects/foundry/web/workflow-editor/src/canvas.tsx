@@ -22,6 +22,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   MARKER_HEIGHT,
   MARKER_WIDTH,
@@ -203,7 +204,6 @@ function ObjectPalette({
 }) {
   return (
     <div className="object-palette" role="toolbar" aria-label="添加对象">
-      <span className="palette-title">添加</span>
       {(['stage', 'operation', 'subtask'] as PaletteKind[]).map((kind) => (
         <button
           key={kind}
@@ -225,9 +225,6 @@ function ObjectPalette({
           <span>{PALETTE_LABELS[kind]}</span>
         </button>
       ))}
-      <span className="palette-hint">
-        拖到画布或 stage；单击后再点 stage 也可以
-      </span>
     </div>
   );
 }
@@ -484,6 +481,7 @@ function CanvasInner({
     useState<PalettePlacementKind | null>(null);
   const armedPaletteRef = useRef<PalettePlacementKind | null>(null);
   armedPaletteRef.current = armedPalette;
+  const [paletteHost, setPaletteHost] = useState<HTMLElement | null>(null);
   const dragMoved = useRef(false);
   const bodyRef = useRef(body);
   bodyRef.current = body;
@@ -492,6 +490,12 @@ function CanvasInner({
   const [geometryTick, setGeometryTick] = useState(0);
   const [operationViews, setOperationViews] = useState<OperationView[]>([]);
   const [hoveredOperation, setHoveredOperation] = useState<string | null>(null);
+
+  // The object toolbar lives at the top of the inspector sidebar. Rendering it
+  // through a portal keeps its drag logic next to the canvas it targets.
+  useEffect(() => {
+    setPaletteHost(document.getElementById('object-palette-slot'));
+  }, []);
 
   const markers = useMemo(
     () => markerPositions(body, positions),
@@ -973,14 +977,17 @@ function CanvasInner({
       className="canvas-stack"
       onClickCapture={handleClickCapture}
     >
-      {!readOnly && (
-        <ObjectPalette
-          armed={armedPalette}
-          dragging={draggingPalette}
-          onStartDrag={beginPaletteDrag}
-          onActivate={activatePalette}
-        />
-      )}
+      {!readOnly &&
+        paletteHost !== null &&
+        createPortal(
+          <ObjectPalette
+            armed={armedPalette}
+            dragging={draggingPalette}
+            onStartDrag={beginPaletteDrag}
+            onActivate={activatePalette}
+          />,
+          paletteHost,
+        )}
       <div
         ref={wrapper}
         className="flow-wrap"
@@ -1028,7 +1035,7 @@ function CanvasInner({
             ) : (
               <>
                 <p>
-                  还没有 stage。把上方工具栏的「阶段」拖到画布，或双击空白处。
+                  还没有 stage。把右侧工具栏的「阶段」拖到画布，或双击空白处。
                 </p>
                 <button
                   type="button"
@@ -1059,7 +1066,7 @@ function CanvasInner({
         <div className="canvas-mode-hint">
           {readOnly
             ? '只读：拖动空白处、按住中键或按住空格平移画布。'
-            : '拖动卡片调整位置（只改布局）；从右侧手柄拖出转移；从上方工具栏拖入阶段、操作或子任务。'}
+            : '拖动卡片调整位置（只改布局）；从右侧手柄拖出转移；从右侧栏顶部的工具栏拖入阶段、操作或子任务。'}
         </div>
         <OperationOverlay
           views={operationViews}

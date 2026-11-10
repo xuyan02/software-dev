@@ -80,6 +80,8 @@ enum Command {
         #[arg(long = "root-workflow", default_value = "project")]
         root_workflow: String,
     },
+    /// Permanently delete a project and all data scoped to it.
+    DeleteProject { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,24 +126,6 @@ enum IssueCommand {
         body: String,
         #[arg(long)]
         internal: bool,
-    },
-    /// Classify an issue.
-    Triage {
-        id: String,
-        #[arg(long)]
-        kind: String,
-        #[arg(long)]
-        severity: Option<String>,
-        #[arg(long)]
-        area: Option<String>,
-        #[arg(long)]
-        impact: Option<String>,
-        #[arg(long, default_value = "human")]
-        assignee_kind: String,
-        #[arg(long)]
-        assignee_id: Option<String>,
-        #[arg(long)]
-        version: Option<u32>,
     },
     /// Request an issue state transition.
     Transition {
@@ -289,38 +273,6 @@ async fn main() -> Result<()> {
                 )
                 .await?;
             }
-            IssueCommand::Triage {
-                id,
-                kind,
-                severity,
-                area,
-                impact,
-                assignee_kind,
-                assignee_id,
-                version,
-            } => {
-                let auth = auth.require()?;
-                let assignee = assignee_id
-                    .as_deref()
-                    .map(|assignee_id| actor_json(&assignee_kind, assignee_id))
-                    .transpose()?;
-                let payload = json!({
-                    "kind": kind,
-                    "severity": severity,
-                    "area": area,
-                    "impact": impact,
-                    "assignee": assignee,
-                    "expected_version": version,
-                });
-                print_response(
-                    &url,
-                    auth,
-                    "POST",
-                    &format!("/api/v1/issues/{id}/triage"),
-                    Some(payload.to_string()),
-                )
-                .await?;
-            }
             IssueCommand::Transition {
                 id,
                 to,
@@ -392,6 +344,17 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
+        Command::DeleteProject { id } => {
+            let auth = auth.require()?;
+            print_response(
+                &url,
+                auth,
+                "DELETE",
+                &format!("/api/v1/projects/{id}"),
+                None,
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -415,14 +378,6 @@ fn read_json(file: &str) -> Result<String> {
     let body = std::fs::read_to_string(file).with_context(|| format!("failed to read {file}"))?;
     let _: Value = serde_json::from_str(&body).context("invalid JSON request body")?;
     Ok(body)
-}
-
-fn actor_json(kind: &str, id: &str) -> Result<Value> {
-    match kind {
-        "human" => Ok(json!({ "kind": "human", "id": id })),
-        "agent" => Ok(json!({ "kind": "agent", "id": id, "role": "cli" })),
-        other => bail!("unknown actor kind {other:?}; use human or agent"),
-    }
 }
 
 async fn print_response(

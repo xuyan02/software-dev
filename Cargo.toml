@@ -5,6 +5,7 @@ resolver = "2"
 # workspace. Each project owns its crates under projects/<name>/, but there is
 # exactly one Cargo.lock and one target/ directory at the repository root.
 members = [
+    "projects/foundry/crates/agent-runtime",
     "projects/foundry/crates/domain",
     "projects/foundry/crates/app",
     "projects/foundry/crates/adapters/memory",
@@ -19,6 +20,7 @@ members = [
     "projects/foundry/crates/shared",
     "projects/foundry/services/control-plane",
     "projects/foundry/services/worker",
+    "projects/foundry/services/agentd",
     "projects/foundry/xtask",
     # new projects: insert member below this line
 ]
@@ -30,6 +32,7 @@ license = "MIT"
 rust-version = "1.93"
 
 [workspace.dependencies]
+foundry-agent-runtime = { path = "projects/foundry/crates/agent-runtime" }
 foundry-domain = { path = "projects/foundry/crates/domain" }
 foundry-app = { path = "projects/foundry/crates/app" }
 foundry-adapter-memory = { path = "projects/foundry/crates/adapters/memory" }
@@ -48,6 +51,7 @@ serde_json = "1"
 toml = "1"
 tokio = { version = "1", features = ["full"] }
 axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace", "request-id", "fs"] }
 http-body-util = "0.1"

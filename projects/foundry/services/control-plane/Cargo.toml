@@ -11,11 +11,15 @@ path = "src/main.rs"
 
 [dependencies]
 foundry-app.workspace = true
+foundry-domain.workspace = true
 foundry-adapter-postgres.workspace = true
 foundry-adapter-policy.workspace = true
+foundry-agent-runtime.workspace = true
 foundry-api-http.workspace = true
 foundry-shared.workspace = true
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true

@@ -33,11 +33,20 @@ use std::collections::HashMap;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod agent_runs;
+mod agents;
+mod project_brief;
+mod requirements_doc;
 mod task;
+mod task_link;
 mod workflow;
 
 pub use task::*;
 pub use workflow::*;
+
+pub use agents::{AssignedTask, listen_task_changes};
+
+pub(crate) use task_link::insert_task_link_row;
 
 #[derive(Clone)]
 pub struct PostgresStore {
@@ -263,39 +272,46 @@ impl RequirementQuery for PostgresStore {
     }
 }
 
+pub(crate) async fn insert_issue_row(
+    tx: &mut Transaction<'_, Postgres>,
+    issue: &Issue,
+) -> Result<(), RepoError> {
+    let body = to_json(issue)?;
+    sqlx::query(
+        "insert into issues \
+         (id, project_id, kind, status, title, source_kind, reporter_kind, reporter_id, \
+          assignee_kind, assignee_id, severity, area, duplicate_of, version, body, \
+          created_at, updated_at) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+    )
+    .bind(issue.id)
+    .bind(issue.project_id)
+    .bind(issue.kind.as_str())
+    .bind(issue.status.as_str())
+    .bind(&issue.title)
+    .bind(issue.source.kind.as_str())
+    .bind(actor_kind(&issue.reporter))
+    .bind(issue.reporter.id())
+    .bind(issue.assignee.as_ref().map(actor_kind))
+    .bind(issue.assignee.as_ref().map(Actor::id))
+    .bind(issue.severity.map(|value| enum_text(&value)).transpose()?)
+    .bind(&issue.area)
+    .bind(issue.duplicate_of)
+    .bind(issue.version as i32)
+    .bind(body)
+    .bind(issue.created_at)
+    .bind(issue.updated_at)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_write_error)?;
+    sync_comments(tx, issue).await
+}
+
 #[async_trait]
 impl IssueRepository for PostgresStore {
     async fn insert(&self, issue: &Issue) -> Result<(), RepoError> {
-        let body = to_json(issue)?;
         let mut tx = self.pool.begin().await.map_err(backend)?;
-        sqlx::query(
-            "insert into issues \
-             (id, project_id, kind, status, title, source_kind, reporter_kind, reporter_id, \
-              assignee_kind, assignee_id, severity, area, duplicate_of, version, body, \
-              created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
-        )
-        .bind(issue.id)
-        .bind(issue.project_id)
-        .bind(issue.kind.as_str())
-        .bind(issue.status.as_str())
-        .bind(&issue.title)
-        .bind(issue.source.kind.as_str())
-        .bind(actor_kind(&issue.reporter))
-        .bind(issue.reporter.id())
-        .bind(issue.assignee.as_ref().map(actor_kind))
-        .bind(issue.assignee.as_ref().map(Actor::id))
-        .bind(issue.severity.map(|value| enum_text(&value)).transpose()?)
-        .bind(&issue.area)
-        .bind(issue.duplicate_of)
-        .bind(issue.version as i32)
-        .bind(body)
-        .bind(issue.created_at)
-        .bind(issue.updated_at)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_write_error)?;
-        sync_comments(&mut tx, issue).await?;
+        insert_issue_row(&mut tx, issue).await?;
         tx.commit().await.map_err(backend)?;
         Ok(())
     }
@@ -646,6 +662,182 @@ impl ProjectRepository for PostgresStore {
         };
         let members = self.project_members(id).await?;
         row.into_project(members).map(Some)
+    }
+
+    async fn delete(&self, id: Uuid, expected_version: u32) -> Result<(), RepoError> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let current: Option<i32> = sqlx::query_scalar(
+            "select version from projects where id = $1 for update",
+        )
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some(current) = current else {
+            return Err(RepoError::NotFound);
+        };
+        let current = current.max(0) as u32;
+        if current != expected_version {
+            return Err(RepoError::Conflict {
+                expected: expected_version,
+                actual: current,
+            });
+        }
+
+        // Events are keyed by project for Task events and by aggregate for
+        // project-scoped aggregates. Remove both before their rows disappear.
+        sqlx::query(
+            "delete from events \
+             where project_id = $1 \
+                or aggregate_id = $1 \
+                or aggregate_id in (select id from issues where project_id = $1) \
+                or aggregate_id in (select id from work_items where project_id = $1) \
+                or aggregate_id in (select id from tasks where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from links \
+             where from_id in ( \
+                 select id from issues where project_id = $1 \
+                 union all select id from work_items where project_id = $1 \
+                 union all select id from tasks where project_id = $1 \
+             ) or to_id in ( \
+                 select id from issues where project_id = $1 \
+                 union all select id from work_items where project_id = $1 \
+                 union all select id from tasks where project_id = $1 \
+             )",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from event_consumer_cursors \
+             where partition_key in (select id::text from tasks where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+
+        // Task dependencies are a self-reference, so clear them before the
+        // tasks themselves. The remaining task tables cascade from tasks.
+        sqlx::query(
+            "delete from task_dependencies \
+             where task_id in (select id from tasks where project_id = $1) \
+                or depends_on_task_id in (select id from tasks where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "update tasks set parent_id = null \
+             where parent_id in (select id from tasks where project_id = $1) \
+               and project_id <> $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query("delete from tasks where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+
+        sqlx::query(
+            "delete from requirements_operations \
+             where draft_id in ( \
+                 select drafts.id from requirements_document_drafts drafts \
+                 join requirements_documents documents on documents.id = drafts.document_id \
+                 where documents.project_id = $1 \
+             )",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from requirements_document_drafts \
+             where document_id in (select id from requirements_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from requirements_document_versions \
+             where document_id in (select id from requirements_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query("delete from requirements_documents where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from requirements_draft_annotations where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+
+        // An issue in another project may still point at one being removed.
+        // Cross-project references are not supported, but the foreign key
+        // would otherwise block the delete.
+        sqlx::query(
+            "update issues set duplicate_of = null \
+             where duplicate_of in (select id from issues where project_id = $1) \
+               and project_id <> $1",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query("delete from issues where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from work_items where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from documents where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from decisions where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from project_briefs where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from project_brief_annotations where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from projects where id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+
+        tx.commit().await.map_err(backend)?;
+        Ok(())
     }
 
     async fn list(&self, filter: ProjectFilter) -> Result<Vec<Project>, RepoError> {

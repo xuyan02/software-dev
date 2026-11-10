@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 foundry-domain.workspace = true
 foundry-app.workspace = true
+foundry-agent-runtime.workspace = true
 sqlx.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -15,6 +16,8 @@ time.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

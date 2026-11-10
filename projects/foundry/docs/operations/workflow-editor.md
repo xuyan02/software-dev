@@ -48,7 +48,7 @@ AST 是唯一真相。画布上的 stage 图形、operation 标签、边和 Star
 - **变量**：`VariablesEditor` 支持新增、改 name、改类型、改 `display_name`、改初始值和删除；stage 变量不能与任务变量同名，`actor_set` 不能声明初始值。
 - **事件、进入效果和转移**：只在检查器的 stage 分区按声明顺序列出，点击列表项编辑对应字段；画布上的 stage 图形不显示它们。operation 也不进入图形，而是用 stage 顶边上方的标签表示。
 - **operation**：每个 operation 在所属 stage 顶边上方有一个带图标的标签，显示 `display_name`（为空时回退 name），并用短线接到 stage 顶边。点击标签选中 operation。允许发送它的角色不在画布上显示，只在检查器里编辑。
-- **新增**：画布上方的对象工具栏提供「阶段」「操作」「子任务」。把「阶段」拖到画布空白处新建 stage，或单击「阶段」放到默认位置；把「操作」拖到 stage（或 operation 标签）新建 operation；把「子任务」拖到 stage 新建进入效果 `create_child`。单击「操作」「子任务」后再点击 stage 也可以放置。新 operation 初始没有角色，检查器会聚焦角色复选框；勾选角色会同时加入该 stage 的 active roles。事件和 `set_state` 仍在检查器里添加；画布空白处双击仍可新建 stage。转移只能通过连线创建，没有「+ 转移」按钮。
+- **新增**：右侧栏顶部的对象工具栏用图形提供「阶段」「操作」「子任务」三个入口。把「阶段」拖到画布空白处新建 stage，或单击「阶段」放到默认位置；把「操作」拖到 stage（或 operation 标签）新建 operation；把「子任务」拖到 stage 新建进入效果 `create_child`。单击「操作」「子任务」后再点击 stage 也可以放置。新 operation 初始没有角色，检查器会聚焦角色复选框；勾选角色会同时加入该 stage 的 active roles。事件和 `set_state` 仍在检查器里添加；画布空白处双击仍可新建 stage。转移只能通过连线创建，没有「+ 转移」按钮。
 - **全员确认模板**：stage 检查器提供「全员确认」表单，选择角色和目标 stage 后生成三个普通 AST 对象——stage 变量 `approved: actor_set`、添加 `event.actor` 的操作、`on: approved ⊇ active_actors('<role>')` 的转移。它们可以像其他对象一样编辑或删除；「模板」标记由结构推导，不写入 AST。生成的 operation 仍以画布上的标签显示。
 - **连线**：从 Start 拖到 stage 设置初始 stage；从 stage 右侧拖到另一个 stage 生成 `on = "false"`、`action = ""` 的 transition；拖到「结束」生成指向 `ended` 的 transition。生成后都在检查器里编辑。
 - **角色**：右侧角色面板新增角色；检查器设置 `kind`、`min_actors`、`max_actors`。operation 的允许角色只在 operation 检查器里用复选框编辑；勾选角色会同时把该角色加入 stage 的 `active_roles`。stage 的 `active_roles` 也可以在 stage 检查器里用复选框调整。

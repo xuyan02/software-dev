@@ -1,6 +1,7 @@
 use crate::{
-    ChildState, DependencyState, OperationName, TaskActorDAO, TaskDAO, TaskError, TaskEvent,
-    TaskMutation, TaskWorkflow, WorkflowContext,
+    ACCEPT_OPERATION, ChildState, DependencyState, OperationName, REJECT_OPERATION,
+    START_OPERATION, TaskActorDAO, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskResult,
+    TaskState, TaskWorkflow, WorkflowContext,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -38,11 +39,42 @@ pub fn apply(
             actors,
             dependencies,
             children: Vec::new(),
+            issues: Vec::new(),
             events: Vec::new(),
         });
     }
 
     match &event {
+        TaskEvent::Operation { operation, .. } if operation.as_str() == START_OPERATION => {
+            // Platform-level start: no workflow operation, no role check. The
+            // API restricts this operation to administrators.
+            let mut ctx =
+                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.set_state(TaskState::InProgress)?;
+            return Ok(ctx.into_mutation());
+        }
+        TaskEvent::Operation { operation, .. } if operation.as_str() == ACCEPT_OPERATION => {
+            // Platform-level acceptance: the project brief approval is the
+            // human acceptance, so close the linked clarification task with
+            // result `approved` without requiring a task-actor binding.
+            let mut ctx =
+                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.complete_task(Some(TaskResult::new("approved")))?;
+            return Ok(ctx.into_mutation());
+        }
+        TaskEvent::Operation { operation, .. } if operation.as_str() == REJECT_OPERATION => {
+            // Platform-level rejection from a human review: return to the
+            // workflow's initial stage (the drafting stage). Annotations carry
+            // the concrete revision feedback.
+            let mut ctx =
+                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            let initial = workflow
+                .body()
+                .and_then(|body| body.initial_stage.clone())
+                .unwrap_or_else(|| "work".to_string());
+            ctx.enter_stage(&initial)?;
+            return Ok(ctx.into_mutation());
+        }
         TaskEvent::Operation {
             operation,
             actor_id,

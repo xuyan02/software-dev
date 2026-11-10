@@ -198,6 +198,17 @@ where
         Ok(project)
     }
 
+    pub async fn delete(&self, actor: Actor, id: Uuid) -> Result<(), ServiceError> {
+        let (account, project) = self.require_owner(&actor, id).await?;
+        self.projects.delete(project.id, project.version).await?;
+        tracing::info!(
+            project_id = %project.id,
+            actor = %account.handle,
+            "project deleted"
+        );
+        Ok(())
+    }
+
     pub async fn list_visible(&self, actor: Actor) -> Result<Vec<Project>, ServiceError> {
         let account = self.require_account(&actor).await?;
         let mut projects = self.projects.list(ProjectFilter::default()).await?;
@@ -388,6 +399,7 @@ fn member_view(account: &Account, role: ProjectRole) -> ProjectMemberView {
 pub trait ProjectUseCases: Send + Sync {
     async fn create(&self, actor: Actor, command: CreateProject) -> Result<Project, ServiceError>;
     async fn update(&self, actor: Actor, command: UpdateProject) -> Result<Project, ServiceError>;
+    async fn delete(&self, actor: Actor, id: Uuid) -> Result<(), ServiceError>;
     async fn get(&self, actor: Actor, id: Uuid) -> Result<Project, ServiceError>;
     async fn list_visible(&self, actor: Actor) -> Result<Vec<Project>, ServiceError>;
     async fn root_workflow_candidates(
@@ -430,6 +442,10 @@ where
 
     async fn update(&self, actor: Actor, command: UpdateProject) -> Result<Project, ServiceError> {
         ProjectService::update(self, actor, command).await
+    }
+
+    async fn delete(&self, actor: Actor, id: Uuid) -> Result<(), ServiceError> {
+        ProjectService::delete(self, actor, id).await
     }
 
     async fn get(&self, actor: Actor, id: Uuid) -> Result<Project, ServiceError> {

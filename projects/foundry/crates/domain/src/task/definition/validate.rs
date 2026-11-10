@@ -6,7 +6,7 @@ use super::ast::{
     CreatedEffect, ENDED_STAGE, InitialValue, OperationSpec, RESULT_VARIABLE, SCHEMA_VERSION,
     VarSpec, WorkflowBody, WorkflowStage,
 };
-use crate::TaskState;
+use crate::{ACCEPT_OPERATION, REJECT_OPERATION, START_OPERATION, TaskState};
 use crate::script::{
     EventAccess, ScriptIssue, ScriptScope, VarType, compile_action, compile_condition, is_reserved,
 };
@@ -291,6 +291,16 @@ fn validate_stage(
     for (operation_index, operation) in stage.operations.iter().enumerate() {
         let operation_path = format!("{path}.operations[{operation_index}]");
         validate_operation(operation, &operation_path, &active_roles, validation);
+        if [START_OPERATION, ACCEPT_OPERATION, REJECT_OPERATION].contains(&operation.name.as_str()) {
+            validation.error(
+                format!("{operation_path}.name"),
+                "reserved_operation",
+                format!(
+                    "operation name {:?} is reserved for a platform command",
+                    operation.name
+                ),
+            );
+        }
         if !operation_names.insert(operation.name.as_str()) {
             validation.error(
                 format!("{operation_path}.name"),

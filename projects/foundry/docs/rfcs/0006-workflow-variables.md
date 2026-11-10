@@ -94,7 +94,7 @@ trigger (operation | event)
 7. **event 是系统内发生的事情**。stage 通过 `events` 声明监听哪些事件，每个事件对应一个 action；事件没有 role，也没有条件。
 8. **transition 是 `on`、可选 `action` 和 `to`**。`on` 是文本 boolean 表达式，触发器 action 执行完后按声明顺序求值；第一条为 true 的 transition 先执行它的 `action`（若有），再进入 `to`。
 9. **没有 changed 集合**。转移的触发条件就是 `on` 表达式本身；action 没有改变量时也会求值。
-10. **transition 的 action 只能修改变量**。它没有 effects 列表，也不能 `create_child` 或完成任务；完成只由 `to = "ended"` 触发。
+10. **transition 的 action 可以修改变量，也可以执行受控副作用（如 `create_issue`）**。它没有 effects 列表，不能改变 stage、不能 `create_child` 或完成任务；完成只由 `to = "ended"` 触发。
 11. **创建子任务属于 stage 进入效果**。目标 stage 的 `created` effects 在进入时执行；`create_child` 只出现在这里。
 12. **完成用虚拟 stage `ended` 表示**。`to` 为 `"ended"` 时任务完成，任务不会停在一个名为 `ended` 的 stage 上；完成结果来自保留的 task 变量 `result`。
 13. **`result` 是内置的 task 级 string 变量**。不需要声明，可与 task 变量一起读写；`to = "ended"` 时如果它非空，就写入 `task.result`，否则 `task.result` 为 null。
@@ -152,8 +152,8 @@ trigger (operation | event)
 
 不变量：
 
-1. 触发器只通过 action 修改 task 变量和当前 stage 变量；不直接改变 stage、不完成任务、不创建子任务。
-2. transition 只执行自己的 action 并进入 `to`；action 只能修改变量，不能创建子任务或完成任务。`to = "ended"` 是唯一的完成方式。
+1. 触发器只通过 action 修改 task 变量和当前 stage 变量，或执行受控副作用（如 `create_issue`）；不直接改变 stage、不完成任务、不创建子任务。
+2. transition 只执行自己的 action 并进入 `to`；action 可以修改变量或执行受控副作用，但不能改变 stage、创建子任务或完成任务。`to = "ended"` 是唯一的完成方式。
 3. 每个触发器执行完 action 后，按声明顺序求值当前 stage 的 transitions；第一条 `on` 为 true 的 transition 执行其 action 并进入 `to`，至多一条。
 4. `on` 必须是 boolean 表达式，且没有副作用。
 5. stage 变量只属于当前 stage，其他 stage 不能读写；task 变量在整个 task 生命周期内可读写。
@@ -288,7 +288,7 @@ trigger (operation | event)
 - `event` 必须来自事件表；发布校验拒绝未知事件名。
 - 同一个 stage 内同一个 `event` 只能声明一次；需要多个处理逻辑时，合并到一个 action 里。
 - event 没有条件表达式，也没有 `roles`。事件到达时，如果是否处理取决于事件内容，由 action 自己判断；不处理时不改变量。
-- event 的 action 与 operation 的 action 有相同限制：只能读写 task 变量和当前 stage 的变量，不能改变 stage、完成任务或创建子任务。
+- event 的 action 与 operation 的 action 有相同限制：可以读写 task 变量和当前 stage 的变量，也可以执行受控副作用（如 `create_issue`），但不能改变 stage、完成任务或创建子任务。
 - 事件按 task 的事件流顺序逐个处理；处理一个事件时产生的后续事件作为后续触发器处理，不在当前触发器内嵌套。
 - `task.created` 只可能由初始 stage 处理；其他 stage 不会再收到这个事件。
 - `child.created` 和 `child.state_changed` 只针对直接子任务；孙任务的事件不会冒泡到当前 task。
@@ -323,7 +323,7 @@ trigger (operation | event)
   - `task.state`、`task.title`；
   - 字面量；
   - 不能读任何 `event.*`。
-- 执行效果：action 只能读写变量。脚本语言不提供变量之外的副作用；stage 转移、创建子任务、完成任务仍然只能由 transition 和 stage 进入效果完成。
+- 执行效果：action 可以读写变量，也可以执行受控副作用（目前是 `create_issue`）。stage 转移、创建子任务、完成任务仍然只能由 transition 和 stage 进入效果完成。
 - 空 action：合法，不改变量。action 执行完后仍然求值 `on`；如果 `on` 已经为 true，转移仍会发生。transition 的空 `action` 同样是合法的。
 - 确定性：action 和 `on` 不得读时钟、随机数或做 I/O；相同输入必须得到相同结果。
 - 发布校验：按 RFC 0007 执行语法、标识符、类型、上下文引用和限制检查；`on` 不允许空字符串。
@@ -348,7 +348,7 @@ trigger (operation | event)
 - `to` 是必填的 stage 名或虚拟 stage `"ended"`；目标可以是任意已声明的 stage、当前 stage 自己或 `ended`。
 - 第一条 `on` 为 true 的 transition 执行其 `action` 并进入 `to`，后面的不再求值。
 - 没有任何 transition 的 `on` 为 true 时，stage 不变；变量保留。
-- transition 的 action 只能修改变量。没有 effects 列表，不创建子任务，也不直接完成任务。
+- transition 的 action 可以修改变量或执行受控副作用。没有 effects 列表，不改变 stage、不创建子任务，也不直接完成任务。
 - 进入已声明的目标 stage 时：
   - stage 变量按目标 stage 的声明重置，task 变量保留；
   - active roles 按目标 stage 的 `active_roles` 重新激活；
@@ -1000,7 +1000,7 @@ event action 在 `child.state_changed` 且 `event.child.workflow == "iteration"`
 
 RFC 0006 只依赖 RFC 0007 的以下保证：
 
-- `on` 是纯 boolean 表达式，没有副作用；action 只能读写当前 stage 的变量。
+- `on` 是纯 boolean 表达式，没有副作用；action 可以读写当前 stage 的变量，并执行受控副作用（如 `create_issue`）。
 - 脚本不能改变 stage、创建子任务或完成任务；这些结构效果只属于 transition 和 stage 进入。
 - 发布时完成全部词法、语法、类型、上下文引用和限制检查；运行期只有确定性的求值。
 - 发布校验提供 action 的读/写变量集合和 `on` 的读变量集合，用于 `unused_variable` 和 `transition_never_triggered`。

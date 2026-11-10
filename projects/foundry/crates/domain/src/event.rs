@@ -17,7 +17,6 @@ pub enum DomainEventKind {
     IssueCreated,
     IssueUpdated,
     IssueCommented,
-    IssueTriaged,
     IssueTransitioned,
     DesignCreated,
     DesignTransitioned,
@@ -34,9 +33,18 @@ pub enum DomainEventKind {
     ActorActivated,
     ActorDeactivated,
     DispatchRequested,
+    TaskReevaluated,
     WorkflowDefinitionCreated,
     WorkflowTitleChanged,
     WorkflowVersionPublished,
+    RequirementsDocumentCreated,
+    RequirementsDraftSaved,
+    RequirementsVersionPublished,
+    ProjectBriefDrafted,
+    ProjectBriefSubmitted,
+    ProjectBriefApproved,
+    TaskLinkAdded,
+    TaskLinkRemoved,
 }
 
 /// An immutable fact that something happened.

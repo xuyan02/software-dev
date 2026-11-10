@@ -13,7 +13,7 @@ Issue 和 Requirement 早期只靠一个全局列表存在。账户和登录会�
 2. **所有读写都按项目限定。** 列表按 `project_id` 过滤；按 id 获取对象后还要校验其 `project_id`，不匹配返回 `NotFound`，不泄露对象是否存在。
 3. **成员角色是权限层。** 项目成员角色为 `viewer < member < maintainer < owner`：
    - Viewer：读取；
-   - Member：创建、评论、分诊、推进；
+   - Member：创建、评论、推进；
    - Maintainer：处置和状态转换；
    - Owner：修改项目和管理成员。
 4. **全局 admin 是运维角色。** 可见所有项目，并覆盖项目角色检查；但不会绕过业务策略（例如智能体不能关闭议题）。
@@ -27,7 +27,7 @@ Issue 和 Requirement 早期只靠一个全局列表存在。账户和登录会�
 - 仓库、CLI、MCP 工具和 Web 页面都必须携带项目上下文；没有可见项目时 API 返回 `400 project_required`。
 - Postgres schema 增加 `project_members`，并要求 Issue/Requirement 行始终有 `project_id`。
 - 全局 admin 拥有较大权力；生产环境应限制其数量并审计操作。
-- 项目删除尚未实现。当前只有归档；删除需要先定义数据保留和审计要求。
+- 项目删除为物理删除：Owner 或全局 admin 可以删除项目，同时删除项目范围内的 Task、需求、议题、简报、成员和相关事件。删除不可恢复。归档仍用于需要保留数据、只读封存的场景。
 
 ## 相关
 

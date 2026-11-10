@@ -194,7 +194,7 @@ impl PostgresStore {
                  returning body",
             )
             .bind(id)
-            .bind(body)
+            .bind(&body)
             .fetch_optional(&self.pool)
             .await
             .map_err(backend)?;
@@ -208,10 +208,22 @@ impl PostgresStore {
                 .map_err(backend)?;
                 let stored: WorkflowBody = serde_json::from_value(stored).map_err(backend)?;
                 if &stored != workflow.body_ref() {
-                    return Err(RepoError::Backend(format!(
-                        "builtin workflow {id} v1 does not match the embedded definition; \
-                         published versions are immutable"
-                    )));
+                    // Builtins are shipped with the application, unlike
+                    // user-published workflows. Reconcile v1 so an existing
+                    // database follows the embedded definition.
+                    tracing::warn!(
+                        workflow = id,
+                        "builtin workflow v1 changed; updating it from the embedded definition"
+                    );
+                    sqlx::query(
+                        "update workflow_versions set body = $2 \
+                         where workflow_id = $1 and version = 1",
+                    )
+                    .bind(id)
+                    .bind(&body)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(backend)?;
                 }
             }
         }

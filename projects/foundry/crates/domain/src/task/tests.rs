@@ -1,9 +1,9 @@
 use super::definition::{DefinitionWorkflow, WorkflowBody, builtin_workflows, validate};
 use crate::task::script::VariableValue;
 use crate::{
-    ChildState, DependencyState, DomainEventKind, OperationName, RoleKey, StageKey, TaskActorDAO,
-    TaskAggregate, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskResult, TaskState,
-    TaskWorkflow, WorkflowContext, WorkflowId, apply,
+    ACCEPT_OPERATION, ChildState, DependencyState, DomainEventKind, OperationName, RoleKey,
+    START_OPERATION, StageKey, TaskActorDAO, TaskAggregate, TaskDAO, TaskError, TaskEvent,
+    TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext, WorkflowId, apply,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -205,18 +205,22 @@ fn project_root_starts_and_creates_the_first_child() {
 }
 
 #[test]
-fn leaf_workflow_moves_from_work_to_acceptance_to_completed() {
+fn leaf_workflow_moves_through_reviews_to_completed() {
     let workflow = builtin("goal_clarification");
     let parent = Uuid::now_v7();
     let mut leaf = task("goal_clarification", TaskState::Pending, None);
     leaf.parent_id = Some(parent);
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
+    let style_reviewer = Uuid::now_v7();
+    let content_reviewer = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
     let mut state = aggregate(
         leaf,
         vec![
             actor(task_id, "clarifier", clarifier, false),
+            actor(task_id, "style_reviewer", style_reviewer, false),
+            actor(task_id, "content_reviewer", content_reviewer, false),
             actor(task_id, "acceptor", acceptor, false),
         ],
         vec![],
@@ -239,12 +243,12 @@ fn leaf_workflow_moves_from_work_to_acceptance_to_completed() {
     state = aggregate_of(started);
 
     let completed = operation(&workflow, state, "completed", clarifier);
-    assert_eq!(completed.task.stage.as_deref(), Some("awaiting_acceptance"));
+    assert_eq!(completed.task.stage.as_deref(), Some("style_review"));
     assert!(
         completed
             .actors
             .iter()
-            .any(|a| a.account_id == acceptor && a.active)
+            .any(|a| a.account_id == style_reviewer && a.active)
     );
     assert!(
         !completed
@@ -254,6 +258,24 @@ fn leaf_workflow_moves_from_work_to_acceptance_to_completed() {
     );
     state = aggregate_of(completed);
 
+    state = aggregate_of(operation(&workflow, state, "approved", style_reviewer));
+    assert_eq!(state.task.stage.as_deref(), Some("content_review"));
+    assert!(
+        state
+            .actors
+            .iter()
+            .any(|a| a.account_id == content_reviewer && a.active)
+    );
+
+    state = aggregate_of(operation(&workflow, state, "approved", content_reviewer));
+    assert_eq!(state.task.stage.as_deref(), Some("awaiting_acceptance"));
+    assert!(
+        state
+            .actors
+            .iter()
+            .any(|a| a.account_id == acceptor && a.active)
+    );
+
     let approved = operation(&workflow, state, "approved", acceptor);
     assert_eq!(approved.task.state, TaskState::Completed);
     assert_eq!(approved.task.result, Some(TaskResult::new("approved")));
@@ -261,6 +283,92 @@ fn leaf_workflow_moves_from_work_to_acceptance_to_completed() {
     assert!(approved.events.iter().any(|event| {
         event.kind == DomainEventKind::ChildStateChanged && event.aggregate_id == parent
     }));
+}
+
+#[test]
+fn reevaluate_applies_a_pending_transition_from_persisted_variables() {
+    let workflow = builtin("goal_clarification");
+    let mut leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    leaf.stage_variables
+        .insert("completed".to_string(), VariableValue::Bool(true));
+    let task_id = leaf.id;
+    let clarifier = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![actor(task_id, "clarifier", clarifier, true)],
+        vec![],
+        vec![],
+    );
+
+    let mutation = apply(&workflow, state, TaskEvent::Reevaluate, now()).unwrap();
+
+    assert_eq!(mutation.task.stage.as_deref(), Some("style_review"));
+    assert!(
+        mutation
+            .events
+            .iter()
+            .any(|event| event.kind == DomainEventKind::TaskStageChanged)
+    );
+}
+
+#[test]
+fn stage_entry_bumps_task_updated_at() {
+    let workflow = builtin("goal_clarification");
+    let mut leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    leaf.stage_variables
+        .insert("completed".to_string(), VariableValue::Bool(true));
+    let old = time::OffsetDateTime::now_utc() - time::Duration::seconds(60);
+    leaf.updated_at = old;
+    let task_id = leaf.id;
+    let clarifier = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![actor(task_id, "clarifier", clarifier, true)],
+        vec![],
+        vec![],
+    );
+
+    let mutation = apply(&workflow, state, TaskEvent::Reevaluate, now()).unwrap();
+
+    assert_eq!(mutation.task.stage.as_deref(), Some("style_review"));
+    assert!(mutation.task.updated_at > old);
+}
+
+#[test]
+fn brief_review_rejection_returns_to_the_clarifier() {
+    let workflow = builtin("goal_clarification");
+    let leaf = task(
+        "goal_clarification",
+        TaskState::InProgress,
+        Some("style_review"),
+    );
+    let task_id = leaf.id;
+    let clarifier = Uuid::now_v7();
+    let style_reviewer = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![
+            actor(task_id, "clarifier", clarifier, false),
+            actor(task_id, "style_reviewer", style_reviewer, true),
+        ],
+        vec![],
+        vec![],
+    );
+
+    let rejected = operation(&workflow, state, "rejected", style_reviewer);
+    assert_eq!(rejected.task.stage.as_deref(), Some("work"));
+    assert!(
+        rejected
+            .actors
+            .iter()
+            .any(|a| a.account_id == clarifier && a.active)
+    );
+    assert!(
+        !rejected
+            .actors
+            .iter()
+            .any(|a| a.account_id == style_reviewer && a.active)
+    );
 }
 
 #[test]
@@ -624,8 +732,7 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
     state = absorb(state, mutation);
 
     let steps = [
-        ("goal_clarification", "requirements_discovery"),
-        ("requirements_discovery", "requirements_analysis"),
+        ("goal_clarification", "requirements_analysis"),
         ("requirements_analysis", "architecture"),
         ("architecture_design", "roadmap"),
         ("roadmap", "iteration"),
@@ -712,6 +819,72 @@ fn operation_on_a_pending_task_starts_it() {
     let mutation = operation(&workflow, state, "go", worker);
     assert_eq!(mutation.task.state, TaskState::InProgress);
     assert_eq!(mutation.task.stage.as_deref(), Some("work"));
+}
+
+#[test]
+fn platform_start_requires_bound_agent_roles() {
+    let body: WorkflowBody = serde_json::from_str(
+        r#"{
+            "schema_version": 1,
+            "roles": [{"name": "worker", "kind": "agent", "min_actors": 1}],
+            "initial_stage": "work",
+            "stages": [{
+                "name": "work",
+                "active_roles": ["worker"],
+                "operations": [],
+                "transitions": []
+            }]
+        }"#,
+    )
+    .unwrap();
+    let workflow = DefinitionWorkflow::new("custom", body);
+    let leaf = task("custom", TaskState::Pending, Some("work"));
+    let task_id = leaf.id;
+    let worker = Uuid::now_v7();
+    let state = aggregate(leaf, vec![], vec![], vec![]);
+
+    let error = apply(
+        &workflow,
+        state.clone(),
+        TaskEvent::Operation {
+            operation: OperationName::new(START_OPERATION),
+            actor_id: worker,
+        },
+        now(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, TaskError::UnboundRoles(_)));
+
+    let mutation = operation(
+        &workflow,
+        aggregate(
+            state.task,
+            vec![actor(task_id, "worker", worker, true)],
+            vec![],
+            vec![],
+        ),
+        START_OPERATION,
+        worker,
+    );
+    assert_eq!(mutation.task.state, TaskState::InProgress);
+}
+
+#[test]
+fn platform_accept_completes_with_approved_result() {
+    let workflow = builtin("goal_clarification");
+    let leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    let state = aggregate(leaf, vec![], vec![], vec![]);
+
+    let mutation = operation(&workflow, state, ACCEPT_OPERATION, Uuid::now_v7());
+
+    assert_eq!(mutation.task.state, TaskState::Completed);
+    assert_eq!(mutation.task.result, Some(TaskResult::new("approved")));
+    assert!(
+        mutation
+            .events
+            .iter()
+            .any(|event| event.kind == DomainEventKind::TaskCompleted)
+    );
 }
 
 #[test]
@@ -1078,4 +1251,47 @@ fn activation_requires_a_bound_account() {
     )
     .unwrap_err();
     assert!(matches!(error, TaskError::Unauthorized(_)));
+}
+
+#[test]
+fn create_issue_action_emits_issue_create() {
+    let body: WorkflowBody = serde_json::from_str(
+        r#"{
+            "schema_version": 1,
+            "roles": [],
+            "initial_stage": "clarify",
+            "stages": [{
+                "name": "clarify",
+                "events": [{
+                    "event": "task.created",
+                    "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = 'Clarify project goals')"
+                }]
+            }]
+        }"#,
+    )
+    .unwrap();
+    let workflow = DefinitionWorkflow::new("clarification", body);
+    let mutation = apply(
+        &workflow,
+        aggregate(
+            task("clarification", TaskState::Pending, None),
+            vec![],
+            vec![],
+            vec![],
+        ),
+        TaskEvent::Created,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(mutation.issues.len(), 1);
+    let issue = &mutation.issues[0];
+    assert_eq!(issue.kind, "question");
+    assert_eq!(issue.title, "Project clarification: Task");
+    assert_eq!(issue.description, "Discuss the project.");
+    assert_eq!(issue.relation, "clarifies");
+    assert_eq!(mutation.children.len(), 1);
+    let child = &mutation.children[0].task;
+    assert_eq!(child.workflow.as_str(), "goal_clarification");
+    assert_eq!(child.title, "Clarify project goals");
+    assert_eq!(issue.link_task_id, Some(child.id));
 }

@@ -1539,6 +1539,7 @@ export function Editor({ workflow }: { workflow: string }) {
           />
         </div>
         <aside className="sidebar" ref={sidebarRef} id="inspector">
+          <div id="object-palette-slot" className="object-palette-slot" />
           <Inspector
             body={body}
             selection={selection}

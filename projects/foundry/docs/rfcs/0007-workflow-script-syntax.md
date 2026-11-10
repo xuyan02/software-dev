@@ -9,7 +9,7 @@
 
 workflow 只有一套脚本语言，有两种使用形式：
 
-- **action**：语句脚本，用于 operation、event 和 transition；可以读写 task 变量和当前 stage 变量。
+- **action**：语句脚本，用于 operation、event 和 transition；可以读写 task 变量和当前 stage 变量，也可以执行受控副作用（`create_issue`），但不能改变 stage、创建子任务或完成任务。
 - **`on`**：表达式，必须返回 boolean，不能赋值、不能有副作用。
 
 示例：
@@ -104,7 +104,7 @@ identifier = [a-z] [a-z0-9_]*
 ```text
 if  else  add  to  and  or  not
 true  false  null  task  event
-active_actors  count_children  result
+active_actors  count_children  create_issue  result
 ```
 
 保留字不能用作变量名；变量名与之冲突时发布校验报 `script_reserved_name`。`result` 是内置的 task 变量，本身可直接引用，但不能再被声明。
@@ -156,12 +156,17 @@ program        = { statement } EOF ;
 
 statement      = assignment
                | add_statement
+               | create_issue_statement
                | if_statement
                | block ;
 
 assignment     = IDENT "=" expression ;
 
 add_statement  = "add" expression "to" IDENT ;
+
+create_issue_statement = "create_issue" "(" [ argument { "," argument } ] ")" ;
+
+argument       = IDENT "=" STRING ;
 
 if_statement   = "if" expression block
                  [ "else" ( if_statement | block ) ] ;
@@ -345,6 +350,8 @@ if event.child.result == 'approved' {
 - `if` 的条件必须是 `bool`；没有 truthiness。
 - `else` 可以省略；`else if` 等价于 `else { if ... }`。
 - 没有循环、`return`、用户定义函数调用或异常。
+- `create_issue` 只接受 `kind`、`title`、`description`、`relation` 四个命名参数，参数值必须是字符串字面量；`kind` 和 `title` 必填，`relation` 默认 `clarifies`。
+- `create_issue` 在执行时创建 Issue 和指向当前 Task 的 TaskLink，并在处理该触发器的同一个事务里落库；它不改变 task 变量、stage 或 state。
 
 ### 5.3 原子性
 

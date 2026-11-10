@@ -1,9 +1,9 @@
-use crate::commands::{CommentIssue, CreateIssue, TransitionIssue, TriageIssue};
+use crate::commands::{CommentIssue, CreateIssue, TransitionIssue};
 use crate::error::ServiceError;
 use crate::ports::{
     Action, ActionContext, EventSink, IssueFilter, IssueRepository, PolicyEngine, Resource,
 };
-use foundry_domain::{Actor, DomainEvent, DomainEventKind, Issue, TransitionEvidence};
+use foundry_domain::{Actor, DomainEvent, DomainEventKind, Issue, IssueKind, TransitionEvidence};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -56,6 +56,11 @@ where
         issue.reproduction = command.reproduction;
         issue.expected = command.expected;
         issue.actual = command.actual;
+        if issue.kind == IssueKind::Bug && issue.severity.is_none() {
+            return Err(ServiceError::Validation(
+                "bug issues require a severity at intake".to_string(),
+            ));
+        }
         issue
             .validate()
             .map_err(|error| ServiceError::Validation(error.to_string()))?;
@@ -106,28 +111,6 @@ where
 
         self.repository.save(&issue, previous_version).await?;
         self.emit(DomainEventKind::IssueCommented, &issue, actor)
-            .await?;
-        Ok(issue)
-    }
-
-    pub async fn triage(&self, command: TriageIssue) -> Result<Issue, ServiceError> {
-        let mut issue = self.get(command.project_id, command.id).await?;
-        check_version(&issue, command.expected_version)?;
-
-        let actor = command.actor;
-        self.policy.check(&ActionContext {
-            actor: actor.clone(),
-            action: Action::TriageIssue,
-            resource: Resource::Issue(command.id),
-        })?;
-
-        let previous_version = issue.version;
-        issue
-            .triage(&actor, command.triage)
-            .map_err(|error| ServiceError::InvalidTransition(error.to_string()))?;
-
-        self.repository.save(&issue, previous_version).await?;
-        self.emit(DomainEventKind::IssueTriaged, &issue, actor)
             .await?;
         Ok(issue)
     }
@@ -199,7 +182,6 @@ pub trait IssueUseCases: Send + Sync {
     async fn list(&self, project_id: Uuid, filter: IssueFilter)
     -> Result<Vec<Issue>, ServiceError>;
     async fn comment(&self, command: CommentIssue) -> Result<Issue, ServiceError>;
-    async fn triage(&self, command: TriageIssue) -> Result<Issue, ServiceError>;
     async fn transition(&self, command: TransitionIssue) -> Result<Issue, ServiceError>;
 }
 
@@ -228,10 +210,6 @@ where
 
     async fn comment(&self, command: CommentIssue) -> Result<Issue, ServiceError> {
         IssueService::comment(self, command).await
-    }
-
-    async fn triage(&self, command: TriageIssue) -> Result<Issue, ServiceError> {
-        IssueService::triage(self, command).await
     }
 
     async fn transition(&self, command: TransitionIssue) -> Result<Issue, ServiceError> {

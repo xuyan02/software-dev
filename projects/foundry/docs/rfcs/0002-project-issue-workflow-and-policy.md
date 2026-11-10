@@ -5,6 +5,8 @@
 - 关联：[ADR 0002 控制平面](../adr/0002-control-plane-form.md)、[ADR 0003 Git 存内容，Postgres 存状态](../adr/0003-git-content-postgres-state.md)、[ADR 0004 Issue 是问题空间，Requirement 是承诺空间](../adr/0004-issue-vs-requirement.md)、[ADR 0006 项目隔离](../adr/0006-project-isolation.md)、[RFC 0001 Foundry MVP](0001-foundry-mvp.md)
 
 > 2026-11-03：Task/Issue 流程模型已由 [RFC 0003](0003-task-workflow-model.md) 重新设计。本 RFC 中关于 Issue 状态、Task 聚合、项目流程对象和 Issue 权限的部分仅作历史参考；策略、审批、证据和外部执行面的总体方向仍可参考。
+>
+> 2026-11-09：Issue 分诊已移除；分类和严重度在创建议题时确定，状态机为 `Open → InProgress / Resolved / Rejected / Duplicate`。本文中所有 `triage` / `Triaged` 描述均不再适用。
 
 ## 0. 结论
 
@@ -380,7 +382,7 @@ Project
 | ProjectBrief | 为什么做、成功是什么、不做什么 | Draft / Approved / Superseded |
 | RoadmapItem | 未来一段时间要达成什么结果 | Draft / Planned / InProgress / Done / Cancelled |
 | Iteration | 本轮计划做什么 | Planned / Active / Closed |
-| Issue | 世界上发生了什么、要处理什么 | Open / Triaged / InProgress / Resolved / Closed / Rejected / Duplicate |
+| Issue | 世界上发生了什么、要处理什么 | Open / InProgress / Resolved / Closed / Rejected / Duplicate |
 | IssueStage | 当前处理到哪一步 | 由工作流模板定义 |
 | Requirement | 为谁解决什么问题、怎样算解决 | Draft / InReview / Approved / InDesign / InDevelopment / InVerification / Done / Rejected / Deferred / Superseded |
 | DesignDoc | 打算怎么实现、权衡是什么 | Draft / InReview / Accepted / Superseded |

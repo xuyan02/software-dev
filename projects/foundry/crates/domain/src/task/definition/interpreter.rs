@@ -142,6 +142,18 @@ impl TaskWorkflow for DefinitionWorkflow {
                 )?;
             }
             TaskEvent::DispatchRequested => {}
+            TaskEvent::Reevaluate => {
+                if ctx.task().state != TaskState::InProgress {
+                    return Ok(());
+                }
+                let Some(name) = ctx.task().stage.clone() else {
+                    return Ok(());
+                };
+                let Some(stage) = self.stage(name.as_str()) else {
+                    return Ok(());
+                };
+                evaluate_transitions(ctx, &self.body, stage)?;
+            }
         }
         Ok(())
     }
@@ -264,7 +276,11 @@ fn run_script(
         run_action(&compiled, &mut values, &context)
     };
     store_values(ctx, body, stage, &values);
-    result.map_err(|error| TaskError::Workflow(error.to_string()))
+    let issues = result.map_err(|error| TaskError::Workflow(error.to_string()))?;
+    for issue in issues {
+        ctx.create_issue(issue)?;
+    }
+    Ok(())
 }
 
 fn evaluate_transitions(

@@ -219,6 +219,12 @@ approved = active_actors('reviewer')
 add event.actor to approved
 attempt = attempt + 1
 completed = true
+create_issue(
+    kind = 'question',
+    title = 'Project clarification: {task.title}',
+    description = 'Discuss the project.',
+    relation = 'clarifies'
+)
 if event.child.result == 'approved' {
     outcome = 'approved'
 } else {
@@ -232,16 +238,31 @@ done and not rejected
 count_children('iteration') >= 2
 ```
 
-- 语句：赋值 `x = expr`、`add expr to x`、`if`/`else`、块；空 action 合法。
+- 语句：赋值 `x = expr`、`add expr to x`、`create_issue(...)`、`if`/`else`、块；空 action 合法。
 - 表达式：字面量、变量、`task.state`、`task.title`、`active_actors('role')`、`count_children('workflow')`、布尔/比较/整数运算、括号。
 - 类型只有 `bool`、`string`、`int`、`actor_set`，以及只在 event 上下文出现的 `actor` 和 `string?`。
-- 没有隐式转换、循环、函数定义、I/O 或时钟。
+- action 可以执行受控副作用（目前是 `create_issue`），但不能改变 task state/stage、不能完成任务；这些仍由 transition 和进入效果负责。
+- `on` 必须是纯 boolean 表达式，没有副作用。
+- 没有隐式转换、循环、函数定义、任意 I/O 或时钟。
 - 发布时完成语法、类型、变量、role、workflow 引用和事件字段检查；运行期只可能发生整数溢出。
 - 源文本上限 16 KiB，嵌套深度 32，语句数 1024。
 
+### 创建 Issue
+
+`create_issue` 只能出现在 action 中，参数全部使用命名参数和字符串字面量：
+
+| 参数 | 必填 | 说明 |
+|---|---|---|
+| `kind` | 是 | `feedback` / `bug` / `question` / `idea` / `task_request` / `incident` |
+| `title` | 是 | Title 模板，语法与 `create_child.title` 相同 |
+| `description` | 否 | Issue 描述，默认空 |
+| `relation` | 否 | 到当前 Task 的链接关系，默认 `clarifies` |
+
+执行时由任务引擎创建 Issue 和 TaskLink，并在处理该 trigger 的同一个事务里落库。每次执行都会创建一条新 Issue；需要幂等时，由脚本只在只触发一次的事件或 operation 中调用。
+
 ## Title 模板
 
-`create_child.title` 是模板字符串：
+`create_child.title` 和 `create_issue.title` 是模板字符串：
 
 | 模板 | 含义 |
 |---|---|

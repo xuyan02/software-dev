@@ -5,19 +5,31 @@
 //! against both.
 
 use foundry_app::{
-    AccountFilter, AccountRepository, EventError, EventSink, IssueFilter, IssueRepository,
-    ProjectFilter, ProjectRepository, RepoError, RequirementFilter, RequirementQuery,
-    RequirementRepository, SessionRepository,
+    AccountFilter, AccountRepository, AgentAdminUseCases, EventError, EventSink,
+    IssueFilter, IssueRepository, ProjectFilter, ProjectRepository, RepoError, RequirementFilter,
+    RequirementQuery, RequirementRepository, ServiceError, SessionRepository,
 };
-use foundry_domain::{Account, DomainEvent, Issue, Project, Requirement, Session, TaskDAO};
+use foundry_domain::{
+    Account, Actor, AgentDefinition, AgentOverview, AgentTemplateView, AssignAgentToTask,
+    CreateAgentFromTemplate, DomainEvent, Issue, IssueKind, IssueSource, IssueSourceKind, Project,
+    ReadyTaskView, Requirement, Session, TaskDAO, TaskIssueCreate, TaskLink, TaskLinkKind,
+    TaskLinkRelation,
+};
 use std::collections::HashMap;
 use std::sync::RwLock;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
+mod project_brief;
+mod requirements_doc;
 mod task;
+mod task_link;
 mod workflow;
 
+use project_brief::MemoryProjectBriefs;
+use requirements_doc::MemoryRequirementDocs;
 pub use task::*;
+use task_link::MemoryTaskLinks;
 use workflow::MemoryWorkflows;
 
 #[derive(Default)]
@@ -29,6 +41,9 @@ pub struct InMemoryStore {
     sessions: RwLock<HashMap<Uuid, Session>>,
     pub(crate) tasks: RwLock<MemoryTasks>,
     pub(crate) workflows: RwLock<MemoryWorkflows>,
+    pub(crate) requirements_docs: RwLock<MemoryRequirementDocs>,
+    pub(crate) project_briefs: RwLock<MemoryProjectBriefs>,
+    pub(crate) task_links: RwLock<MemoryTaskLinks>,
 }
 
 impl InMemoryStore {
@@ -54,6 +69,113 @@ impl InMemoryStore {
 
     pub fn project_count(&self) -> usize {
         self.projects.read().expect("lock poisoned").len()
+    }
+
+    pub(crate) fn persist_task_issues(
+        &self,
+        task_id: Uuid,
+        project_id: Uuid,
+        issues: &[TaskIssueCreate],
+    ) -> Result<(), RepoError> {
+        for spec in issues {
+            let kind = IssueKind::parse(&spec.kind)
+                .ok_or_else(|| RepoError::Invalid(format!("unknown issue kind {:?}", spec.kind)))?;
+            let relation = TaskLinkRelation::parse(&spec.relation).ok_or_else(|| {
+                RepoError::Invalid(format!("unknown link relation {:?}", spec.relation))
+            })?;
+            let link_task_id = spec.link_task_id.unwrap_or(task_id);
+            let issue = Issue::new(
+                project_id,
+                spec.title.clone(),
+                spec.description.clone(),
+                kind,
+                IssueSource {
+                    kind: IssueSourceKind::Internal,
+                    reference: Some(link_task_id.to_string()),
+                },
+                Actor::System,
+            )
+            .map_err(|error| RepoError::Invalid(error.to_string()))?;
+            self.issues
+                .write()
+                .expect("lock poisoned")
+                .insert(issue.id, issue.clone());
+            let link = TaskLink {
+                id: Uuid::now_v7(),
+                task_id: link_task_id,
+                kind: TaskLinkKind::Issue,
+                target_id: Some(issue.id),
+                url: None,
+                title: issue.title.clone(),
+                relation,
+                created_by: Actor::System,
+                created_at: OffsetDateTime::now_utc(),
+                metadata: serde_json::json!({}),
+            };
+            self.task_links
+                .write()
+                .expect("lock poisoned")
+                .insert_link(&link)?;
+        }
+        Ok(())
+    }
+}
+
+/// The in-memory adapter keeps no managed-agent state. Tests use this no-op;
+/// the real management plane is Postgres + the control-plane supervisor.
+#[derive(Default)]
+pub struct MemoryAgentAdmin;
+
+#[async_trait::async_trait]
+impl AgentAdminUseCases for MemoryAgentAdmin {
+    async fn overview(&self, _actor: Actor) -> Result<AgentOverview, ServiceError> {
+        Ok(AgentOverview::default())
+    }
+
+    async fn agents(&self, _actor: Actor) -> Result<Vec<AgentDefinition>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    async fn ready_tasks(&self, _actor: Actor) -> Result<Vec<ReadyTaskView>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    async fn templates(
+        &self,
+        _actor: Actor,
+        _role: Option<String>,
+    ) -> Result<Vec<AgentTemplateView>, ServiceError> {
+        Ok(Vec::new())
+    }
+
+    async fn create_from_template(
+        &self,
+        _actor: Actor,
+        _command: CreateAgentFromTemplate,
+    ) -> Result<AgentDefinition, ServiceError> {
+        Err(ServiceError::Forbidden(
+            "agent dispatch is not available in the memory adapter".to_string(),
+        ))
+    }
+
+    async fn assign_task(
+        &self,
+        _actor: Actor,
+        _command: AssignAgentToTask,
+    ) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn start(&self, _actor: Actor, _id: Uuid) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn stop(&self, _actor: Actor, _id: Uuid) -> Result<(), ServiceError> {
+        Ok(())
+    }
+
+    async fn restart(&self, _actor: Actor, _id: Uuid) -> Result<(), ServiceError> {
+        Ok(())
     }
 }
 
@@ -317,6 +439,45 @@ impl ProjectRepository for InMemoryStore {
             .expect("lock poisoned")
             .get(&id)
             .cloned())
+    }
+
+    async fn delete(&self, id: Uuid, expected_version: u32) -> Result<(), RepoError> {
+        let mut projects = self.projects.write().expect("lock poisoned");
+        let stored = projects.get(&id).ok_or(RepoError::NotFound)?;
+        if stored.version != expected_version {
+            return Err(RepoError::Conflict {
+                expected: expected_version,
+                actual: stored.version,
+            });
+        }
+
+        let task_ids = self
+            .tasks
+            .write()
+            .expect("lock poisoned")
+            .delete_project(id);
+        self.task_links
+            .write()
+            .expect("lock poisoned")
+            .delete_tasks(&task_ids);
+        self.requirements
+            .write()
+            .expect("lock poisoned")
+            .retain(|_, requirement| requirement.project_id != id);
+        self.issues
+            .write()
+            .expect("lock poisoned")
+            .retain(|_, issue| issue.project_id != id);
+        self.project_briefs
+            .write()
+            .expect("lock poisoned")
+            .delete_project(id);
+        self.requirements_docs
+            .write()
+            .expect("lock poisoned")
+            .delete_project(id);
+        projects.remove(&id);
+        Ok(())
     }
 
     async fn list(&self, filter: ProjectFilter) -> Result<Vec<Project>, RepoError> {

@@ -19,13 +19,21 @@ use foundry_adapter_postgres::{
 };
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountService, AuthService, IssueService, ProjectService, RequirementService, TaskDispatcher,
-    TaskRepository, TaskService, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    AccountService, AgentAdminUseCases, AuthService, IssueService,
+    ProjectBriefService, ProjectBriefUseCases, ProjectService, RequirementService,
+    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
+    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, WorkflowCatalog,
+    WorkflowService, WorkflowUseCases,
 };
-use foundry_shared::Config;
+use foundry_domain::OperationName;
+use foundry_shared::{AgentLogFiles, Config};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod agent_admin;
+mod platform_agents;
+mod supervisor;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         store.pool().clone(),
         Arc::clone(&workflows),
     ));
+    reevaluate_transitions(store.as_ref(), task_dispatcher.as_ref()).await;
 
     let requirements =
         RequirementService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
@@ -72,6 +81,26 @@ async fn main() -> anyhow::Result<()> {
         workflows,
     ));
     let workflows_admin: Arc<dyn WorkflowUseCases> = Arc::new(WorkflowService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
+    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
+        Arc::new(RequirementsDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&events),
+        ));
+    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
+    let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
         Arc::clone(&store),
         Arc::clone(&store),
         Arc::clone(&events),
@@ -120,13 +149,44 @@ async fn main() -> anyhow::Result<()> {
             None
         },
     ));
+    let host = if config.addr.ip().is_unspecified() {
+        "127.0.0.1".to_string()
+    } else {
+        config.addr.ip().to_string()
+    };
+    let agent_logs = Arc::new(AgentLogFiles::new(AgentLogFiles::default_dir()));
+    let supervisor = supervisor::AgentSupervisor::new(
+        Arc::clone(&store),
+        config.database_url.clone(),
+        format!("http://{host}:{}", config.addr.port()),
+        config.session_ttl_hours,
+        config.openai_api_key.clone().unwrap_or_default(),
+        Arc::clone(&agent_logs),
+    );
+    let agents: Arc<dyn AgentAdminUseCases> = Arc::new(agent_admin::PostgresAgentAdmin::new(
+        Arc::clone(&store),
+        Arc::clone(&supervisor),
+        config
+            .openai_base_url
+            .clone()
+            .unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string()),
+        config
+            .openai_model
+            .clone()
+            .unwrap_or_else(|| "qwen2.5-coder".to_string()),
+    ));
     let state = AppState {
         requirements: Arc::new(requirements),
         issues: Arc::new(issues),
         accounts,
         projects,
         tasks,
+        agents,
+        agent_logs,
         workflows: workflows_admin,
+        requirements_doc,
+        project_brief,
+        task_links,
         auth,
         setup,
         editor: Arc::new(foundry_api_http::EditorAssets::new(resolve_editor_dir(
@@ -134,13 +194,28 @@ async fn main() -> anyhow::Result<()> {
         ))),
     };
     let app = foundry_api_http::router(state);
-    tokio::spawn(run_task_dispatcher(task_dispatcher));
+    tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     tracing::info!(
         addr = %config.addr,
         "foundry control plane listening"
     );
+    let platform_store = Arc::clone(&store);
+    let platform_supervisor = Arc::clone(&supervisor);
+    let platform_base = config.openai_base_url.clone();
+    let platform_model = config.openai_model.clone();
+    let platform_has_key = config.openai_api_key.is_some();
+    tokio::spawn(async move {
+        platform_agents::ensure_platform_agent(
+            platform_store,
+            platform_supervisor,
+            platform_base,
+            platform_model,
+            platform_has_key,
+        )
+        .await;
+    });
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -173,9 +248,37 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received");
 }
 
-/// Runs the task scheduler. Ready tasks are woken first so their
-/// `DispatchRequested` events are consumed by the same tick.
-async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>) {
+/// Re-evaluate transitions for tasks that were already in progress when the
+/// process stopped. Transitions normally run only on a new task event; this
+/// startup pass recovers tasks whose persisted stage variables already satisfy
+/// a transition.
+async fn reevaluate_transitions(store: &PostgresStore, dispatcher: &dyn TaskDispatcher) {
+    let ids = match store.in_progress_task_ids().await {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(error = %error, "cannot list in-progress tasks for transition recheck");
+            return;
+        }
+    };
+    let mut checked = 0;
+    for id in ids {
+        match dispatcher
+            .process(id, Some(TaskCommand::Reevaluate))
+            .await
+        {
+            Ok(()) => checked += 1,
+            Err(error) => {
+                tracing::warn!(task_id = %id, error = %error, "transition recheck failed");
+            }
+        }
+    }
+    tracing::info!(tasks = checked, "startup transition recheck finished");
+}
+
+/// Advances task workflows and reconciles durable state into agent
+/// activations. Notifications are not persisted; this loop rebuilds missed
+/// ones from task state, assignments and Issue comments.
+async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<PostgresStore>) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
@@ -188,6 +291,44 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>) {
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "processed task trigger partitions"),
             Err(error) => tracing::warn!(%error, "task dispatcher failed"),
+        }
+        match store.approved_goal_clarifications().await {
+            Ok(tasks) => {
+                for (task_id, _project_id, approved_by) in tasks {
+                    let command = TaskCommand::SendOperation {
+                        actor_id: approved_by,
+                        operation: OperationName::new(foundry_domain::ACCEPT_OPERATION),
+                        idempotency_key: format!("brief-approved:{task_id}"),
+                    };
+                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
+                        tracing::warn!(
+                            %error,
+                            task_id = %task_id,
+                            "approved brief task completion failed"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "approved brief scan failed"),
+        }
+        match store.approved_requirements_analyses().await {
+            Ok(tasks) => {
+                for (task_id, _project_id, published_by) in tasks {
+                    let command = TaskCommand::SendOperation {
+                        actor_id: published_by,
+                        operation: OperationName::new(foundry_domain::ACCEPT_OPERATION),
+                        idempotency_key: format!("requirements-published:{task_id}"),
+                    };
+                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
+                        tracing::warn!(
+                            %error,
+                            task_id = %task_id,
+                            "published requirements task completion failed"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "published requirements scan failed"),
         }
     }
 }

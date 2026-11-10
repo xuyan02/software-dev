@@ -12,6 +12,7 @@ uuid.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
 time.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

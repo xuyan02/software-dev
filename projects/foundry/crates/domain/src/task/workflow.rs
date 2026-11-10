@@ -75,6 +75,9 @@ pub enum TaskEvent {
         result: Option<TaskResult>,
     },
     DispatchRequested,
+    /// Re-evaluate the current stage's transitions from persisted state. Used
+    /// by the startup recovery pass; it runs no event action.
+    Reevaluate,
 }
 
 impl TaskEvent {
@@ -127,6 +130,7 @@ impl TaskEvent {
                     .map(TaskResult::new),
             },
             DomainEventKind::DispatchRequested => Self::DispatchRequested,
+            DomainEventKind::TaskReevaluated => Self::Reevaluate,
             other => {
                 return Err(TaskError::Workflow(format!(
                     "{other:?} is not a task trigger event"
@@ -155,6 +159,7 @@ pub struct WorkflowContext<'a> {
     dependencies: Vec<DependencyState>,
     children: Vec<ChildState>,
     created_children: Vec<TaskChild>,
+    created_issues: Vec<crate::TaskIssueCreate>,
     events: Vec<DomainEvent>,
     now: OffsetDateTime,
 }
@@ -175,6 +180,7 @@ impl<'a> WorkflowContext<'a> {
             dependencies,
             children,
             created_children: Vec::new(),
+            created_issues: Vec::new(),
             events: Vec::new(),
             now,
         }
@@ -222,9 +228,7 @@ impl<'a> WorkflowContext<'a> {
         &self.task.task_variables
     }
 
-    pub fn task_variables_mut(
-        &mut self,
-    ) -> &mut std::collections::BTreeMap<String, VariableValue> {
+    pub fn task_variables_mut(&mut self) -> &mut std::collections::BTreeMap<String, VariableValue> {
         &mut self.task.task_variables
     }
 
@@ -272,6 +276,7 @@ impl<'a> WorkflowContext<'a> {
                 {
                     return Err(TaskError::DependencyBlocked);
                 }
+                self.require_bound_agent_roles()?;
             }
             _ => {
                 return Err(TaskError::InvalidEffect(format!(
@@ -283,6 +288,7 @@ impl<'a> WorkflowContext<'a> {
 
         let from = self.task.state;
         self.task.state = state;
+        self.task.updated_at = self.now;
         self.events.push(system_event(
             DomainEventKind::TaskStateChanged,
             self.task.id,
@@ -291,6 +297,32 @@ impl<'a> WorkflowContext<'a> {
         ));
         self.notify_parent(state, None);
         Ok(())
+    }
+
+    /// A task may enter `in_progress` only after every agent role that requires
+    /// actors has them bound. Later-stage roles are bound before the task
+    /// starts, so this check applies to the whole workflow, not just the
+    /// initial stage.
+    fn require_bound_agent_roles(&self) -> Result<(), TaskError> {
+        let mut unbound = Vec::new();
+        for spec in self.workflow.roles() {
+            if spec.kind != RoleKind::Agent || spec.min_actors == 0 {
+                continue;
+            }
+            let bound = self
+                .actors
+                .iter()
+                .filter(|actor| actor.role_key.as_str() == spec.name)
+                .count();
+            if bound < spec.min_actors as usize {
+                unbound.push(spec.name.clone());
+            }
+        }
+        if unbound.is_empty() {
+            Ok(())
+        } else {
+            Err(TaskError::UnboundRoles(unbound.join(", ")))
+        }
     }
 
     /// Enter a stage by name, running its entry semantics.
@@ -305,6 +337,7 @@ impl<'a> WorkflowContext<'a> {
         };
 
         self.set_stage(name);
+        self.task.updated_at = self.now;
         self.task.stage_variables = stage
             .vars
             .iter()
@@ -443,7 +476,7 @@ impl<'a> WorkflowContext<'a> {
         Ok(())
     }
 
-    fn create_child(&mut self, workflow: &str, title: String) {
+    fn create_child(&mut self, workflow: &str, title: String) -> Uuid {
         let id = Uuid::now_v7();
         let child = TaskDAO {
             id,
@@ -495,6 +528,21 @@ impl<'a> WorkflowContext<'a> {
             task: child,
             dependencies: Vec::new(),
         });
+        id
+    }
+
+    pub(crate) fn create_issue(
+        &mut self,
+        mut issue: crate::TaskIssueCreate,
+    ) -> Result<(), TaskError> {
+        let link_task_id = if let Some(task) = issue.task.take() {
+            self.create_child(task.workflow.as_str(), task.title)
+        } else {
+            self.task.id
+        };
+        issue.link_task_id = Some(link_task_id);
+        self.created_issues.push(issue);
+        Ok(())
     }
 
     fn notify_parent(&mut self, state: TaskState, result: Option<TaskResult>) {
@@ -524,6 +572,7 @@ impl<'a> WorkflowContext<'a> {
             actors: self.actors,
             dependencies: self.dependencies,
             children: self.created_children,
+            issues: self.created_issues,
             events: self.events,
         }
     }

@@ -1,7 +1,9 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "clarifier", "kind": "any", "min_actors": 1, "max_actors": null},
+    {"name": "clarifier", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "content_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
   ],
   "initial_stage": "work",
@@ -22,14 +24,68 @@
         },
         {
           "name": "completed",
-          "display_name": "Complete clarification",
-          "description": "The goal is clarified; submit it for acceptance.",
+          "display_name": "Submit for review",
+          "description": "The goal is clarified and the project brief is submitted for style review.",
           "roles": ["clarifier"],
           "action": "completed = true"
         }
       ],
       "transitions": [
-        {"on": "completed", "to": "awaiting_acceptance"}
+        {"on": "completed", "to": "style_review"}
+      ]
+    },
+    {
+      "name": "style_review",
+      "active_roles": ["style_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The project brief is clear; move to content review.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The wording is unclear or ambiguous; return to the clarifier.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "content_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "content_review",
+      "active_roles": ["content_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The project brief is complete and consistent; move to human acceptance.",
+          "roles": ["content_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The content is incomplete, inconsistent or unmeasurable; return to the clarifier.",
+          "roles": ["content_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "awaiting_acceptance"},
+        {"on": "decision == 'rejected'", "to": "work"}
       ]
     },
     {

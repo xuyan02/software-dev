@@ -79,6 +79,24 @@ pub enum TaskState {
     Completed,
 }
 
+/// Reserved platform operation that starts a Ready task.
+///
+/// It is not declared by a workflow; `apply` handles it before workflow role
+/// authorization and runs no stage action.
+pub const START_OPERATION: &str = "start";
+
+/// Reserved platform operation that completes a task with result `approved`.
+///
+/// Used by the project-brief approval path to close its goal-clarification
+/// task without requiring the acceptor role to be bound as a task actor.
+pub const ACCEPT_OPERATION: &str = "accept";
+
+/// Reserved platform operation that returns a task to its initial stage.
+///
+/// Used by the human requirements-review action: the reason is stored as a
+/// document annotation, and the analyst is activated again for revision.
+pub const REJECT_OPERATION: &str = "reject";
+
 impl TaskState {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -331,6 +349,27 @@ pub struct TaskChild {
     pub dependencies: Vec<Uuid>,
 }
 
+/// A child task a `create_issue` action asked to create alongside the Issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskIssueTask {
+    pub workflow: String,
+    pub title: String,
+}
+
+/// An Issue a workflow action asked to create for this Task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskIssueCreate {
+    pub kind: String,
+    pub title: String,
+    pub description: String,
+    pub relation: String,
+    /// When present, the engine creates this child task and links the Issue to
+    /// it; otherwise the Issue links to the task running the action.
+    pub task: Option<TaskIssueTask>,
+    /// Resolved by the workflow context before the mutation is persisted.
+    pub link_task_id: Option<Uuid>,
+}
+
 /// The complete result of applying one trigger event to a Task aggregate.
 #[derive(Debug, Clone)]
 pub struct TaskMutation {
@@ -338,6 +377,8 @@ pub struct TaskMutation {
     pub actors: Vec<TaskActorDAO>,
     pub dependencies: Vec<DependencyState>,
     pub children: Vec<TaskChild>,
+    /// Issues created by `create_issue` statements in this mutation.
+    pub issues: Vec<TaskIssueCreate>,
     pub events: Vec<crate::DomainEvent>,
 }
 
@@ -347,6 +388,8 @@ pub enum TaskError {
     Completed,
     #[error("dependencies are not completed")]
     DependencyBlocked,
+    #[error("agent roles are not fully bound: {0}")]
+    UnboundRoles(String),
     #[error("direct child tasks are not completed")]
     ChildrenNotCompleted,
     #[error("invalid operation {0:?} in the current stage")]

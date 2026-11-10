@@ -25,10 +25,7 @@ impl PolicyEngine for DemoPolicy {
             (Actor::Human { .. }, _) => Ok(()),
             (
                 Actor::Agent { .. },
-                Action::CreateRequirement
-                | Action::CreateIssue
-                | Action::CommentIssue
-                | Action::TriageIssue,
+                Action::CreateRequirement | Action::CreateIssue | Action::CommentIssue,
             ) => Ok(()),
             (Actor::Agent { .. }, Action::TransitionRequirement { from, to }) => {
                 if agent_transition_allowed(*from, *to) {
@@ -66,15 +63,13 @@ fn agent_transition_allowed(from: RequirementStatus, to: RequirementStatus) -> b
     )
 }
 
-/// Agents can move work forward and report a delivery, but cannot make the
-/// disposition decisions (`Rejected`, `Duplicate`, `Closed`) or reopen a
-/// closed issue. `Open -> Triaged` happens through the triage action, which
-/// carries the classification evidence.
+/// Agents can start and move work forward, but cannot make the disposition
+/// decisions (`Rejected`, `Duplicate`, `Closed`) or reopen a closed issue.
 fn agent_issue_transition_allowed(from: IssueStatus, to: IssueStatus) -> bool {
     use IssueStatus::*;
     matches!(
         (from, to),
-        (Triaged, InProgress) | (Triaged, Resolved) | (InProgress, Resolved)
+        (Open, InProgress) | (Open, Resolved) | (InProgress, Resolved)
     )
 }
 
@@ -135,11 +130,11 @@ mod tests {
     #[test]
     fn agent_can_work_an_issue_forward() {
         DemoPolicy
-            .check(&ActionContext {
-                actor: Actor::agent("triage-bot", "triage"),
-                action: Action::TriageIssue,
-                resource: Resource::Issue(Uuid::now_v7()),
-            })
+            .check(&issue_context(
+                Actor::agent("fixer", "developer"),
+                IssueStatus::Open,
+                IssueStatus::InProgress,
+            ))
             .unwrap();
         DemoPolicy
             .check(&issue_context(
@@ -155,7 +150,7 @@ mod tests {
         assert!(
             DemoPolicy
                 .check(&issue_context(
-                    Actor::agent("triage-bot", "triage"),
+                    Actor::agent("reviewer", "fixer"),
                     IssueStatus::Open,
                     IssueStatus::Rejected,
                 ))

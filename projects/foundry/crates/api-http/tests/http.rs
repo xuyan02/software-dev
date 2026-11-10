@@ -3,13 +3,18 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode, header};
-use foundry_adapter_memory::{InMemoryEventSink, InMemoryStore, InMemoryTaskDispatcher};
+use foundry_adapter_memory::{
+    InMemoryEventSink, InMemoryStore, InMemoryTaskDispatcher, MemoryAgentAdmin,
+};
 use foundry_adapter_policy::DemoPolicy;
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountFilter, AccountRepository, AccountService, AuthService, CreateProject, IssueService,
-    ProjectRepository, ProjectService, RequirementService, TaskDispatcher, TaskRepository,
-    TaskService, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    AccountFilter, AccountRepository, AccountService, AuthService, CreateProject,
+    IssueRepository, IssueService, ProjectBriefRepository, ProjectBriefService,
+    ProjectBriefUseCases, ProjectRepository, ProjectService, RequirementService,
+    RequirementsDocumentService, RequirementsDocumentUseCases, TaskDispatcher, TaskLinkService,
+    TaskLinkUseCases, TaskRepository, TaskService, WorkflowCatalog, WorkflowService,
+    WorkflowUseCases,
 };
 use foundry_domain::WorkflowId;
 use http_body_util::BodyExt;
@@ -20,6 +25,7 @@ use uuid::Uuid;
 
 struct Harness {
     router: Router,
+    store: Arc<InMemoryStore>,
     admin_token: String,
     admin_id: Uuid,
     project_id: String,
@@ -74,6 +80,26 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
+        Arc::new(RequirementsDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&events),
+        ));
+    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
+    let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
 
     let project = projects
         .create(
@@ -95,7 +121,14 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         accounts,
         projects,
         tasks: tasks.clone(),
+        agents: Arc::new(MemoryAgentAdmin),
+        agent_logs: Arc::new(foundry_shared::AgentLogFiles::new(
+            std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
+        )),
         workflows: workflows_admin,
+        requirements_doc,
+        project_brief,
+        task_links,
         auth,
         setup: Arc::new(SetupState::new(
             false,
@@ -110,6 +143,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
 
     Harness {
         router,
+        store,
         admin_token: token,
         admin_id: admin.id,
         project_id: project.id.to_string(),
@@ -183,6 +217,183 @@ async fn suspended_accounts_lose_their_sessions() {
     );
     let (status, _, _) = send(&harness.router, request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn only_owners_can_delete_a_project_and_deletion_removes_its_data() {
+    let harness = harness().await;
+    create_account(&harness, "observer", "human").await;
+
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({ "name": "Retired", "root_workflow_id": "project" }),
+        ),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+    let root_task_id = project["root_task_id"].as_str().unwrap().to_string();
+
+    body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/projects/{project_id}/members"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "handle": "observer", "role": "member" }),
+        ),
+    )
+    .await;
+    let observer_token = login(&harness.router, "observer", "observer-password").await;
+
+    let issue = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&project_id),
+            json!({ "title": "Delete with the project", "description": "scoped" }),
+        ),
+    )
+    .await;
+    let issue_id = issue["id"].as_str().unwrap().to_string();
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "DELETE",
+            &format!("/api/v1/projects/{project_id}"),
+            Some(&observer_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "DELETE",
+            &format!("/api/v1/projects/{project_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    assert!(
+        IssueRepository::get(&*harness.store, Uuid::parse_str(&issue_id).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        TaskRepository::get(&*harness.store, Uuid::parse_str(&root_task_id).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{project_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/issues/{issue_id}"),
+            Some(&harness.admin_token),
+            Some(&project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let projects = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert!(
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| value["id"] != project_id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn project_console_delete_redirects_and_clears_the_project_cookie() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({ "name": "Console delete", "root_workflow_id": "project" }),
+        ),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().to_string();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("/projects/{project_id}/delete"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", harness.admin_token),
+        )
+        .header(
+            header::COOKIE,
+            format!("foundry_project={project_id}"),
+        )
+        .body(Body::from(""))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers[header::LOCATION], "/projects");
+    assert!(
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .any(|value| value.contains("foundry_project=;"))
+    );
+    assert!(ProjectRepository::get(&*harness.store, Uuid::parse_str(&project_id).unwrap())
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -511,6 +722,286 @@ async fn login_and_logout_revoke_the_session() {
 }
 
 #[tokio::test]
+async fn task_console_lists_the_tree_and_links_the_issue() {
+    let harness = harness().await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("handle=admin&password=admin-password&next=%2F"))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let list = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/tasks",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let child_id = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["workflow"] == "goal_clarification")
+        .and_then(|task| task["id"].as_str())
+        .unwrap()
+        .to_string();
+
+    let request = Request::builder()
+        .uri("/tasks")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Clarify project goals"));
+    assert!(body.contains("goal_clarification"));
+    assert!(body.contains("智能体"));
+
+    let request = Request::builder()
+        .uri(format!("/tasks/{child_id}"))
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Clarify project goals"));
+    assert!(body.contains("Project clarification: Primary"));
+    assert!(body.contains("打开议题"));
+}
+
+#[tokio::test]
+async fn project_brief_console_saves_submits_and_approves() {
+    let harness = harness().await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("handle=admin&password=admin-password&next=%2F"))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let project_id = harness.project_id.clone();
+    let page_uri = format!("/projects/{project_id}/brief");
+
+    let get_page = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let (status, _, body) = send(&harness.router, get_page(&page_uri)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("项目简报"));
+    assert!(body.contains("我的草稿"));
+    assert!(body.contains("新建草稿"));
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("{page_uri}/drafts"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(""))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let draft_uri = headers[header::LOCATION].to_str().unwrap().to_string();
+    assert!(draft_uri.starts_with(&format!("{page_uri}?draft=")));
+    let (status, _, body) = send(&harness.router, get_page(&draft_uri)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("编辑草稿"));
+    assert!(body.contains("非目标"));
+    let draft_id = draft_uri
+        .split_once("?draft=")
+        .unwrap()
+        .1
+        .to_string();
+
+    let fields = |revision: &str, action: &str| -> Vec<(String, String)> {
+        vec![
+            ("draft_id".to_string(), draft_id.clone()),
+            ("revision".to_string(), revision.to_string()),
+            ("action".to_string(), action.to_string()),
+            ("problem".to_string(), "客服只能整单退款".to_string()),
+            ("goals".to_string(), "支持部分退款".to_string()),
+            (
+                "success_metrics".to_string(),
+                "人工处理量 | 700 | 件/月 | 客服看板 | 上线后 3 个月".to_string(),
+            ),
+            ("in_scope".to_string(), "部分退款".to_string()),
+            ("out_of_scope".to_string(), "多次退款合并".to_string()),
+            ("constraints".to_string(), "兼容支付网关".to_string()),
+            (
+                "risks".to_string(),
+                "网关风险 | medium | high | 双写校验 | 张三".to_string(),
+            ),
+            (
+                "stakeholders".to_string(),
+                "产品 | product-owner | 目标,范围".to_string(),
+            ),
+            ("budget_amount".to_string(), "100000".to_string()),
+            ("budget_currency".to_string(), "CNY".to_string()),
+            ("budget_note".to_string(), "首期".to_string()),
+            (
+                "assumptions".to_string(),
+                "支付网关支持部分退款".to_string(),
+            ),
+            ("open_questions".to_string(), String::new()),
+        ]
+    };
+    let post_page = |revision: &str, action: &str| {
+        let body = serde_urlencoded::to_string(fields(revision, action)).unwrap();
+        Request::builder()
+            .method("POST")
+            .uri(page_uri.as_str())
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .header(header::COOKIE, &cookie)
+            .body(Body::from(body))
+            .unwrap()
+    };
+
+    let (status, headers, _) = send(&harness.router, post_page("1", "save")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers[header::LOCATION].to_str().unwrap(),
+        draft_uri.as_str()
+    );
+    let (status, _, body) = send(&harness.router, get_page(&draft_uri)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("支持部分退款"));
+    assert!(body.contains("多次退款合并"));
+
+    let (status, headers, _) = send(&harness.router, post_page("11", "submit")).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        headers[header::LOCATION].to_str().unwrap(),
+        page_uri.as_str()
+    );
+    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
+    assert!(body.contains("待批准"));
+    assert!(body.contains("支持部分退款"));
+
+    let annotation = serde_urlencoded::to_string([
+        ("target_type", "goals"),
+        ("body", "目标需要可衡量"),
+    ])
+    .unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("{page_uri}/annotations"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(annotation))
+        .unwrap();
+    let (status, _, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
+    assert!(body.contains("待处理批注（1）"));
+    assert!(body.contains("目标需要可衡量"));
+
+    let annotations =
+        ProjectBriefRepository::annotations(&*harness.store, project_id.parse().unwrap(), true)
+            .await
+            .unwrap();
+    let annotation_id = annotations[0].id;
+    let resolution = serde_urlencoded::to_string([("resolution", "已补充可衡量目标")]).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("{page_uri}/annotations/{annotation_id}/resolve"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(resolution))
+        .unwrap();
+    let (status, _, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
+    assert!(body.contains("待处理批注（0）"));
+    assert!(body.contains("历史批注（1）"));
+    assert!(body.contains("已补充可衡量目标"));
+
+    let body = serde_urlencoded::to_string([("version", "1")]).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("{page_uri}/approve"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(body))
+        .unwrap();
+    let (status, _, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
+    assert!(body.contains("已批准"));
+}
+
+#[tokio::test]
+async fn agents_page_is_admin_only() {
+    let harness = harness().await;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("handle=admin&password=admin-password&next=%2F"))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let request = Request::builder()
+        .uri("/agents")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("智能体由平台定义"));
+    assert!(body.contains("平台还没有注册智能体"));
+
+    let request = Request::builder()
+        .uri(format!("/agents/{}/logs", Uuid::now_v7()))
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn web_login_sets_a_cookie_session() {
     let harness = harness().await;
 
@@ -670,7 +1161,15 @@ async fn issues_are_isolated_between_projects() {
         ),
     )
     .await;
-    assert_eq!(listed, json!([]));
+    // The other project has its own clarification Issue, but it must not see
+    // the primary project's issue.
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|value| { value["project_id"] == other_id && value["id"] != issue_id })
+    );
 
     let listed = body_json(
         &harness.router,
@@ -683,7 +1182,13 @@ async fn issues_are_isolated_between_projects() {
         ),
     )
     .await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["id"] == issue_id)
+    );
 }
 
 #[tokio::test]
@@ -957,6 +1462,26 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
+        Arc::new(RequirementsDocumentService::new(
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&store),
+            Arc::clone(&events),
+        ));
+    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
+    let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&events),
+    ));
     let requirements = RequirementService::new(
         Arc::clone(&store),
         Arc::clone(&events),
@@ -981,7 +1506,14 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         accounts: accounts.clone(),
         projects,
         tasks,
+        agents: Arc::new(MemoryAgentAdmin),
+        agent_logs: Arc::new(foundry_shared::AgentLogFiles::new(
+            std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
+        )),
         workflows: workflows_admin,
+        requirements_doc,
+        project_brief,
+        task_links,
         auth: auth.clone(),
         setup: Arc::clone(&setup),
         editor: Arc::new(foundry_api_http::EditorAssets::new(missing_editor_dir())),
@@ -1281,7 +1813,7 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
     .await;
     assert_eq!(detail["allowed_operations"], json!([]));
     assert_eq!(detail["actors"], json!([]));
-    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 2);
+    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 4);
 
     let ready = body_json(
         &harness.router,
@@ -1296,6 +1828,45 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
     .await;
     assert_eq!(ready.as_array().unwrap().len(), 1);
     assert_eq!(ready[0]["workflow"], "goal_clarification");
+
+    // The child's `task.created` action creates the clarification Issue and
+    // links it to the Task.
+    let issues = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let issue = issues
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["title"] == "Project clarification: Primary")
+        .expect("clarification issue");
+    assert_eq!(issue["kind"], "question");
+    assert_eq!(issue["status"], "open");
+
+    let links = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{}/links", child["id"].as_str().unwrap()),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert!(links.as_array().unwrap().iter().any(|link| {
+        link["kind"] == "issue"
+            && link["relation"] == "clarifies"
+            && link["target_id"] == issue["id"]
+    }));
 }
 
 #[tokio::test]
@@ -1373,6 +1944,28 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .bind_actor(
             project_id,
             child_id,
+            foundry_domain::RoleKey::new("style_reviewer"),
+            harness.admin_id,
+            harness.admin_id,
+        )
+        .await
+        .unwrap();
+    harness
+        .tasks
+        .bind_actor(
+            project_id,
+            child_id,
+            foundry_domain::RoleKey::new("content_reviewer"),
+            harness.admin_id,
+            harness.admin_id,
+        )
+        .await
+        .unwrap();
+    harness
+        .tasks
+        .bind_actor(
+            project_id,
+            child_id,
             foundry_domain::RoleKey::new("acceptor"),
             harness.admin_id,
             harness.admin_id,
@@ -1399,7 +1992,10 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .collect();
     assert_eq!(allowed_names, vec!["started", "completed"]);
 
-    for operation in ["started", "completed", "approved"] {
+    for (index, operation) in ["started", "completed", "approved", "approved", "approved"]
+        .iter()
+        .enumerate()
+    {
         let (status, _, body) = send(
             &harness.router,
             json_request(
@@ -1407,7 +2003,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
                 &input_uri,
                 Some(&harness.admin_token),
                 Some(&harness.project_id),
-                json!({ "operation": operation, "idempotency_key": format!("{child_id}:{operation}") }),
+                json!({ "operation": operation, "idempotency_key": format!("{child_id}:{index}:{operation}") }),
             ),
         )
         .await;
@@ -1422,7 +2018,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:approved") }),
+            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:4:approved") }),
         ),
     )
     .await;
@@ -1444,7 +2040,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
     assert_eq!(detail["dispatch_state"], "closed");
     assert_eq!(detail["allowed_operations"], json!([]));
     let actors = detail["actors"].as_array().unwrap();
-    assert_eq!(actors.len(), 2);
+    assert_eq!(actors.len(), 4);
     assert!(actors.iter().all(|actor| actor["active"] == false));
 
     let history = body_json(
@@ -1492,7 +2088,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .iter()
         .find(|task| task["parent_id"].is_null())
         .unwrap();
-    assert_eq!(root["stage"], "requirements_discovery");
+    assert_eq!(root["stage"], "requirements_analysis");
 
     let ready = body_json(
         &harness.router,
@@ -1507,7 +2103,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
     .await;
     let ready = ready.as_array().unwrap();
     assert_eq!(ready.len(), 1);
-    assert_eq!(ready[0]["workflow"], "requirements_discovery");
+    assert_eq!(ready[0]["workflow"], "requirements_analysis");
     assert_eq!(ready[0]["stage"], "work");
 
     // Comments are independent of the workflow and remain writable after
@@ -2289,4 +2885,536 @@ async fn an_account_workflow_goes_from_creation_to_a_project_root() {
         .expect("root task");
     assert_eq!(root["workflow"], id);
     assert_eq!(root["workflow_version"], 1);
+}
+
+#[tokio::test]
+async fn requirements_document_round_trips_over_http() {
+    let harness = harness().await;
+    let base = format!(
+        "/api/v1/projects/{}/requirements-document",
+        harness.project_id
+    );
+
+    let draft = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/draft"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(draft["revision"], 1);
+
+    let user_id = "persona-customer";
+    let function_id = "func-shopping";
+    let operation_id = "op-search";
+    let story_id = "story-search";
+    let operations = json!({
+        "operations": [
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "user_add",
+                "user": {
+                    "id": user_id,
+                    "name": "张先生",
+                    "goals": ["快速找到商品"],
+                    "pain_points": ["搜索结果不准确"]
+                }
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "function_add",
+                "function": { "id": function_id, "name": "购物" }
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "operation_add",
+                "function_id": function_id,
+                "operation": {
+                    "id": operation_id,
+                    "name": "搜索",
+                    "actor_user_ids": [user_id]
+                }
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "story_add",
+                "function_id": function_id,
+                "story": {
+                    "id": story_id,
+                    "title": "搜索商品",
+                    "user_ids": [user_id],
+                    "scenario": "客户想买某件商品",
+                    "goal": "找到商品",
+                    "operation_ids": [operation_id]
+                }
+            }
+        ]
+    });
+
+    let saved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            operations.clone(),
+        ),
+    )
+    .await;
+    assert_eq!(saved["revision"], 2);
+    assert_eq!(saved["body"]["users"][0]["id"], user_id);
+    assert_eq!(saved["body"]["functions"][0]["stories"][0]["id"], story_id);
+
+    // Replaying the same operation ids is idempotent even with a stale revision.
+    let replay = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            operations,
+        ),
+    )
+    .await;
+    assert_eq!(replay["revision"], 2);
+
+    let validation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft/validate"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
+
+    let published = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/publish"),
+            &harness.admin_token,
+            Some("2"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(published["version"], 1);
+    assert_eq!(published["revision"], 3);
+
+    let document = body_json(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert_eq!(document["current_version"], 1);
+    assert_eq!(document["body"]["functions"][0]["name"], "购物");
+
+    let version = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/versions/1"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(version["version"], 1);
+    assert_eq!(version["body"]["users"][0]["name"], "张先生");
+
+    let stale_result = send(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            json!({
+                "operations": [{
+                    "op_id": Uuid::now_v7(),
+                    "type": "user_add",
+                    "user": { "id": "persona-second", "name": "李女士" }
+                }]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(stale_result.0, StatusCode::CONFLICT);
+    assert_eq!(error_body(&stale_result.2)["code"], "draft_conflict");
+}
+
+#[tokio::test]
+async fn project_brief_round_trips_over_http() {
+    let harness = harness().await;
+    let base = format!("/api/v1/projects/{}/brief", harness.project_id);
+
+    let first = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/drafts"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    let second = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/drafts"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(first["revision"], 1);
+
+    let draft_id = first["id"].as_str().unwrap().to_string();
+    let mut revision = 1;
+    let operations = [
+        json!({ "type": "set_problem", "value": "客服只能整单退款" }),
+        json!({ "type": "set_goals", "values": ["支持部分退款"] }),
+        json!({
+            "type": "set_success_metrics",
+            "values": [{
+                "id": "m1",
+                "name": "人工处理量",
+                "target": 700,
+                "unit": "件/月",
+                "measurement": "客服看板",
+                "window": "上线后 3 个月"
+            }]
+        }),
+        json!({
+            "type": "set_scope",
+            "in_scope": ["部分退款"],
+            "out_of_scope": ["多次退款合并"]
+        }),
+        json!({ "type": "set_constraints", "values": ["兼容支付网关"] }),
+        json!({
+            "type": "set_stakeholders",
+            "values": [{
+                "id": "s1",
+                "role": "产品",
+                "account": "product-owner",
+                "decision_rights": ["目标/范围"]
+            }]
+        }),
+    ];
+    for operation in operations {
+        let updated = body_json(
+            &harness.router,
+            json_request(
+                "POST",
+                &format!("{base}/drafts/{draft_id}/operations"),
+                Some(&harness.admin_token),
+                None,
+                json!({
+                    "op_id": Uuid::now_v7(),
+                    "base_revision": revision,
+                    "operation": operation,
+                }),
+            ),
+        )
+        .await;
+        revision += 1;
+        assert_eq!(updated["revision"], revision);
+    }
+
+    let drafts = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/drafts"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(drafts.as_array().unwrap().len(), 2);
+
+    create_account(&harness, "brief-observer", "human").await;
+    body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/members",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            None,
+            json!({ "handle": "brief-observer", "role": "member" }),
+        ),
+    )
+    .await;
+    let observer_token = login(&harness.router, "brief-observer", "brief-observer-password").await;
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/drafts/{}", second["id"].as_str().unwrap()),
+            Some(&observer_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let observer_drafts = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/drafts"),
+            Some(&observer_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(observer_drafts.as_array().unwrap().len(), 0);
+
+    let submitted = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/drafts/{draft_id}/submit"),
+            &harness.admin_token,
+            Some(&revision.to_string()),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(submitted["status"], "in_review");
+    assert_eq!(submitted["version"], 1);
+
+    let current = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &base,
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(current["version"], 1);
+    assert_eq!(current["status"], "in_review");
+
+    let versions = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/versions"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(versions.as_array().unwrap().len(), 1);
+
+    let annotation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "target_type": "success_metrics",
+                "target_id": "m1",
+                "field": "target",
+                "body": "目标值需要说明理由",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(annotation["status"], "open");
+    assert_eq!(annotation["target_id"], "m1");
+    let annotation_id = annotation["id"].as_str().unwrap().to_string();
+
+    let open = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(open.as_array().unwrap().len(), 1);
+
+    let resolved = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations/{annotation_id}/resolve"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "resolution": "补充了基线说明" }),
+        ),
+    )
+    .await;
+    assert_eq!(resolved["status"], "resolved");
+
+    let open = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(open.as_array().unwrap().len(), 0);
+
+    let all = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/annotations?include_resolved=true"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(all.as_array().unwrap().len(), 1);
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "target_type": "risks",
+                "target_id": "missing",
+                "body": "unknown risk",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let approved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/approve"),
+            &harness.admin_token,
+            Some("1"),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(approved["status"], "approved");
+    assert_eq!(approved["version"], 1);
+    assert!(approved["approved_by"].is_string());
+}
+
+#[tokio::test]
+async fn task_links_round_trip_over_http() {
+    let harness = harness().await;
+    let tasks = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/tasks",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let task_id = tasks[0]["id"].as_str().unwrap().to_string();
+    let base = format!("/api/v1/tasks/{task_id}/links");
+
+    let created = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &base,
+            &harness.admin_token,
+            None,
+            json!({
+                "kind": "url",
+                "url": "https://example.com/refund-spec",
+                "title": "退款规范",
+                "relation": "references"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(created["kind"], "url");
+    assert_eq!(created["title"], "退款规范");
+    let link_id = created["id"].as_str().unwrap().to_string();
+
+    let list = body_json(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+
+    let duplicate = send(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &base,
+            &harness.admin_token,
+            None,
+            json!({
+                "kind": "url",
+                "url": "https://example.com/refund-spec",
+                "title": "退款规范",
+                "relation": "references"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(duplicate.0, StatusCode::CONFLICT);
+
+    let removed = send(
+        &harness.router,
+        workflow_request(
+            "DELETE",
+            &format!("{base}/{link_id}"),
+            &harness.admin_token,
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(removed.0, StatusCode::NO_CONTENT);
+
+    let list = body_json(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(list.as_array().unwrap().is_empty());
 }

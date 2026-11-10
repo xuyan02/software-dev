@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 foundry-domain.workspace = true
 foundry-app.workspace = true
+foundry-shared.workspace = true
 foundry-api-mcp.workspace = true
 foundry-web.workspace = true
 axum.workspace = true
@@ -23,6 +24,8 @@ tokio.workspace = true
 [dev-dependencies]
 foundry-adapter-memory.workspace = true
 foundry-adapter-policy.workspace = true
+async-trait.workspace = true
+serde_urlencoded = "0.7"
 tower = { workspace = true, features = ["util"] }
 http-body-util.workspace = true
 tokio.workspace = true

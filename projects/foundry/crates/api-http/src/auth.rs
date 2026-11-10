@@ -271,6 +271,10 @@ pub fn project_cookie(project_id: &str) -> String {
     format!("{PROJECT_COOKIE}={project_id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000")
 }
 
+pub fn clear_project_cookie() -> String {
+    format!("{PROJECT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+}
+
 pub fn safe_next(next: &str) -> String {
     let next = next.trim();
     if next.starts_with('/')

@@ -5,27 +5,35 @@
 //! Postgres or memory, whether events go to Kafka or an in-process channel.
 
 pub mod account_service;
+pub mod agent_admin;
 pub mod auth;
 pub mod auth_service;
 pub mod commands;
 pub mod error;
 pub mod issue_service;
 pub mod ports;
+pub mod project_brief;
 pub mod project_service;
 pub mod queries;
+pub mod requirements_doc;
 pub mod service;
 pub mod task;
+pub mod task_link;
 pub mod workflow;
 
 pub use account_service::*;
+pub use agent_admin::*;
 pub use auth::*;
 pub use auth_service::*;
 pub use commands::*;
 pub use error::*;
 pub use issue_service::*;
 pub use ports::*;
+pub use project_brief::*;
 pub use project_service::*;
 pub use queries::*;
+pub use requirements_doc::*;
 pub use service::*;
 pub use task::*;
+pub use task_link::*;
 pub use workflow::*;

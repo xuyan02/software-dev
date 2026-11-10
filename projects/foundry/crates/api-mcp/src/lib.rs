@@ -9,13 +9,20 @@
 //! Tools deliberately mirror the human API. An agent can do exactly what a
 //! human with the same role can do — no more.
 
+#![recursion_limit = "512"]
+
 use foundry_app::{
-    CommentIssue, CreateIssue, CreateRequirement, IssueFilter, IssueUseCases, RequirementFilter,
-    RequirementUseCases, TransitionIssue, TransitionRequirement, TriageIssue, WorkflowUseCases,
+    AddTaskLink, AnnotateProjectBrief, ApplyProjectBriefDraftOperation,
+    ApplyRequirementsOperations, ApproveProjectBrief, CommentIssue, CreateIssue,
+    CreateProjectBriefDraft, CreateRequirement, IssueFilter, IssueUseCases, ProjectBriefUseCases,
+    PublishRequirementsDocument, RemoveTaskLink, RequirementFilter, RequirementUseCases,
+    RequirementsDocumentUseCases, ResolveProjectBriefAnnotation, SubmitProjectBriefDraft,
+    TaskLinkUseCases, TransitionIssue, TransitionRequirement, WorkflowUseCases,
 };
 use foundry_domain::{
     AcceptanceScenario, Actor, IssueKind, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus,
-    Priority, RequirementStatus, RiskClass, Triage, WorkflowId,
+    Priority, ProjectBriefAnnotationTarget, ProjectBriefDraftOperation, RequirementStatus,
+    RequirementsOperation, RiskClass, TaskLinkKind, TaskLinkRelation, WorkflowId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -29,13 +36,18 @@ pub struct Caller<'a> {
     pub can_dispose: bool,
 }
 
-pub async fn handle(
-    requirements: &dyn RequirementUseCases,
-    issues: &dyn IssueUseCases,
-    workflows: &dyn WorkflowUseCases,
-    caller: &Caller<'_>,
-    request: Value,
-) -> Value {
+/// The use cases exposed over MCP. Passing them as one value keeps the tool
+/// dispatcher readable as more domains are added.
+pub struct Services<'a> {
+    pub requirements: &'a dyn RequirementUseCases,
+    pub issues: &'a dyn IssueUseCases,
+    pub workflows: &'a dyn WorkflowUseCases,
+    pub requirements_doc: &'a dyn RequirementsDocumentUseCases,
+    pub project_brief: &'a dyn ProjectBriefUseCases,
+    pub task_links: &'a dyn TaskLinkUseCases,
+}
+
+pub async fn handle(services: &Services<'_>, caller: &Caller<'_>, request: Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     let method = request
         .get("method")
@@ -59,8 +71,8 @@ pub async fn handle(
                 },
                 "instructions": "Foundry is a software engineering control plane. \
                     This connection is scoped to one project and authenticated as the \
-                    account owning the bearer token. Issues are the problem space: create, \
-                    discuss and triage them before deciding what becomes a requirement. \
+                    account owning the bearer token. Issues are the problem space: create and \
+                    discuss them before deciding what becomes a requirement. \
                     Requirements are executable contracts: describe the problem, users and \
                     acceptance scenarios before moving them forward. Agents may not approve \
                     requirements or close issues; ask a human to decide."
@@ -75,7 +87,7 @@ pub async fn handle(
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            match call_tool(requirements, issues, workflows, caller, name, arguments).await {
+            match call_tool(services, caller, name, arguments).await {
                 Ok(value) => success(
                     id,
                     json!({
@@ -98,13 +110,17 @@ pub async fn handle(
 }
 
 async fn call_tool(
-    requirements: &dyn RequirementUseCases,
-    issues: &dyn IssueUseCases,
-    workflows: &dyn WorkflowUseCases,
+    services: &Services<'_>,
     caller: &Caller<'_>,
     name: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    let requirements = services.requirements;
+    let issues = services.issues;
+    let workflows = services.workflows;
+    let requirements_doc = services.requirements_doc;
+    let project_brief = services.project_brief;
+    let task_links = services.task_links;
     match name {
         "create_requirement" => {
             require_contribute(caller)?;
@@ -242,29 +258,6 @@ async fn call_tool(
                 .map_err(|error| error.to_string())?;
             serde_json::to_value(issue).map_err(|error| error.to_string())
         }
-        "triage_issue" => {
-            require_contribute(caller)?;
-            let args: TriageIssueArgs =
-                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
-            let issue = issues
-                .triage(TriageIssue {
-                    project_id: caller.project_id,
-                    id: args.id,
-                    actor: caller.actor.clone(),
-                    triage: Triage {
-                        kind: args.kind,
-                        severity: args.severity,
-                        assignee: args.assignee,
-                        area: args.area,
-                        labels: args.labels,
-                        impact: args.impact,
-                    },
-                    expected_version: args.expected_version,
-                })
-                .await
-                .map_err(|error| error.to_string())?;
-            serde_json::to_value(issue).map_err(|error| error.to_string())
-        }
         "transition_issue" => {
             require_dispose(caller)?;
             let args: IssueTransitionArgs =
@@ -282,6 +275,267 @@ async fn call_tool(
                 .await
                 .map_err(|error| error.to_string())?;
             serde_json::to_value(issue).map_err(|error| error.to_string())
+        }
+        "list_task_links" => {
+            let args: TaskIdArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let links = task_links
+                .list(caller.actor.clone(), args.task_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(links).map_err(|error| error.to_string())
+        }
+        "add_task_link" => {
+            require_contribute(caller)?;
+            let args: AddTaskLinkArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let kind = TaskLinkKind::parse(&args.kind)
+                .ok_or_else(|| format!("unknown task link kind {}", args.kind))?;
+            let relation = TaskLinkRelation::parse(&args.relation)
+                .ok_or_else(|| format!("unknown task link relation {}", args.relation))?;
+            let link = task_links
+                .add(
+                    caller.actor.clone(),
+                    AddTaskLink {
+                        task_id: args.task_id,
+                        kind,
+                        target_id: args.target_id,
+                        url: args.url,
+                        title: args.title,
+                        relation,
+                        metadata: args.metadata,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(link).map_err(|error| error.to_string())
+        }
+        "remove_task_link" => {
+            require_contribute(caller)?;
+            let args: RemoveTaskLinkArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            task_links
+                .remove(
+                    caller.actor.clone(),
+                    RemoveTaskLink {
+                        task_id: args.task_id,
+                        link_id: args.link_id,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(json!({ "removed": true }))
+        }
+        "get_project_brief" => {
+            let brief = project_brief
+                .current(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(brief).map_err(|error| error.to_string())
+        }
+        "list_project_brief_versions" => {
+            let versions = project_brief
+                .versions(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(versions).map_err(|error| error.to_string())
+        }
+        "get_project_brief_version" => {
+            let args: BriefVersionArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let version = project_brief
+                .version(caller.actor.clone(), caller.project_id, args.version)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(version).map_err(|error| error.to_string())
+        }
+        "create_project_brief_draft" => {
+            require_contribute(caller)?;
+            let draft = project_brief
+                .create_draft(
+                    caller.actor.clone(),
+                    CreateProjectBriefDraft {
+                        project_id: caller.project_id,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        }
+        "list_project_brief_drafts" => {
+            let drafts = project_brief
+                .drafts(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(drafts).map_err(|error| error.to_string())
+        }
+        "get_project_brief_draft" => {
+            let args: BriefDraftIdArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let draft = project_brief
+                .draft(
+                    caller.actor.clone(),
+                    caller.project_id,
+                    args.draft_id,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        }
+        "apply_project_brief_draft_operation" => {
+            require_contribute(caller)?;
+            let args: ApplyProjectBriefDraftOperationArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let draft = project_brief
+                .apply_operation(
+                    caller.actor.clone(),
+                    ApplyProjectBriefDraftOperation {
+                        project_id: caller.project_id,
+                        draft_id: args.draft_id,
+                        op_id: args.op_id,
+                        base_revision: args.base_revision,
+                        operation: args.operation,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        }
+        "submit_project_brief_draft" => {
+            require_contribute(caller)?;
+            let args: SubmitProjectBriefDraftArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let version = project_brief
+                .submit_draft(
+                    caller.actor.clone(),
+                    SubmitProjectBriefDraft {
+                        project_id: caller.project_id,
+                        draft_id: args.draft_id,
+                        expected_revision: args.expected_revision,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(version).map_err(|error| error.to_string())
+        }
+        "approve_project_brief" => {
+            require_dispose(caller)?;
+            let args: ApproveBriefArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let version = project_brief
+                .approve(
+                    caller.actor.clone(),
+                    ApproveProjectBrief {
+                        project_id: caller.project_id,
+                        expected_version: args.expected_version,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(version).map_err(|error| error.to_string())
+        }
+        "list_project_brief_annotations" => {
+            let args: ProjectBriefAnnotationsArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let annotations = project_brief
+                .annotations(
+                    caller.actor.clone(),
+                    caller.project_id,
+                    args.include_resolved,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(annotations).map_err(|error| error.to_string())
+        }
+        "annotate_project_brief" => {
+            require_contribute(caller)?;
+            let args: AnnotateProjectBriefArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let annotation = project_brief
+                .annotate(
+                    caller.actor.clone(),
+                    AnnotateProjectBrief {
+                        project_id: caller.project_id,
+                        target_type: args.target_type,
+                        target_id: args.target_id,
+                        field: args.field,
+                        body: args.body,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(annotation).map_err(|error| error.to_string())
+        }
+        "resolve_project_brief_annotation" => {
+            require_contribute(caller)?;
+            let args: ResolveProjectBriefAnnotationArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let annotation = project_brief
+                .resolve_annotation(
+                    caller.actor.clone(),
+                    ResolveProjectBriefAnnotation {
+                        project_id: caller.project_id,
+                        annotation_id: args.annotation_id,
+                        resolution: args.resolution,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(annotation).map_err(|error| error.to_string())
+        }
+        "get_requirements_document" => {
+            let document = requirements_doc
+                .get(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        }
+        "get_requirements_draft" => {
+            let draft = requirements_doc
+                .draft(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        }
+        "apply_requirements_operations" => {
+            require_contribute(caller)?;
+            let args: ApplyRequirementOpsArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let draft = requirements_doc
+                .apply(
+                    caller.actor.clone(),
+                    ApplyRequirementsOperations {
+                        project_id: caller.project_id,
+                        expected_revision: args.expected_revision,
+                        operations: args.operations,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(draft).map_err(|error| error.to_string())
+        }
+        "validate_requirements_document" => {
+            let validation = requirements_doc
+                .validate(caller.actor.clone(), caller.project_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(validation).map_err(|error| error.to_string())
+        }
+        "publish_requirements_document" => {
+            require_dispose(caller)?;
+            let args: PublishRequirementDocArgs =
+                serde_json::from_value(arguments).map_err(|error| error.to_string())?;
+            let published = requirements_doc
+                .publish(
+                    caller.actor.clone(),
+                    PublishRequirementsDocument {
+                        project_id: caller.project_id,
+                        expected_revision: args.expected_revision,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_value(published).map_err(|error| error.to_string())
         }
         "list_workflows" => {
             let items = workflows
@@ -405,7 +659,8 @@ fn tool_definitions() -> Value {
         {
             "name": "create_issue",
             "description": "Record a problem-space issue: feedback, bug, question, idea, task \
-                            request or incident. Classification can be refined by triage later.",
+                            request or incident. Classify it at creation; bug issues require \
+                            a severity.",
             "inputSchema": {
                 "type": "object",
                 "required": ["title", "description"],
@@ -476,28 +731,6 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "triage_issue",
-            "description": "Classify an issue: set kind, severity, assignee, area, labels and \
-                            impact. Bug issues require a severity.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["id", "kind"],
-                "properties": {
-                    "id": { "type": "string", "format": "uuid" },
-                    "kind": {
-                        "type": "string",
-                        "enum": ["feedback", "bug", "question", "idea", "task_request", "incident"]
-                    },
-                    "severity": { "type": "string", "enum": ["s1", "s2", "s3", "s4"] },
-                    "assignee": { "type": "object" },
-                    "area": { "type": "string" },
-                    "labels": { "type": "array", "items": { "type": "string" } },
-                    "impact": { "type": "string" },
-                    "expected_version": { "type": "integer" }
-                }
-            }
-        },
-        {
             "name": "transition_issue",
             "description": "Request an issue state transition. Resolved/Rejected need a \
                             resolution; Duplicate needs duplicate_of. Agents cannot close or \
@@ -509,7 +742,7 @@ fn tool_definitions() -> Value {
                     "id": { "type": "string", "format": "uuid" },
                     "to": {
                         "type": "string",
-                        "enum": ["open", "triaged", "in_progress", "resolved", "closed", "rejected", "duplicate"]
+                        "enum": ["open", "in_progress", "resolved", "closed", "rejected", "duplicate"]
                     },
                     "resolution": { "type": "string" },
                     "duplicate_of": { "type": "string", "format": "uuid" },
@@ -535,8 +768,323 @@ fn tool_definitions() -> Value {
                     "version": { "type": "integer" }
                 }
             }
+        },
+        {
+            "name": "list_task_links",
+            "description": "List links attached to a Task: Issues, documents, artifacts or URLs.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["task_id"],
+                "properties": { "task_id": { "type": "string", "format": "uuid" } }
+            }
+        },
+        {
+            "name": "add_task_link",
+            "description": "Attach a link to a Task. Use kind=url with url for external links, \
+                            or kind=issue/requirement/design/adr/contract/decision/task/artifact \
+                            with target_id for internal links.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["task_id", "kind", "title", "relation"],
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" },
+                    "kind": { "type": "string" },
+                    "target_id": { "type": "string", "format": "uuid" },
+                    "url": { "type": "string" },
+                    "title": { "type": "string" },
+                    "relation": { "type": "string" },
+                    "metadata": { "type": "object" }
+                }
+            }
+        },
+        {
+            "name": "remove_task_link",
+            "description": "Remove a link from a Task.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["task_id", "link_id"],
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" },
+                    "link_id": { "type": "string", "format": "uuid" }
+                }
+            }
+        },
+        {
+            "name": "get_project_brief",
+            "description": "Read the current project brief version: problem, goals, success \
+                            metrics, scope, constraints, risks and stakeholders.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "list_project_brief_versions",
+            "description": "List all submitted project brief versions, newest first.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_project_brief_version",
+            "description": "Read one submitted project brief version.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["version"],
+                "properties": { "version": { "type": "integer" } }
+            }
+        },
+        {
+            "name": "create_project_brief_draft",
+            "description": "Create a new server-persisted draft. Each call creates a new draft, \
+                            initialized from the current brief version. Drafts are private to \
+                            their creator.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "list_project_brief_drafts",
+            "description": "List drafts created by the current account, newest first.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_project_brief_draft",
+            "description": "Read one of the current account's drafts.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["draft_id"],
+                "properties": { "draft_id": { "type": "string", "format": "uuid" } }
+            }
+        },
+        {
+            "name": "apply_project_brief_draft_operation",
+            "description": "Apply exactly one structured operation to a draft. Operation types: \
+                            set_problem, set_goals, set_success_metrics, set_scope, \
+                            set_constraints, set_risks, set_stakeholders, set_budget, \
+                            set_assumptions, set_open_questions. Use the revision returned by \
+                            the previous call.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["draft_id", "op_id", "base_revision", "operation"],
+                "properties": {
+                    "draft_id": { "type": "string", "format": "uuid" },
+                    "op_id": { "type": "string", "format": "uuid" },
+                    "base_revision": { "type": "integer" },
+                    "operation": {
+                        "type": "object",
+                        "required": ["type"],
+                        "properties": { "type": { "type": "string" } },
+                        "additionalProperties": true
+                    }
+                }
+            }
+        },
+        {
+            "name": "submit_project_brief_draft",
+            "description": "Submit a draft for review: creates a new brief version, moves the \
+                            current pointer and deletes the draft. This does NOT advance the \
+                            task; after a successful submit, call task_operation with operation \
+                            \"completed\".",
+            "inputSchema": {
+                "type": "object",
+                "required": ["draft_id", "expected_revision"],
+                "properties": {
+                    "draft_id": { "type": "string", "format": "uuid" },
+                    "expected_revision": { "type": "integer" }
+                }
+            }
+        },
+        {
+            "name": "approve_project_brief",
+            "description": "Approve the current project brief version. Only a human \
+                            Maintainer/Owner may approve.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["expected_version"],
+                "properties": { "expected_version": { "type": "integer" } }
+            }
+        },
+        {
+            "name": "list_project_brief_annotations",
+            "description": "List review annotations on the project brief. Open annotations are \
+                            feedback the clarifier must address or resolve.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "include_resolved": { "type": "boolean", "default": false } }
+            }
+        },
+        {
+            "name": "annotate_project_brief",
+            "description": "Add a review annotation to a project brief section, metric, risk or \
+                            stakeholder.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["target_type", "body"],
+                "properties": {
+                    "target_type": {
+                        "type": "string",
+                        "enum": [
+                            "document", "problem", "goals", "success_metrics", "scope",
+                            "constraints", "risks", "stakeholders", "budget", "assumptions",
+                            "open_questions"
+                        ]
+                    },
+                    "target_id": { "type": "string" },
+                    "field": { "type": "string" },
+                    "body": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "resolve_project_brief_annotation",
+            "description": "Mark a project brief annotation resolved after applying the requested \
+                            change. Include a short resolution note.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["annotation_id", "resolution"],
+                "properties": {
+                    "annotation_id": { "type": "string", "format": "uuid" },
+                    "resolution": { "type": "string" }
+                }
+            }
+        },
+        {
+            "name": "get_requirements_document",
+            "description": "Read the project's requirements document: users, functions, stories, \
+                            operations, interactions, screens and images.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "get_requirements_draft",
+            "description": "Open the shared requirements draft and return its revision. \
+                            Creates an empty draft when none exists; use the returned revision \
+                            for apply_requirements_operations.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "apply_requirements_operations",
+            "description": "Apply structured operations to the shared requirements draft. \
+                            Operations are idempotent; revision conflicts are rejected.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["expected_revision", "operations"],
+                "properties": {
+                    "expected_revision": { "type": "integer" },
+                    "operations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["op_id", "type"],
+                            "properties": {
+                                "op_id": { "type": "string", "format": "uuid" },
+                                "type": { "type": "string" }
+                            },
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "name": "validate_requirements_document",
+            "description": "Validate the current requirements draft and return errors and warnings.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "publish_requirements_document",
+            "description": "Publish the current requirements draft as an immutable version. \
+                            Agents cannot publish; a human Maintainer/Owner must approve.",
+            "inputSchema": {
+                "type": "object",
+                "required": ["expected_revision"],
+                "properties": {
+                    "expected_revision": { "type": "integer" }
+                }
+            }
         }
     ])
+}
+
+#[derive(Debug, Deserialize)]
+struct TaskIdArgs {
+    task_id: uuid::Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct AddTaskLinkArgs {
+    task_id: uuid::Uuid,
+    kind: String,
+    #[serde(default)]
+    target_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    url: Option<String>,
+    title: String,
+    relation: String,
+    #[serde(default)]
+    metadata: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveTaskLinkArgs {
+    task_id: uuid::Uuid,
+    link_id: uuid::Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefVersionArgs {
+    version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct BriefDraftIdArgs {
+    draft_id: uuid::Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyProjectBriefDraftOperationArgs {
+    draft_id: uuid::Uuid,
+    op_id: uuid::Uuid,
+    base_revision: u64,
+    operation: ProjectBriefDraftOperation,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubmitProjectBriefDraftArgs {
+    draft_id: uuid::Uuid,
+    expected_revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApproveBriefArgs {
+    expected_version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProjectBriefAnnotationsArgs {
+    #[serde(default)]
+    include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnnotateProjectBriefArgs {
+    target_type: ProjectBriefAnnotationTarget,
+    #[serde(default)]
+    target_id: Option<String>,
+    #[serde(default)]
+    field: Option<String>,
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveProjectBriefAnnotationArgs {
+    annotation_id: uuid::Uuid,
+    resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyRequirementOpsArgs {
+    expected_revision: u64,
+    #[serde(default)]
+    operations: Vec<RequirementsOperation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PublishRequirementDocArgs {
+    expected_revision: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -635,24 +1183,6 @@ struct CommentIssueArgs {
     body: String,
     #[serde(default)]
     internal: bool,
-    #[serde(default)]
-    expected_version: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TriageIssueArgs {
-    id: uuid::Uuid,
-    kind: IssueKind,
-    #[serde(default)]
-    severity: Option<IssueSeverity>,
-    #[serde(default)]
-    assignee: Option<Actor>,
-    #[serde(default)]
-    area: Option<String>,
-    #[serde(default)]
-    labels: Vec<String>,
-    #[serde(default)]
-    impact: Option<String>,
     #[serde(default)]
     expected_version: Option<u32>,
 }

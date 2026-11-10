@@ -1,30 +1,48 @@
 use crate::ApiError;
 use crate::auth::{self, ApiSession, WebAccountSession, WebSession};
 use crate::dto::{
-    AccountUpdateForm, AddMemberForm, AddMemberRequest, CommentIssueForm, CommentIssueRequest,
-    CreateAccountRequest, CreateIssueRequest, CreateProjectRequest, CreateRequirementRequest,
-    CreateWorkflowRequest, IssueListQuery, IssueTransitionForm, ListQuery, LoginForm, LoginQuery,
-    LoginRequest, LoginResponse, MemberRoleForm, NewAccountForm, NewIssueForm, NewProjectForm,
-    NewRequirementForm, NewWorkflowForm, PageQuery, ProjectUpdateForm, PublishWorkflowForm,
-    RenameWorkflowForm, RenameWorkflowRequest, SaveDraftRequest, SelectProjectForm,
-    SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, TaskCommentRequest, TaskListQuery,
-    TaskOperationRequest, TransitionIssueRequest, TransitionRequirementRequest, TriageIssueForm,
-    TriageIssueRequest, UpdateAccountRequest, UpdateProjectRequest, UpdateRequirementRequest,
-    ValidateWorkflowRequest, transition_command,
+    AccountUpdateForm, AddMemberForm, AddMemberRequest, AddTaskLinkRequest, AgentTemplateQuery,
+    AnnotateProjectBriefForm, AnnotateProjectBriefRequest, AnnotateRequirementsForm,
+    AnnotateRequirementsRequest, ApplyProjectBriefDraftOperationRequest,
+    ApplyRequirementsOperationsRequest, AssignAgentRequest, CommentIssueForm,
+    CommentIssueRequest, CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest,
+    CreateProjectRequest, CreateRequirementRequest, CreateWorkflowRequest, IssueListQuery,
+    IssueTransitionForm, ListQuery, LoginForm, LoginQuery, LoginRequest, LoginResponse,
+    MemberRoleForm, NewAccountForm, NewIssueForm, NewProjectForm, NewRequirementForm,
+    NewWorkflowForm, PageQuery, ProjectBriefAnnotationQuery, ProjectBriefApproveForm,
+    ProjectBriefDraftQuery, ProjectBriefForm, ProjectUpdateForm, PublishWorkflowForm,
+    RenameWorkflowForm, RenameWorkflowRequest, RequirementsAnnotationQuery,
+    RequirementsRevisionForm, ResolveProjectBriefAnnotationRequest,
+    ResolveRequirementsAnnotationRequest, RejectRequirementsForm, SaveDraftRequest,
+    SelectProjectForm, SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, TaskCommentRequest,
+    TaskListQuery, TaskOperationRequest, TransitionIssueRequest, TransitionRequirementRequest,
+    UpdateAccountRequest, UpdateProjectRequest, UpdateRequirementRequest, ValidateWorkflowRequest,
+    transition_command,
 };
-use crate::error::workflow_error;
+use crate::error::{project_brief_error, requirements_error, workflow_error};
 use axum::Form;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use foundry_app::{
-    AccountFilter, AccountUseCases, AuthUseCases, IssueFilter, IssueUseCases, ProjectDetail,
-    ProjectUseCases, PublishWorkflow, RemoveProjectMember, RequirementFilter, RequirementUseCases,
-    SaveWorkflowLayout, ServiceError, TaskUseCases, TaskViewer, WorkflowUseCases, hash_token,
-    new_session_token,
+    AccountFilter, AccountUseCases, AddTaskLink, AgentAdminUseCases,
+    AnnotateProjectBrief, AnnotateRequirements, ApplyProjectBriefDraftOperation,
+    ApplyRequirementsOperations, ApproveProjectBrief, AuthUseCases, CreateProjectBriefDraft,
+    IssueFilter, IssueUseCases, ProjectBriefDraftView, ProjectBriefUseCases,
+    ProjectBriefVersionView, ProjectDetail, ProjectUseCases, PublishRequirementsDocument,
+    PublishWorkflow, RemoveProjectMember, RemoveTaskLink, RequirementFilter, RequirementUseCases,
+    RequirementsDocumentUseCases, RequirementsDocumentView, RequirementsDraftView,
+    RequirementsPublished, ResolveProjectBriefAnnotation, ResolveRequirementsAnnotation,
+    SaveWorkflowLayout, ServiceError, SubmitProjectBriefDraft, TaskFilter, TaskLinkUseCases,
+    TaskUseCases, TaskViewer, WorkflowUseCases, hash_token, new_session_token,
 };
-use foundry_domain::{AllowedOperation, OperationName, Project, WorkflowId, WorkflowLayout};
+use foundry_domain::{
+    AccountKind, AccountRole, AllowedOperation, OperationName, Project, ProjectBriefAnnotation,
+    ProjectBriefAnnotationTarget, ProjectBriefBody, ProjectBriefDraftOperation, ProjectRole,
+    RequirementsAnnotation, Task, TaskLinkKind, TaskLinkRelation, TaskState, Validation,
+    WorkflowId, WorkflowLayout,
+};
 use foundry_web::MemberInfo;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -166,7 +184,12 @@ pub struct AppState {
     pub accounts: Arc<dyn AccountUseCases>,
     pub projects: Arc<dyn ProjectUseCases>,
     pub tasks: Arc<dyn TaskUseCases>,
+    pub agents: Arc<dyn AgentAdminUseCases>,
+    pub agent_logs: Arc<foundry_shared::AgentLogFiles>,
     pub workflows: Arc<dyn WorkflowUseCases>,
+    pub requirements_doc: Arc<dyn RequirementsDocumentUseCases>,
+    pub project_brief: Arc<dyn ProjectBriefUseCases>,
+    pub task_links: Arc<dyn TaskLinkUseCases>,
     pub auth: Arc<dyn AuthUseCases>,
     pub setup: Arc<SetupState>,
     pub editor: Arc<EditorAssets>,
@@ -511,6 +534,172 @@ pub async fn api_me(
 // Accounts
 // ---------------------------------------------------------------------------
 
+pub async fn dispatch_agents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<foundry_domain::AgentDefinition>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.agents.agents(account.actor()).await?))
+}
+
+pub async fn dispatch_ready_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<foundry_domain::ReadyTaskView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.agents.ready_tasks(account.actor()).await?))
+}
+
+pub async fn dispatch_templates(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<AgentTemplateQuery>,
+) -> Result<Json<Vec<foundry_domain::AgentTemplateView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state.agents.templates(account.actor(), query.role).await?,
+    ))
+}
+
+pub async fn dispatch_create(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CreateAgentFromTemplateRequest>,
+) -> Result<Json<foundry_domain::AgentDefinition>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .agents
+            .create_from_template(account.actor(), body.into_command())
+            .await?,
+    ))
+}
+
+pub async fn dispatch_assign(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AssignAgentRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    state
+        .agents
+        .assign_task(account.actor(), body.into_command())
+        .await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn agents_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if session.account.role != AccountRole::Admin {
+        return auth::web_forbidden("仅管理员可以管理智能体。");
+    }
+    agents_response(&state, &session, None).await
+}
+
+pub async fn agent_logs_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if session.account.role != AccountRole::Admin {
+        return auth::web_forbidden("仅管理员可以查看智能体日志。");
+    }
+    let definition = match state.agents.agents(session.account.actor()).await {
+        Ok(definitions) => definitions.into_iter().find(|definition| definition.id == id),
+        Err(error) => return auth::web_error(error),
+    };
+    let Some(definition) = definition else {
+        return auth::web_error(ServiceError::not_found("agent", id));
+    };
+    match state.agent_logs.tail(&id.to_string(), 256 * 1024) {
+        Ok(log) => Html(foundry_web::agent_logs_page(
+            &session.context,
+            &definition,
+            &log,
+        ))
+        .into_response(),
+        Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
+    }
+}
+
+pub async fn start_agent_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    agent_action(state, headers, id, AgentAction::Start).await
+}
+
+pub async fn stop_agent_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    agent_action(state, headers, id, AgentAction::Stop).await
+}
+
+pub async fn restart_agent_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    agent_action(state, headers, id, AgentAction::Restart).await
+}
+
+enum AgentAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+async fn agent_action(
+    state: AppState,
+    headers: HeaderMap,
+    id: Uuid,
+    action: AgentAction,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if session.account.role != AccountRole::Admin {
+        return auth::web_forbidden("仅管理员可以管理智能体。");
+    }
+    let actor = session.account.actor();
+    let result = match action {
+        AgentAction::Start => state.agents.start(actor, id).await,
+        AgentAction::Stop => state.agents.stop(actor, id).await,
+        AgentAction::Restart => state.agents.restart(actor, id).await,
+    };
+    match result {
+        Ok(()) => Redirect::to("/agents").into_response(),
+        Err(error) => agents_response(&state, &session, Some(error.to_string())).await,
+    }
+}
+
+async fn agents_response(
+    state: &AppState,
+    session: &WebAccountSession,
+    error: Option<String>,
+) -> Response {
+    match state.agents.overview(session.account.actor()).await {
+        Ok(overview) => Html(foundry_web::agents_page(
+            &session.context,
+            &overview,
+            error.as_deref(),
+        ))
+        .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
 pub async fn accounts_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let session = match auth::web_account_session(&state, &headers).await {
         Ok(session) => session,
@@ -815,6 +1004,788 @@ pub async fn project_page(
     }
 }
 
+pub async fn project_brief_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ProjectBriefDraftQuery>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    render_brief(&state, &session, &project, query.draft, None, Vec::new()).await
+}
+
+pub async fn create_project_brief_draft_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .project_brief
+        .create_draft(
+            session.account.actor(),
+            CreateProjectBriefDraft { project_id: id },
+        )
+        .await
+    {
+        Ok(draft) => Redirect::to(&format!(
+            "/projects/{}/brief?draft={}",
+            project.id, draft.id
+        ))
+        .into_response(),
+        Err(error) => {
+            render_brief(&state, &session, &project, None, Some(error.to_string()), Vec::new())
+                .await
+        }
+    }
+}
+
+pub async fn save_project_brief_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ProjectBriefForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let (draft_id, revision, action, body) = match form.into_parts() {
+        Ok(parts) => parts,
+        Err(message) => {
+            return render_brief(
+                &state,
+                &session,
+                &project,
+                None,
+                Some(message),
+                Vec::new(),
+            )
+            .await;
+        }
+    };
+    let (draft_id, mut revision) = match draft_id {
+        Some(draft_id) => (draft_id, revision),
+        None => match state
+            .project_brief
+            .create_draft(
+                session.account.actor(),
+                CreateProjectBriefDraft { project_id: id },
+            )
+            .await
+        {
+            Ok(draft) => (draft.id, draft.revision),
+            Err(error) => {
+                return render_brief(
+                    &state,
+                    &session,
+                    &project,
+                    None,
+                    Some(error.to_string()),
+                    Vec::new(),
+                )
+                .await;
+            }
+        },
+    };
+    for operation in brief_form_operations(body) {
+        match state
+            .project_brief
+            .apply_operation(
+                session.account.actor(),
+                ApplyProjectBriefDraftOperation {
+                    project_id: id,
+                    draft_id,
+                    op_id: Uuid::now_v7(),
+                    base_revision: revision,
+                    operation,
+                },
+            )
+            .await
+        {
+            Ok(draft) => revision = draft.revision,
+            Err(error) => {
+                return render_brief(
+                    &state,
+                    &session,
+                    &project,
+                    Some(draft_id),
+                    Some(error.to_string()),
+                    Vec::new(),
+                )
+                .await;
+            }
+        }
+    }
+    if action == "submit" {
+        match state
+            .project_brief
+            .submit_draft(
+                session.account.actor(),
+                SubmitProjectBriefDraft {
+                    project_id: id,
+                    draft_id,
+                    expected_revision: revision,
+                },
+            )
+            .await
+        {
+            Ok(_) => Redirect::to(&format!("/projects/{id}/brief")).into_response(),
+            Err(ServiceError::ProjectBriefInvalid(validation)) => {
+                render_brief(
+                    &state,
+                    &session,
+                    &project,
+                    Some(draft_id),
+                    None,
+                    validation_errors(&validation),
+                )
+                .await
+            }
+            Err(error) => {
+                render_brief(
+                    &state,
+                    &session,
+                    &project,
+                    Some(draft_id),
+                    Some(error.to_string()),
+                    Vec::new(),
+                )
+                .await
+            }
+        }
+    } else {
+        Redirect::to(&format!("/projects/{id}/brief?draft={draft_id}")).into_response()
+    }
+}
+
+fn brief_form_operations(body: ProjectBriefBody) -> Vec<ProjectBriefDraftOperation> {
+    vec![
+        ProjectBriefDraftOperation::SetProblem {
+            value: body.problem,
+        },
+        ProjectBriefDraftOperation::SetGoals { values: body.goals },
+        ProjectBriefDraftOperation::SetSuccessMetrics {
+            values: body.success_metrics,
+        },
+        ProjectBriefDraftOperation::SetScope {
+            in_scope: body.scope.in_scope,
+            out_of_scope: body.scope.out_of_scope,
+        },
+        ProjectBriefDraftOperation::SetConstraints {
+            values: body.constraints,
+        },
+        ProjectBriefDraftOperation::SetRisks { values: body.risks },
+        ProjectBriefDraftOperation::SetStakeholders {
+            values: body.stakeholders,
+        },
+        ProjectBriefDraftOperation::SetBudget { value: body.budget },
+        ProjectBriefDraftOperation::SetAssumptions {
+            values: body.assumptions,
+        },
+        ProjectBriefDraftOperation::SetOpenQuestions {
+            values: body.open_questions,
+        },
+    ]
+}
+
+pub async fn annotate_project_brief_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<AnnotateProjectBriefForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, project_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let Some(target_type) = ProjectBriefAnnotationTarget::parse(&form.target_type) else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "unknown annotation target").into_response();
+    };
+    match state
+        .project_brief
+        .annotate(
+            session.account.actor(),
+            AnnotateProjectBrief {
+                project_id,
+                target_type,
+                target_id: form.target_id,
+                field: form.field,
+                body: form.body,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{}/brief", project.id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn resolve_project_brief_annotation_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, annotation_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<ResolveProjectBriefAnnotationRequest>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, project_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .project_brief
+        .resolve_annotation(
+            session.account.actor(),
+            ResolveProjectBriefAnnotation {
+                project_id,
+                annotation_id,
+                resolution: form.resolution,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{}/brief", project.id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn requirements_document_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .requirements_doc
+        .get(session.account.actor(), id)
+        .await
+    {
+        Ok(view) => {
+            render_requirements_document(&state, &session, &project, &view, None).await
+        }
+        Err(error) => auth::web_error(error),
+    }
+}
+
+async fn render_requirements_document(
+    state: &AppState,
+    session: &WebAccountSession,
+    project: &Project,
+    view: &RequirementsDocumentView,
+    error: Option<&str>,
+) -> Response {
+    let annotations = match state
+        .requirements_doc
+        .annotations(session.account.actor(), project.id, false)
+        .await
+    {
+        Ok(annotations) => annotations,
+        Err(error) => return auth::web_error(error),
+    };
+    Html(foundry_web::requirements_document_page(
+        &session.context,
+        project,
+        &view.body,
+        view.current_version,
+        view.latest_version,
+        view.draft_revision,
+        view.editable,
+        can_publish_requirements(session, project),
+        &annotations,
+        error,
+    ))
+    .into_response()
+}
+
+pub async fn publish_requirements_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RequirementsRevisionForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    if !can_publish_requirements(&session, &project) {
+        return auth::web_forbidden("只有项目 Maintainer/Owner 可以发布需求文档。");
+    }
+    match human_review_requirements_task(&state, id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "需求分析尚未进入人工评审阶段",
+            )
+                .into_response();
+        }
+        Err(error) => return auth::web_error(error),
+    }
+    match state
+        .requirements_doc
+        .publish(
+            session.account.actor(),
+            PublishRequirementsDocument {
+                project_id: id,
+                expected_revision: form.revision,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}/requirements")).into_response(),
+        Err(error) => match state
+            .requirements_doc
+            .get(session.account.actor(), id)
+            .await
+        {
+            Ok(view) => {
+                render_requirements_document(
+                    &state,
+                    &session,
+                    &project,
+                    &view,
+                    Some(&error.to_string()),
+                )
+                .await
+            }
+            Err(error) => auth::web_error(error),
+        },
+    }
+}
+
+pub async fn list_requirements_annotations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(query): Query<RequirementsAnnotationQuery>,
+) -> Result<Json<Vec<RequirementsAnnotation>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .requirements_doc
+            .annotations(
+                account.actor(),
+                project_id,
+                query.include_resolved,
+            )
+            .await?,
+    ))
+}
+
+pub async fn annotate_requirements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<AnnotateRequirementsRequest>,
+) -> Result<Json<RequirementsAnnotation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .requirements_doc
+            .annotate(
+                account.actor(),
+                AnnotateRequirements {
+                    project_id,
+                    target_type: body.target_type,
+                    target_id: body.target_id,
+                    field: body.field,
+                    body: body.body,
+                },
+            )
+            .await?,
+    ))
+}
+
+pub async fn resolve_requirements_annotation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, annotation_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<ResolveRequirementsAnnotationRequest>,
+) -> Result<Json<RequirementsAnnotation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .requirements_doc
+            .resolve_annotation(
+                account.actor(),
+                ResolveRequirementsAnnotation {
+                    project_id,
+                    annotation_id,
+                    resolution: body.resolution,
+                },
+            )
+            .await?,
+    ))
+}
+
+pub async fn annotate_requirements_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<AnnotateRequirementsForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, project_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let Some(target_type) = foundry_domain::AnnotationTarget::parse(&form.target_type) else {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "unknown annotation target").into_response();
+    };
+    match state
+        .requirements_doc
+        .annotate(
+            session.account.actor(),
+            AnnotateRequirements {
+                project_id,
+                target_type,
+                target_id: form.target_id,
+                field: form.field,
+                body: form.body,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{}/requirements", project.id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn resolve_requirements_annotation_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, annotation_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<ResolveRequirementsAnnotationRequest>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, project_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .requirements_doc
+        .resolve_annotation(
+            session.account.actor(),
+            ResolveRequirementsAnnotation {
+                project_id,
+                annotation_id,
+                resolution: form.resolution,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{}/requirements", project.id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+fn can_publish_requirements(session: &WebAccountSession, project: &Project) -> bool {
+    session.account.is_admin()
+        || project
+            .role_of(session.account.id)
+            .is_some_and(|role| role >= ProjectRole::Maintainer)
+}
+
+async fn human_review_requirements_task(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<Option<Task>, ServiceError> {
+    Ok(state
+        .tasks
+        .list(project_id, TaskFilter::default(), TaskViewer::system())
+        .await?
+        .into_iter()
+        .find(|task| {
+            task.workflow.as_str() == "requirements_analysis"
+                && task.state == TaskState::InProgress
+                && task.stage.as_deref() == Some("human_review")
+        }))
+}
+
+pub async fn reject_requirements_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RejectRequirementsForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    if !can_publish_requirements(&session, &project) {
+        return auth::web_forbidden("只有项目 Maintainer/Owner 可以打回需求文档。");
+    }
+    let reason = form.reason.trim();
+    if reason.is_empty() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, "打回原因不能为空").into_response();
+    }
+    let task = match human_review_requirements_task(&state, id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "需求分析尚未进入人工评审阶段",
+            )
+                .into_response();
+        }
+        Err(error) => return auth::web_error(error),
+    };
+    if let Err(error) = state
+        .requirements_doc
+        .annotate(
+            session.account.actor(),
+            AnnotateRequirements {
+                project_id: id,
+                target_type: foundry_domain::AnnotationTarget::Document,
+                target_id: None,
+                field: None,
+                body: reason.to_string(),
+            },
+        )
+        .await
+    {
+        return auth::web_error(error);
+    }
+    match state
+        .tasks
+        .send_operation(
+            id,
+            task.id,
+            session.account.id,
+            OperationName::new(foundry_domain::REJECT_OPERATION),
+            format!("requirements-rejected:{}", task.id),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}/requirements")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn approve_project_brief_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<ProjectBriefApproveForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .project_brief
+        .approve(
+            session.account.actor(),
+            ApproveProjectBrief {
+                project_id: id,
+                expected_version: form.version,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}/brief")).into_response(),
+        Err(error) => {
+            render_brief(&state, &session, &project, None, Some(error.to_string()), Vec::new())
+                .await
+        }
+    }
+}
+
+fn brief_project(session: &WebAccountSession, id: Uuid) -> Option<Project> {
+    session
+        .projects
+        .iter()
+        .find(|project| project.id == id)
+        .cloned()
+}
+
+fn validation_errors(validation: &Validation) -> Vec<String> {
+    validation
+        .errors
+        .iter()
+        .map(|issue| format!("{}: {}", issue.path, issue.message))
+        .collect()
+}
+
+async fn render_brief(
+    state: &AppState,
+    session: &WebAccountSession,
+    project: &Project,
+    selected_draft: Option<Uuid>,
+    error: Option<String>,
+    validation: Vec<String>,
+) -> Response {
+    let actor = session.account.actor();
+    let role = project.role_of(session.account.id);
+    let can_edit = session.account.is_admin()
+        || role.is_some_and(|role| role >= ProjectRole::Member);
+    let current = match state.project_brief.current(actor.clone(), project.id).await {
+        Ok(current) => current,
+        Err(error) => return auth::web_error(error),
+    };
+    let drafts = if can_edit {
+        match state.project_brief.drafts(actor.clone(), project.id).await {
+            Ok(drafts) => drafts,
+            Err(error) => return auth::web_error(error),
+        }
+    } else {
+        Vec::new()
+    };
+    let selected = if can_edit {
+        match selected_draft {
+            Some(draft_id) => match state
+                .project_brief
+                .draft(actor.clone(), project.id, draft_id)
+                .await
+            {
+                Ok(draft) => Some(draft),
+                Err(error) => return auth::web_error(error),
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+    let annotations = match state
+        .project_brief
+        .annotations(actor, project.id, true)
+        .await
+    {
+        Ok(annotations) => annotations,
+        Err(error) => return auth::web_error(error),
+    };
+    let has_current = current.is_some();
+    let data = foundry_web::ProjectBriefPageData {
+        revision: current
+            .as_ref()
+            .map(|version| version.version as u64)
+            .unwrap_or(0),
+        status: current
+            .as_ref()
+            .map(|version| version.status)
+            .unwrap_or(foundry_domain::ProjectBriefStatus::Draft),
+        body: current
+            .as_ref()
+            .map(|version| version.body.clone())
+            .unwrap_or_default(),
+        approved_by: current.as_ref().and_then(|version| version.approved_by),
+        updated_at: current
+            .as_ref()
+            .map(|version| version.updated_at)
+            .unwrap_or_else(OffsetDateTime::now_utc),
+        has_current,
+        drafts: drafts
+            .into_iter()
+            .map(|draft| foundry_web::ProjectBriefDraftData {
+                id: draft.id,
+                revision: draft.revision,
+                body: draft.body,
+                updated_at: draft.updated_at,
+            })
+            .collect(),
+        selected_draft: selected.map(|draft| foundry_web::ProjectBriefDraftData {
+            id: draft.id,
+            revision: draft.revision,
+            body: draft.body,
+            updated_at: draft.updated_at,
+        }),
+        can_edit,
+        can_annotate: can_edit,
+        can_approve: session.account.kind == AccountKind::Human
+            && (session.account.is_admin()
+                || role.is_some_and(|role| role >= ProjectRole::Maintainer)),
+        annotations,
+        error,
+        validation,
+    };
+    let context =
+        foundry_web::ConsoleContext::new(&session.account, &session.projects, Some(project));
+    Html(foundry_web::project_brief_page(&context, project, &data)).into_response()
+}
+
 pub async fn update_project_form(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -865,6 +1836,39 @@ async fn project_detail_error(
                 .into_response()
         }
         Err(_) => auth::web_error(error),
+    }
+}
+
+pub async fn delete_project_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = require_project_manager(
+        &state,
+        &session,
+        id,
+        "只有项目 Owner 或全局管理员可以删除项目。",
+    )
+    .await
+    {
+        return response;
+    }
+    match state.projects.delete(session.account.actor(), id).await {
+        Ok(()) => {
+            let mut response = Redirect::to("/projects").into_response();
+            if session.project.id == id
+                && let Ok(value) = HeaderValue::from_str(&auth::clear_project_cookie())
+            {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+            response
+        }
+        Err(error) => project_detail_error(&state, &session, id, error).await,
     }
 }
 
@@ -1006,6 +2010,16 @@ pub async fn update_project(
             .update(session.actor(), body.into_command(id))
             .await?,
     ))
+}
+
+pub async fn delete_project(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    state.projects.delete(session.actor(), id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn add_project_member(
@@ -1298,22 +2312,6 @@ pub async fn comment_issue(
     ))
 }
 
-pub async fn triage_issue(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<Uuid>,
-    Json(body): Json<TriageIssueRequest>,
-) -> Result<Json<foundry_domain::Issue>, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
-    require_contribute(&session)?;
-    Ok(Json(
-        state
-            .issues
-            .triage(body.into_command(session.project.id, id, session.actor()))
-            .await?,
-    ))
-}
-
 pub async fn transition_issue(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1401,6 +2399,29 @@ pub async fn issue_page(
     }
 }
 
+pub async fn issue_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state.issues.get(session.project.id, id).await {
+        Ok(issue) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            format!("{}:{}", issue.version, issue.comments.len()),
+        )
+            .into_response(),
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => {
+            (StatusCode::NOT_FOUND, "not found").into_response()
+        }
+        Err(error) => auth::web_error(error),
+    }
+}
+
 pub async fn comment_issue_form(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1417,29 +2438,6 @@ pub async fn comment_issue_form(
     match state
         .issues
         .comment(form.into_command(session.project.id, id, session.actor()))
-        .await
-    {
-        Ok(_) => Redirect::to(&format!("/issues/{id}")).into_response(),
-        Err(error) => auth::web_error(error),
-    }
-}
-
-pub async fn triage_issue_form(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(id): Path<Uuid>,
-    Form(form): Form<TriageIssueForm>,
-) -> Response {
-    let session = match auth::web_session(&state, &headers).await {
-        Ok(session) => session,
-        Err(response) => return response,
-    };
-    if !session.can_contribute() {
-        return auth::web_forbidden("当前项目角色不允许分诊议题。");
-    }
-    match state
-        .issues
-        .triage(form.into_command(session.project.id, id, session.actor()))
         .await
     {
         Ok(_) => Redirect::to(&format!("/issues/{id}")).into_response(),
@@ -1495,10 +2493,23 @@ pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Respons
         Ok(requirements) => requirements,
         Err(error) => return auth::web_error(error),
     };
+    let tasks = match state
+        .tasks
+        .list(
+            session.project.id,
+            TaskFilter::default(),
+            web_task_viewer(&session),
+        )
+        .await
+    {
+        Ok(tasks) => tasks,
+        Err(error) => return auth::web_error(error),
+    };
     Html(foundry_web::workbench(
         &session.context,
         &issues,
         &requirements,
+        &tasks,
     ))
     .into_response()
 }
@@ -1515,6 +2526,117 @@ pub async fn issue_index(State(state): State<AppState>, headers: HeaderMap) -> R
     {
         Ok(issues) => Html(foundry_web::issue_dashboard(&session.context, &issues)).into_response(),
         Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn tasks_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let tasks = match state
+        .tasks
+        .list(
+            session.project.id,
+            TaskFilter::default(),
+            web_task_viewer(&session),
+        )
+        .await
+    {
+        Ok(tasks) => tasks,
+        Err(error) => return auth::web_error(error),
+    };
+    Html(foundry_web::tasks_page(&session.context, &tasks)).into_response()
+}
+
+pub async fn task_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let task = match state
+        .tasks
+        .get(session.project.id, id, web_task_viewer(&session))
+        .await
+    {
+        Ok(task) => task,
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Html(foundry_web::not_found_page(&session.context)),
+            )
+                .into_response();
+        }
+        Err(error) => return auth::web_error(error),
+    };
+    let links = state
+        .task_links
+        .list(session.account.actor(), id)
+        .await
+        .unwrap_or_default();
+    Html(foundry_web::task_page(&session.context, &task, &links)).into_response()
+}
+
+pub async fn tasks_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let tasks = match state
+        .tasks
+        .list(
+            session.project.id,
+            TaskFilter::default(),
+            web_task_viewer(&session),
+        )
+        .await
+    {
+        Ok(tasks) => tasks,
+        Err(error) => return auth::web_error(error),
+    };
+    no_store(foundry_web::tasks_fingerprint(&tasks))
+}
+
+pub async fn task_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let task = match state
+        .tasks
+        .get(session.project.id, id, web_task_viewer(&session))
+        .await
+    {
+        Ok(task) => task,
+        Err(error) => return auth::web_error(error),
+    };
+    no_store(foundry_web::task_fingerprint(&task))
+}
+
+fn no_store(body: String) -> Response {
+    let mut response = body.into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn web_task_viewer(session: &WebSession) -> TaskViewer {
+    if session
+        .role
+        .is_some_and(|role| role >= ProjectRole::Maintainer)
+    {
+        TaskViewer::manager(session.account.id)
+    } else {
+        TaskViewer::member(session.account.id)
     }
 }
 
@@ -1579,14 +2701,15 @@ pub async fn mcp(
         can_contribute: session.can_contribute(),
         can_dispose: session.can_dispose(),
     };
-    let response = foundry_api_mcp::handle(
-        state.requirements.as_ref(),
-        state.issues.as_ref(),
-        state.workflows.as_ref(),
-        &caller,
-        body,
-    )
-    .await;
+    let services = foundry_api_mcp::Services {
+        requirements: state.requirements.as_ref(),
+        issues: state.issues.as_ref(),
+        workflows: state.workflows.as_ref(),
+        requirements_doc: state.requirements_doc.as_ref(),
+        project_brief: state.project_brief.as_ref(),
+        task_links: state.task_links.as_ref(),
+    };
+    let response = foundry_api_mcp::handle(&services, &caller, body).await;
     if response.is_null() {
         StatusCode::ACCEPTED.into_response()
     } else {
@@ -1667,6 +2790,19 @@ pub async fn send_task_operation(
     Path(id): Path<Uuid>,
     Json(body): Json<TaskOperationRequest>,
 ) -> Result<StatusCode, ApiError> {
+    if [
+        foundry_domain::START_OPERATION,
+        foundry_domain::ACCEPT_OPERATION,
+        foundry_domain::REJECT_OPERATION,
+    ]
+    .contains(&body.operation.as_str())
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "reserved_operation",
+            "use the dedicated task endpoint for this operation",
+        ));
+    }
     let session = auth::api_session(&state, &headers).await?;
     state
         .tasks
@@ -1676,6 +2812,69 @@ pub async fn send_task_operation(
             session.account.id,
             OperationName::new(body.operation),
             body.idempotency_key,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn start_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    if session.account.role != AccountRole::Admin {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only administrators can start tasks",
+        ));
+    }
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    match task.dispatch_state {
+        foundry_domain::TaskDispatchState::Ready => {}
+        foundry_domain::TaskDispatchState::Running => return Ok(StatusCode::NO_CONTENT),
+        foundry_domain::TaskDispatchState::Blocked | foundry_domain::TaskDispatchState::Closed => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_ready",
+                "task is not Ready",
+            ));
+        }
+    }
+    let ready = state
+        .agents
+        .ready_tasks(session.account.actor())
+        .await?;
+    let Some(view) = ready.iter().find(|view| view.task_id == id) else {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_ready",
+            "task is not a Ready dispatch candidate",
+        ));
+    };
+    if view
+        .roles
+        .iter()
+        .any(|role| role.agent.as_ref().is_none_or(|agent| !agent.enabled))
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "roles_unassigned",
+            "assign every agent role before starting the task",
+        ));
+    }
+    state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(foundry_domain::START_OPERATION),
+            foundry_domain::START_OPERATION.to_string(),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1958,6 +3157,362 @@ pub async fn save_workflow_layout(
     };
     Ok(Json(workflow_error(
         state.workflows.save_layout(account.actor(), command).await,
+    )?))
+}
+
+pub async fn list_task_links(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<Uuid>,
+) -> Result<Json<Vec<foundry_domain::TaskLink>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(state.task_links.list(account.actor(), task_id).await?))
+}
+
+pub async fn add_task_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<Uuid>,
+    Json(body): Json<AddTaskLinkRequest>,
+) -> Result<Json<foundry_domain::TaskLink>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let kind = TaskLinkKind::parse(&body.kind).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_task_link_kind",
+            format!("unknown task link kind {}", body.kind),
+        )
+    })?;
+    let relation = TaskLinkRelation::parse(&body.relation).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_task_link_relation",
+            format!("unknown task link relation {}", body.relation),
+        )
+    })?;
+    let command = AddTaskLink {
+        task_id,
+        kind,
+        target_id: body.target_id,
+        url: body.url,
+        title: body.title,
+        relation,
+        metadata: body.metadata,
+    };
+    Ok(Json(state.task_links.add(account.actor(), command).await?))
+}
+
+pub async fn remove_task_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((task_id, link_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    state
+        .task_links
+        .remove(account.actor(), RemoveTaskLink { task_id, link_id })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn get_project_brief(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Option<ProjectBriefVersionView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state.project_brief.current(account.actor(), project_id).await,
+    )?))
+}
+
+pub async fn list_project_brief_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectBriefVersionView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state.project_brief.versions(account.actor(), project_id).await,
+    )?))
+}
+
+pub async fn get_project_brief_version(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, version)): Path<(Uuid, u32)>,
+) -> Result<Json<Option<ProjectBriefVersionView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state
+            .project_brief
+            .version(account.actor(), project_id, version)
+            .await,
+    )?))
+}
+
+pub async fn create_project_brief_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<(StatusCode, Json<ProjectBriefDraftView>), ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let draft = project_brief_error(
+        state
+            .project_brief
+            .create_draft(
+                account.actor(),
+                CreateProjectBriefDraft { project_id },
+            )
+            .await,
+    )?;
+    Ok((StatusCode::CREATED, Json(draft)))
+}
+
+pub async fn list_project_brief_drafts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<ProjectBriefDraftView>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state.project_brief.drafts(account.actor(), project_id).await,
+    )?))
+}
+
+pub async fn get_project_brief_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, draft_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ProjectBriefDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state
+            .project_brief
+            .draft(account.actor(), project_id, draft_id)
+            .await,
+    )?))
+}
+
+pub async fn apply_project_brief_draft_operation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, draft_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<ApplyProjectBriefDraftOperationRequest>,
+) -> Result<Json<ProjectBriefDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(project_brief_error(
+        state
+            .project_brief
+            .apply_operation(
+                account.actor(),
+                ApplyProjectBriefDraftOperation {
+                    project_id,
+                    draft_id,
+                    op_id: body.op_id,
+                    base_revision: body.base_revision,
+                    operation: body.operation,
+                },
+            )
+            .await,
+    )?))
+}
+
+pub async fn submit_project_brief_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, draft_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<ProjectBriefVersionView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = SubmitProjectBriefDraft {
+        project_id,
+        draft_id,
+        expected_revision: if_match(&headers)?,
+    };
+    Ok(Json(project_brief_error(
+        state.project_brief.submit_draft(account.actor(), command).await,
+    )?))
+}
+
+pub async fn approve_project_brief(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<ProjectBriefVersionView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = ApproveProjectBrief {
+        project_id,
+        expected_version: if_match(&headers)? as u32,
+    };
+    Ok(Json(project_brief_error(
+        state.project_brief.approve(account.actor(), command).await,
+    )?))
+}
+
+pub async fn list_project_brief_annotations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Query(query): Query<ProjectBriefAnnotationQuery>,
+) -> Result<Json<Vec<ProjectBriefAnnotation>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .project_brief
+            .annotations(account.actor(), project_id, query.include_resolved)
+            .await?,
+    ))
+}
+
+pub async fn annotate_project_brief(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<AnnotateProjectBriefRequest>,
+) -> Result<Json<ProjectBriefAnnotation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .project_brief
+            .annotate(
+                account.actor(),
+                AnnotateProjectBrief {
+                    project_id,
+                    target_type: body.target_type,
+                    target_id: body.target_id,
+                    field: body.field,
+                    body: body.body,
+                },
+            )
+            .await?,
+    ))
+}
+
+pub async fn resolve_project_brief_annotation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, annotation_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<ResolveProjectBriefAnnotationRequest>,
+) -> Result<Json<ProjectBriefAnnotation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .project_brief
+            .resolve_annotation(
+                account.actor(),
+                ResolveProjectBriefAnnotation {
+                    project_id,
+                    annotation_id,
+                    resolution: body.resolution,
+                },
+            )
+            .await?,
+    ))
+}
+
+pub async fn get_requirements_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<RequirementsDocumentView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .get(account.actor(), project_id)
+            .await,
+    )?))
+}
+
+pub async fn get_requirements_draft(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<RequirementsDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .draft(account.actor(), project_id)
+            .await,
+    )?))
+}
+
+pub async fn apply_requirements_operations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<ApplyRequirementsOperationsRequest>,
+) -> Result<Json<RequirementsDraftView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let expected_revision = if_match(&headers)?;
+    let command = ApplyRequirementsOperations {
+        project_id,
+        expected_revision,
+        operations: body.operations,
+    };
+    Ok(Json(requirements_error(
+        state.requirements_doc.apply(account.actor(), command).await,
+    )?))
+}
+
+pub async fn validate_requirements_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<foundry_domain::Validation>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .validate(account.actor(), project_id)
+            .await,
+    )?))
+}
+
+pub async fn publish_requirements_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<RequirementsPublished>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let command = PublishRequirementsDocument {
+        project_id,
+        expected_revision: if_match(&headers)?,
+    };
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .publish(account.actor(), command)
+            .await,
+    )?))
+}
+
+pub async fn list_requirements_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<foundry_domain::RequirementsVersionRow>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .versions(account.actor(), project_id)
+            .await,
+    )?))
+}
+
+pub async fn get_requirements_version(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, version)): Path<(Uuid, u32)>,
+) -> Result<Json<foundry_app::RequirementsVersionView>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    Ok(Json(requirements_error(
+        state
+            .requirements_doc
+            .version(account.actor(), project_id, version)
+            .await,
     )?))
 }
 

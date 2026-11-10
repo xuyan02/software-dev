@@ -446,6 +446,7 @@ impl From<RepoError> for TaskDispatchError {
                 "version conflict: expected {expected}, current is {actual}"
             )),
             RepoError::Duplicate(message) => Self::Conflict(message),
+            RepoError::Invalid(message) => Self::Rejected(message),
             RepoError::Backend(message) => Self::Backend(message),
         }
     }

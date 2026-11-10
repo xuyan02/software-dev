@@ -5,9 +5,14 @@
 //! enough for humans to observe and act.
 
 use foundry_domain::{
-    Account, AccountKind, AccountRole, AccountStatus, Issue, IssueKind, IssueSeverity,
-    IssueSourceKind, IssueStatus, Project, ProjectRole, ProjectStatus, Requirement,
-    RequirementStatus, WorkflowDefinition, WorkflowOption, WorkflowOwner,
+    Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
+    AnnotationStatus, Confidence, EntityStatus, Issue, IssueKind, IssueSeverity,
+    IssueSourceKind, IssueStatus, Project, ProjectBriefAnnotation, ProjectBriefBody,
+    ProjectBriefStatus, ProjectRole, ProjectStatus,
+    Requirement, RequirementStatus, RequirementsAnnotation, RequirementsDocumentBody, RiskLevel,
+    RoleKind, StoryPriority,
+    Task, TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState,
+    WorkflowDefinition, WorkflowOption, WorkflowOwner,
 };
 
 const STYLE: &str = r#"
@@ -67,9 +72,45 @@ tr:last-child td { border-bottom:0; }
 a { color: var(--accent); }
 .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px;
          border:1px solid var(--line); background:var(--bg); }
+.agent-log { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+             padding:14px 16px; max-height:72vh; overflow:auto; white-space:pre-wrap;
+             word-break:break-word; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+             font-size:12px; line-height:1.5; }
 .meta { display:flex; flex-wrap:wrap; gap:10px 22px; color:var(--muted); font-size:13px; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
         padding:16px 18px; margin:12px 0; }
+.markdown > :first-child { margin-top:0; }
+.markdown > :last-child { margin-bottom:0; }
+.markdown p { margin:8px 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+  margin:16px 0 8px; line-height:1.3;
+}
+.markdown h1 { font-size:20px; }
+.markdown h2 { font-size:17px; }
+.markdown h3 { font-size:15px; }
+.markdown ul, .markdown ol { margin:8px 0; padding-left:22px; }
+.markdown li { margin:2px 0; }
+.markdown pre { background:var(--bg); border:1px solid var(--line); border-radius:6px;
+                padding:10px 12px; overflow:auto; margin:10px 0; }
+.markdown pre code { background:none; padding:0; }
+.markdown blockquote { margin:10px 0; padding:2px 12px; border-left:3px solid var(--line);
+                       color:var(--muted); }
+.markdown hr { border:0; border-top:1px solid var(--line); margin:14px 0; }
+.markdown .table-wrap { overflow-x:auto; margin:10px 0; }
+.markdown table { width:100%; border-collapse:collapse; background:transparent; }
+.markdown th, .markdown td { padding:6px 10px; border:1px solid var(--line); }
+.markdown th { background:var(--bg); }
+.markdown img { max-width:100%; }
+.brief { margin-top:8px; }
+.brief h2 { margin-top:26px; }
+.brief h3 { margin:0 0 6px; font-size:14px; color:var(--muted); }
+.brief .empty { padding:10px 0; text-align:left; }
+.brief ul { margin:6px 0; }
+.brief-editor { margin-top:28px; border-top:1px solid var(--line); padding-top:12px; }
+.brief-editor summary { cursor:pointer; color:var(--accent); }
+.annotation .markdown { margin:6px 0; }
+.annotation .inline-form { margin-top:8px; }
+.annotation-target { color:var(--accent); }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
 .empty { color:var(--muted); padding:24px; text-align:center; }
 ul { padding-left: 20px; }
@@ -146,6 +187,424 @@ fn escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// A small Markdown subset for Issue comments: headings, lists, code blocks,
+/// inline code, emphasis, links and blockquotes. Raw HTML is always escaped.
+fn markdown_to_html(input: &str) -> String {
+    let normalized = input.replace("\r\n", "\n");
+    let lines: Vec<&str> = normalized.lines().collect();
+    let mut out = String::new();
+    let mut paragraph: Vec<&str> = Vec::new();
+    let mut list: Option<&'static str> = None;
+    let mut code: Option<(String, Vec<&str>)> = None;
+    let mut index = 0;
+
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = line.trim();
+
+        if code.is_some() {
+            if trimmed.starts_with("```") {
+                let (language, body) = code.take().unwrap_or_default();
+                out.push_str("<pre><code");
+                if !language.is_empty() {
+                    out.push_str(&format!(r#" class="language-{}""#, escape(&language)));
+                }
+                out.push('>');
+                out.push_str(&escape(&body.join("\n")));
+                out.push_str("</code></pre>");
+            } else if let Some((_, body)) = code.as_mut() {
+                body.push(line);
+            }
+            index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("```") {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            code = Some((trimmed.trim_start_matches('`').trim().to_string(), Vec::new()));
+            index += 1;
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            index += 1;
+            continue;
+        }
+
+        if let Some((level, rest)) = markdown_heading(trimmed) {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            out.push_str(&format!("<h{level}>{}</h{level}>", inline_markdown(rest, 0)));
+            index += 1;
+            continue;
+        }
+
+        if markdown_hr(trimmed) {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            out.push_str("<hr>");
+            index += 1;
+            continue;
+        }
+
+        if trimmed.starts_with('>') {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            let mut quote = Vec::new();
+            while index < lines.len() && lines[index].trim().starts_with('>') {
+                quote.push(lines[index].trim().trim_start_matches('>').trim_start());
+                index += 1;
+            }
+            out.push_str("<blockquote><p>");
+            out.push_str(&inline_markdown(&quote.join("\n"), 0));
+            out.push_str("</p></blockquote>");
+            continue;
+        }
+
+        if let Some((tag, item)) = markdown_list_item(trimmed) {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            if list != Some(tag) {
+                close_markdown_list(&mut out, &mut list);
+                out.push_str(&format!("<{tag}>"));
+                list = Some(tag);
+            }
+            out.push_str("<li>");
+            out.push_str(&inline_markdown(item, 0));
+            out.push_str("</li>");
+            index += 1;
+            continue;
+        }
+
+        if index + 1 < lines.len()
+            && let Some(header) = markdown_table_cells(line)
+            && let Some(aligns) = markdown_table_aligns(lines[index + 1])
+            && header.len() == aligns.len()
+        {
+            flush_markdown_paragraph(&mut out, &mut paragraph);
+            close_markdown_list(&mut out, &mut list);
+            out.push_str(r#"<div class="table-wrap"><table><thead><tr>"#);
+            for (cell, align) in header.iter().zip(&aligns) {
+                out.push_str(&format!(
+                    "<th{}>{}</th>",
+                    markdown_align_attr(*align),
+                    inline_markdown(&cell.replace("\\|", "|"), 0)
+                ));
+            }
+            out.push_str("</tr></thead><tbody>");
+            index += 2;
+            while index < lines.len() {
+                let row_line = lines[index];
+                if row_line.trim().is_empty() {
+                    break;
+                }
+                let Some(cells) = markdown_table_cells(row_line) else {
+                    break;
+                };
+                if cells.len() != header.len() {
+                    break;
+                }
+                out.push_str("<tr>");
+                for (cell, align) in cells.iter().zip(&aligns) {
+                    out.push_str(&format!(
+                        "<td{}>{}</td>",
+                        markdown_align_attr(*align),
+                        inline_markdown(&cell.replace("\\|", "|"), 0)
+                    ));
+                }
+                out.push_str("</tr>");
+                index += 1;
+            }
+            out.push_str("</tbody></table></div>");
+            continue;
+        }
+
+        close_markdown_list(&mut out, &mut list);
+        paragraph.push(line);
+        index += 1;
+    }
+
+    if let Some((language, body)) = code {
+        out.push_str("<pre><code");
+        if !language.is_empty() {
+            out.push_str(&format!(r#" class="language-{}""#, escape(&language)));
+        }
+        out.push('>');
+        out.push_str(&escape(&body.join("\n")));
+        out.push_str("</code></pre>");
+    }
+    flush_markdown_paragraph(&mut out, &mut paragraph);
+    close_markdown_list(&mut out, &mut list);
+    out
+}
+
+fn flush_markdown_paragraph(out: &mut String, paragraph: &mut Vec<&str>) {
+    if paragraph.is_empty() {
+        return;
+    }
+    out.push_str("<p>");
+    out.push_str(&inline_markdown(&paragraph.join("\n"), 0));
+    out.push_str("</p>");
+    paragraph.clear();
+}
+
+fn close_markdown_list(out: &mut String, list: &mut Option<&'static str>) {
+    if let Some(tag) = list.take() {
+        out.push_str(&format!("</{tag}>"));
+    }
+}
+
+fn markdown_heading(line: &str) -> Option<(usize, &str)> {
+    let level = line.chars().take_while(|character| *character == '#').count();
+    if !(1..=6).contains(&level) {
+        return None;
+    }
+    let rest = &line[level..];
+    rest.starts_with(' ')
+        .then(|| (level, rest.trim_start()))
+}
+
+fn markdown_hr(line: &str) -> bool {
+    let Some(first) = line.chars().next() else {
+        return false;
+    };
+    if !matches!(first, '-' | '*' | '_') {
+        return false;
+    }
+    line.chars().all(|character| character == first || character == ' ')
+        && line.chars().filter(|character| *character == first).count() >= 3
+}
+
+fn markdown_list_item(line: &str) -> Option<(&'static str, &str)> {
+    for prefix in ["- ", "* ", "+ "] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some(("ul", rest.trim_start()));
+        }
+    }
+    let digits = line.chars().take_while(|character| character.is_ascii_digit()).count();
+    if digits > 0 {
+        if let Some(rest) = line[digits..].strip_prefix(". ") {
+            return Some(("ol", rest.trim_start()));
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+enum MarkdownAlign {
+    None,
+    Left,
+    Center,
+    Right,
+}
+
+fn markdown_table_cells(line: &str) -> Option<Vec<&str>> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return None;
+    }
+    let inner = trimmed.strip_prefix('|').unwrap_or(trimmed);
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let mut cells = Vec::new();
+    let mut start = 0;
+    let bytes = inner.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\' && index + 1 < bytes.len() {
+            index += 2;
+            continue;
+        }
+        if bytes[index] == b'|' {
+            cells.push(inner[start..index].trim());
+            start = index + 1;
+        }
+        index += 1;
+    }
+    cells.push(inner[start..].trim());
+    Some(cells)
+}
+
+fn markdown_table_aligns(line: &str) -> Option<Vec<MarkdownAlign>> {
+    let cells = markdown_table_cells(line)?;
+    let mut aligns = Vec::new();
+    for cell in cells {
+        let cell = cell.trim();
+        let left = cell.starts_with(':');
+        let right = cell.ends_with(':');
+        let dashes = cell.trim_matches(':');
+        if dashes.len() < 3 || !dashes.chars().all(|character| character == '-') {
+            return None;
+        }
+        aligns.push(match (left, right) {
+            (true, true) => MarkdownAlign::Center,
+            (false, true) => MarkdownAlign::Right,
+            (true, false) => MarkdownAlign::Left,
+            (false, false) => MarkdownAlign::None,
+        });
+    }
+    Some(aligns)
+}
+
+fn markdown_align_attr(align: MarkdownAlign) -> &'static str {
+    match align {
+        MarkdownAlign::None => "",
+        MarkdownAlign::Left => r#" style="text-align:left""#,
+        MarkdownAlign::Center => r#" style="text-align:center""#,
+        MarkdownAlign::Right => r#" style="text-align:right""#,
+    }
+}
+
+fn inline_markdown(text: &str, depth: usize) -> String {
+    if depth > 6 {
+        return escape(text);
+    }
+    let characters: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut index = 0;
+    while index < characters.len() {
+        match characters[index] {
+            '`' => {
+                if let Some(end) = markdown_find(&characters, index + 1, '`') {
+                    let code: String = characters[index + 1..end].iter().collect();
+                    out.push_str("<code>");
+                    out.push_str(&escape(code.trim()));
+                    out.push_str("</code>");
+                    index = end + 1;
+                } else {
+                    out.push('`');
+                    index += 1;
+                }
+            }
+            '[' => {
+                if let Some((label, url, end)) = markdown_link(&characters, index) {
+                    if markdown_safe_url(&url) {
+                        out.push_str(&format!(
+                            r#"<a href="{}" rel="noreferrer noopener" target="_blank">{}</a>"#,
+                            escape(&url),
+                            inline_markdown(&label, depth + 1)
+                        ));
+                    } else {
+                        out.push_str(&escape(&format!("[{label}]({url})")));
+                    }
+                    index = end;
+                } else {
+                    out.push('[');
+                    index += 1;
+                }
+            }
+            '*' => {
+                if index + 1 < characters.len() && characters[index + 1] == '*' {
+                    if let Some(end) = markdown_find_pair(&characters, index + 2, '*', '*') {
+                        let inner: String = characters[index + 2..end].iter().collect();
+                        out.push_str("<strong>");
+                        out.push_str(&inline_markdown(&inner, depth + 1));
+                        out.push_str("</strong>");
+                        index = end + 2;
+                    } else {
+                        out.push('*');
+                        index += 1;
+                    }
+                } else if let Some(end) = markdown_find(&characters, index + 1, '*') {
+                    let inner: String = characters[index + 1..end].iter().collect();
+                    out.push_str("<em>");
+                    out.push_str(&inline_markdown(&inner, depth + 1));
+                    out.push_str("</em>");
+                    index = end + 1;
+                } else {
+                    out.push('*');
+                    index += 1;
+                }
+            }
+            '~' => {
+                if index + 1 < characters.len() && characters[index + 1] == '~' {
+                    if let Some(end) = markdown_find_pair(&characters, index + 2, '~', '~') {
+                        let inner: String = characters[index + 2..end].iter().collect();
+                        out.push_str("<del>");
+                        out.push_str(&inline_markdown(&inner, depth + 1));
+                        out.push_str("</del>");
+                        index = end + 2;
+                    } else {
+                        out.push('~');
+                        index += 1;
+                    }
+                } else {
+                    out.push('~');
+                    index += 1;
+                }
+            }
+            '\n' => {
+                out.push_str("<br>");
+                index += 1;
+            }
+            _ => {
+                let start = index;
+                while index < characters.len()
+                    && !matches!(characters[index], '`' | '[' | '*' | '~' | '\n')
+                {
+                    index += 1;
+                }
+                let literal: String = characters[start..index].iter().collect();
+                out.push_str(&escape(&literal));
+            }
+        }
+    }
+    out
+}
+
+fn markdown_find(characters: &[char], start: usize, needle: char) -> Option<usize> {
+    (start..characters.len()).find(|index| characters[*index] == needle)
+}
+
+fn markdown_find_pair(
+    characters: &[char],
+    start: usize,
+    first: char,
+    second: char,
+) -> Option<usize> {
+    (start..characters.len().saturating_sub(1))
+        .find(|index| characters[*index] == first && characters[*index + 1] == second)
+}
+
+fn markdown_link(characters: &[char], start: usize) -> Option<(String, String, usize)> {
+    let mut index = start + 1;
+    let mut label = String::new();
+    while index < characters.len() && characters[index] != ']' {
+        label.push(characters[index]);
+        index += 1;
+    }
+    if index >= characters.len() || characters[index] != ']' {
+        return None;
+    }
+    index += 1;
+    if index >= characters.len() || characters[index] != '(' {
+        return None;
+    }
+    index += 1;
+    let mut url = String::new();
+    while index < characters.len() && characters[index] != ')' {
+        if characters[index].is_whitespace() {
+            return None;
+        }
+        url.push(characters[index]);
+        index += 1;
+    }
+    if index >= characters.len() || characters[index] != ')' {
+        return None;
+    }
+    Some((label, url, index + 1))
+}
+
+fn markdown_safe_url(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("mailto:")
+        || url.starts_with('/')
+        || url.starts_with('#')
 }
 
 #[derive(Clone, Debug)]
@@ -255,9 +714,12 @@ enum Section {
     Workbench,
     Issues,
     Requirements,
+    Brief,
+    Tasks,
     Projects,
     Workflows,
     Accounts,
+    Agents,
     None,
 }
 
@@ -316,6 +778,19 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         )
     };
 
+    let brief_nav = ctx
+        .current
+        .as_ref()
+        .map(|project| {
+            nav_item(
+                active,
+                Section::Brief,
+                &format!("/projects/{}/brief", project.id),
+                "项目简报",
+            )
+        })
+        .unwrap_or_default();
+
     let nav = format!(
         r#"<a class="brand" href="/">Foundry</a>
 <p class="brand-sub">AI 原生软件工程控制平面</p>
@@ -331,6 +806,11 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
   <div class="nav-group">
     <p class="nav-heading">承诺空间</p>
     {}
+    {brief_nav}
+  </div>
+  <div class="nav-group">
+    <p class="nav-heading">执行</p>
+    {}
   </div>
   <div class="nav-group">
     <p class="nav-heading">流程</p>
@@ -340,11 +820,11 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
     <p class="nav-heading">组织</p>
     {}
     {}
+    {}
   </div>
   <details class="nav-more">
     <summary>后续模块</summary>
     <div class="nav-group">
-      <span class="nav-item disabled" aria-disabled="true">任务 <em class="nav-tag">待接入</em></span>
       <span class="nav-item disabled" aria-disabled="true">设计文档 <em class="nav-tag">待接入</em></span>
       <span class="nav-item disabled" aria-disabled="true">ADR <em class="nav-tag">待接入</em></span>
       <span class="nav-item disabled" aria-disabled="true">决策 <em class="nav-tag">待接入</em></span>
@@ -365,9 +845,15 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         nav_item(active, Section::Workbench, "/", "工作台"),
         nav_item(active, Section::Issues, "/issues", "议题"),
         nav_item(active, Section::Requirements, "/requirements", "需求"),
+        nav_item(active, Section::Tasks, "/tasks", "任务"),
         nav_item(active, Section::Workflows, "/workflows", "流程"),
         nav_item(active, Section::Projects, "/projects", "项目"),
         nav_item(active, Section::Accounts, "/accounts", "账户"),
+        if ctx.viewer.is_admin() {
+            nav_item(active, Section::Agents, "/agents", "智能体")
+        } else {
+            String::new()
+        },
         create_issue = if ctx.can_contribute() {
             r#"<a class="button" href="/issues/new">＋ 新建议题</a>"#.to_string()
         } else {
@@ -378,6 +864,7 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         } else {
             ""
         },
+        brief_nav = brief_nav,
         display_name = escape(&ctx.viewer.display_name),
         handle = escape(&ctx.viewer.handle),
         kind = if ctx.viewer.kind == AccountKind::Human {
@@ -497,18 +984,28 @@ pub fn setup_admin_page(handle: &str, display_name: &str, error: Option<&str>) -
     bare_layout("创建管理员", &body)
 }
 
-pub fn workbench(ctx: &ConsoleContext, issues: &[Issue], requirements: &[Requirement]) -> String {
+pub fn workbench(
+    ctx: &ConsoleContext,
+    issues: &[Issue],
+    requirements: &[Requirement],
+    tasks: &[Task],
+) -> String {
     let fresh = issues
         .iter()
         .filter(|issue| issue.status == IssueStatus::Open)
         .count();
     let active = issues
         .iter()
-        .filter(|issue| matches!(issue.status, IssueStatus::Triaged | IssueStatus::InProgress))
+        .filter(|issue| issue.status == IssueStatus::InProgress)
         .count();
     let resolved = issues
         .iter()
         .filter(|issue| issue.status == IssueStatus::Resolved)
+        .count();
+    let task_total = tasks.len();
+    let task_active = tasks
+        .iter()
+        .filter(|task| task.state == TaskState::InProgress)
         .count();
 
     let issue_items = if issues.is_empty() {
@@ -568,7 +1065,7 @@ pub fn workbench(ctx: &ConsoleContext, issues: &[Issue], requirements: &[Require
 <div class="stats">
   <a class="stat" href="/issues">
     <span class="stat-label">议题</span>
-    <span class="stat-value">{fresh}<small> 待分诊</small></span>
+    <span class="stat-value">{fresh}<small> 待处理</small></span>
     <span class="stat-foot">{active} 处理中 · {resolved} 待确认</span>
   </a>
   <a class="stat" href="/requirements">
@@ -576,30 +1073,28 @@ pub fn workbench(ctx: &ConsoleContext, issues: &[Issue], requirements: &[Require
     <span class="stat-value">{requirement_count}</span>
     <span class="stat-foot">承诺空间</span>
   </a>
-  <div class="stat disabled">
+  <a class="stat" href="/tasks">
     <span class="stat-label">任务</span>
-    <span class="stat-value">—</span>
-    <span class="stat-foot">执行面尚未接入</span>
-  </div>
+    <span class="stat-value">{task_total}</span>
+    <span class="stat-foot">{task_active} 处理中</span>
+  </a>
 </div>
 
 <h2>流程</h2>
 <div class="flow">
   <span class="flow-step available">议题</span>
   <span class="flow-arrow">→</span>
-  <span class="flow-step available">分诊</span>
-  <span class="flow-arrow">→</span>
   <span class="flow-step available">需求</span>
   <span class="flow-arrow">→</span>
   <span class="flow-step">设计</span>
   <span class="flow-arrow">→</span>
-  <span class="flow-step">任务</span>
+  <span class="flow-step available">任务</span>
   <span class="flow-arrow">→</span>
   <span class="flow-step">验证</span>
   <span class="flow-arrow">→</span>
   <span class="flow-step">发布</span>
 </div>
-<p class="hint">当前已接入议题全流程和需求早期流程；任务、设计文档、决策和发布尚未接入。</p>
+<p class="hint">当前已接入议题、需求和任务；设计文档、决策和发布尚未接入。</p>
 
 <div class="two-col">
   <section>
@@ -664,6 +1159,1380 @@ pub fn dashboard(ctx: &ConsoleContext, requirements: &[Requirement]) -> String {
         },
     );
     layout(ctx, Section::Requirements, "需求", &body)
+}
+
+pub fn tasks_page(ctx: &ConsoleContext, tasks: &[Task]) -> String {
+    let ids: std::collections::HashSet<_> = tasks.iter().map(|task| task.id).collect();
+    let mut children: std::collections::HashMap<Option<uuid::Uuid>, Vec<&Task>> =
+        std::collections::HashMap::new();
+    for task in tasks {
+        let parent = task.parent_id.filter(|parent| ids.contains(parent));
+        children.entry(parent).or_default().push(task);
+    }
+    let mut rows = String::new();
+    for root in children.get(&None).cloned().unwrap_or_default() {
+        render_task_tree(&mut rows, root, 0, &children);
+    }
+    if rows.is_empty() {
+        rows = r#"<tr><td colspan="5" class="empty">还没有任务。项目创建后，流程脚本会创建第一个任务。</td></tr>"#.to_string();
+    }
+
+    let refresh = task_refresh_script("/tasks/state", &tasks_fingerprint(tasks));
+    let body = format!(
+        r#"<h1>任务</h1>
+<p class="sub">执行空间：谁在什么时候做什么。任务由流程脚本创建；声明 agent 角色的任务由任务池调度。</p>
+<table>
+<thead><tr><th>标题 / 流程</th><th>状态</th><th>阶段</th><th>调度</th><th>Agent</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>{refresh}"#
+    );
+    layout(ctx, Section::Tasks, "任务", &body)
+}
+
+pub fn tasks_fingerprint(tasks: &[Task]) -> String {
+    let mut tasks = tasks
+        .iter()
+        .map(|task| {
+            format!(
+                "{}:{}:{}:{}",
+                task.id,
+                task.state.as_str(),
+                task.stage
+                    .as_ref()
+                    .map(|stage| stage.as_str())
+                    .unwrap_or("-"),
+                task.updated_at.unix_timestamp_nanos()
+            )
+        })
+        .collect::<Vec<_>>();
+    tasks.sort();
+    tasks.join(";")
+}
+
+pub fn task_fingerprint(task: &Task) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        task.id,
+        task.state.as_str(),
+        task.stage
+            .as_ref()
+            .map(|stage| stage.as_str())
+            .unwrap_or("-"),
+        task.updated_at.unix_timestamp_nanos()
+    )
+}
+
+fn task_refresh_script(endpoint: &str, fingerprint: &str) -> String {
+    format!(
+        r#"<script>
+(() => {{
+  const endpoint = "{endpoint}";
+  const known = "{fingerprint}";
+  let busy = false;
+  const dirty = () => Array.from(
+    document.querySelectorAll('main textarea, main input[type="text"]')
+  ).some((element) => element.value.trim().length > 0);
+  const tick = async () => {{
+    if (busy || document.hidden || dirty()) return;
+    busy = true;
+    try {{
+      const response = await fetch(endpoint, {{
+        cache: 'no-store',
+        credentials: 'same-origin'
+      }});
+      if (response.ok) {{
+        const next = (await response.text()).trim();
+        if (next !== known && !dirty()) {{
+          location.reload();
+          return;
+        }}
+      }}
+    }} catch (_) {{}}
+    busy = false;
+  }};
+  setInterval(tick, 3000);
+  document.addEventListener('visibilitychange', () => {{
+    if (!document.hidden) tick();
+  }});
+}})();
+</script>"#
+    )
+}
+
+fn render_task_tree(
+    out: &mut String,
+    task: &Task,
+    depth: usize,
+    children: &std::collections::HashMap<Option<uuid::Uuid>, Vec<&Task>>,
+) {
+    let indent = "↳ ".repeat(depth);
+    let agents = task
+        .role_specs
+        .iter()
+        .filter(|role| role.kind == RoleKind::Agent)
+        .map(|role| {
+            let bound = task
+                .actors
+                .iter()
+                .any(|actor| actor.role_key.as_str() == role.name);
+            format!(
+                "{} · {} · {}",
+                escape(&role.name),
+                role_kind_label(role.kind),
+                if bound { "已绑定" } else { "未绑定" }
+            )
+        })
+        .collect::<Vec<_>>();
+    let agents = if agents.is_empty() {
+        "—".to_string()
+    } else {
+        agents.join("<br>")
+    };
+    out.push_str(&format!(
+        r#"<tr>
+<td>{indent}<a href="/tasks/{id}">{title}</a><br><code>{workflow}</code></td>
+<td><span class="badge">{state}</span></td>
+<td>{stage}</td>
+<td>{dispatch}</td>
+<td>{agents}</td>
+</tr>"#,
+        id = task.id,
+        indent = indent,
+        title = escape(&task.title),
+        workflow = escape(task.workflow.as_str()),
+        state = task_state_label(task.state),
+        stage = task
+            .stage
+            .as_ref()
+            .map(|stage| escape(stage.as_str()))
+            .unwrap_or_else(|| "—".to_string()),
+        dispatch = task_dispatch_label(task.dispatch_state),
+        agents = agents,
+    ));
+    if let Some(kids) = children.get(&Some(task.id)) {
+        for kid in kids {
+            render_task_tree(out, kid, depth + 1, children);
+        }
+    }
+}
+
+pub fn task_page(
+    ctx: &ConsoleContext,
+    task: &Task,
+    links: &[TaskLink],
+) -> String {
+    let role_rows = if task.role_specs.is_empty() {
+        r#"<tr><td colspan="4" class="empty">流程没有声明角色。</td></tr>"#.to_string()
+    } else {
+        task.role_specs
+            .iter()
+            .map(|role| {
+                let actors = task
+                    .actors
+                    .iter()
+                    .filter(|actor| actor.role_key.as_str() == role.name)
+                    .map(|actor| {
+                        format!(
+                            "{} {}",
+                            escape(&actor.display_name),
+                            if actor.active {
+                                r#"<span class="badge">活跃</span>"#
+                            } else {
+                                ""
+                            }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let actors = if actors.is_empty() {
+                    "未绑定".to_string()
+                } else {
+                    actors.join("<br>")
+                };
+                format!(
+                    r#"<tr><td><code>{name}</code></td><td>{kind}</td><td>{range}</td><td>{actors}</td></tr>"#,
+                    name = escape(&role.name),
+                    kind = role_kind_label(role.kind),
+                    range = match role.max_actors {
+                        Some(max) => format!("{} - {max}", role.min_actors),
+                        None => format!("{} - ∞", role.min_actors),
+                    },
+                    actors = actors,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let link_rows = if links.is_empty() {
+        r#"<tr><td colspan="4" class="empty">没有关联对象。</td></tr>"#.to_string()
+    } else {
+        links
+            .iter()
+            .map(|link| {
+                let target = match (link.kind, link.target_id, link.url.as_deref()) {
+                    (TaskLinkKind::Issue, Some(id), _) => {
+                        format!(r#"<a href="/issues/{id}">打开议题</a>"#)
+                    }
+                    (TaskLinkKind::Url, _, Some(url)) => format!(
+                        r#"<a href="{url}" rel="noreferrer">打开链接</a>"#,
+                        url = escape(url)
+                    ),
+                    (_, Some(id), _) => format!("<code>{id}</code>"),
+                    _ => "—".to_string(),
+                };
+                format!(
+                    r#"<tr><td>{kind}</td><td>{relation}</td><td>{title}</td><td>{target}</td></tr>"#,
+                    kind = task_link_kind_label(link.kind),
+                    relation = task_link_relation_label(link.relation),
+                    title = escape(&link.title),
+                    target = target,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let dependency_rows = if task.dependencies.is_empty() {
+        r#"<tr><td colspan="2" class="empty">没有依赖。</td></tr>"#.to_string()
+    } else {
+        task.dependencies
+            .iter()
+            .map(|dependency| {
+                format!(
+                    r#"<tr><td><a href="/tasks/{id}">{title}</a></td><td>{state}</td></tr>"#,
+                    id = dependency.task_id,
+                    title = escape(&dependency.title),
+                    state = task_state_label(dependency.state),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let operation_rows = if task.operations.is_empty() {
+        r#"<tr><td colspan="3" class="empty">还没有操作。</td></tr>"#.to_string()
+    } else {
+        task.operations
+            .iter()
+            .map(|operation| {
+                format!(
+                    r#"<tr><td>{kind:?}</td><td><code>{actor}</code></td><td>{at}</td></tr>"#,
+                    kind = operation.kind,
+                    actor = escape(operation.actor.id()),
+                    at = operation
+                        .occurred_at
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let parent = task
+        .parent_id
+        .map(|id| format!(r#"<a href="/tasks/{id}"><code>{id}</code></a>"#))
+        .unwrap_or_else(|| "无".to_string());
+    let refresh = task_refresh_script(
+        &format!("/tasks/{}/state", task.id),
+        &task_fingerprint(task),
+    );
+    let body = format!(
+        r#"<p><a href="/tasks">← 返回任务列表</a></p>
+<h1>{title}</h1>
+<p class="sub"><span class="badge">{state}</span> <span class="badge">{dispatch}</span></p>
+<div class="meta">
+  <span>流程 <code>{workflow} v{version}</code></span>
+  <span>阶段 {stage}</span>
+  <span>父任务 {parent}</span>
+  <span>更新 {updated}</span>
+</div>
+<h2>角色与成员</h2>
+<table>
+<thead><tr><th>角色</th><th>类型</th><th>人数</th><th>Actor</th></tr></thead>
+<tbody>{role_rows}</tbody>
+</table>
+<h2>关联对象</h2>
+<table>
+<thead><tr><th>类型</th><th>关系</th><th>标题</th><th>目标</th></tr></thead>
+<tbody>{link_rows}</tbody>
+</table>
+<h2>依赖</h2>
+<table>
+<thead><tr><th>任务</th><th>状态</th></tr></thead>
+<tbody>{dependency_rows}</tbody>
+</table>
+<h2>操作历史</h2>
+<table>
+<thead><tr><th>事件</th><th>Actor</th><th>时间</th></tr></thead>
+<tbody>{operation_rows}</tbody>
+</table>{refresh}"#,
+        title = escape(&task.title),
+        state = task_state_label(task.state),
+        dispatch = task_dispatch_label(task.dispatch_state),
+        workflow = escape(task.workflow.as_str()),
+        version = task.workflow_version,
+        stage = task
+            .stage
+            .as_ref()
+            .map(|stage| escape(stage.as_str()))
+            .unwrap_or_else(|| "—".to_string()),
+        parent = parent,
+        updated = task
+            .updated_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        refresh = refresh,
+    );
+    layout(ctx, Section::Tasks, &task.title, &body)
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectBriefDraftData {
+    pub id: uuid::Uuid,
+    pub revision: u64,
+    pub body: ProjectBriefBody,
+    pub updated_at: time::OffsetDateTime,
+}
+
+pub struct ProjectBriefPageData {
+    pub revision: u64,
+    pub status: ProjectBriefStatus,
+    pub body: ProjectBriefBody,
+    pub approved_by: Option<uuid::Uuid>,
+    pub updated_at: time::OffsetDateTime,
+    pub has_current: bool,
+    pub drafts: Vec<ProjectBriefDraftData>,
+    pub selected_draft: Option<ProjectBriefDraftData>,
+    pub can_edit: bool,
+    pub can_annotate: bool,
+    pub can_approve: bool,
+    pub annotations: Vec<ProjectBriefAnnotation>,
+    pub error: Option<String>,
+    pub validation: Vec<String>,
+}
+
+pub fn project_brief_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    data: &ProjectBriefPageData,
+) -> String {
+    let editable = data.can_edit && data.selected_draft.is_some();
+    let editor_body = data
+        .selected_draft
+        .as_ref()
+        .map(|draft| &draft.body)
+        .unwrap_or(&data.body);
+    let ro = "";
+    let metrics = editor_body
+        .success_metrics
+        .iter()
+        .map(|metric| {
+            format!(
+                "{} | {} | {} | {} | {} | {}",
+                metric.name,
+                metric.target,
+                metric.unit,
+                metric.measurement,
+                metric.window,
+                metric
+                    .baseline
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let risks = editor_body
+        .risks
+        .iter()
+        .map(|risk| {
+            format!(
+                "{} | {} | {} | {} | {}",
+                risk.description,
+                risk_level_str(risk.probability),
+                risk_level_str(risk.impact),
+                risk.mitigation,
+                risk.owner
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stakeholders = editor_body
+        .stakeholders
+        .iter()
+        .map(|stakeholder| {
+            format!(
+                "{} | {} | {}",
+                stakeholder.role,
+                stakeholder.account,
+                stakeholder.decision_rights.join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (budget_amount, budget_currency, budget_note) = editor_body
+        .budget
+        .as_ref()
+        .map(|budget| {
+            (
+                budget.amount.to_string(),
+                budget.currency.clone(),
+                budget.note.clone().unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
+    let error_html = data
+        .error
+        .as_ref()
+        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
+        .unwrap_or_default();
+    let validation_html = if data.validation.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="error"><strong>简报未通过校验：</strong><ul>{}</ul></div>"#,
+            data.validation
+                .iter()
+                .map(|issue| format!("<li>{}</li>", escape(issue)))
+                .collect::<String>()
+        )
+    };
+    let approved = data
+        .approved_by
+        .map(|id| format!(r#"<span>批准人 <code>{id}</code></span>"#))
+        .unwrap_or_default();
+    let buttons = if editable {
+        r#"<div class="actions">
+  <button type="submit" name="action" value="save">保存草稿</button>
+  <button type="submit" name="action" value="submit">提交评审</button>
+</div>"#
+            .to_string()
+    } else {
+        String::new()
+    };
+    let approve = if data.can_approve && data.status == ProjectBriefStatus::InReview && data.has_current {
+        format!(
+            r#"<form method="post" action="/projects/{id}/brief/approve">
+  <input type="hidden" name="version" value="{version}">
+  <div class="actions"><button type="submit">批准当前版本</button></div>
+</form>"#,
+            id = project.id,
+            version = data.revision,
+        )
+    } else {
+        String::new()
+    };
+    let status_note = if !data.has_current {
+        "还没有提交过项目简报。先创建一个草稿并提交评审。"
+    } else {
+        match data.status {
+            ProjectBriefStatus::Draft => "草稿可以编辑；提交后等待人类批准。",
+            ProjectBriefStatus::InReview => {
+                "已提交，先由文风 Reviewer 和内容 Reviewer 审阅；通过后等待 Maintainer/Owner 批准。"
+            }
+            ProjectBriefStatus::Approved => {
+                "已批准，作为项目基线。变更需要通过新草稿提交新版本。"
+            }
+            ProjectBriefStatus::Superseded => "已被新版本取代。",
+        }
+    };
+
+    let document = if data.has_current {
+        project_brief_document(&data.body, data.can_annotate)
+    } else {
+        r#"<p class="empty">还没有提交过项目简报。</p>"#.to_string()
+    };
+    let editor = if editable {
+        let draft = data.selected_draft.as_ref().expect("editable draft");
+        format!(
+            r#"<h2>编辑草稿</h2>
+<form method="post" action="/projects/{project_id}/brief">
+  <input type="hidden" name="draft_id" value="{draft_id}">
+  <input type="hidden" name="revision" value="{revision}">
+  <div class="field">
+    <label for="problem">问题 / 为什么做</label>
+    <textarea id="problem" name="problem"{ro}>{problem}</textarea>
+  </div>
+  <div class="field">
+    <label for="goals">项目目标（每行一个）</label>
+    <textarea id="goals" name="goals"{ro}>{goals}</textarea>
+  </div>
+  <div class="field">
+    <label for="success_metrics">成功指标（每行：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选））</label>
+    <textarea id="success_metrics" name="success_metrics"{ro}>{metrics}</textarea>
+  </div>
+  <div class="grid">
+    <div class="field">
+      <label for="in_scope">范围内（每行一个）</label>
+      <textarea id="in_scope" name="in_scope"{ro}>{in_scope}</textarea>
+    </div>
+    <div class="field">
+      <label for="out_of_scope">非目标（每行一个）</label>
+      <textarea id="out_of_scope" name="out_of_scope"{ro}>{out_of_scope}</textarea>
+    </div>
+  </div>
+  <div class="field">
+    <label for="constraints">约束（每行一个）</label>
+    <textarea id="constraints" name="constraints"{ro}>{constraints}</textarea>
+  </div>
+  <div class="field">
+    <label for="risks">风险（每行：描述 | 概率(low/medium/high) | 影响(low/medium/high) | 缓解 | 负责人）</label>
+    <textarea id="risks" name="risks"{ro}>{risks}</textarea>
+  </div>
+  <div class="field">
+    <label for="stakeholders">干系人（每行：角色 | 账号 | 决策权（逗号分隔））</label>
+    <textarea id="stakeholders" name="stakeholders"{ro}>{stakeholders}</textarea>
+  </div>
+  <div class="grid">
+    <div class="field"><label for="budget_amount">预算金额（可选）</label>
+      <input id="budget_amount" name="budget_amount" value="{budget_amount}"{ro}></div>
+    <div class="field"><label for="budget_currency">币种</label>
+      <input id="budget_currency" name="budget_currency" value="{budget_currency}"{ro}></div>
+  </div>
+  <div class="field"><label for="budget_note">预算说明（可选）</label>
+    <input id="budget_note" name="budget_note" value="{budget_note}"{ro}></div>
+  <div class="field">
+    <label for="assumptions">假设（每行一个）</label>
+    <textarea id="assumptions" name="assumptions"{ro}>{assumptions}</textarea>
+  </div>
+  <div class="field">
+    <label for="open_questions">待决问题（每行一个）</label>
+    <textarea id="open_questions" name="open_questions"{ro}>{open_questions}</textarea>
+  </div>
+  {buttons}
+</form>"#,
+            project_id = project.id,
+            draft_id = draft.id,
+            revision = draft.revision,
+            ro = ro,
+            problem = escape(&editor_body.problem),
+            goals = escape(&editor_body.goals.join("\n")),
+            metrics = escape(&metrics),
+            in_scope = escape(&editor_body.scope.in_scope.join("\n")),
+            out_of_scope = escape(&editor_body.scope.out_of_scope.join("\n")),
+            constraints = escape(&editor_body.constraints.join("\n")),
+            risks = escape(&risks),
+            stakeholders = escape(&stakeholders),
+            budget_amount = escape(&budget_amount),
+            budget_currency = escape(&budget_currency),
+            budget_note = escape(&budget_note),
+            assumptions = escape(&editor_body.assumptions.join("\n")),
+            open_questions = escape(&editor_body.open_questions.join("\n")),
+            buttons = buttons,
+        )
+    } else {
+        String::new()
+    };
+
+    let drafts = if data.drafts.is_empty() {
+        r#"<p class="empty">没有草稿。</p>"#.to_string()
+    } else {
+        let mut out = String::from("<ul>");
+        for draft in &data.drafts {
+            out.push_str(&format!(
+                r#"<li><a href="/projects/{project_id}/brief?draft={draft_id}">草稿 {draft_id}</a> · revision {revision} · 更新 {updated}</li>"#,
+                project_id = project.id,
+                draft_id = draft.id,
+                revision = draft.revision,
+                updated = draft
+                    .updated_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+            ));
+        }
+        out.push_str("</ul>");
+        out
+    };
+    let create_draft = if data.can_edit {
+        format!(
+            r#"<form method="post" action="/projects/{id}/brief/drafts">
+  <div class="actions"><button type="submit">新建草稿</button></div>
+</form>"#,
+            id = project.id,
+        )
+    } else {
+        String::new()
+    };
+
+    let body = format!(
+        r#"<p><a href="/projects/{project_id}">← 返回项目</a></p>
+<h1>{project_name} · 项目简报</h1>
+<p class="sub">项目级承诺：为什么做、目标、成功指标、范围和非目标、约束、风险、干系人。</p>
+<div class="meta">
+  <span>当前版本 <strong>{status}</strong></span>
+  <span>版本 {revision}</span>
+  <span>更新 {updated}</span>
+  {approved}
+</div>
+<p class="hint">{status_note}</p>
+{error_html}
+{validation_html}
+<h2>我的草稿</h2>
+{create_draft}
+{drafts}
+{annotations}
+{document}
+{editor}
+{approve}"#,
+        project_id = project.id,
+        project_name = escape(&project.name),
+        status = if data.has_current {
+            project_brief_status_label(data.status)
+        } else {
+            "无"
+        },
+        revision = if data.has_current {
+            data.revision.to_string()
+        } else {
+            "—".to_string()
+        },
+        updated = if data.has_current {
+            data.updated_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default()
+        } else {
+            "—".to_string()
+        },
+        approved = approved,
+        status_note = status_note,
+        error_html = error_html,
+        validation_html = validation_html,
+        create_draft = create_draft,
+        drafts = drafts,
+        annotations = if data.has_current {
+            project_brief_annotations_html(project, &data.annotations, data.can_annotate)
+        } else {
+            String::new()
+        },
+        document = document,
+        editor = editor,
+        approve = approve,
+    );
+    layout(
+        ctx,
+        Section::Brief,
+        &format!("{} · 项目简报", project.name),
+        &body,
+    )
+}
+
+fn brief_annotate_link(
+    editable: bool,
+    target: &str,
+    target_id: Option<&str>,
+    field: Option<&str>,
+) -> String {
+    if !editable {
+        return String::new();
+    }
+    let mut attrs = format!(r#"data-annotate-type="{}""#, escape(target));
+    if let Some(target_id) = target_id {
+        attrs.push_str(&format!(r#" data-annotate-id="{}""#, escape(target_id)));
+    }
+    if let Some(field) = field {
+        attrs.push_str(&format!(r#" data-annotate-field="{}""#, escape(field)));
+    }
+    format!(r##" <a href="#annotation-form" {attrs}>批注</a>"##)
+}
+
+fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
+    let mut out = String::from(r#"<div class="brief">"#);
+    out.push_str(&format!(
+        "<h2>问题 / 为什么做{}</h2>",
+        brief_annotate_link(editable, "problem", None, None)
+    ));
+    if body.problem.trim().is_empty() {
+        out.push_str(r#"<p class="empty">未填写</p>"#);
+    } else {
+        out.push_str(r#"<div class="card markdown">"#);
+        out.push_str(&markdown_to_html(&body.problem));
+        out.push_str("</div>");
+    }
+
+    out.push_str(&format!(
+        "<h2>项目目标{}</h2>",
+        brief_annotate_link(editable, "goals", None, None)
+    ));
+    out.push_str(&brief_list(&body.goals));
+
+    out.push_str(&format!(
+        "<h2>成功指标{}</h2>",
+        brief_annotate_link(editable, "success_metrics", None, None)
+    ));
+    if body.success_metrics.is_empty() {
+        out.push_str(r#"<p class="empty">未填写</p>"#);
+    } else {
+        out.push_str(
+            r#"<div class="table-wrap"><table><thead><tr><th>指标</th><th>基线</th><th>目标</th><th>单位</th><th>测量方式</th><th>窗口</th></tr></thead><tbody>"#,
+        );
+        for metric in &body.success_metrics {
+            out.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                inline_markdown(&metric.name, 0),
+                brief_annotate_link(editable, "success_metrics", Some(&metric.id), None),
+                metric
+                    .baseline
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "—".to_string()),
+                metric.target,
+                inline_markdown(&metric.unit, 0),
+                inline_markdown(&metric.measurement, 0),
+                inline_markdown(&metric.window, 0),
+            ));
+        }
+        out.push_str("</tbody></table></div>");
+    }
+
+    out.push_str(&format!(
+        r#"<h2>范围与非目标{}</h2><div class="two-col"><div><h3>范围内{}</h3>"#,
+        brief_annotate_link(editable, "scope", None, None),
+        brief_annotate_link(editable, "scope", None, Some("in_scope"))
+    ));
+    out.push_str(&brief_list(&body.scope.in_scope));
+    out.push_str(&format!(
+        r#"</div><div><h3>非目标{}</h3>"#,
+        brief_annotate_link(editable, "scope", None, Some("out_of_scope"))
+    ));
+    out.push_str(&brief_list(&body.scope.out_of_scope));
+    out.push_str("</div></div>");
+
+    out.push_str(&format!(
+        "<h2>约束{}</h2>",
+        brief_annotate_link(editable, "constraints", None, None)
+    ));
+    out.push_str(&brief_list(&body.constraints));
+
+    out.push_str(&format!(
+        "<h2>风险{}</h2>",
+        brief_annotate_link(editable, "risks", None, None)
+    ));
+    if body.risks.is_empty() {
+        out.push_str(r#"<p class="empty">未填写</p>"#);
+    } else {
+        out.push_str(
+            r#"<div class="table-wrap"><table><thead><tr><th>风险</th><th>概率</th><th>影响</th><th>缓解</th><th>负责人</th></tr></thead><tbody>"#,
+        );
+        for risk in &body.risks {
+            out.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                inline_markdown(&risk.description, 0),
+                brief_annotate_link(editable, "risks", Some(&risk.id), None),
+                risk_level_label(risk.probability),
+                risk_level_label(risk.impact),
+                inline_markdown(&risk.mitigation, 0),
+                inline_markdown(&risk.owner, 0),
+            ));
+        }
+        out.push_str("</tbody></table></div>");
+    }
+
+    out.push_str(&format!(
+        "<h2>干系人{}</h2>",
+        brief_annotate_link(editable, "stakeholders", None, None)
+    ));
+    if body.stakeholders.is_empty() {
+        out.push_str(r#"<p class="empty">未填写</p>"#);
+    } else {
+        out.push_str(
+            r#"<div class="table-wrap"><table><thead><tr><th>角色</th><th>账号</th><th>决策权</th></tr></thead><tbody>"#,
+        );
+        for stakeholder in &body.stakeholders {
+            let rights = if stakeholder.decision_rights.is_empty() {
+                "—".to_string()
+            } else {
+                stakeholder.decision_rights.join("、")
+            };
+            out.push_str(&format!(
+                "<tr><td>{}{}</td><td>{}</td><td>{}</td></tr>",
+                inline_markdown(&stakeholder.role, 0),
+                brief_annotate_link(editable, "stakeholders", Some(&stakeholder.id), None),
+                inline_markdown(&stakeholder.account, 0),
+                escape(&rights),
+            ));
+        }
+        out.push_str("</tbody></table></div>");
+    }
+
+    out.push_str(&format!(
+        "<h2>预算{}</h2>",
+        brief_annotate_link(editable, "budget", None, None)
+    ));
+    if let Some(budget) = &body.budget {
+        out.push_str(&format!(
+            "<p><strong>{}</strong> {}{}</p>",
+            budget.amount,
+            escape(&budget.currency),
+            budget
+                .note
+                .as_ref()
+                .map(|note| format!("（{}）", escape(note)))
+                .unwrap_or_default(),
+        ));
+    } else {
+        out.push_str(r#"<p class="empty">未填写</p>"#);
+    }
+
+    out.push_str(&format!(
+        "<h2>假设{}</h2>",
+        brief_annotate_link(editable, "assumptions", None, None)
+    ));
+    out.push_str(&brief_list(&body.assumptions));
+    out.push_str(&format!(
+        "<h2>待决问题{}</h2>",
+        brief_annotate_link(editable, "open_questions", None, None)
+    ));
+    out.push_str(&brief_list(&body.open_questions));
+    out.push_str("</div>");
+    out
+}
+
+fn project_brief_annotations_html(
+    project: &Project,
+    annotations: &[ProjectBriefAnnotation],
+    editable: bool,
+) -> String {
+    let open: Vec<&ProjectBriefAnnotation> = annotations
+        .iter()
+        .filter(|annotation| annotation.status == AnnotationStatus::Open)
+        .collect();
+    let resolved: Vec<&ProjectBriefAnnotation> = annotations
+        .iter()
+        .filter(|annotation| annotation.status == AnnotationStatus::Resolved)
+        .collect();
+    let mut out = String::new();
+    out.push_str(&format!("<h2>待处理批注（{}）</h2>", open.len()));
+    if open.is_empty() {
+        out.push_str(r#"<p class="empty">没有待处理批注。</p>"#);
+    } else {
+        for annotation in open {
+            out.push_str(&project_brief_annotation_card(project, annotation, editable));
+        }
+    }
+    if !resolved.is_empty() {
+        out.push_str(&format!("<h2>历史批注（{}）</h2>", resolved.len()));
+        for annotation in resolved {
+            out.push_str(&project_brief_annotation_card(project, annotation, false));
+        }
+    }
+    if editable {
+        out.push_str(&format!(
+            r#"<h2>添加批注</h2>
+<form id="annotation-form" method="post" action="/projects/{project_id}/brief/annotations">
+  <div class="grid">
+    <div class="field"><label for="target_type">目标</label>
+      <select id="target_type" name="target_type">
+        <option value="document">整个简报</option>
+        <option value="problem">问题 / 为什么做</option>
+        <option value="goals">项目目标</option>
+        <option value="success_metrics">成功指标</option>
+        <option value="scope">范围与非目标</option>
+        <option value="constraints">约束</option>
+        <option value="risks">风险</option>
+        <option value="stakeholders">干系人</option>
+        <option value="budget">预算</option>
+        <option value="assumptions">假设</option>
+        <option value="open_questions">待决问题</option>
+      </select>
+    </div>
+    <div class="field"><label for="target_id">对象 ID（可选）</label>
+      <input id="target_id" name="target_id" placeholder="例如指标、风险或干系人的 id"></div>
+  </div>
+  <div class="field"><label for="annotation-field">字段（可选）</label>
+    <input id="annotation-field" name="field" placeholder="例如 target / mitigation / decision_rights"></div>
+  <div class="field"><label for="annotation-body">批注</label>
+    <textarea id="annotation-body" name="body" required placeholder="指出不清楚、不一致或需要修改的地方"></textarea></div>
+  <div class="actions"><button type="submit">添加批注</button></div>
+</form>"#,
+            project_id = project.id,
+        ));
+        out.push_str(
+            r#"<script>
+(() => {
+  const form = document.getElementById('annotation-form');
+  if (!form) return;
+  document.querySelectorAll('[data-annotate-type]').forEach((link) => {
+    link.addEventListener('click', () => {
+      form.querySelector('[name="target_type"]').value = link.dataset.annotateType;
+      form.querySelector('[name="target_id"]').value = link.dataset.annotateId || '';
+      form.querySelector('[name="field"]').value = link.dataset.annotateField || '';
+      form.querySelector('[name="body"]').focus();
+    });
+  });
+})();
+</script>"#,
+        );
+    }
+    out
+}
+
+fn project_brief_annotation_card(
+    project: &Project,
+    annotation: &ProjectBriefAnnotation,
+    can_resolve: bool,
+) -> String {
+    let mut target = project_brief_annotation_target_label(annotation.target_type).to_string();
+    if let Some(target_id) = &annotation.target_id {
+        target.push_str(&format!(" · {}", escape(target_id)));
+    }
+    if let Some(field) = &annotation.field {
+        target.push_str(&format!(" · {}", escape(field)));
+    }
+    let resolve = if can_resolve && annotation.status == AnnotationStatus::Open {
+        format!(
+            r#"<form class="inline-form" method="post" action="/projects/{project_id}/brief/annotations/{annotation_id}/resolve">
+  <input name="resolution" placeholder="解决说明" required>
+  <button class="secondary" type="submit">标记已解决</button>
+</form>"#,
+            project_id = project.id,
+            annotation_id = annotation.id,
+        )
+    } else {
+        String::new()
+    };
+    let resolution = if annotation.status == AnnotationStatus::Resolved {
+        let at = annotation
+            .resolved_at
+            .map(|value| {
+                value
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        format!(
+            r#"<div class="meta">已解决 · {at}</div><div class="markdown">{}</div>"#,
+            markdown_to_html(annotation.resolution.as_deref().unwrap_or("")),
+        )
+    } else {
+        String::new()
+    };
+    let author = format!(
+        "{} (@{})",
+        escape(&annotation.author_name),
+        escape(&annotation.author_handle)
+    );
+    format!(
+        r#"<div class="card annotation">
+<div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
+<div class="markdown">{body}</div>
+{resolution}
+{resolve}
+</div>"#,
+        author = author,
+        at = annotation
+            .created_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+        target = target,
+        body = markdown_to_html(&annotation.body),
+        resolution = resolution,
+        resolve = resolve,
+    )
+}
+
+fn project_brief_annotation_target_label(
+    target: foundry_domain::ProjectBriefAnnotationTarget,
+) -> &'static str {
+    use foundry_domain::ProjectBriefAnnotationTarget::*;
+    match target {
+        Document => "整个简报",
+        Problem => "问题 / 为什么做",
+        Goals => "项目目标",
+        SuccessMetrics => "成功指标",
+        Scope => "范围与非目标",
+        Constraints => "约束",
+        Risks => "风险",
+        Stakeholders => "干系人",
+        Budget => "预算",
+        Assumptions => "假设",
+        OpenQuestions => "待决问题",
+    }
+}
+
+fn brief_list(items: &[String]) -> String {
+    if items.is_empty() {
+        return r#"<p class="empty">无</p>"#.to_string();
+    }
+    let mut out = String::from("<ul>");
+    for item in items {
+        out.push_str("<li>");
+        out.push_str(&inline_markdown(item, 0));
+        out.push_str("</li>");
+    }
+    out.push_str("</ul>");
+    out
+}
+
+fn risk_level_label(level: RiskLevel) -> &'static str {
+    match level {
+        RiskLevel::Low => "低",
+        RiskLevel::Medium => "中",
+        RiskLevel::High => "高",
+    }
+}
+
+pub fn requirements_document_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    body: &RequirementsDocumentBody,
+    current_version: u32,
+    latest_version: Option<u32>,
+    draft_revision: Option<u64>,
+    editable: bool,
+    can_publish: bool,
+    annotations: &[RequirementsAnnotation],
+    error: Option<&str>,
+) -> String {
+    let error_html = error
+        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
+        .unwrap_or_default();
+    let publish = if can_publish {
+        draft_revision
+            .map(|revision| {
+                format!(
+                    r#"<form method="post" action="/projects/{id}/requirements/publish">
+  <input type="hidden" name="revision" value="{revision}">
+  <div class="actions"><button type="submit">发布当前草稿</button></div>
+</form>"#,
+                    id = project.id,
+                    revision = revision,
+                )
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let reject = if can_publish {
+        format!(
+            r#"<h2>人工评审</h2>
+<form method="post" action="/projects/{id}/requirements/reject">
+  <div class="field"><label for="reject-reason">打回原因</label>
+    <textarea id="reject-reason" name="reason" required placeholder="说明需要修改的地方；会作为文档注释保存"></textarea></div>
+  <div class="actions"><button class="danger" type="submit">打回给 Analyst</button></div>
+</form>"#,
+            id = project.id,
+        )
+    } else {
+        String::new()
+    };
+    let page = format!(
+        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/brief">项目简报</a></p>
+<h1>{name} · 需求文档</h1>
+<p class="sub">用户、功能、故事、操作的结构化需求模型。Agent 编辑草稿，人类发布版本。</p>
+<div class="meta">
+  <span>已发布版本 <strong>{current_version}</strong></span>
+  <span>最新版本 <strong>{latest_version}</strong></span>
+  <span>草稿 revision <strong>{draft_revision}</strong></span>
+</div>
+{error_html}
+{publish}
+{reject}
+{annotations}
+{document}"#,
+        id = project.id,
+        name = escape(&project.name),
+        current_version = current_version,
+        latest_version = latest_version
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        draft_revision = draft_revision
+            .map(|revision| revision.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        error_html = error_html,
+        publish = publish,
+        reject = reject,
+        annotations = requirements_annotations_html(project, annotations, editable),
+        document = requirements_document_html(body, editable),
+    );
+    layout(
+        ctx,
+        Section::Projects,
+        &format!("{} · 需求文档", project.name),
+        &page,
+    )
+}
+
+fn requirements_document_html(body: &RequirementsDocumentBody, editable: bool) -> String {
+    let mut out = String::from(r#"<div class="brief">"#);
+    out.push_str("<h2>用户</h2>");
+    if body.users.is_empty() {
+        out.push_str(r#"<p class="empty">尚未填写</p>"#);
+    } else {
+        out.push_str(
+            r#"<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>目标</th><th>痛点</th><th>证据</th><th>置信度</th><th>状态</th></tr></thead><tbody>"#,
+        );
+        for user in &body.users {
+            let annotate = if editable {
+                format!(
+                    r##"<br><a href="#annotation-form" data-annotate-type="user" data-annotate-id="{}">注释</a>"##,
+                    escape(&user.id)
+                )
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                "<tr><td><code>{}</code>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                escape(&user.id),
+                annotate,
+                inline_markdown(&user.name, 0),
+                escape(&join_markdown(&user.goals)),
+                escape(&join_markdown(&user.pain_points)),
+                escape(&join_markdown(&user.evidence)),
+                confidence_label(user.confidence),
+                entity_status_label(user.status),
+            ));
+        }
+        out.push_str("</tbody></table></div>");
+    }
+
+    out.push_str("<h2>功能</h2>");
+    if body.functions.is_empty() {
+        out.push_str(r#"<p class="empty">尚未填写</p>"#);
+        out.push_str("</div>");
+        return out;
+    }
+    for function in &body.functions {
+        let annotate = if editable {
+            format!(
+                r##"<p><a href="#annotation-form" data-annotate-type="function" data-annotate-id="{}" data-annotate-field="description">注释</a></p>"##,
+                escape(&function.id)
+            )
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            r#"<div class="card"><h3><code>{}</code> · {}</h3>{}"#,
+            escape(&function.id),
+            inline_markdown(&function.name, 0),
+            annotate,
+        ));
+        if let Some(description) = function.description.as_deref() {
+            out.push_str(&format!(r#"<div class="markdown">{}</div>"#, markdown_to_html(description)));
+        }
+        out.push_str(&format!(
+            r#"<p class="hint">状态：{}</p>"#,
+            entity_status_label(function.status)
+        ));
+
+        if function.stories.is_empty() {
+            out.push_str(r#"<p class="empty">没有故事</p>"#);
+        } else {
+            out.push_str("<h4>故事</h4>");
+            out.push_str(
+                r#"<div class="table-wrap"><table><thead><tr><th>故事</th><th>用户</th><th>场景 / 目标</th><th>操作</th><th>优先级</th><th>状态</th></tr></thead><tbody>"#,
+            );
+            for story in &function.stories {
+                let annotate = if editable {
+                    format!(
+                        r##" <a href="#annotation-form" data-annotate-type="story" data-annotate-id="{}" data-annotate-field="goal">注释</a>"##,
+                        escape(&story.id)
+                    )
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "<tr><td><code>{}</code><br>{}{}</td><td>{}</td><td>{}<br>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    escape(&story.id),
+                    inline_markdown(&story.title, 0),
+                    annotate,
+                    escape(&join_markdown(&story.user_ids)),
+                    escape(&story.scenario),
+                    escape(&story.goal),
+                    escape(&join_markdown(&story.operation_ids)),
+                    story_priority_label(story.priority),
+                    entity_status_label(story.status),
+                ));
+            }
+            out.push_str("</tbody></table></div>");
+        }
+
+        if function.operations.is_empty() {
+            out.push_str(r#"<p class="empty">没有操作</p>"#);
+        } else {
+            out.push_str("<h4>操作</h4>");
+            out.push_str(
+                r#"<div class="table-wrap"><table><thead><tr><th>操作</th><th>参与者</th><th>触发</th><th>输入</th><th>输出</th><th>状态</th></tr></thead><tbody>"#,
+            );
+            for operation in &function.operations {
+                let annotate = if editable {
+                    format!(
+                        r##" <a href="#annotation-form" data-annotate-type="operation" data-annotate-id="{}" data-annotate-field="trigger">注释</a>"##,
+                        escape(&operation.id)
+                    )
+                } else {
+                    String::new()
+                };
+                out.push_str(&format!(
+                    "<tr><td><code>{}</code><br>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                    escape(&operation.id),
+                    inline_markdown(&operation.name, 0),
+                    annotate,
+                    escape(&join_markdown(&operation.actor_user_ids)),
+                    escape(operation.trigger.as_deref().unwrap_or("—")),
+                    escape(&join_markdown(&operation.inputs)),
+                    escape(&join_markdown(&operation.outputs)),
+                    entity_status_label(operation.status),
+                ));
+            }
+            out.push_str("</tbody></table></div>");
+        }
+        out.push_str("</div>");
+    }
+    out.push_str("</div>");
+    out
+}
+
+fn requirements_annotations_html(
+    project: &Project,
+    annotations: &[RequirementsAnnotation],
+    editable: bool,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("<h2>待处理注释（{}）</h2>", annotations.len()));
+    if annotations.is_empty() {
+        out.push_str(r#"<p class="empty">没有待处理注释。</p>"#);
+    } else {
+        for annotation in annotations {
+            let target = match &annotation.target_id {
+                Some(target_id) => {
+                    let mut label = format!(
+                        "{} {}",
+                        annotation.target_type.as_str(),
+                        escape(target_id)
+                    );
+                    if let Some(field) = &annotation.field {
+                        label.push_str(&format!(" · {}", escape(field)));
+                    }
+                    label
+                }
+                None => "整个文档".to_string(),
+            };
+            let resolve = if editable {
+                format!(
+                    r#"<form class="inline-form" method="post" action="/projects/{project_id}/requirements/annotations/{annotation_id}/resolve">
+  <input name="resolution" placeholder="解决说明" required>
+  <button class="secondary" type="submit">标记已解决</button>
+</form>"#,
+                    project_id = project.id,
+                    annotation_id = annotation.id,
+                )
+            } else {
+                String::new()
+            };
+            out.push_str(&format!(
+                r#"<div class="card annotation">
+<div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
+<div class="markdown">{body}</div>
+{resolve}
+</div>"#,
+                author = format!(
+                    "{} (@{})",
+                    escape(&annotation.author_name),
+                    escape(&annotation.author_handle)
+                ),
+                at = annotation
+                    .created_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+                target = target,
+                body = markdown_to_html(&annotation.body),
+                resolve = resolve,
+            ));
+        }
+    }
+    if editable {
+        out.push_str(&format!(
+            r#"<h2>添加注释</h2>
+<form id="annotation-form" method="post" action="/projects/{project_id}/requirements/annotations">
+  <div class="grid">
+    <div class="field"><label for="target_type">目标类型</label>
+      <select id="target_type" name="target_type">
+        <option value="document">整个文档</option>
+        <option value="user">用户</option>
+        <option value="function">功能</option>
+        <option value="story">故事</option>
+        <option value="operation">操作</option>
+      </select>
+    </div>
+    <div class="field"><label for="target_id">目标 ID</label>
+      <input id="target_id" name="target_id" placeholder="例如 F1 / S1 / O1"></div>
+  </div>
+  <div class="field"><label for="annotation-field">字段（可选）</label>
+    <input id="annotation-field" name="field" placeholder="例如 goal / inputs / description"></div>
+  <div class="field"><label for="annotation-body">注释</label>
+    <textarea id="annotation-body" name="body" required placeholder="指出不清楚或需要修改的地方"></textarea></div>
+  <div class="actions"><button type="submit">添加注释</button></div>
+</form>"#,
+            project_id = project.id,
+        ));
+        out.push_str(
+            r#"<script>
+(() => {
+  const form = document.getElementById('annotation-form');
+  if (!form) return;
+  document.querySelectorAll('[data-annotate-type]').forEach((link) => {
+    link.addEventListener('click', () => {
+      form.querySelector('[name="target_type"]').value = link.dataset.annotateType;
+      form.querySelector('[name="target_id"]').value = link.dataset.annotateId || '';
+      form.querySelector('[name="field"]').value = link.dataset.annotateField || '';
+      form.querySelector('[name="body"]').focus();
+    });
+  });
+})();
+</script>"#,
+        );
+    }
+    out
+}
+
+fn join_markdown(items: &[String]) -> String {
+    if items.is_empty() {
+        "—".to_string()
+    } else {
+        items.join("、")
+    }
+}
+
+fn confidence_label(confidence: Confidence) -> &'static str {
+    match confidence {
+        Confidence::Low => "低",
+        Confidence::Medium => "中",
+        Confidence::High => "高",
+    }
+}
+
+fn story_priority_label(priority: StoryPriority) -> &'static str {
+    match priority {
+        StoryPriority::Must => "必须",
+        StoryPriority::Should => "应该",
+        StoryPriority::Could => "可以",
+    }
+}
+
+fn entity_status_label(status: EntityStatus) -> &'static str {
+    match status {
+        EntityStatus::Draft => "草稿",
+        EntityStatus::Active => "生效",
+        EntityStatus::Deprecated => "弃用",
+        EntityStatus::Retired => "退役",
+    }
+}
+
+fn project_brief_status_label(status: ProjectBriefStatus) -> &'static str {
+    match status {
+        ProjectBriefStatus::Draft => "草稿",
+        ProjectBriefStatus::InReview => "待批准",
+        ProjectBriefStatus::Approved => "已批准",
+        ProjectBriefStatus::Superseded => "已替代",
+    }
+}
+
+fn risk_level_str(level: RiskLevel) -> &'static str {
+    match level {
+        RiskLevel::Low => "low",
+        RiskLevel::Medium => "medium",
+        RiskLevel::High => "high",
+    }
 }
 
 pub fn requirement_page(ctx: &ConsoleContext, requirement: &Requirement) -> String {
@@ -886,7 +2755,7 @@ pub fn issue_dashboard(ctx: &ConsoleContext, issues: &[Issue]) -> String {
         .count();
     let active = issues
         .iter()
-        .filter(|issue| matches!(issue.status, IssueStatus::Triaged | IssueStatus::InProgress))
+        .filter(|issue| issue.status == IssueStatus::InProgress)
         .count();
     let resolved = issues
         .iter()
@@ -935,7 +2804,7 @@ pub fn issue_dashboard(ctx: &ConsoleContext, issues: &[Issue]) -> String {
         r#"<h1>议题</h1>
 <p class="sub">问题空间：世界上发生了什么、谁想要什么、哪里需要讨论。议题不是需求，只有明确的处置才会变成工作。</p>
 <div class="meta">
-  <span>待分诊 <strong>{fresh}</strong></span>
+  <span>待处理 <strong>{fresh}</strong></span>
   <span>处理中 <strong>{active}</strong></span>
   <span>待确认 <strong>{resolved}</strong></span>
 </div>
@@ -982,7 +2851,7 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
                 format!(
                     r#"<div class="card">
 <div class="meta"><strong>{author}</strong> · {at} {internal}</div>
-<p>{body}</p>
+<div class="markdown">{body}</div>
 </div>"#,
                     author = escape(comment.author.id()),
                     at = comment
@@ -994,7 +2863,7 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
                     } else {
                         ""
                     },
-                    body = escape(&comment.body),
+                    body = markdown_to_html(&comment.body),
                 )
             })
             .collect::<Vec<_>>()
@@ -1012,96 +2881,6 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
             id = issue.id,
             viewer = escape(&ctx.viewer.display_name),
             body = textarea_field("body", "评论 *", "", None),
-        )
-    } else {
-        String::new()
-    };
-
-    let triage_form = if ctx.can_contribute()
-        && matches!(issue.status, IssueStatus::Open | IssueStatus::Triaged)
-    {
-        format!(
-            r#"<h2>分诊</h2>
-<form method="post" action="/issues/{id}/triage">
-  <div class="grid">
-    {kind}
-    {severity}
-  </div>
-  {area}
-  {impact}
-  <div class="grid">
-    {assignee_kind}
-    {assignee_id}
-  </div>
-  {labels}
-  <p class="hint">缺陷必须选择严重度。分诊会把议题移到 Triaged。将以 {viewer} 的身份记录分诊。</p>
-  <div class="actions"><button type="submit">保存分诊</button></div>
-</form>"#,
-            id = issue.id,
-            kind = select_field(
-                "kind",
-                "类型",
-                issue.kind.as_str(),
-                &[
-                    ("feedback", "反馈"),
-                    ("bug", "缺陷"),
-                    ("question", "问题"),
-                    ("idea", "想法"),
-                    ("task_request", "任务请求"),
-                    ("incident", "事故"),
-                ],
-            ),
-            severity = select_field(
-                "severity",
-                "严重度",
-                issue.severity.map(IssueSeverity::as_str).unwrap_or(""),
-                &[
-                    ("", "未设置"),
-                    ("s1", "S1 · 致命"),
-                    ("s2", "S2 · 严重"),
-                    ("s3", "S3 · 一般"),
-                    ("s4", "S4 · 轻微"),
-                ],
-            ),
-            area = input_field(
-                "area",
-                "影响范围 / 组件",
-                issue.area.as_deref().unwrap_or(""),
-                false
-            ),
-            impact = textarea_field(
-                "impact",
-                "影响",
-                issue.impact.as_deref().unwrap_or(""),
-                Some("谁受影响、影响多大。"),
-            ),
-            assignee_kind = select_field(
-                "assignee_kind",
-                "负责人类型",
-                issue
-                    .assignee
-                    .as_ref()
-                    .map(|actor| if actor.is_agent() { "agent" } else { "human" })
-                    .unwrap_or("human"),
-                &[("human", "人类"), ("agent", "智能体")],
-            ),
-            assignee_id = input_field(
-                "assignee_id",
-                "负责人 ID",
-                issue
-                    .assignee
-                    .as_ref()
-                    .map(|actor| actor.id())
-                    .unwrap_or(""),
-                false,
-            ),
-            labels = textarea_field(
-                "labels",
-                "标签",
-                &issue.labels.join("\n"),
-                Some("每行一个。"),
-            ),
-            viewer = escape(&ctx.viewer.display_name),
         )
     } else {
         String::new()
@@ -1186,16 +2965,16 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
   <span>项目 ID <code>{project_id}</code></span>
   <span>ID <code>{id}</code></span>
 </div>
-<h2>描述</h2><div class="card">{description}</div>
+<h2>描述</h2><div class="card markdown">{description}</div>
 {bug_details}
 {resolution}
 {duplicate}
 <h2>讨论</h2>
 {comments}
 {comment_form}
-{triage_form}
 {transition_form}
-<h2>状态历史</h2><ul>{history}</ul>"#,
+<h2>状态历史</h2><ul>{history}</ul>
+{auto_refresh}"#,
         title = escape(&issue.title),
         kind = issue_kind_label(issue.kind),
         status = issue_status_label(issue.status),
@@ -1216,17 +2995,59 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
             .unwrap_or_default(),
         project_id = issue.project_id,
         id = issue.id,
-        description = escape(&issue.description),
+        description = markdown_to_html(&issue.description),
         bug_details = bug_details,
         resolution = resolution,
         duplicate = duplicate,
         comments = comments,
         comment_form = comment_form,
-        triage_form = triage_form,
         transition_form = transition_form,
         history = history,
+        auto_refresh = issue_refresh_script(issue),
     );
     layout(ctx, Section::Issues, &issue.title, &body)
+}
+
+/// Reload the Issue page when the Issue version or comment count changes,
+/// unless the viewer is currently editing a form.
+fn issue_refresh_script(issue: &Issue) -> String {
+    format!(
+        r#"<script>
+(() => {{
+  const issueId = "{id}";
+  let known = "{version}:{comments}";
+  let busy = false;
+  const dirty = () => Array.from(
+    document.querySelectorAll('main textarea, main input[type="text"]')
+  ).some((element) => element.value.trim().length > 0);
+  const tick = async () => {{
+    if (busy || document.hidden || dirty()) return;
+    busy = true;
+    try {{
+      const response = await fetch(`/issues/${{issueId}}/state`, {{
+        cache: 'no-store',
+        credentials: 'same-origin'
+      }});
+      if (response.ok) {{
+        const next = (await response.text()).trim();
+        if (next !== known && !dirty()) {{
+          location.reload();
+          return;
+        }}
+      }}
+    }} catch (_) {{}}
+    busy = false;
+  }};
+  setInterval(tick, 3000);
+  document.addEventListener('visibilitychange', () => {{
+    if (!document.hidden) tick();
+  }});
+}})();
+</script>"#,
+        id = issue.id,
+        version = issue.version,
+        comments = issue.comments.len(),
+    )
 }
 
 fn issue_bug_details(issue: &Issue) -> String {
@@ -1321,7 +3142,7 @@ pub fn new_issue_page(
     let body = format!(
         r#"<p><a href="/issues">← 返回议题列表</a></p>
 <h1>新建议题</h1>
-<p class="sub">把发生的事说清楚即可。分类、优先级和处置结论留给分诊。</p>
+<p class="sub">把发生的事说清楚；分类和严重度在创建时一并填写。</p>
 {error_html}
 <form method="post" action="/issues">
   {title}
@@ -1448,7 +3269,7 @@ pub fn projects_page(
             .map(|project| {
                 format!(
                     r#"<tr>
-<td><a href="/projects/{id}">{name}</a></td>
+<td><a href="/projects/{id}">{name}</a> · <a href="/projects/{id}/brief">简报</a></td>
 <td><span class="badge">{status}</span></td>
 <td>{role}</td>
 <td>{current}</td>
@@ -1645,6 +3466,11 @@ pub fn project_page(
   </div>
   <p class="hint">输入已存在的账号 handle。只有项目 Owner 或全局管理员可以管理成员。</p>
   <div class="actions"><button type="submit">添加成员</button></div>
+</form>
+<h2>删除项目</h2>
+<form method="post" action="/projects/{id}/delete" onsubmit="return confirm('删除项目会永久删除项目及其任务、需求、议题、简报、成员和事件记录，且无法恢复。确定继续吗？');">
+  <p class="hint">只有项目 Owner 或全局管理员可以删除项目。删除后无法恢复。</p>
+  <div class="actions"><button class="danger" type="submit">删除项目</button></div>
 </form>"#,
             id = project.id,
             name = input_field("name", "名称", &project.name, true),
@@ -1673,6 +3499,7 @@ pub fn project_page(
   <span>版本 {version}</span>
 </div>
 <h2>描述</h2><div class="card">{description}</div>
+<p><a class="button secondary" href="/projects/{id}/brief">项目简报</a> <a class="button secondary" href="/projects/{id}/requirements">需求文档</a></p>
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>
@@ -1694,6 +3521,147 @@ pub fn project_page(
         manage = manage,
     );
     layout(ctx, Section::Projects, &project.name, &body)
+}
+
+pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option<&str>) -> String {
+    let error_html = error
+        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
+        .unwrap_or_default();
+    let processes: std::collections::HashMap<_, _> = overview
+        .processes
+        .iter()
+        .map(|process| (process.agent_definition_id, process))
+        .collect();
+    let definition_rows = if overview.definitions.is_empty() {
+        r#"<tr><td colspan="6" class="empty">平台还没有注册智能体。</td></tr>"#.to_string()
+    } else {
+        overview
+            .definitions
+            .iter()
+            .map(|definition| {
+                let process = processes.get(&definition.id);
+                let status = process
+                    .map(|process| process.status.as_str())
+                    .unwrap_or("stopped");
+                let heartbeat = process
+                    .and_then(|process| process.heartbeat_at)
+                    .map(|at| {
+                        at.format(&time::format_description::well_known::Rfc3339)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_else(|| "—".to_string());
+                let last_error = process
+                    .and_then(|process| process.last_error.as_deref())
+                    .map(escape)
+                    .unwrap_or_default();
+                let can_start = !matches!(status, "running" | "starting");
+                let start = if can_start {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/agents/{id}/start">
+<button type="submit">启动</button></form>"#,
+                        id = definition.id,
+                    )
+                } else {
+                    String::new()
+                };
+                let stop = if matches!(status, "running" | "starting" | "idle") {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/agents/{id}/stop">
+<button class="danger" type="submit">停止</button></form>"#,
+                        id = definition.id,
+                    )
+                } else {
+                    String::new()
+                };
+                let restart = format!(
+                    r#"<form class="inline-form" method="post" action="/agents/{id}/restart">
+<button class="secondary" type="submit">重启</button></form>"#,
+                    id = definition.id,
+                );
+                let logs = format!(
+                    r#"<a href="/agents/{id}/logs">日志</a>"#,
+                    id = definition.id
+                );
+                format!(
+                    r#"<tr>
+<td><strong>{name}</strong><br><code>@{account}</code><br><span class="hint">{role}</span></td>
+<td><code>{model}</code><br><span class="hint">{base_url}</span></td>
+<td>{enabled}</td>
+<td><span class="badge">{status}</span></td>
+<td>{heartbeat}<br><span class="hint">{last_error}</span></td>
+<td>{logs} {start}{stop}{restart}</td>
+</tr>"#,
+                    name = escape(&definition.name),
+                    account = escape(&definition.account_handle),
+                    role = escape(&definition.role),
+                    model = escape(&definition.model_name),
+                    base_url = escape(&definition.model_base_url),
+                    enabled = if definition.enabled {
+                        "已启用"
+                    } else {
+                        "已停用"
+                    },
+                    status = agent_process_status_label(status),
+                    heartbeat = heartbeat,
+                    last_error = last_error,
+                    logs = logs,
+                    start = start,
+                    stop = stop,
+                    restart = restart,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let body = format!(
+        r#"<h1>智能体</h1>
+<p class="sub">智能体由平台定义，用户不能新建或修改；这里只管理运行状态。</p>
+{error_html}
+<p class="hint">目标澄清任务（<code>goal_clarification / clarifier</code>）由 PM Agent 自动承接。</p>
+<table>
+<thead><tr><th>名称 / 账户</th><th>模型</th><th>启用</th><th>进程</th><th>心跳 / 错误</th><th></th></tr></thead>
+<tbody>{definition_rows}</tbody>
+</table>"#,
+        error_html = error_html,
+        definition_rows = definition_rows,
+    );
+    layout(ctx, Section::Agents, "智能体", &body)
+}
+
+pub fn agent_logs_page(
+    ctx: &ConsoleContext,
+    definition: &AgentDefinition,
+    log: &str,
+) -> String {
+    let content = if log.trim().is_empty() {
+        r#"<p class="empty">还没有日志。智能体启动后，进程的 stdout/stderr 会写入这里。</p>"#
+            .to_string()
+    } else {
+        format!(r#"<pre class="agent-log">{}</pre>"#, escape(log))
+    };
+    let body = format!(
+        r#"<p class="hint"><a href="/agents">← 返回智能体</a> · <a href="/agents/{id}/logs">刷新</a></p>
+<h1>{name} 日志</h1>
+<p class="sub"><code>@{account}</code> · <code>{role}</code> · 最近 256 KB</p>
+{content}"#,
+        id = definition.id,
+        name = escape(&definition.name),
+        account = escape(&definition.account_handle),
+        role = escape(&definition.role),
+    );
+    layout(ctx, Section::Agents, "智能体日志", &body)
+}
+
+fn agent_process_status_label(status: &str) -> &'static str {
+    match status {
+        "starting" => "启动中",
+        "running" => "运行中",
+        "idle" => "空闲",
+        "stopped" => "已停止",
+        "failed" => "失败",
+        _ => "未知",
+    }
 }
 
 pub fn accounts_page(ctx: &ConsoleContext, accounts: &[Account], error: Option<&str>) -> String {
@@ -2075,11 +4043,61 @@ fn project_role_label(role: ProjectRole) -> &'static str {
     }
 }
 
+fn task_state_label(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Pending => "待处理",
+        TaskState::InProgress => "进行中",
+        TaskState::Completed => "已完成",
+    }
+}
+
+fn task_dispatch_label(state: TaskDispatchState) -> &'static str {
+    match state {
+        TaskDispatchState::Blocked => "阻塞",
+        TaskDispatchState::Ready => "就绪",
+        TaskDispatchState::Running => "运行中",
+        TaskDispatchState::Closed => "已关闭",
+    }
+}
+
+fn role_kind_label(kind: RoleKind) -> &'static str {
+    match kind {
+        RoleKind::Human => "人类",
+        RoleKind::Agent => "智能体",
+        RoleKind::Any => "任意",
+    }
+}
+
+fn task_link_kind_label(kind: TaskLinkKind) -> &'static str {
+    match kind {
+        TaskLinkKind::Issue => "议题",
+        TaskLinkKind::Requirement => "需求",
+        TaskLinkKind::Design => "设计",
+        TaskLinkKind::Adr => "ADR",
+        TaskLinkKind::Contract => "契约",
+        TaskLinkKind::Decision => "决策",
+        TaskLinkKind::Task => "任务",
+        TaskLinkKind::Artifact => "产物",
+        TaskLinkKind::Url => "链接",
+    }
+}
+
+fn task_link_relation_label(relation: TaskLinkRelation) -> &'static str {
+    match relation {
+        TaskLinkRelation::Clarifies => "澄清",
+        TaskLinkRelation::Implements => "实现",
+        TaskLinkRelation::DependsOn => "依赖",
+        TaskLinkRelation::References => "引用",
+        TaskLinkRelation::Produces => "产出",
+        TaskLinkRelation::Verifies => "验证",
+        TaskLinkRelation::Related => "相关",
+    }
+}
+
 fn issue_status_label(status: IssueStatus) -> &'static str {
     use IssueStatus::*;
     match status {
-        Open => "待分诊",
-        Triaged => "已分诊",
+        Open => "待处理",
         InProgress => "处理中",
         Resolved => "待确认",
         Closed => "已关闭",
@@ -2177,5 +4195,141 @@ mod tests {
     #[test]
     fn escapes_user_content() {
         assert_eq!(escape("<script>"), "&lt;script&gt;");
+    }
+
+    #[test]
+    fn markdown_renders_basic_blocks_and_escapes_html() {
+        let html = markdown_to_html(
+            "## 标题\n\n**粗体** 和 `code`\n\n- 一\n- 二\n\n```js\nalert(1)\n```\n\n[链接](https://example.com)\n<script>",
+        );
+        assert!(html.contains("<h2>标题</h2>"));
+        assert!(html.contains("<strong>粗体</strong>"));
+        assert!(html.contains("<code>code</code>"));
+        assert!(html.contains("<li>一</li>"));
+        assert!(html.contains(r#"<pre><code class="language-js">alert(1)</code></pre>"#));
+        assert!(html.contains(r#"href="https://example.com""#));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn markdown_renders_tables() {
+        let html = markdown_to_html("| A | B |\n| --- | ---: |\n| 1 | **2** |\n");
+        assert!(html.contains(r#"<div class="table-wrap"><table>"#));
+        assert!(html.contains("<th>A</th>"));
+        assert!(html.contains(r#"<th style="text-align:right">B</th>"#));
+        assert!(html.contains("<td>1</td>"));
+        assert!(html.contains(r#"<td style="text-align:right"><strong>2</strong></td>"#));
+    }
+
+    #[test]
+    fn project_brief_document_renders_structured_sections() {
+        let body = ProjectBriefBody {
+            problem: "因为 <原因>".to_string(),
+            goals: vec!["目标一".to_string()],
+            success_metrics: vec![foundry_domain::SuccessMetric {
+                name: "转化率".to_string(),
+                baseline: Some(1.0),
+                target: 2.0,
+                unit: "%".to_string(),
+                measurement: "埋点".to_string(),
+                window: "30 天".to_string(),
+                ..Default::default()
+            }],
+            risks: vec![foundry_domain::Risk {
+                description: "风险一".to_string(),
+                probability: RiskLevel::High,
+                impact: RiskLevel::Medium,
+                ..Default::default()
+            }],
+            stakeholders: vec![foundry_domain::Stakeholder {
+                role: "用户".to_string(),
+                account: "团队".to_string(),
+                decision_rights: vec!["验收".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let html = project_brief_document(&body, false);
+
+        assert!(html.contains("问题 / 为什么做"));
+        assert!(html.contains("&lt;原因&gt;"));
+        assert!(html.contains("<h2>项目目标</h2>"));
+        assert!(html.contains("转化率"));
+        assert!(html.contains("<h2>风险</h2>"));
+        assert!(html.contains("高"));
+        assert!(html.contains("<h2>干系人</h2>"));
+        assert!(html.contains("验收"));
+
+        let editable = project_brief_document(&body, true);
+        assert!(editable.contains(r#"data-annotate-type="problem""#));
+        assert!(editable.contains(r#"data-annotate-type="success_metrics""#));
+        assert!(editable.contains(r#"data-annotate-type="stakeholders""#));
+    }
+
+    #[test]
+    fn markdown_rejects_unsafe_links() {
+        let html = markdown_to_html("[x](javascript:alert(1))");
+        assert!(!html.contains(r#"href="javascript"#));
+    }
+
+    #[test]
+    fn project_page_offers_delete_only_to_managers() {
+        let owner = Account::new(
+            "owner".to_string(),
+            "Owner".to_string(),
+            AccountKind::Human,
+            AccountRole::Member,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let project = Project::new("Project", None, owner.id).unwrap();
+        let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
+
+        let manager_html = project_page(&ctx, &project, &[], true, None);
+        assert!(manager_html.contains(&format!("/projects/{}/delete", project.id)));
+        assert!(manager_html.contains("删除项目"));
+
+        let member_html = project_page(&ctx, &project, &[], false, None);
+        assert!(!member_html.contains("/delete"));
+    }
+
+    #[test]
+    fn agent_logs_page_escapes_process_output() {
+        let account = Account::new(
+            "admin".to_string(),
+            "Admin".to_string(),
+            AccountKind::Human,
+            AccountRole::Admin,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let ctx = ConsoleContext::new(&account, &[], None);
+        let definition = AgentDefinition {
+            id: uuid::Uuid::now_v7(),
+            name: "Clarifier <script>".to_string(),
+            account_id: account.id,
+            account_handle: "agent".to_string(),
+            role: "goal_clarification:clarifier".to_string(),
+            model_base_url: "http://127.0.0.1:11434/v1".to_string(),
+            model_name: "test-model".to_string(),
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            system_prompt: String::new(),
+            tools: Vec::new(),
+            enabled: true,
+            created_at: time::OffsetDateTime::now_utc(),
+            updated_at: time::OffsetDateTime::now_utc(),
+        };
+        let log = "[info] tool <script>\n<b>bad</b>\n";
+
+        let html = agent_logs_page(&ctx, &definition, log);
+
+        assert!(html.contains("Clarifier &lt;script&gt;"));
+        assert!(html.contains("&lt;script&gt;"));
+        assert!(html.contains("&lt;b&gt;bad&lt;/b&gt;"));
+        assert!(!html.contains("<script>"));
     }
 }

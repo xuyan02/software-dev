@@ -1,7 +1,7 @@
 use foundry_domain::{
     AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssueSeverity,
     IssueSource, IssueStatus, Priority, ProjectRole, ProjectStatus, RequirementStatus, RiskClass,
-    Triage, WorkflowBody, WorkflowId, WorkflowLayout, WorkflowVersionRef,
+    WorkflowBody, WorkflowId, WorkflowLayout, WorkflowVersionRef,
 };
 
 #[derive(Debug, Clone)]
@@ -147,8 +147,7 @@ pub struct UpdateRequirement {
     pub expected_version: Option<u32>,
 }
 
-/// Intake is intentionally permissive. Triage is where classification becomes
-/// trustworthy; the reporter only has to describe what happened.
+/// The reporter describes what happened and classifies it at intake.
 #[derive(Debug, Clone)]
 pub struct CreateIssue {
     pub project_id: uuid::Uuid,
@@ -164,15 +163,6 @@ pub struct CreateIssue {
     pub reproduction: Option<String>,
     pub expected: Option<String>,
     pub actual: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct TriageIssue {
-    pub project_id: uuid::Uuid,
-    pub id: uuid::Uuid,
-    pub actor: Actor,
-    pub triage: Triage,
-    pub expected_version: Option<u32>,
 }
 
 #[derive(Debug, Clone)]

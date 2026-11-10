@@ -9,32 +9,16 @@
         "outcome": {"type": "string", "display_name": "Outcome"}
       },
       "created": [
-        {"set_state": "in_progress"},
-        {"create_child": {"workflow": "goal_clarification", "title": "Clarify project goals"}}
+        {"set_state": "in_progress"}
       ],
       "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = 'Clarify project goals')"
+        },
         {
           "event": "child.state_changed",
           "action": "if event.child.workflow == 'goal_clarification' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
-        }
-      ],
-      "transitions": [
-        {"on": "outcome == 'approved'", "to": "requirements_discovery"},
-        {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
-      ]
-    },
-    {
-      "name": "requirements_discovery",
-      "vars": {
-        "outcome": {"type": "string", "display_name": "Outcome"}
-      },
-      "created": [
-        {"create_child": {"workflow": "requirements_discovery", "title": "Discover initial requirements"}}
-      ],
-      "events": [
-        {
-          "event": "child.state_changed",
-          "action": "if event.child.workflow == 'requirements_discovery' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
         }
       ],
       "transitions": [

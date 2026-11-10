@@ -94,6 +94,9 @@ pub trait ProjectRepository: Send + Sync {
 
     async fn save(&self, project: &Project, expected_version: u32) -> Result<(), RepoError>;
 
+    /// Permanently delete a project and every row scoped to it.
+    async fn delete(&self, id: Uuid, expected_version: u32) -> Result<(), RepoError>;
+
     async fn get(&self, id: Uuid) -> Result<Option<Project>, RepoError>;
 
     async fn list(&self, filter: ProjectFilter) -> Result<Vec<Project>, RepoError>;
@@ -131,7 +134,6 @@ pub enum Action {
     },
     CreateIssue,
     CommentIssue,
-    TriageIssue,
     TransitionIssue {
         from: IssueStatus,
         to: IssueStatus,

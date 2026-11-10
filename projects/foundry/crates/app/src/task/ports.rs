@@ -110,6 +110,8 @@ pub enum TaskCommand {
         account_id: Uuid,
         bound_by: Uuid,
     },
+    /// Re-evaluate the current stage's transitions from persisted state.
+    Reevaluate,
 }
 
 #[derive(Debug, thiserror::Error)]

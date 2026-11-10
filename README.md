@@ -6,7 +6,7 @@
 
 | 工程 | 说明 | 状态 |
 |---|---|---|
-| [foundry](projects/foundry/) | AI 原生的软件工程控制平面 | MVP 纵向切片可运行 |
+| [foundry](projects/foundry/) | AI 原生的软件工程控制平面 | MVP 纵向切片可运行；完整生命周期设计见 RFC 0008–0019（设计稿） |
 
 ## 构建
 

@@ -1,13 +1,17 @@
-use crate::{PostgresStore, backend, enum_text, map_write_error, parse_enum};
+use crate::{
+    PostgresStore, backend, enum_text, insert_issue_row, insert_task_link_row, map_write_error,
+    parse_enum,
+};
 use async_trait::async_trait;
 use foundry_app::{
     RepoError, TaskActorRow, TaskCommand, TaskCommentRow, TaskDependencyRow, TaskDispatchError,
     TaskDispatcher, TaskFilter, TaskListRow, TaskRepository, WorkflowCatalog,
 };
 use foundry_domain::{
-    AccountKind, Actor, ChildState, DependencyState, DomainEvent, DomainEventKind, TaskActorDAO,
-    TaskAggregate, TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskOperation,
-    TaskResult, TaskState, WorkflowId,
+    AccountKind, Actor, ChildState, DependencyState, DomainEvent, DomainEventKind, Issue,
+    IssueKind, IssueSource, IssueSourceKind, TaskActorDAO, TaskAggregate, TaskCommentDAO, TaskDAO,
+    TaskError, TaskEvent, TaskIssueCreate, TaskLink, TaskLinkKind, TaskLinkRelation, TaskMutation,
+    TaskOperation, TaskResult, TaskState, WorkflowId,
 };
 use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
@@ -46,6 +50,7 @@ fn trigger_kinds() -> Vec<String> {
         DomainEventKind::ChildCreated,
         DomainEventKind::ChildStateChanged,
         DomainEventKind::DispatchRequested,
+        DomainEventKind::TaskReevaluated,
     ]
     .into_iter()
     .map(|kind| enum_text(&kind))
@@ -651,6 +656,18 @@ impl PostgresTaskDispatcher {
                     work: None,
                 });
             }
+            TaskCommand::Reevaluate => {
+                if aggregate.task.state != TaskState::InProgress {
+                    return Ok(());
+                }
+                let event = DomainEvent::new(
+                    DomainEventKind::TaskReevaluated,
+                    aggregate.task.id,
+                    Actor::System,
+                    json!({}),
+                );
+                append_events(tx, aggregate.task.project_id, &[event]).await?;
+            }
         }
         Ok(())
     }
@@ -687,7 +704,8 @@ async fn load_aggregate(
 ) -> Result<TaskAggregate, RepoError> {
     let row: Option<TaskRow> = sqlx::query_as(
         "select id, project_id, parent_id, workflow, workflow_version, title, state, stage, \
-         result, created_at, updated_at, completed_at from tasks where id = $1 for update",
+         result, stage_variables, task_variables, created_at, updated_at, completed_at \
+         from tasks where id = $1 for update",
     )
     .bind(task_id)
     .fetch_optional(&mut **tx)
@@ -820,7 +838,49 @@ async fn persist_mutation(
         }
     }
 
+    persist_created_issues(tx, &mutation.task, &mutation.issues).await?;
     append_events(tx, mutation.task.project_id, &mutation.events).await
+}
+
+async fn persist_created_issues(
+    tx: &mut Transaction<'_, Postgres>,
+    task: &TaskDAO,
+    issues: &[TaskIssueCreate],
+) -> Result<(), RepoError> {
+    for spec in issues {
+        let kind = IssueKind::parse(&spec.kind)
+            .ok_or_else(|| RepoError::Invalid(format!("unknown issue kind {:?}", spec.kind)))?;
+        let relation = TaskLinkRelation::parse(&spec.relation).ok_or_else(|| {
+            RepoError::Invalid(format!("unknown link relation {:?}", spec.relation))
+        })?;
+        let issue = Issue::new(
+            task.project_id,
+            spec.title.clone(),
+            spec.description.clone(),
+            kind,
+            IssueSource {
+                kind: IssueSourceKind::Internal,
+                reference: Some(format!("{}:{}", task.workflow.as_str(), task.id)),
+            },
+            Actor::System,
+        )
+        .map_err(|error| RepoError::Invalid(error.to_string()))?;
+        insert_issue_row(tx, &issue).await?;
+        let link = TaskLink {
+            id: Uuid::now_v7(),
+            task_id: spec.link_task_id.unwrap_or(task.id),
+            kind: TaskLinkKind::Issue,
+            target_id: Some(issue.id),
+            url: None,
+            title: issue.title.clone(),
+            relation,
+            created_by: Actor::System,
+            created_at: OffsetDateTime::now_utc(),
+            metadata: json!({}),
+        };
+        insert_task_link_row(tx, &link).await?;
+    }
+    Ok(())
 }
 
 /// Resolve a child workflow in the parent definition owner's scope.

@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 /// What kind of thing an issue is.
 ///
-/// Intake is deliberately cheap: the reporter picks the closest kind, and
-/// triage may reclassify it. `Issue` stays the discussion object; it is not a
+/// Intake is deliberately cheap: the reporter picks the closest kind when the
+/// issue is created. `Issue` stays the discussion object; it is not a
 /// requirement, a task or a defect record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -32,15 +32,25 @@ impl IssueKind {
             Self::Incident => "incident",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "feedback" => Some(Self::Feedback),
+            "bug" => Some(Self::Bug),
+            "question" => Some(Self::Question),
+            "idea" => Some(Self::Idea),
+            "task_request" => Some(Self::TaskRequest),
+            "incident" => Some(Self::Incident),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueStatus {
-    /// Reported, not yet looked at.
+    /// Reported, not yet acted on.
     Open,
-    /// Classified and accepted for action.
-    Triaged,
     /// Work is underway.
     InProgress,
     /// Delivered, awaiting confirmation.
@@ -57,11 +67,8 @@ impl IssueStatus {
     pub fn allowed_transitions(self) -> &'static [IssueStatus] {
         use IssueStatus::*;
         match self {
-            // Classification is a triage action, not a bare transition: it
-            // carries kind, severity, assignee and impact.
-            Open => &[Rejected, Duplicate],
-            Triaged => &[InProgress, Resolved, Rejected, Duplicate],
-            InProgress => &[Resolved, Triaged, Rejected],
+            Open => &[InProgress, Resolved, Rejected, Duplicate],
+            InProgress => &[Resolved, Rejected],
             Resolved => &[Closed, InProgress],
             Closed => &[Open],
             Rejected => &[Open],
@@ -76,7 +83,6 @@ impl IssueStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
-            Self::Triaged => "triaged",
             Self::InProgress => "in_progress",
             Self::Resolved => "resolved",
             Self::Closed => "closed",
@@ -182,16 +188,6 @@ pub enum IssueTransitionError {
     NotReady(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Triage {
-    pub kind: IssueKind,
-    pub severity: Option<IssueSeverity>,
-    pub assignee: Option<Actor>,
-    pub area: Option<String>,
-    pub labels: Vec<String>,
-    pub impact: Option<String>,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TransitionEvidence {
     /// Required for Resolved and Rejected; becomes the resolution record.
@@ -203,8 +199,8 @@ pub struct TransitionEvidence {
 /// A discussion object in problem space: something happened, someone wants
 /// something, or something needs an answer.
 ///
-/// An issue is not a requirement. It becomes work only through an explicit
-/// triage disposition.
+/// An issue is not a requirement. Work starts when it transitions to
+/// `InProgress`, optionally through a task created alongside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: Uuid,
@@ -311,42 +307,6 @@ impl Issue {
         } else {
             Err(IssueValidationError(errors))
         }
-    }
-
-    /// Classify an issue. Allowed while it is open or already triaged.
-    pub fn triage(&mut self, actor: &Actor, triage: Triage) -> Result<(), IssueTransitionError> {
-        if !matches!(self.status, IssueStatus::Open | IssueStatus::Triaged) {
-            return Err(IssueTransitionError::NotReady(format!(
-                "issue in status {:?} cannot be triaged",
-                self.status
-            )));
-        }
-        if triage.kind == IssueKind::Bug && triage.severity.is_none() {
-            return Err(IssueTransitionError::NotReady(
-                "bug issues require a severity at triage".to_string(),
-            ));
-        }
-
-        self.kind = triage.kind;
-        self.severity = triage.severity;
-        self.assignee = triage.assignee;
-        self.area = triage.area;
-        self.labels = triage.labels;
-        self.impact = triage.impact;
-
-        let from = self.status;
-        if from == IssueStatus::Open {
-            self.status = IssueStatus::Triaged;
-            self.history.push(IssueStatusChange {
-                from,
-                to: self.status,
-                actor: actor.clone(),
-                note: Some("triaged".to_string()),
-                at: OffsetDateTime::now_utc(),
-            });
-        }
-        self.touch();
-        Ok(())
     }
 
     pub fn comment(
@@ -471,63 +431,16 @@ mod tests {
     }
 
     #[test]
-    fn open_cannot_skip_triage() {
+    fn open_can_start_work() {
         let mut issue = issue();
-        let error = issue
+        issue
             .transition_to(
-                IssueStatus::Triaged,
+                IssueStatus::InProgress,
                 &Actor::human("pm"),
                 TransitionEvidence::default(),
             )
-            .expect_err("triaged is reached through triage, not a bare transition");
-        assert!(matches!(
-            error,
-            IssueTransitionError::Invalid {
-                from: IssueStatus::Open,
-                to: IssueStatus::Triaged
-            }
-        ));
-        assert_eq!(issue.status, IssueStatus::Open);
-    }
-
-    #[test]
-    fn triage_requires_severity_for_bugs() {
-        let mut issue = issue();
-        let error = issue
-            .triage(
-                &Actor::human("pm"),
-                Triage {
-                    kind: IssueKind::Bug,
-                    severity: None,
-                    assignee: None,
-                    area: None,
-                    labels: vec![],
-                    impact: None,
-                },
-            )
-            .expect_err("bug triage without severity must fail");
-        assert!(matches!(error, IssueTransitionError::NotReady(_)));
-        assert_eq!(issue.status, IssueStatus::Open);
-    }
-
-    #[test]
-    fn triage_classifies_and_moves_to_triaged() {
-        let mut issue = issue();
-        issue
-            .triage(
-                &Actor::human("pm"),
-                Triage {
-                    kind: IssueKind::Bug,
-                    severity: Some(IssueSeverity::S2),
-                    assignee: Some(Actor::agent("fixer", "developer")),
-                    area: Some("payments".to_string()),
-                    labels: vec!["refund".to_string()],
-                    impact: Some("5% 退款请求失败".to_string()),
-                },
-            )
-            .unwrap();
-        assert_eq!(issue.status, IssueStatus::Triaged);
-        assert_eq!(issue.severity, Some(IssueSeverity::S2));
+            .expect("open -> in_progress");
+        assert_eq!(issue.status, IssueStatus::InProgress);
         assert_eq!(issue.version, 2);
     }
 
@@ -535,25 +448,12 @@ mod tests {
     fn resolve_requires_resolution_note() {
         let mut issue = issue();
         issue
-            .triage(
-                &Actor::human("pm"),
-                Triage {
-                    kind: IssueKind::Bug,
-                    severity: Some(IssueSeverity::S2),
-                    assignee: None,
-                    area: None,
-                    labels: vec![],
-                    impact: None,
-                },
-            )
-            .unwrap();
-        issue
             .transition_to(
                 IssueStatus::InProgress,
                 &Actor::agent("fixer", "developer"),
                 TransitionEvidence::default(),
             )
-            .expect("triaged -> in_progress is allowed without evidence");
+            .expect("open -> in_progress is allowed without evidence");
         assert_eq!(issue.status, IssueStatus::InProgress);
 
         let error = issue
@@ -582,19 +482,6 @@ mod tests {
     #[test]
     fn closed_issue_can_be_reopened() {
         let mut issue = issue();
-        issue
-            .triage(
-                &Actor::human("pm"),
-                Triage {
-                    kind: IssueKind::Bug,
-                    severity: Some(IssueSeverity::S3),
-                    assignee: None,
-                    area: None,
-                    labels: vec![],
-                    impact: None,
-                },
-            )
-            .unwrap();
         issue
             .transition_to(
                 IssueStatus::InProgress,

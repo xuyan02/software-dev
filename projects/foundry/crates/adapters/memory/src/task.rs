@@ -61,6 +61,30 @@ impl MemoryTasks {
         }
     }
 
+    /// Remove every task in a project and the rows that key off those tasks.
+    /// Returns the removed task ids so callers can clean separate stores.
+    pub(crate) fn delete_project(&mut self, project_id: Uuid) -> Vec<Uuid> {
+        let ids: HashSet<Uuid> = self
+            .tasks
+            .values()
+            .filter(|task| task.project_id == project_id)
+            .map(|task| task.id)
+            .collect();
+        self.tasks.retain(|_, task| task.project_id != project_id);
+        self.dependencies.retain(|task_id, dependencies| {
+            !ids.contains(task_id) && !dependencies.iter().any(|id| ids.contains(id))
+        });
+        self.actors.retain(|task_id, _| !ids.contains(task_id));
+        self.comments
+            .retain(|comment| !ids.contains(&comment.task_id));
+        self.inputs.retain(|(task_id, _)| !ids.contains(task_id));
+        self.events.retain(|(_, event)| {
+            event.aggregate_id != project_id && !ids.contains(&event.aggregate_id)
+        });
+        self.cursors.retain(|task_id, _| !ids.contains(task_id));
+        ids.into_iter().collect()
+    }
+
     fn is_ready(&self, task_id: Uuid) -> bool {
         self.dependencies
             .get(&task_id)
@@ -150,6 +174,7 @@ fn is_trigger(kind: DomainEventKind) -> bool {
             | DomainEventKind::ChildCreated
             | DomainEventKind::ChildStateChanged
             | DomainEventKind::DispatchRequested
+            | DomainEventKind::TaskReevaluated
     )
 }
 
@@ -507,6 +532,13 @@ impl InMemoryStore {
                     child.task.workflow_version = reference.version;
                 }
                 state.persist(&mutation);
+                if !mutation.issues.is_empty() {
+                    self.persist_task_issues(
+                        mutation.task.id,
+                        mutation.task.project_id,
+                        &mutation.issues,
+                    )?;
+                }
                 aggregate = aggregate_of(mutation);
                 last_seq = seq;
             }
@@ -603,6 +635,17 @@ impl InMemoryStore {
                     task_id,
                     actor,
                     json!({ "role": role, "account_id": account_id }),
+                )]);
+            }
+            TaskCommand::Reevaluate => {
+                if aggregate.task.state != TaskState::InProgress {
+                    return Ok(());
+                }
+                state.append(&[DomainEvent::new(
+                    DomainEventKind::TaskReevaluated,
+                    task_id,
+                    Actor::System,
+                    json!({}),
                 )]);
             }
         }

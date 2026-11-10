@@ -155,3 +155,77 @@ impl IntoResponse for ApiError {
         (self.status, Json(json!({ "error": error }))).into_response()
     }
 }
+
+/// Maps requirements-document use-case results to their wire contract.
+pub fn requirements_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
+    result.map_err(|error| match error {
+        ServiceError::RequirementsInvalid(validation) => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "requirements_invalid",
+            "requirements document is invalid",
+        )
+        .with_details(json!({
+            "errors": validation.errors,
+            "warnings": validation.warnings,
+        })),
+        ServiceError::RequirementsTooLarge => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "requirements_too_large",
+            error.to_string(),
+        ),
+        ServiceError::DraftNotFound(_) => {
+            ApiError::new(StatusCode::CONFLICT, "draft_not_found", error.to_string())
+        }
+        ServiceError::DraftConflict {
+            expected,
+            current,
+            current_updated_at,
+        } => ApiError::new(
+            StatusCode::CONFLICT,
+            "draft_conflict",
+            format!("draft revision conflict: expected {expected}, current is {current}"),
+        )
+        .with_details(json!({
+            "current_revision": current,
+            "current_updated_at": rfc3339(current_updated_at),
+        })),
+        other => other.into(),
+    })
+}
+
+/// Maps project-brief use-case results to their wire contract.
+pub fn project_brief_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
+    result.map_err(|error| match error {
+        ServiceError::ProjectBriefInvalid(validation) => ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "project_brief_invalid",
+            "project brief is invalid",
+        )
+        .with_details(json!({
+            "errors": validation.errors,
+            "warnings": validation.warnings,
+        })),
+        ServiceError::ProjectBriefTooLarge => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "project_brief_too_large",
+            error.to_string(),
+        ),
+        ServiceError::DraftNotFound(_) => {
+            ApiError::new(StatusCode::CONFLICT, "brief_not_found", error.to_string())
+        }
+        ServiceError::DraftConflict {
+            expected,
+            current,
+            current_updated_at,
+        } => ApiError::new(
+            StatusCode::CONFLICT,
+            "draft_conflict",
+            format!("draft revision conflict: expected {expected}, current is {current}"),
+        )
+        .with_details(json!({
+            "current_revision": current,
+            "current_updated_at": rfc3339(current_updated_at),
+        })),
+        other => other.into(),
+    })
+}

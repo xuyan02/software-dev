@@ -24,3 +24,10 @@ bootstrap_name = "Administrator"
 bootstrap_password = "change-this-initialization-passphrase"
 
 session_ttl_hours = 168
+
+# Platform model used by managed agents (the PM Agent). The API key can live
+# here or in OPENAI_API_KEY; environment variables take precedence. The key is
+# never written to the database. Keep this file chmod 600.
+openai_api_key = "sk-..."
+openai_base_url = "https://api.deepseek.com/v1"
+openai_model = "deepseek-chat"

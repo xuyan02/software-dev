@@ -6,9 +6,12 @@
 //! pure function of the task snapshot and the current stage variables.
 
 use crate::ChildState;
+use crate::{TaskIssueCreate, TaskIssueTask};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
+
+use super::definition::{TitleContext, TitleTemplate};
 
 pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
 pub const MAX_DEPTH: usize = 32;
@@ -174,11 +177,18 @@ pub const RESERVED: &[&str] = &[
     "event",
     "active_actors",
     "count_children",
+    "create_issue",
     "result",
 ];
 
 pub fn is_reserved(name: &str) -> bool {
     RESERVED.contains(&name)
+}
+
+fn is_workflow_id(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
 }
 
 // ---------------------------------------------------------------------------
@@ -204,6 +214,7 @@ enum TokenKind {
     Event,
     ActiveActors,
     CountChildren,
+    CreateIssue,
     LParen,
     RParen,
     LBrace,
@@ -297,6 +308,7 @@ fn lex(source: &str) -> Result<Vec<Token>, ScriptIssue> {
                 "event" => TokenKind::Event,
                 "active_actors" => TokenKind::ActiveActors,
                 "count_children" => TokenKind::CountChildren,
+                "create_issue" => TokenKind::CreateIssue,
                 _ => TokenKind::Ident(text),
             };
             tokens.push(single(kind));
@@ -498,6 +510,16 @@ enum Statement {
         line: usize,
         column: usize,
     },
+    CreateIssue {
+        kind: String,
+        title: TitleTemplate,
+        description: String,
+        relation: String,
+        task_workflow: Option<String>,
+        task_title: Option<TitleTemplate>,
+        line: usize,
+        column: usize,
+    },
     If {
         condition: Expression,
         then_branch: Vec<Statement>,
@@ -605,6 +627,7 @@ impl Parser {
             TokenKind::LBrace => self.block(),
             TokenKind::If => self.if_statement(),
             TokenKind::Add => self.add_statement(),
+            TokenKind::CreateIssue => self.create_issue_statement(),
             TokenKind::Ident(ref name) => {
                 let name = name.clone();
                 self.next();
@@ -700,6 +723,142 @@ impl Parser {
         Ok(Statement::Add {
             expression,
             name,
+            line: keyword.line,
+            column: keyword.column,
+        })
+    }
+
+    fn create_issue_statement(&mut self) -> Result<Statement, ScriptIssue> {
+        let keyword = self.expect(&TokenKind::CreateIssue, "create_issue")?;
+        self.expect(&TokenKind::LParen, "(")?;
+        let mut kind: Option<String> = None;
+        let mut title: Option<String> = None;
+        let mut description: Option<String> = None;
+        let mut relation: Option<String> = None;
+        let mut task_workflow: Option<String> = None;
+        let mut task_title: Option<String> = None;
+        loop {
+            if self.eat(&TokenKind::RParen) {
+                break;
+            }
+            let key_token = self.peek().clone();
+            let TokenKind::Ident(key) = key_token.kind else {
+                return Err(ScriptIssue::new(
+                    "script_syntax_error",
+                    key_token.line,
+                    key_token.column,
+                    "create_issue arguments are named, for example kind = 'question'",
+                ));
+            };
+            self.next();
+            self.expect(&TokenKind::Assign, "=")?;
+            let value_token = self.peek().clone();
+            let TokenKind::Str(value) = value_token.kind else {
+                return Err(ScriptIssue::new(
+                    "script_syntax_error",
+                    value_token.line,
+                    value_token.column,
+                    "create_issue arguments must be string literals",
+                ));
+            };
+            self.next();
+            let slot = match key.as_str() {
+                "kind" => &mut kind,
+                "title" => &mut title,
+                "description" => &mut description,
+                "relation" => &mut relation,
+                "task_workflow" => &mut task_workflow,
+                "task_title" => &mut task_title,
+                other => {
+                    return Err(ScriptIssue::new(
+                        "script_unknown_argument",
+                        key_token.line,
+                        key_token.column,
+                        format!("unknown create_issue argument {other:?}"),
+                    ));
+                }
+            };
+            if slot.replace(value).is_some() {
+                return Err(ScriptIssue::new(
+                    "script_duplicate_argument",
+                    key_token.line,
+                    key_token.column,
+                    format!("duplicate create_issue argument {key:?}"),
+                ));
+            }
+            if !self.eat(&TokenKind::Comma) {
+                self.expect(&TokenKind::RParen, ")")?;
+                break;
+            }
+        }
+        let kind = kind.ok_or_else(|| {
+            ScriptIssue::new(
+                "script_missing_argument",
+                keyword.line,
+                keyword.column,
+                "create_issue requires kind",
+            )
+        })?;
+        let title = title.ok_or_else(|| {
+            ScriptIssue::new(
+                "script_missing_argument",
+                keyword.line,
+                keyword.column,
+                "create_issue requires title",
+            )
+        })?;
+        if crate::IssueKind::parse(&kind).is_none() {
+            return Err(ScriptIssue::new(
+                "script_invalid_issue_kind",
+                keyword.line,
+                keyword.column,
+                format!("unknown issue kind {kind:?}"),
+            ));
+        }
+        let relation = relation.unwrap_or_else(|| "clarifies".to_string());
+        if crate::TaskLinkRelation::parse(&relation).is_none() {
+            return Err(ScriptIssue::new(
+                "script_invalid_link_relation",
+                keyword.line,
+                keyword.column,
+                format!("unknown link relation {relation:?}"),
+            ));
+        }
+        let title = TitleTemplate::parse(title).map_err(|error| {
+            ScriptIssue::new("script_invalid_title", keyword.line, keyword.column, error)
+        })?;
+        let (task_workflow, task_title) = match (task_workflow, task_title) {
+            (None, None) => (None, None),
+            (Some(workflow), Some(title)) => {
+                if !is_workflow_id(&workflow) {
+                    return Err(ScriptIssue::new(
+                        "script_invalid_workflow_id",
+                        keyword.line,
+                        keyword.column,
+                        format!("workflow id {workflow:?} must match [a-z][a-z0-9_]*"),
+                    ));
+                }
+                let title = TitleTemplate::parse(title).map_err(|error| {
+                    ScriptIssue::new("script_invalid_title", keyword.line, keyword.column, error)
+                })?;
+                (Some(workflow), Some(title))
+            }
+            _ => {
+                return Err(ScriptIssue::new(
+                    "script_incomplete_task",
+                    keyword.line,
+                    keyword.column,
+                    "task_workflow and task_title must be provided together",
+                ));
+            }
+        };
+        Ok(Statement::CreateIssue {
+            kind,
+            title,
+            description: description.unwrap_or_default(),
+            relation,
+            task_workflow,
+            task_title,
             line: keyword.line,
             column: keyword.column,
         })
@@ -1152,6 +1311,23 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+            Statement::CreateIssue {
+                task_workflow,
+                line,
+                column,
+                ..
+            } => {
+                if let Some(workflow) = task_workflow
+                    && !(self.scope.known_workflow)(workflow)
+                {
+                    self.issues.push(ScriptIssue::new(
+                        "script_unknown_workflow",
+                        *line,
+                        *column,
+                        format!("create_issue references unknown workflow {workflow:?}"),
+                    ));
+                }
+            }
             Statement::If {
                 condition,
                 then_branch,
@@ -1501,11 +1677,12 @@ pub fn run_action(
     compiled: &CompiledAction,
     variables: &mut BTreeMap<String, VariableValue>,
     context: &RuntimeContext<'_>,
-) -> Result<(), RuntimeError> {
+) -> Result<Vec<TaskIssueCreate>, RuntimeError> {
+    let mut issues = Vec::new();
     for statement in &compiled.statements {
-        run_statement(statement, variables, context)?;
+        run_statement(statement, variables, context, &mut issues)?;
     }
-    Ok(())
+    Ok(issues)
 }
 
 pub fn eval_condition(
@@ -1532,6 +1709,7 @@ fn run_statement(
     statement: &Statement,
     variables: &mut BTreeMap<String, VariableValue>,
     context: &RuntimeContext<'_>,
+    issues: &mut Vec<TaskIssueCreate>,
 ) -> Result<(), RuntimeError> {
     match statement {
         Statement::Assign {
@@ -1561,6 +1739,40 @@ fn run_statement(
                 }
             }
         }
+        Statement::CreateIssue {
+            kind,
+            title,
+            description,
+            relation,
+            task_workflow,
+            task_title,
+            ..
+        } => {
+            let title_context = TitleContext {
+                task_title: context.task_title,
+                children: context.children,
+            };
+            let title = title
+                .render(&title_context)
+                .map_err(|error| RuntimeError::Internal(error.to_string()))?;
+            let task = match (task_workflow, task_title) {
+                (Some(workflow), Some(template)) => Some(TaskIssueTask {
+                    workflow: workflow.clone(),
+                    title: template
+                        .render(&title_context)
+                        .map_err(|error| RuntimeError::Internal(error.to_string()))?,
+                }),
+                _ => None,
+            };
+            issues.push(TaskIssueCreate {
+                kind: kind.clone(),
+                title,
+                description: description.clone(),
+                relation: relation.clone(),
+                task,
+                link_task_id: None,
+            });
+        }
         Statement::If {
             condition,
             then_branch,
@@ -1569,17 +1781,17 @@ fn run_statement(
         } => {
             if matches!(evaluate(condition, variables, context)?, Value::Bool(true)) {
                 for statement in then_branch {
-                    run_statement(statement, variables, context)?;
+                    run_statement(statement, variables, context, issues)?;
                 }
             } else if let Some(else_branch) = else_branch {
                 for statement in else_branch {
-                    run_statement(statement, variables, context)?;
+                    run_statement(statement, variables, context, issues)?;
                 }
             }
         }
         Statement::Block(statements) => {
             for statement in statements {
-                run_statement(statement, variables, context)?;
+                run_statement(statement, variables, context, issues)?;
             }
         }
     }
