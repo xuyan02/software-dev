@@ -8,8 +8,8 @@ use foundry_domain::{
     AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, Budget, IssueKind,
     IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, Priority, ProjectBriefBody,
     ProjectRole, ProjectScope, ProjectStatus, RequirementStatus, Risk, RiskClass, RiskLevel,
-    RoleKey, StageKey, Stakeholder, SuccessMetric, TaskDispatchState, TaskState, WorkflowBody,
-    WorkflowId, WorkflowVersionRef,
+    RoleKey, StageKey, TaskDispatchState, TaskState, Term, WorkflowBody, WorkflowId,
+    WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1151,8 +1151,6 @@ pub struct ProjectBriefForm {
     #[serde(default)]
     pub goals: String,
     #[serde(default)]
-    pub success_metrics: String,
-    #[serde(default)]
     pub in_scope: String,
     #[serde(default)]
     pub out_of_scope: String,
@@ -1161,17 +1159,13 @@ pub struct ProjectBriefForm {
     #[serde(default)]
     pub risks: String,
     #[serde(default)]
-    pub stakeholders: String,
+    pub terms: String,
     #[serde(default)]
     pub budget_amount: String,
     #[serde(default)]
     pub budget_currency: String,
     #[serde(default)]
     pub budget_note: String,
-    #[serde(default)]
-    pub assumptions: String,
-    #[serde(default)]
-    pub open_questions: String,
 }
 
 impl ProjectBriefForm {
@@ -1181,9 +1175,8 @@ impl ProjectBriefForm {
     pub fn into_parts(
         self,
     ) -> Result<(Option<uuid::Uuid>, u64, String, ProjectBriefBody), String> {
-        let metrics = parse_success_metrics(&self.success_metrics)?;
         let risks = parse_risks(&self.risks)?;
-        let stakeholders = parse_stakeholders(&self.stakeholders)?;
+        let terms = parse_terms(&self.terms)?;
         let budget = if self.budget_amount.trim().is_empty() {
             None
         } else {
@@ -1210,17 +1203,14 @@ impl ProjectBriefForm {
                 schema_version: foundry_domain::PROJECT_BRIEF_SCHEMA_VERSION,
                 problem: self.problem.trim().to_string(),
                 goals: lines(&self.goals),
-                success_metrics: metrics,
                 scope: ProjectScope {
                     in_scope: lines(&self.in_scope),
                     out_of_scope: lines(&self.out_of_scope),
                 },
                 constraints: lines(&self.constraints),
                 risks,
-                stakeholders,
+                terms,
                 budget,
-                assumptions: lines(&self.assumptions),
-                open_questions: lines(&self.open_questions),
             },
         ))
     }
@@ -1311,39 +1301,19 @@ pub struct RejectRequirementsForm {
     pub reason: String,
 }
 
-fn parse_success_metrics(value: &str) -> Result<Vec<SuccessMetric>, String> {
-    let mut metrics = Vec::new();
+fn parse_terms(value: &str) -> Result<Vec<Term>, String> {
+    let mut terms = Vec::new();
     for (index, line) in lines(value).iter().enumerate() {
         let parts = split_row(line);
-        if parts.len() < 5 {
-            return Err(format!(
-                "成功指标第 {} 行需要：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选）",
-                index + 1
-            ));
+        if parts.len() < 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(format!("术语第 {} 行需要：术语 | 解释", index + 1));
         }
-        let target = parts[1]
-            .parse::<f64>()
-            .map_err(|_| format!("成功指标第 {} 行的目标值不是数字", index + 1))?;
-        let baseline = parts
-            .get(5)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<f64>()
-                    .map_err(|_| format!("成功指标第 {} 行的基线不是数字", index + 1))
-            })
-            .transpose()?;
-        metrics.push(SuccessMetric {
-            id: format!("m{}", index + 1),
-            name: parts[0].to_string(),
-            baseline,
-            target,
-            unit: parts[2].to_string(),
-            measurement: parts[3].to_string(),
-            window: parts[4].to_string(),
+        terms.push(Term {
+            term: parts[0].to_string(),
+            definition: parts[1].to_string(),
         });
     }
-    Ok(metrics)
+    Ok(terms)
 }
 
 fn parse_risks(value: &str) -> Result<Vec<Risk>, String> {
@@ -1366,36 +1336,6 @@ fn parse_risks(value: &str) -> Result<Vec<Risk>, String> {
         });
     }
     Ok(risks)
-}
-
-fn parse_stakeholders(value: &str) -> Result<Vec<Stakeholder>, String> {
-    let mut stakeholders = Vec::new();
-    for (index, line) in lines(value).iter().enumerate() {
-        let parts = split_row(line);
-        if parts.len() < 2 {
-            return Err(format!(
-                "干系人第 {} 行需要：角色 | 账号 | 决策权（逗号分隔，可选）",
-                index + 1
-            ));
-        }
-        stakeholders.push(Stakeholder {
-            id: format!("s{}", index + 1),
-            role: parts[0].to_string(),
-            account: parts[1].to_string(),
-            decision_rights: parts
-                .get(2)
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        });
-    }
-    Ok(stakeholders)
 }
 
 fn split_row(line: &str) -> Vec<String> {

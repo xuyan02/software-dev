@@ -9,7 +9,7 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | id | 标题 | 用途 | 状态 |
 |---|---|---|---|
 | `project` | Project lifecycle | 项目根 Task，串起从目标澄清到迭代的完整生命周期 | 已实现 |
-| `goal_clarification` | Goal clarification | 澄清项目目标并评审项目简报；`task.created` 的 action 创建统一澄清 Issue，Clarifier → 文风 Reviewer → 内容 Reviewer → 人类验收 | 已实现 |
+| `project_brief_writing` | Project brief writing | 先澄清目标，再撰写并评审项目简报；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Brief Writer → 文风 Reviewer → 内容 Reviewer → 验收 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 结构化需求文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
 | `architecture_design` | Architecture design | 架构设计与评审 | 已实现 |
@@ -31,13 +31,13 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 1. 进入 `goal`；
 2. `set_state in_progress`；
-3. 创建 `goal_clarification` 子 Task。
+3. 创建 `project_brief_writing` 子 Task。
 
 每个 stage 声明 `outcome` 变量。子 Task 完成时，event action 根据其 `result` 写入 `outcome`；对应的 transition 再推进 stage 或完成任务：
 
 | Stage | 创建的子流程 | 子 Task 完成后的转移 |
 |---|---|---|
-| `goal` | `goal_clarification` | `approved` → `requirements_analysis`；失败结果 → 完成任务，`result = 'failed'` |
+| `goal` | `project_brief_writing` | `approved` → `requirements_analysis`；失败结果 → 完成任务，`result = 'failed'` |
 | `requirements_analysis` | `requirements_analysis` | `approved` → `architecture`；失败结果 → 完成任务，`result = 'failed'` |
 | `architecture` | `architecture_design` | `approved` → `roadmap`；失败结果 → 完成任务，`result = 'failed'` |
 | `roadmap` | `roadmap` | `approved` → `iteration`；失败结果 → 完成任务，`result = 'failed'` |
@@ -47,16 +47,26 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 根 Task 不会自动重试失败；它以 `failed` 完成后停在固定版本，等待人工处理。
 
-## Goal clarification
+## Project brief writing
 
-| Stage | active roles | operation |
+分为澄清和撰写项目简报两个阶段：
+
+| Stage | active roles | operations |
 |---|---|---|
-| `work` | `clarifier` | `started`；`completed` 写 `completed = true` → `style_review` |
-| `style_review` | `style_reviewer` | `approved` 写 `decision = 'approved'` → `content_review`；`rejected` 写 `decision = 'rejected'` → `work` |
-| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`rejected` 写 `decision = 'rejected'` → `work` |
-| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
+| `clarify` | `clarifier` | `started`；`completed` 写 `completed = true` → `brief` |
+| `brief` | `brief_writer` | `started`；`completed` 写 `outcome = 'completed'` → `style_review`；`continue_clarification` 写 `outcome = 'continue'` → `clarify` |
+| `style_review` | `style_reviewer` | `approved` 写 `decision = 'approved'` → `content_review`；`rejected` 写 `decision = 'rejected'` → `brief` |
+| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`rejected` 写 `decision = 'rejected'` → `brief` |
+| `acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `brief` |
 
-`clarifier`、`style_reviewer` 和 `content_reviewer` 都是 agent 角色。Clarifier 维护项目简报并提交；两个 Reviewer 不修改简报，用 `project_brief_annotate` 把意见挂到简报字段或对象上；Clarifier 在下一轮用 `project_brief_annotations_list` 读取并逐条处理，修改后用 `project_brief_resolve_annotation` 标记解决。Reviewer 打回时任务回到 `work`。人类批准简报后，control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`，不会跳过评审。
+各智能体的输入、任务和操作：
+
+- **Clarifier**（`clarify`）：输入是澄清 Issue（`task_links_list` 找到 `clarifies` 链接，`issue_get` 读取标题、描述和全部评论）。任务是一次只问一个问题：每轮最多发一条 `issue_comment`，评论里只包含一个问题；发完结束本轮，等下一轮再问下一个。没有未回答问题后，先在 Issue 里发一条交接评论，说明澄清结束、接下来将撰写项目简报，然后调用 `completed`。它不写项目简报，也不调用项目简报工具。
+- **Brief Writer**（`brief`）：输入是 Issue 评论、当前项目简报和其批注（`issue_get`、`project_brief_get`、`project_brief_annotations_list`、草稿工具）。任务是在服务端草稿上填写并提交简报。它必须处理每一条批注：接受的修改写进简报，不接受的也要 resolve 并写明理由，不能留下未解决批注。信息不足时先在 Issue 里发 `issue_comment` 列出具体问题，再调用 `continue_clarification` 回到澄清阶段。只有当**没有未解决批注**且 **Issue 中的重点内容已被简报覆盖**时，才能提交草稿并调用 `completed` 进入文风评审。
+- **Style / Content Reviewer**：输入是 `project_brief_get` 和已有批注；任务是用 `project_brief_annotate` 写具体意见。只要添加了任何批注（或仍有上一轮未解决的批注）就调用 `rejected`；只有完全没有批注时才调用 `approved`。打回时任务回到 `brief`，由 Brief Writer 修改。
+- **Acceptor**：人类或其他账户；批准后任务完成并设置 `result = 'approved'`，拒绝则回到 `brief`。
+
+Clarifier、Brief Writer、Style Reviewer 和 Content Reviewer 都是 agent 角色，由 PM 在任务启动前统一分配。它们都通过通用的 `load_skill` 工具加载名为 `project_brief_writing` 的 [项目简报撰写技能](../../skills/project-brief-writing.md)，该技能定义简报应该写什么、不应该写什么，以及每个字段的质量门槛。人类批准简报后，control-plane 只在任务处于 `acceptance` 时发送保留操作 `accept`，不会跳过评审。
 
 ## Iteration
 

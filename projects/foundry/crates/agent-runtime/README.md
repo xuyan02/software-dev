@@ -107,7 +107,7 @@ cargo run -p foundry-agent-runtime --bin foundry-agent -- clarify \
   - 不再写 `agent_runs` / `agent_steps`，也没有 lease、checkpoint、运行历史或自动重试。
   - 运行和工具调用使用现有 `tracing` 日志输出；控制平面把 agentd 的 stdout/stderr 原样写入 `~/.foundry/logs/agents/<id>.log`，管理员在网页 `/agents/{id}/logs` 查看纯文本日志。
 - `services/worker` 已弃用，运行时会直接报错退出。
-- 澄清 Issue 由 `goal_clarification` 的 `task.created` action 创建；`clarifier` 是 agent 角色，issue 评论通知会唤醒它。
+- 澄清 Issue 由 `project_brief_writing` 的 `task.created` action 创建；`clarifier` 是 agent 角色，issue 评论通知会唤醒它。
 - `FoundryIssueCommentSource`：从 Issue 读取 `after` 之后的人类评论。
 - 审批与回答分离：Agent 只能评论、起草和提交 ProjectBrief，人类单独批准。
 

@@ -53,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Arc::new(PostgresStore::connect(&config.database_url).await?);
     store.migrate().await?;
     store.seed_builtin_workflows().await?;
+    store.migrate_legacy_project_brief_workflow().await?;
     let events = Arc::new(PostgresEventSink::new(store.pool().clone()));
     let policy = Arc::new(DemoPolicy);
     let workflows: Arc<dyn WorkflowCatalog> =
@@ -292,7 +293,7 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             Ok(count) => tracing::debug!(count, "processed task trigger partitions"),
             Err(error) => tracing::warn!(%error, "task dispatcher failed"),
         }
-        match store.approved_goal_clarifications().await {
+        match store.approved_project_briefs().await {
             Ok(tasks) => {
                 for (task_id, _project_id, approved_by) in tasks {
                     let command = TaskCommand::SendOperation {

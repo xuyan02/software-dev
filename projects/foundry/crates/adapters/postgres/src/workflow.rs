@@ -273,6 +273,75 @@ impl PostgresStore {
         }
         Ok(())
     }
+
+    /// Rename the legacy `goal_clarification` workflow id to
+    /// `project_brief_writing`.
+    ///
+    /// This runs after the builtins are seeded so the new definition and its
+    /// v1 version already exist when tasks are repointed. It is idempotent and
+    /// removes the legacy definition once nothing references it.
+    pub async fn migrate_legacy_project_brief_workflow(&self) -> Result<(), RepoError> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+
+        sqlx::query(
+            "update agent_definitions \
+             set role = 'project_brief_writing:' || \
+                        substr(role, length('goal_clarification:') + 1) \
+             where role like 'goal_clarification:%'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::map_write_error)?;
+
+        sqlx::query(
+            "update agent_bindings \
+             set workflow_id = 'project_brief_writing', \
+                 role = case when role like 'goal_clarification:%' \
+                             then 'project_brief_writing:' || \
+                                  substr(role, length('goal_clarification:') + 1) \
+                             else role end \
+             where workflow_id = 'goal_clarification'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::map_write_error)?;
+
+        sqlx::query(
+            "update task_agent_assignments \
+             set role = case when role like 'goal_clarification:%' \
+                             then 'project_brief_writing:' || \
+                                  substr(role, length('goal_clarification:') + 1) \
+                             else role end \
+             where role like 'goal_clarification:%'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::map_write_error)?;
+
+        sqlx::query(
+            "update tasks \
+             set workflow = 'project_brief_writing', workflow_version = 1 \
+             where workflow = 'goal_clarification'",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(crate::map_write_error)?;
+
+        for statement in [
+            "delete from workflow_drafts where workflow_id = 'goal_clarification'",
+            "delete from workflow_layouts where workflow_id = 'goal_clarification'",
+            "delete from workflow_versions where workflow_id = 'goal_clarification'",
+            "delete from workflow_definitions where id = 'goal_clarification'",
+        ] {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(crate::map_write_error)?;
+        }
+
+        tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
 }
 
 fn backend(error: impl std::fmt::Display) -> RepoError {

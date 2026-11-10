@@ -310,7 +310,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
     .unwrap();
     assert_eq!(children.len(), 1);
     let child = children[0].task.clone();
-    assert_eq!(child.workflow.as_str(), "goal_clarification");
+    assert_eq!(child.workflow.as_str(), "project_brief_writing");
 
     // The child has no dependencies, so the scheduler wakes it once.
     dispatcher.dispatch_ready().await.unwrap();
@@ -389,7 +389,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
             &CreateAgentDefinition {
                 name: format!("Clarifier {}", suffix()),
                 account_handle: clarifier_account.handle.clone(),
-                role: "goal_clarification:clarifier".to_string(),
+                role: "project_brief_writing:clarifier".to_string(),
                 model_base_url: "http://127.0.0.1:11434/v1".to_string(),
                 model_name: "test-model".to_string(),
                 api_key_env: "OPENAI_API_KEY".to_string(),
@@ -403,7 +403,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
         .await
         .unwrap();
     store
-        .assign_task(child.id, "goal_clarification:clarifier", clarifier.id)
+        .assign_task(child.id, "project_brief_writing:clarifier", clarifier.id)
         .await
         .unwrap();
     let ready = store.list_ready_tasks().await.unwrap();
@@ -705,7 +705,7 @@ async fn requirements_document_round_trips_idempotently_and_conflicts() {
 }
 
 #[tokio::test]
-async fn goal_clarification_is_valid() {
+async fn project_brief_writing_is_valid() {
     let Some(store) = test_store().await else {
         eprintln!("TEST_DATABASE_URL is unset; skipping Postgres integration test");
         return;
@@ -713,11 +713,11 @@ async fn goal_clarification_is_valid() {
 
     let body: serde_json::Value = sqlx::query_scalar(
         "select body from workflow_versions \
-         where workflow_id = 'goal_clarification' and version = 1",
+         where workflow_id = 'project_brief_writing' and version = 1",
     )
     .fetch_one(store.pool())
     .await
-    .expect("goal_clarification v1");
+    .expect("project_brief_writing v1");
     let body: foundry_domain::WorkflowBody =
         serde_json::from_value(body).expect("v1 body is a workflow AST");
     let validation = foundry_domain::validate(&body, &|_| true);
@@ -742,7 +742,7 @@ async fn goal_clarification_is_valid() {
         .map(|event| event.action.as_str())
         .expect("project task.created action");
     assert!(action.contains("create_issue("));
-    assert!(action.contains("task_workflow = 'goal_clarification'"));
+    assert!(action.contains("task_workflow = 'project_brief_writing'"));
 }
 
 #[tokio::test]
@@ -883,10 +883,10 @@ async fn project_brief_annotations_round_trip() {
     let annotation = ProjectBriefAnnotation {
         id: Uuid::now_v7(),
         project_id: project.id,
-        target_type: ProjectBriefAnnotationTarget::SuccessMetrics,
-        target_id: Some("m1".to_string()),
-        field: Some("target".to_string()),
-        body: "目标值需要说明理由".to_string(),
+        target_type: ProjectBriefAnnotationTarget::Terms,
+        target_id: Some("SLA".to_string()),
+        field: Some("definition".to_string()),
+        body: "解释需要更清楚".to_string(),
         author_id: author.id,
         author_handle: author.handle.clone(),
         author_name: author.display_name.clone(),
@@ -903,7 +903,7 @@ async fn project_brief_annotations_round_trip() {
         .await
         .unwrap();
     assert_eq!(open.len(), 1);
-    assert_eq!(open[0].target_type, ProjectBriefAnnotationTarget::SuccessMetrics);
+    assert_eq!(open[0].target_type, ProjectBriefAnnotationTarget::Terms);
 
     let resolved = ProjectBriefRepository::resolve_annotation(
         &store,

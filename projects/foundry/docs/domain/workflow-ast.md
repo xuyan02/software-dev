@@ -161,7 +161,7 @@
   { "set_state": "in_progress" },
   {
     "create_child": {
-      "workflow": "goal_clarification",
+      "workflow": "project_brief_writing",
       "title": "Clarify project goals"
     }
   }

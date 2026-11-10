@@ -175,7 +175,7 @@ Bug 有额外字段（环境、影响版本、复现步骤、预期、实际）�
 | Agent | EvaluationSuite / EvaluationRun / AgentTrajectory | 聚合/记录 | 0015 |
 | 度量 | MetricDefinition / MetricSnapshot / CostRecord | 记录 | 0016 |
 | 产品与组合 | Vision / Strategy / Opportunity | 聚合/记录 | 0017 |
-| 立项 | ProjectBrief / SuccessMetric / PortfolioDecision | 聚合 | 0017 |
+| 立项 | ProjectBrief / PortfolioDecision | 聚合 | 0017 |
 | 知识 | KnowledgeItem / Document / KnowledgeLink | 记录 | 0018 |
 | 上下文 | ContextBundle / ContextItem / MemoryEntry | 记录 | 0018 |
 | 治理 | Policy / PolicyDecision / Capability | 记录 | 0019 |

@@ -26,6 +26,19 @@ impl Default for Budget {
 }
 
 impl Budget {
+    /// No limits at all: steps, tokens, tool calls and wall-clock time are
+    /// unbounded. Managed agents use this so a long dispatch sweep is never
+    /// cut off mid-way; tests and one-shot CLI runs keep the bounded default.
+    pub fn unlimited() -> Self {
+        Self {
+            max_steps: u32::MAX,
+            max_input_tokens: u64::MAX,
+            max_output_tokens: u64::MAX,
+            max_tool_calls: u32::MAX,
+            max_duration: Duration::from_millis(u64::MAX),
+        }
+    }
+
     pub fn small() -> Self {
         Self {
             max_steps: 6,

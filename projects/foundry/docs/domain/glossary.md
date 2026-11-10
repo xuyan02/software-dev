@@ -62,8 +62,8 @@
 |---|---|
 | Opportunity | 组合层的机会候选：市场、客户、技术、合规或内部改进。 |
 | Portfolio | 项目组合：预算、容量、依赖、风险和优先级。 |
-| ProjectBrief | 立项简报：问题、目标、成功指标、范围、约束、风险、干系人。 |
-| SuccessMetric | 可度量的成功标准：基线、目标、测量方式、时间窗。 |
+| ProjectBrief | 立项简报：背景、描述性目标、非目标、范围、约束、风险、术语、预算。 |
+| SuccessMetric | 成功指标：需求分析阶段定义，不属于项目简报。 |
 | KnowledgeItem | 知识条目：约定、术语、模式、FAQ、runbook、摘要。 |
 | Authority（知识） | 知识权威性：canonical / reference / draft / deprecated / stale。 |
 | ContextBundle | 为一次任务组装的上下文包：条目、来源、版本、预算。 |

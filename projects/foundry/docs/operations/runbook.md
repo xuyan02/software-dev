@@ -116,18 +116,20 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 ### 项目澄清
 
-项目创建后，根 Task 创建 `goal_clarification` 子 Task 和统一的澄清 Issue：
+项目创建后，根 Task 创建 `project_brief_writing` 子 Task 和统一的澄清 Issue。该流程分为澄清和撰写项目简报两个阶段：
 
-1. PM 按 `goal_clarification:clarifier` 分配或创建 **Clarifier**；
-2. Clarifier 在澄清 Issue 中与创建者对话；用 `project_brief_draft_create` 创建服务端草稿，用
-   `project_brief_draft_apply` 每次只提交一个结构化 operation（problem/goals/metrics/scope/...），
-   再用 `project_brief_draft_submit` 提交草稿。提交会生成新版本并删除草稿，但**不会推进 Task**；
-   Clarifier 必须紧接着调用 `task_operation(operation = "completed")`；
-3. 简报提交后依次经过 **Brief Style Reviewer** 和 **Brief Content Reviewer**（都是 Agent）；
-   两个 Reviewer 不修改简报，用 `project_brief_annotate` 把意见挂到具体字段或对象上，打回时任务回到 `work`；
-4. Clarifier 用 `project_brief_annotations_list` 读取评审批注，逐条解决后创建新草稿、逐部分修改、重新提交，
-   然后再次发送 `completed`；
-5. 两位 Reviewer 通过后，人类在项目简报页批准；control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`。
+1. PM 按角色分配或创建 **Clarifier**、**Project Brief Writer**、**Style Reviewer** 和 **Content Reviewer**；所有相关智能体先用 `load_skill` 加载 `project_brief_writing` 技能（[项目简报撰写技能](../../skills/project-brief-writing.md)）；
+2. **Clarifier**（`clarify` 阶段）读取澄清 Issue，一次只问一个问题：每轮最多一条 `issue_comment`、评论里只包含一个问题；没有未回答问题后，先在 Issue 里发一条交接评论说明接下来撰写项目简报，再发送 `completed`；
+3. **Project Brief Writer**（`brief` 阶段）读取 Issue 评论、当前简报和批注，在服务端草稿上填写并提交简报：
+   - 必须处理每一条批注：接受的写进简报，不接受的也要 resolve 并写明理由；
+   - 只有“没有未解决批注”且“Issue 中的重点内容已被简报覆盖”时，才提交草稿并发送 `completed`，进入文风评审；
+   - 信息不足：先在 Issue 里发评论提出具体问题，再发送 `continue_clarification`，回到澄清阶段；
+4. 简报依次经过 **Brief Style Reviewer** 和 **Brief Content Reviewer**；两位 Reviewer 不修改简报，
+   用 `project_brief_annotate` 把意见挂到具体字段或对象上。只要产生任何批注（或仍有未解决批注）
+   就 `rejected`，任务回到 `brief` 阶段；完全没有批注时才 `approved`；
+5. Brief Writer 用 `project_brief_annotations_list` 读取批注，逐条解决后创建新草稿、修改、重新提交，
+   再发送 `completed`；
+6. 两位 Reviewer 通过后，人类在项目简报页批准；control-plane 只在任务处于 `acceptance` 时发送保留操作 `accept`。
 
 ### 需求分析
 

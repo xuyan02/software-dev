@@ -18,21 +18,16 @@ pub struct ProjectBriefBody {
     #[serde(default)]
     pub goals: Vec<String>,
     #[serde(default)]
-    pub success_metrics: Vec<SuccessMetric>,
-    #[serde(default)]
     pub scope: ProjectScope,
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]
     pub risks: Vec<Risk>,
+    /// Terms, acronyms and jargon that need an explicit explanation.
     #[serde(default)]
-    pub stakeholders: Vec<Stakeholder>,
+    pub terms: Vec<Term>,
     #[serde(default)]
     pub budget: Option<Budget>,
-    #[serde(default)]
-    pub assumptions: Vec<String>,
-    #[serde(default)]
-    pub open_questions: Vec<String>,
 }
 
 impl Default for ProjectBriefBody {
@@ -41,35 +36,13 @@ impl Default for ProjectBriefBody {
             schema_version: PROJECT_BRIEF_SCHEMA_VERSION,
             problem: String::new(),
             goals: Vec::new(),
-            success_metrics: Vec::new(),
             scope: ProjectScope::default(),
             constraints: Vec::new(),
             risks: Vec::new(),
-            stakeholders: Vec::new(),
+            terms: Vec::new(),
             budget: None,
-            assumptions: Vec::new(),
-            open_questions: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SuccessMetric {
-    #[serde(default)]
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub baseline: Option<f64>,
-    #[serde(default)]
-    pub target: f64,
-    #[serde(default)]
-    pub unit: String,
-    #[serde(default)]
-    pub measurement: String,
-    #[serde(default)]
-    pub window: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,17 +80,14 @@ pub enum RiskLevel {
     High,
 }
 
+/// One term or acronym explained for readers of the brief.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Stakeholder {
+pub struct Term {
     #[serde(default)]
-    pub id: String,
+    pub term: String,
     #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub account: String,
-    #[serde(default)]
-    pub decision_rights: Vec<String>,
+    pub definition: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -198,9 +168,6 @@ pub enum ProjectBriefDraftOperation {
     SetGoals {
         values: Vec<String>,
     },
-    SetSuccessMetrics {
-        values: Vec<SuccessMetric>,
-    },
     SetScope {
         in_scope: Vec<String>,
         out_of_scope: Vec<String>,
@@ -211,17 +178,11 @@ pub enum ProjectBriefDraftOperation {
     SetRisks {
         values: Vec<Risk>,
     },
-    SetStakeholders {
-        values: Vec<Stakeholder>,
+    SetTerms {
+        values: Vec<Term>,
     },
     SetBudget {
         value: Option<Budget>,
-    },
-    SetAssumptions {
-        values: Vec<String>,
-    },
-    SetOpenQuestions {
-        values: Vec<String>,
     },
 }
 
@@ -230,7 +191,6 @@ impl ProjectBriefDraftOperation {
         match self {
             Self::SetProblem { value } => body.problem = value,
             Self::SetGoals { values } => body.goals = values,
-            Self::SetSuccessMetrics { values } => body.success_metrics = values,
             Self::SetScope {
                 in_scope,
                 out_of_scope,
@@ -242,10 +202,8 @@ impl ProjectBriefDraftOperation {
             }
             Self::SetConstraints { values } => body.constraints = values,
             Self::SetRisks { values } => body.risks = values,
-            Self::SetStakeholders { values } => body.stakeholders = values,
+            Self::SetTerms { values } => body.terms = values,
             Self::SetBudget { value } => body.budget = value,
-            Self::SetAssumptions { values } => body.assumptions = values,
-            Self::SetOpenQuestions { values } => body.open_questions = values,
         }
     }
 }
@@ -256,14 +214,11 @@ pub enum ProjectBriefAnnotationTarget {
     Document,
     Problem,
     Goals,
-    SuccessMetrics,
     Scope,
     Constraints,
     Risks,
-    Stakeholders,
+    Terms,
     Budget,
-    Assumptions,
-    OpenQuestions,
 }
 
 impl ProjectBriefAnnotationTarget {
@@ -272,14 +227,11 @@ impl ProjectBriefAnnotationTarget {
             Self::Document => "document",
             Self::Problem => "problem",
             Self::Goals => "goals",
-            Self::SuccessMetrics => "success_metrics",
             Self::Scope => "scope",
             Self::Constraints => "constraints",
             Self::Risks => "risks",
-            Self::Stakeholders => "stakeholders",
+            Self::Terms => "terms",
             Self::Budget => "budget",
-            Self::Assumptions => "assumptions",
-            Self::OpenQuestions => "open_questions",
         }
     }
 
@@ -288,14 +240,11 @@ impl ProjectBriefAnnotationTarget {
             "document" => Some(Self::Document),
             "problem" => Some(Self::Problem),
             "goals" => Some(Self::Goals),
-            "success_metrics" => Some(Self::SuccessMetrics),
             "scope" => Some(Self::Scope),
             "constraints" => Some(Self::Constraints),
             "risks" => Some(Self::Risks),
-            "stakeholders" => Some(Self::Stakeholders),
+            "terms" => Some(Self::Terms),
             "budget" => Some(Self::Budget),
-            "assumptions" => Some(Self::Assumptions),
-            "open_questions" => Some(Self::OpenQuestions),
             _ => None,
         }
     }
@@ -342,52 +291,6 @@ pub fn validate_project_brief(body: &ProjectBriefBody) -> Validation {
             "the project must declare at least one goal",
         ));
     }
-    if body.success_metrics.is_empty() {
-        validation.errors.push(ValidationIssue::error(
-            "success_metrics",
-            "no_success_metrics",
-            "the project must declare at least one success metric",
-        ));
-    }
-    let mut metric_ids = std::collections::HashSet::new();
-    for (index, metric) in body.success_metrics.iter().enumerate() {
-        let path = format!("success_metrics[{index}]");
-        if !metric_ids.insert(metric.id.clone()) {
-            validation.errors.push(ValidationIssue::error(
-                format!("{path}.id"),
-                "duplicate_id",
-                format!("duplicate success metric id {}", metric.id),
-            ));
-        }
-        if metric.name.trim().is_empty() {
-            validation.errors.push(ValidationIssue::error(
-                format!("{path}.name"),
-                "empty_name",
-                "success metric name must not be empty",
-            ));
-        }
-        if metric.measurement.trim().is_empty() {
-            validation.errors.push(ValidationIssue::error(
-                format!("{path}.measurement"),
-                "no_measurement",
-                "success metric needs a measurement method",
-            ));
-        }
-        if metric.unit.trim().is_empty() {
-            validation.errors.push(ValidationIssue::error(
-                format!("{path}.unit"),
-                "no_unit",
-                "success metric needs a unit",
-            ));
-        }
-        if metric.window.trim().is_empty() {
-            validation.warnings.push(ValidationIssue::error(
-                format!("{path}.window"),
-                "no_window",
-                "success metric has no measurement window",
-            ));
-        }
-    }
     if body.scope.out_of_scope.is_empty() {
         validation.errors.push(ValidationIssue::error(
             "scope.out_of_scope",
@@ -395,28 +298,29 @@ pub fn validate_project_brief(body: &ProjectBriefBody) -> Validation {
             "the project must declare at least one non-goal",
         ));
     }
-    if body.stakeholders.is_empty() {
-        validation.errors.push(ValidationIssue::error(
-            "stakeholders",
-            "no_stakeholders",
-            "the project must declare at least one stakeholder",
-        ));
-    }
-    let mut stakeholder_ids = std::collections::HashSet::new();
-    for (index, stakeholder) in body.stakeholders.iter().enumerate() {
-        let path = format!("stakeholders[{index}]");
-        if !stakeholder_ids.insert(stakeholder.id.clone()) {
+    let mut term_names = std::collections::HashSet::new();
+    for (index, term) in body.terms.iter().enumerate() {
+        let path = format!("terms[{index}]");
+        if term.term.trim().is_empty() {
             validation.errors.push(ValidationIssue::error(
-                format!("{path}.id"),
-                "duplicate_id",
-                format!("duplicate stakeholder id {}", stakeholder.id),
+                format!("{path}.term"),
+                "empty_term",
+                "term must not be empty",
             ));
         }
-        if stakeholder.role.trim().is_empty() {
+        if term.definition.trim().is_empty() {
             validation.errors.push(ValidationIssue::error(
-                format!("{path}.role"),
-                "empty_role",
-                "stakeholder role must not be empty",
+                format!("{path}.definition"),
+                "empty_definition",
+                "term definition must not be empty",
+            ));
+        }
+        let key = term.term.trim().to_lowercase();
+        if !key.is_empty() && !term_names.insert(key) {
+            validation.errors.push(ValidationIssue::error(
+                format!("{path}.term"),
+                "duplicate_term",
+                format!("duplicate term {:?}", term.term),
             ));
         }
     }
@@ -458,13 +362,13 @@ pub fn validate_project_brief(body: &ProjectBriefBody) -> Validation {
                 "risk has no owner",
             ));
         }
-    }
-    if !body.open_questions.is_empty() {
-        validation.warnings.push(ValidationIssue::error(
-            "open_questions",
-            "open_questions",
-            "the brief still has open questions",
-        ));
+        if risk.mitigation.trim().is_empty() {
+            validation.warnings.push(ValidationIssue::error(
+                format!("{path}.mitigation"),
+                "no_mitigation",
+                "risk has no later resolution plan",
+            ));
+        }
     }
     validation
 }
@@ -477,25 +381,10 @@ mod tests {
         ProjectBriefBody {
             problem: "客服只能整单退款".to_string(),
             goals: vec!["支持部分退款".to_string()],
-            success_metrics: vec![SuccessMetric {
-                id: "m1".to_string(),
-                name: "人工处理量".to_string(),
-                baseline: Some(1000.0),
-                target: 700.0,
-                unit: "件/月".to_string(),
-                measurement: "客服看板".to_string(),
-                window: "上线后 3 个月".to_string(),
-            }],
             scope: ProjectScope {
                 in_scope: vec!["部分退款".to_string()],
                 out_of_scope: vec!["多次退款合并".to_string()],
             },
-            stakeholders: vec![Stakeholder {
-                id: "s1".to_string(),
-                role: "产品".to_string(),
-                account: "product-owner".to_string(),
-                decision_rights: vec!["目标/范围".to_string()],
-            }],
             ..ProjectBriefBody::default()
         }
     }
@@ -507,30 +396,44 @@ mod tests {
     }
 
     #[test]
-    fn approval_requires_metrics_non_goals_and_stakeholders() {
+    fn terms_need_a_definition_and_unique_names() {
         let mut body = complete();
-        body.success_metrics.clear();
+        body.terms = vec![
+            Term {
+                term: "SLA".to_string(),
+                definition: String::new(),
+            },
+            Term {
+                term: "sla".to_string(),
+                definition: "服务等级协议".to_string(),
+            },
+        ];
+        let validation = validate_project_brief(&body);
+        assert!(
+            validation
+                .errors
+                .iter()
+                .any(|issue| issue.code == "empty_definition")
+        );
+        assert!(
+            validation
+                .errors
+                .iter()
+                .any(|issue| issue.code == "duplicate_term")
+        );
+    }
+
+    #[test]
+    fn approval_requires_non_goals() {
+        let mut body = complete();
         body.scope.out_of_scope.clear();
-        body.stakeholders.clear();
         let validation = validate_project_brief(&body);
         assert!(!validation.is_valid());
         assert!(
             validation
                 .errors
                 .iter()
-                .any(|issue| issue.code == "no_success_metrics")
-        );
-        assert!(
-            validation
-                .errors
-                .iter()
                 .any(|issue| issue.code == "no_non_goals")
-        );
-        assert!(
-            validation
-                .errors
-                .iter()
-                .any(|issue| issue.code == "no_stakeholders")
         );
     }
 }

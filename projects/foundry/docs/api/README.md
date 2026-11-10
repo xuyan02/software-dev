@@ -553,16 +553,13 @@ POST /api/v1/projects/{project}/brief/annotations/{annotation_id}/resolve
 草稿编辑每次只接受一个 operation：
 
 ```text
-set_problem            { value }
-set_goals              { values: string[] }
-set_success_metrics    { values: SuccessMetric[] }
-set_scope              { in_scope: string[], out_of_scope: string[] }
+set_problem            { value }                 // 背景：现状、需求、痛点、价值
+set_goals              { values: string[] }       // 描述性目标，按重要程度排序，第一条为核心目标；不写量化标准
+set_scope              { in_scope: string[], out_of_scope: string[] }  // 非目标紧跟目标；一次提交
 set_constraints        { values: string[] }
 set_risks              { values: Risk[] }
-set_stakeholders       { values: Stakeholder[] }
+set_terms              { values: Term[] }        // Term = { term, definition }
 set_budget             { value: Budget | null }
-set_assumptions        { values: string[] }
-set_open_questions     { values: string[] }
 ```
 
 请求体：
@@ -580,11 +577,11 @@ set_open_questions     { values: string[] }
 - `POST .../drafts/{draft_id}/submit`，`If-Match: "<draft revision>"`
 - `POST .../approve`，`If-Match: "<version>"`
 
-提交后生成新版本，旧当前版本变为 `superseded`，草稿被删除。**提交成功后必须发送 `task_operation(operation = "completed")`，否则 goal_clarification 任务仍停在 work。**
+提交后生成新版本，旧当前版本变为 `superseded`，草稿被删除。**提交成功后必须发送 `task_operation(operation = "completed")`，否则 project_brief_writing 任务仍停在 brief。**
 
-批注用于文风/内容评审：`target_type` 可取值 `document`、`problem`、`goals`、`success_metrics`、`scope`、`constraints`、`risks`、`stakeholders`、`budget`、`assumptions`、`open_questions`；`target_id` 和 `field` 可选，用于定位具体指标、风险、干系人或字段。批注正文非空，解决时必须填写 `resolution`。
+批注用于文风/内容评审：`target_type` 可取值 `document`、`problem`、`goals`、`scope`、`constraints`、`risks`、`terms`、`budget`；`target_id` 和 `field` 可选，用于定位具体风险、术语或字段。批注正文非空，解决时必须填写 `resolution`。
 
-状态：版本状态为 `in_review → approved / superseded`。提交和批准前校验问题、目标、成功指标、non-goals 和干系人。Agent 不能批准。
+状态：版本状态为 `in_review → approved / superseded`。提交和批准前校验背景、目标和 non-goals；项目简报不包含成功指标，指标由需求分析阶段定义。Agent 不能批准。
 
 MCP 工具：`get_project_brief`、`list_project_brief_versions`、`get_project_brief_version`、`create_project_brief_draft`、`list_project_brief_drafts`、`get_project_brief_draft`、`apply_project_brief_draft_operation`、`submit_project_brief_draft`、`approve_project_brief`、`list_project_brief_annotations`、`annotate_project_brief`、`resolve_project_brief_annotation`。
 

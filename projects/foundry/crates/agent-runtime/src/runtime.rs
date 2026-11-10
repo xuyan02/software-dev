@@ -6,13 +6,13 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 use crate::{
-    Budget, ContextBundle, Message, ModelGateway, ModelRequest, ModelResponse, PauseRequest,
-    Pricing, RunError, StepKind, StepRecord, ToolCall, ToolContext, ToolOutput, ToolRegistry,
-    TrajectorySink, Usage,
+    Budget, ContextBundle, Message, MessageRole, ModelGateway, ModelRequest, ModelResponse,
+    PauseRequest, Pricing, RunError, StepKind, StepRecord, ToolCall, ToolContext, ToolOutput,
+    ToolRegistry, TrajectorySink, Usage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -90,6 +90,9 @@ pub struct AgentCheckpoint {
 
 struct RuntimeState {
     messages: Vec<Message>,
+    /// Number of leading messages that are always sent: the system prompt and
+    /// the initial user message (or the resumed conversation's prompt).
+    head_len: usize,
     usage: Usage,
     steps: u32,
     tool_calls: u32,
@@ -127,11 +130,17 @@ impl Cancellation {
     }
 }
 
+/// Keep the system prompt, the initial user message and the most recent
+/// messages of the run. Older tool exchanges fall out of the model context;
+/// the agent can always re-read them with a tool if it needs to.
+const DEFAULT_CONTEXT_WINDOW_MESSAGES: usize = 30;
+
 pub struct AgentRuntime {
     model: Arc<dyn ModelGateway>,
     tools: Arc<ToolRegistry>,
     trajectory: Arc<dyn TrajectorySink>,
     budget: Budget,
+    context_window_messages: usize,
     pricing: Option<Pricing>,
 }
 
@@ -147,8 +156,16 @@ impl AgentRuntime {
             tools,
             trajectory,
             budget,
+            context_window_messages: DEFAULT_CONTEXT_WINDOW_MESSAGES,
             pricing: None,
         }
+    }
+
+    /// Override how many recent messages (after the system/user head) are sent
+    /// to the model. Must be at least 1; the head is always preserved.
+    pub fn with_context_window(mut self, messages: usize) -> Self {
+        self.context_window_messages = messages.max(1);
+        self
     }
 
     pub fn with_pricing(mut self, pricing: Pricing) -> Self {
@@ -173,8 +190,10 @@ impl AgentRuntime {
             format!("{rendered_context}\n\n{user_message}")
         };
         messages.push(Message::user(user_message));
+        let head_len = messages.len();
         let state = RuntimeState {
             messages,
+            head_len,
             usage: Usage::default(),
             steps: 0,
             tool_calls: 0,
@@ -217,8 +236,10 @@ impl AgentRuntime {
             "New human comments on the clarification Issue:\n{}",
             human_comments.into()
         )));
+        let head_len = messages.len().min(2);
         let state = RuntimeState {
             messages,
+            head_len,
             usage,
             steps,
             tool_calls,
@@ -229,6 +250,14 @@ impl AgentRuntime {
             pause: None,
         };
         self.run_loop(state, remaining_calls, cancellation).await
+    }
+
+    fn context_messages(&self, state: &RuntimeState) -> Vec<Message> {
+        context_window(
+            &state.messages,
+            state.head_len,
+            self.context_window_messages,
+        )
     }
 
     async fn run_loop(
@@ -252,8 +281,16 @@ impl AgentRuntime {
                 continue;
             }
 
+            let messages = self.context_messages(&state);
+            if messages.len() < state.messages.len() {
+                tracing::debug!(
+                    total_messages = state.messages.len(),
+                    sent_messages = messages.len(),
+                    "agent context window trimmed"
+                );
+            }
             let model_request = ModelRequest {
-                messages: state.messages.clone(),
+                messages,
                 tools: self.tools.specs(),
                 max_tokens: None,
                 temperature: None,
@@ -404,7 +441,7 @@ impl AgentRuntime {
         if state.steps >= self.budget.max_steps {
             return Some(self.stop_outcome(StopReason::MaxSteps, state));
         }
-        if elapsed_ms(state) > self.budget.max_duration.as_millis() as u64 {
+        if Duration::from_millis(elapsed_ms(state)) > self.budget.max_duration {
             return Some(self.stop_outcome(StopReason::BudgetExceeded, state));
         }
         if self.budget.tokens_exceeded(&state.usage) {
@@ -464,4 +501,96 @@ fn truncate(text: &str, limit: usize) -> String {
 
 fn elapsed_ms(state: &RuntimeState) -> u64 {
     state.prior_elapsed_ms + state.started.elapsed().as_millis() as u64
+}
+
+/// Keep the leading prompt messages and a recent tail of `max_tail` messages.
+///
+/// The tail is moved back to a safe boundary when it would otherwise begin
+/// with a tool result: a tool message is only valid after the assistant
+/// message that issued its call. If that assistant is outside the window, the
+/// orphan results are dropped instead.
+fn context_window(messages: &[Message], head_len: usize, max_tail: usize) -> Vec<Message> {
+    let head = head_len.min(messages.len());
+    let max_tail = max_tail.max(1);
+    let mut start = messages.len().saturating_sub(max_tail).max(head);
+
+    // A tool result is only valid after the assistant message that issued its
+    // call, so start the tail at that assistant instead of in the middle of a
+    // tool-call group.
+    while start > head && messages[start].role == MessageRole::Tool {
+        start -= 1;
+    }
+    // If the owning assistant is outside the window, drop the orphan results.
+    if start == head && messages.get(start).is_some_and(|m| m.role == MessageRole::Tool) {
+        while start < messages.len() && messages[start].role == MessageRole::Tool {
+            start += 1;
+        }
+    }
+
+    let mut window = Vec::with_capacity(head + messages.len() - start);
+    window.extend_from_slice(&messages[..head]);
+    window.extend_from_slice(&messages[start..]);
+    window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tool_call(id: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: "tool".to_string(),
+            arguments: json!({}),
+        }
+    }
+
+    fn conversation(turns: usize) -> Vec<Message> {
+        let mut messages = vec![Message::system("system"), Message::user("task")];
+        for index in 0..turns {
+            messages.push(Message::assistant(
+                "",
+                vec![tool_call(&format!("call-{index}"))],
+            ));
+            messages.push(Message::tool(
+                format!("call-{index}"),
+                format!("result {index}"),
+            ));
+        }
+        messages
+    }
+
+    #[test]
+    fn keeps_head_and_recent_turn_boundary() {
+        let messages = conversation(10);
+        let window = context_window(&messages, 2, 5);
+
+        assert_eq!(window[0].role, MessageRole::System);
+        assert_eq!(window[1].role, MessageRole::User);
+        assert_ne!(window[2].role, MessageRole::Tool);
+        assert_eq!(window.last().unwrap().content, "result 9");
+        assert!(window.len() <= 2 + 5 + 1);
+    }
+
+    #[test]
+    fn drops_orphan_tool_results_when_the_assistant_is_outside_the_window() {
+        let messages = vec![
+            Message::system("system"),
+            Message::user("task"),
+            Message::tool("orphan", "result"),
+        ];
+        let window = context_window(&messages, 2, 1);
+
+        assert_eq!(window.len(), 2);
+        assert_eq!(window[0].role, MessageRole::System);
+        assert_eq!(window[1].role, MessageRole::User);
+    }
+
+    #[test]
+    fn returns_everything_when_the_conversation_fits() {
+        let messages = conversation(2);
+        let window = context_window(&messages, 2, 30);
+        assert_eq!(window, messages);
+    }
 }

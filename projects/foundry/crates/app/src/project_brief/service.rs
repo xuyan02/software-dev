@@ -579,25 +579,18 @@ fn brief_annotation_target_exists(
         return true;
     };
     match target {
-        ProjectBriefAnnotationTarget::SuccessMetrics => body
-            .success_metrics
-            .iter()
-            .any(|metric| metric.id == target_id),
         ProjectBriefAnnotationTarget::Risks => {
             body.risks.iter().any(|risk| risk.id == target_id)
         }
-        ProjectBriefAnnotationTarget::Stakeholders => body
-            .stakeholders
-            .iter()
-            .any(|stakeholder| stakeholder.id == target_id),
+        ProjectBriefAnnotationTarget::Terms => {
+            body.terms.iter().any(|term| term.term == target_id)
+        }
         ProjectBriefAnnotationTarget::Document
         | ProjectBriefAnnotationTarget::Problem
         | ProjectBriefAnnotationTarget::Goals
         | ProjectBriefAnnotationTarget::Scope
         | ProjectBriefAnnotationTarget::Constraints
-        | ProjectBriefAnnotationTarget::Budget
-        | ProjectBriefAnnotationTarget::Assumptions
-        | ProjectBriefAnnotationTarget::OpenQuestions => true,
+        | ProjectBriefAnnotationTarget::Budget => true,
     }
 }
 

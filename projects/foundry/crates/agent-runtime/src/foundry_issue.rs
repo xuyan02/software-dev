@@ -108,9 +108,9 @@ impl Tool for IssueCommentTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "issue_comment".to_string(),
-            description: "Comment on an Issue. Use it for questions; finish your turn after \
-                          posting. A later human comment on the same Issue activates the agent \
-                          again."
+            description: "Comment on an Issue. After a question that needs a human reply, finish \
+                          your turn; a later human comment activates the agent again. A status \
+                          or handoff comment can be followed by more tool calls."
                 .to_string(),
             input_schema: json!({
                 "type": "object",

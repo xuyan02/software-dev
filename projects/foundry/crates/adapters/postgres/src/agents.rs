@@ -1,8 +1,9 @@
 //! Postgres storage for managed agents.
 
 use foundry_domain::{
-    AgentBinding, AgentDefinition, AgentProcess, AssignedAgentView, CreateAgentBinding,
-    CreateAgentDefinition, ReadyTaskRoleView, ReadyTaskView, RoleKind, WorkflowBody,
+    Actor, AgentBinding, AgentDefinition, AgentProcess, AssignedAgentView, CreateAgentBinding,
+    CreateAgentDefinition, DomainEvent, DomainEventKind, ReadyTaskRoleView, ReadyTaskView,
+    RoleKind, WorkflowBody,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -533,6 +534,44 @@ impl PostgresStore {
         role: &str,
         agent_definition_id: Uuid,
     ) -> Result<(), RepoError> {
+        let project_id: Option<Uuid> =
+            sqlx::query_scalar("select project_id from tasks where id = $1")
+                .bind(task_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(backend)?;
+        let Some(project_id) = project_id else {
+            return Err(RepoError::NotFound);
+        };
+        // The assigned agent account becomes a task actor for the role. Only
+        // roles active in the current stage start active; later-stage roles are
+        // bound now but activated when their stage is entered.
+        let role_key = role.split_once(':').map(|(_, role)| role).unwrap_or(role);
+        let active = self
+            .current_stage_roles(task_id)
+            .await?
+            .iter()
+            .any(|name| name == role_key);
+        let account_id: Option<Uuid> =
+            sqlx::query_scalar("select account_id from agent_definitions where id = $1")
+                .bind(agent_definition_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(backend)?;
+        let Some(account_id) = account_id else {
+            return Err(RepoError::NotFound);
+        };
+
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let previous: Option<Uuid> = sqlx::query_scalar(
+            "select agent_definition_id from task_agent_assignments \
+             where task_id = $1 and role = $2",
+        )
+        .bind(task_id)
+        .bind(role)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
         sqlx::query(
             "insert into task_agent_assignments (task_id, role, agent_definition_id) \
              values ($1, $2, $3) \
@@ -542,39 +581,54 @@ impl PostgresStore {
         .bind(task_id)
         .bind(role)
         .bind(agent_definition_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(map_write_error)?;
-        // The assigned agent account becomes a task actor for the role. Only
-        // roles active in the current stage start active; later-stage roles are
-        // bound now but activated when their stage is entered.
-        let role_key = role.split_once(':').map(|(_, role)| role).unwrap_or(role);
-        let active = self
-            .current_stage_roles(task_id)
-            .await?
-            .iter()
-            .any(|role| role == role_key);
-        let account_id: Option<Uuid> = sqlx::query_scalar(
-            "select account_id from agent_definitions where id = $1",
+        let previous_active: Option<bool> = sqlx::query_scalar(
+            "select active from task_actors \
+             where task_id = $1 and role_key = $2 and account_id = $3",
         )
-        .bind(agent_definition_id)
-        .fetch_optional(&self.pool)
+        .bind(task_id)
+        .bind(role_key)
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(backend)?;
-        if let Some(account_id) = account_id {
-            sqlx::query(
-                "insert into task_actors (task_id, role_key, account_id, active, work) \
-                 values ($1, $2, $3, $4, null) \
-                 on conflict (task_id, role_key, account_id) do update set active = excluded.active",
-            )
-            .bind(task_id)
-            .bind(role_key)
-            .bind(account_id)
-            .bind(active)
-            .execute(&self.pool)
-            .await
-            .map_err(map_write_error)?;
+        sqlx::query(
+            "insert into task_actors (task_id, role_key, account_id, active, work) \
+             values ($1, $2, $3, $4, null) \
+             on conflict (task_id, role_key, account_id) do update set active = excluded.active",
+        )
+        .bind(task_id)
+        .bind(role_key)
+        .bind(account_id)
+        .bind(active)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_write_error)?;
+
+        // A real change must enter the task event stream: it wakes the PM and
+        // the assigned agent, and it bumps updated_at so the console refreshes.
+        // Re-assigning the same agent is a no-op; emitting an event for it
+        // would wake the PM in a loop.
+        let changed = previous != Some(agent_definition_id)
+            || previous_active.is_none()
+            || previous_active != Some(active);
+        if changed {
+            let event = DomainEvent::new(
+                DomainEventKind::ActorBound,
+                task_id,
+                Actor::System,
+                serde_json::json!({ "role": role_key, "account_id": account_id }),
+            );
+            crate::task::append_events(&mut tx, project_id, &[event]).await?;
+            sqlx::query("update tasks set updated_at = now() where id = $1")
+                .bind(task_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(map_write_error)?;
         }
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
@@ -609,7 +663,7 @@ impl PostgresStore {
         workflow_id: &str,
         role: &str,
     ) -> Result<Option<(Uuid, String, Uuid)>, RepoError> {
-        if workflow_id != "goal_clarification" || role != "clarifier" {
+        if workflow_id != "project_brief_writing" || role != "clarifier" {
             return Ok(None);
         }
         let row: Option<(Uuid, String, Uuid)> = sqlx::query_as(

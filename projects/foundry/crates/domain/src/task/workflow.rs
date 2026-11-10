@@ -465,6 +465,10 @@ impl<'a> WorkflowContext<'a> {
         self.task.state = TaskState::Completed;
         self.task.result = result.clone();
         self.task.completed_at = Some(self.now);
+        // Leaving the last stage (to the virtual `ended` stage) does not run
+        // `enter_stage`, so clear its variables explicitly. Task variables
+        // stay; they belong to the task, not the stage.
+        self.task.stage_variables.clear();
 
         self.events.push(system_event(
             DomainEventKind::TaskCompleted,

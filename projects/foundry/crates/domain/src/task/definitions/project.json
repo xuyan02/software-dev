@@ -14,11 +14,11 @@
       "events": [
         {
           "event": "task.created",
-          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = 'Clarify project goals')"
+          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'project_brief_writing', task_title = '撰写项目简报')"
         },
         {
           "event": "child.state_changed",
-          "action": "if event.child.workflow == 'goal_clarification' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+          "action": "if event.child.workflow == 'project_brief_writing' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
         }
       ],
       "transitions": [

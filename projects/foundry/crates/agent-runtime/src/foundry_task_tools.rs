@@ -352,7 +352,8 @@ impl Tool for TaskOperationTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "task_operation".to_string(),
-            description: "Send a task operation such as started, completed or approved."
+            description: "Send a task operation such as started, completed or approved. \
+                          The tool generates a fresh idempotency key for this call."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -360,8 +361,7 @@ impl Tool for TaskOperationTool {
                 "properties": {
                     "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" },
-                    "operation": { "type": "string" },
-                    "idempotency_key": { "type": "string" }
+                    "operation": { "type": "string" }
                 }
             }),
         }
@@ -375,8 +375,11 @@ impl Tool for TaskOperationTool {
         let task_id = parse_uuid(&arguments, "task_id")?;
         let operation = parse_string(&arguments, "operation")?;
         let project = optional_string(&arguments, "project_id");
-        let key = optional_string(&arguments, "idempotency_key")
-            .unwrap_or_else(|| Uuid::now_v7().to_string());
+        // Always generate a fresh key. Models cannot be trusted to produce a
+        // unique key per attempt; a reused key silently deduplicates a real
+        // operation (for example, completing clarification again after a
+        // review loop sent the task back).
+        let key = Uuid::now_v7().to_string();
         let result = self
             .client
             .send_task_operation(project.as_deref(), task_id, &operation, &key)

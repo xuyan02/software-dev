@@ -5,11 +5,11 @@ use foundry_agent_runtime::{
     AgentRunRequest, AgentRuntime, Budget, CLARIFY_SYSTEM_PROMPT, ContextBundle, EchoTool,
     FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
     FoundryRequirementsGetTool, FoundryRequirementsValidateTool, InMemoryTrajectory,
-    IssueCommentTool, IssueGetTool, LocalSandbox, ModelResponse, OpenAiCompatibleConfig,
-    OpenAiCompatibleModel, Pricing, ProjectBriefAnnotateTool, ProjectBriefAnnotationsListTool,
-    ProjectBriefDraftApplyTool, ProjectBriefDraftCreateTool, ProjectBriefDraftGetTool,
-    ProjectBriefDraftsListTool, ProjectBriefDraftSubmitTool, ProjectBriefGetTool,
-    ProjectBriefResolveAnnotationTool, ProjectBriefVersionGetTool,
+    IssueCommentTool, IssueGetTool, ListSkillsTool, LoadSkillTool, LocalSandbox, ModelResponse,
+    OpenAiCompatibleConfig, OpenAiCompatibleModel, Pricing, ProjectBriefAnnotateTool,
+    ProjectBriefAnnotationsListTool, ProjectBriefDraftApplyTool, ProjectBriefDraftCreateTool,
+    ProjectBriefDraftGetTool, ProjectBriefDraftsListTool, ProjectBriefDraftSubmitTool,
+    ProjectBriefGetTool, ProjectBriefResolveAnnotationTool, ProjectBriefVersionGetTool,
     ProjectBriefVersionsListTool, RequirementsGetTool, RunOutcome, ScriptedModel,
     TaskAllowedOperationsTool, TaskCommentTool, TaskLinksListTool, TaskOperationTool, ToolRegistry,
 };
@@ -204,6 +204,8 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
+    tools.register(Arc::new(ListSkillsTool));
+    tools.register(Arc::new(LoadSkillTool));
     tools.register(Arc::new(ProjectBriefGetTool::new(Arc::clone(&client))));
     tools.register(Arc::new(ProjectBriefVersionsListTool::new(Arc::clone(
         &client,

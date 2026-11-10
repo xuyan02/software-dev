@@ -6,18 +6,18 @@ use uuid::Uuid;
 use crate::{PostgresStore, backend};
 
 impl PostgresStore {
-    /// Goal-clarification tasks whose current project brief version has been
+    /// Project-brief-writing tasks whose current brief version has been
     /// approved but the task has not been completed yet.
-    pub async fn approved_goal_clarifications(&self) -> Result<Vec<(Uuid, Uuid, Uuid)>, RepoError> {
+    pub async fn approved_project_briefs(&self) -> Result<Vec<(Uuid, Uuid, Uuid)>, RepoError> {
         sqlx::query_as(
             "select t.id, t.project_id, b.approved_by \
              from tasks t \
              join project_brief_current c on c.project_id = t.project_id \
              join project_briefs b \
                on b.project_id = c.project_id and b.version = c.version \
-             where t.workflow = 'goal_clarification' \
+             where t.workflow = 'project_brief_writing' \
                and t.state = 'in_progress' \
-               and t.stage = 'awaiting_acceptance' \
+               and t.stage = 'acceptance' \
                and b.status = 'approved' \
                and b.approved_by is not null",
         )

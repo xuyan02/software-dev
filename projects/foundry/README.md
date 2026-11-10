@@ -301,6 +301,7 @@ cargo xtask check
 - [状态机](docs/domain/state-machines.md)
 - [流程定义 AST](docs/domain/workflow-ast.md)
 - [内置流程](docs/domain/builtin-workflows.md)
+- [项目简报撰写技能](skills/project-brief-writing.md)
 - [术语表](docs/domain/glossary.md)
 - [API / MCP](docs/api/README.md)
 - [运行手册](docs/operations/runbook.md)

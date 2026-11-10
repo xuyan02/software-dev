@@ -38,8 +38,8 @@ impl Tool for ProjectBriefGetTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "project_brief_get".to_string(),
-            description: "Read the current project brief version: problem, goals, metrics, \
-                          scope, constraints, risks and stakeholders."
+            description: "Read the current project brief version: background, goals, scope, \
+                          constraints, risks, terms, budget and open questions."
                 .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
@@ -257,10 +257,9 @@ impl Tool for ProjectBriefDraftApplyTool {
         ToolSpec {
             name: "project_brief_draft_apply".to_string(),
             description: "Apply exactly one structured operation to a draft. Operation types: \
-                          set_problem, set_goals, set_success_metrics, set_scope, \
-                          set_constraints, set_risks, set_stakeholders, set_budget, \
-                          set_assumptions, set_open_questions. Use the revision returned by the \
-                          previous call."
+                          set_problem, set_goals, set_scope, \
+                          set_constraints, set_risks, set_terms, set_budget. Use the \
+                          revision returned by the previous call."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -418,9 +417,8 @@ impl Tool for ProjectBriefAnnotateTool {
                     "target_type": {
                         "type": "string",
                         "enum": [
-                            "document", "problem", "goals", "success_metrics", "scope",
-                            "constraints", "risks", "stakeholders", "budget", "assumptions",
-                            "open_questions"
+                            "document", "problem", "goals", "scope",
+                            "constraints", "risks", "terms", "budget"
                         ]
                     },
                     "target_id": { "type": "string" },

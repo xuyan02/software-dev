@@ -1524,25 +1524,6 @@ pub fn project_brief_page(
         .map(|draft| &draft.body)
         .unwrap_or(&data.body);
     let ro = "";
-    let metrics = editor_body
-        .success_metrics
-        .iter()
-        .map(|metric| {
-            format!(
-                "{} | {} | {} | {} | {} | {}",
-                metric.name,
-                metric.target,
-                metric.unit,
-                metric.measurement,
-                metric.window,
-                metric
-                    .baseline
-                    .map(|value| value.to_string())
-                    .unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
     let risks = editor_body
         .risks
         .iter()
@@ -1558,17 +1539,10 @@ pub fn project_brief_page(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let stakeholders = editor_body
-        .stakeholders
+    let terms = editor_body
+        .terms
         .iter()
-        .map(|stakeholder| {
-            format!(
-                "{} | {} | {}",
-                stakeholder.role,
-                stakeholder.account,
-                stakeholder.decision_rights.join(",")
-            )
-        })
+        .map(|term| format!("{} | {}", term.term, term.definition))
         .collect::<Vec<_>>()
         .join("\n");
     let (budget_amount, budget_currency, budget_note) = editor_body
@@ -1651,7 +1625,7 @@ pub fn project_brief_page(
   <input type="hidden" name="draft_id" value="{draft_id}">
   <input type="hidden" name="revision" value="{revision}">
   <div class="field">
-    <label for="problem">问题 / 为什么做</label>
+    <label for="problem">背景（现状、需求、痛点、价值）</label>
     <textarea id="problem" name="problem"{ro}>{problem}</textarea>
   </div>
   <div class="field">
@@ -1659,30 +1633,24 @@ pub fn project_brief_page(
     <textarea id="goals" name="goals"{ro}>{goals}</textarea>
   </div>
   <div class="field">
-    <label for="success_metrics">成功指标（每行：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选））</label>
-    <textarea id="success_metrics" name="success_metrics"{ro}>{metrics}</textarea>
+    <label for="out_of_scope">非目标（每行一个）</label>
+    <textarea id="out_of_scope" name="out_of_scope"{ro}>{out_of_scope}</textarea>
   </div>
-  <div class="grid">
-    <div class="field">
-      <label for="in_scope">范围内（每行一个）</label>
-      <textarea id="in_scope" name="in_scope"{ro}>{in_scope}</textarea>
-    </div>
-    <div class="field">
-      <label for="out_of_scope">非目标（每行一个）</label>
-      <textarea id="out_of_scope" name="out_of_scope"{ro}>{out_of_scope}</textarea>
-    </div>
+  <div class="field">
+    <label for="in_scope">范围内（每行一个）</label>
+    <textarea id="in_scope" name="in_scope"{ro}>{in_scope}</textarea>
   </div>
   <div class="field">
     <label for="constraints">约束（每行一个）</label>
     <textarea id="constraints" name="constraints"{ro}>{constraints}</textarea>
   </div>
   <div class="field">
-    <label for="risks">风险（每行：描述 | 概率(low/medium/high) | 影响(low/medium/high) | 缓解 | 负责人）</label>
+    <label for="risks">风险 / 未解决项（每行：未解决项 | 概率(low/medium/high) | 影响(low/medium/high) | 后续处理 | 负责人）</label>
     <textarea id="risks" name="risks"{ro}>{risks}</textarea>
   </div>
   <div class="field">
-    <label for="stakeholders">干系人（每行：角色 | 账号 | 决策权（逗号分隔））</label>
-    <textarea id="stakeholders" name="stakeholders"{ro}>{stakeholders}</textarea>
+    <label for="terms">术语（每行：术语 | 解释）</label>
+    <textarea id="terms" name="terms"{ro}>{terms}</textarea>
   </div>
   <div class="grid">
     <div class="field"><label for="budget_amount">预算金额（可选）</label>
@@ -1692,14 +1660,6 @@ pub fn project_brief_page(
   </div>
   <div class="field"><label for="budget_note">预算说明（可选）</label>
     <input id="budget_note" name="budget_note" value="{budget_note}"{ro}></div>
-  <div class="field">
-    <label for="assumptions">假设（每行一个）</label>
-    <textarea id="assumptions" name="assumptions"{ro}>{assumptions}</textarea>
-  </div>
-  <div class="field">
-    <label for="open_questions">待决问题（每行一个）</label>
-    <textarea id="open_questions" name="open_questions"{ro}>{open_questions}</textarea>
-  </div>
   {buttons}
 </form>"#,
             project_id = project.id,
@@ -1708,17 +1668,14 @@ pub fn project_brief_page(
             ro = ro,
             problem = escape(&editor_body.problem),
             goals = escape(&editor_body.goals.join("\n")),
-            metrics = escape(&metrics),
             in_scope = escape(&editor_body.scope.in_scope.join("\n")),
             out_of_scope = escape(&editor_body.scope.out_of_scope.join("\n")),
             constraints = escape(&editor_body.constraints.join("\n")),
             risks = escape(&risks),
-            stakeholders = escape(&stakeholders),
+            terms = escape(&terms),
             budget_amount = escape(&budget_amount),
             budget_currency = escape(&budget_currency),
             budget_note = escape(&budget_note),
-            assumptions = escape(&editor_body.assumptions.join("\n")),
-            open_questions = escape(&editor_body.open_questions.join("\n")),
             buttons = buttons,
         )
     } else {
@@ -1758,7 +1715,7 @@ pub fn project_brief_page(
     let body = format!(
         r#"<p><a href="/projects/{project_id}">← 返回项目</a></p>
 <h1>{project_name} · 项目简报</h1>
-<p class="sub">项目级承诺：为什么做、目标、成功指标、范围和非目标、约束、风险、干系人。</p>
+<p class="sub">项目级承诺：背景、目标、非目标、范围、约束、风险、术语、预算。</p>
 <div class="meta">
   <span>当前版本 <strong>{status}</strong></span>
   <span>版本 {revision}</span>
@@ -1839,7 +1796,7 @@ fn brief_annotate_link(
 fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
     let mut out = String::from(r#"<div class="brief">"#);
     out.push_str(&format!(
-        "<h2>问题 / 为什么做{}</h2>",
+        "<h2>背景{}</h2>",
         brief_annotate_link(editable, "problem", None, None)
     ));
     if body.problem.trim().is_empty() {
@@ -1857,45 +1814,16 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
     out.push_str(&brief_list(&body.goals));
 
     out.push_str(&format!(
-        "<h2>成功指标{}</h2>",
-        brief_annotate_link(editable, "success_metrics", None, None)
-    ));
-    if body.success_metrics.is_empty() {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    } else {
-        out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>指标</th><th>基线</th><th>目标</th><th>单位</th><th>测量方式</th><th>窗口</th></tr></thead><tbody>"#,
-        );
-        for metric in &body.success_metrics {
-            out.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                inline_markdown(&metric.name, 0),
-                brief_annotate_link(editable, "success_metrics", Some(&metric.id), None),
-                metric
-                    .baseline
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "—".to_string()),
-                metric.target,
-                inline_markdown(&metric.unit, 0),
-                inline_markdown(&metric.measurement, 0),
-                inline_markdown(&metric.window, 0),
-            ));
-        }
-        out.push_str("</tbody></table></div>");
-    }
-
-    out.push_str(&format!(
-        r#"<h2>范围与非目标{}</h2><div class="two-col"><div><h3>范围内{}</h3>"#,
-        brief_annotate_link(editable, "scope", None, None),
-        brief_annotate_link(editable, "scope", None, Some("in_scope"))
-    ));
-    out.push_str(&brief_list(&body.scope.in_scope));
-    out.push_str(&format!(
-        r#"</div><div><h3>非目标{}</h3>"#,
+        "<h2>非目标{}</h2>",
         brief_annotate_link(editable, "scope", None, Some("out_of_scope"))
     ));
     out.push_str(&brief_list(&body.scope.out_of_scope));
-    out.push_str("</div></div>");
+
+    out.push_str(&format!(
+        "<h2>范围{}</h2>",
+        brief_annotate_link(editable, "scope", None, Some("in_scope"))
+    ));
+    out.push_str(&brief_list(&body.scope.in_scope));
 
     out.push_str(&format!(
         "<h2>约束{}</h2>",
@@ -1911,7 +1839,7 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
         out.push_str(r#"<p class="empty">未填写</p>"#);
     } else {
         out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>风险</th><th>概率</th><th>影响</th><th>缓解</th><th>负责人</th></tr></thead><tbody>"#,
+            r#"<div class="table-wrap"><table><thead><tr><th>未解决项</th><th>概率</th><th>影响</th><th>后续处理</th><th>负责人</th></tr></thead><tbody>"#,
         );
         for risk in &body.risks {
             out.push_str(&format!(
@@ -1928,27 +1856,21 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
     }
 
     out.push_str(&format!(
-        "<h2>干系人{}</h2>",
-        brief_annotate_link(editable, "stakeholders", None, None)
+        "<h2>术语{}</h2>",
+        brief_annotate_link(editable, "terms", None, None)
     ));
-    if body.stakeholders.is_empty() {
+    if body.terms.is_empty() {
         out.push_str(r#"<p class="empty">未填写</p>"#);
     } else {
         out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>角色</th><th>账号</th><th>决策权</th></tr></thead><tbody>"#,
+            r#"<div class="table-wrap"><table><thead><tr><th>术语</th><th>解释</th></tr></thead><tbody>"#,
         );
-        for stakeholder in &body.stakeholders {
-            let rights = if stakeholder.decision_rights.is_empty() {
-                "—".to_string()
-            } else {
-                stakeholder.decision_rights.join("、")
-            };
+        for term in &body.terms {
             out.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td></tr>",
-                inline_markdown(&stakeholder.role, 0),
-                brief_annotate_link(editable, "stakeholders", Some(&stakeholder.id), None),
-                inline_markdown(&stakeholder.account, 0),
-                escape(&rights),
+                "<tr><td>{}{}</td><td>{}</td></tr>",
+                inline_markdown(&term.term, 0),
+                brief_annotate_link(editable, "terms", Some(&term.term), None),
+                inline_markdown(&term.definition, 0),
             ));
         }
         out.push_str("</tbody></table></div>");
@@ -1973,16 +1895,6 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
         out.push_str(r#"<p class="empty">未填写</p>"#);
     }
 
-    out.push_str(&format!(
-        "<h2>假设{}</h2>",
-        brief_annotate_link(editable, "assumptions", None, None)
-    ));
-    out.push_str(&brief_list(&body.assumptions));
-    out.push_str(&format!(
-        "<h2>待决问题{}</h2>",
-        brief_annotate_link(editable, "open_questions", None, None)
-    ));
-    out.push_str(&brief_list(&body.open_questions));
     out.push_str("</div>");
     out
 }
@@ -2023,20 +1935,17 @@ fn project_brief_annotations_html(
     <div class="field"><label for="target_type">目标</label>
       <select id="target_type" name="target_type">
         <option value="document">整个简报</option>
-        <option value="problem">问题 / 为什么做</option>
+        <option value="problem">背景</option>
         <option value="goals">项目目标</option>
-        <option value="success_metrics">成功指标</option>
         <option value="scope">范围与非目标</option>
         <option value="constraints">约束</option>
         <option value="risks">风险</option>
-        <option value="stakeholders">干系人</option>
+        <option value="terms">术语</option>
         <option value="budget">预算</option>
-        <option value="assumptions">假设</option>
-        <option value="open_questions">待决问题</option>
       </select>
     </div>
     <div class="field"><label for="target_id">对象 ID（可选）</label>
-      <input id="target_id" name="target_id" placeholder="例如指标、风险或干系人的 id"></div>
+      <input id="target_id" name="target_id" placeholder="例如风险或术语的 id"></div>
   </div>
   <div class="field"><label for="annotation-field">字段（可选）</label>
     <input id="annotation-field" name="field" placeholder="例如 target / mitigation / decision_rights"></div>
@@ -2136,16 +2045,13 @@ fn project_brief_annotation_target_label(
     use foundry_domain::ProjectBriefAnnotationTarget::*;
     match target {
         Document => "整个简报",
-        Problem => "问题 / 为什么做",
+        Problem => "背景",
         Goals => "项目目标",
-        SuccessMetrics => "成功指标",
         Scope => "范围与非目标",
         Constraints => "约束",
         Risks => "风险",
-        Stakeholders => "干系人",
+        Terms => "术语",
         Budget => "预算",
-        Assumptions => "假设",
-        OpenQuestions => "待决问题",
     }
 }
 
@@ -3618,7 +3524,7 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
         r#"<h1>智能体</h1>
 <p class="sub">智能体由平台定义，用户不能新建或修改；这里只管理运行状态。</p>
 {error_html}
-<p class="hint">目标澄清任务（<code>goal_clarification / clarifier</code>）由 PM Agent 自动承接。</p>
+<p class="hint">目标澄清任务（<code>project_brief_writing / clarifier</code>）由 PM Agent 自动承接。</p>
 <table>
 <thead><tr><th>名称 / 账户</th><th>模型</th><th>启用</th><th>进程</th><th>心跳 / 错误</th><th></th></tr></thead>
 <tbody>{definition_rows}</tbody>
@@ -4227,45 +4133,41 @@ mod tests {
         let body = ProjectBriefBody {
             problem: "因为 <原因>".to_string(),
             goals: vec!["目标一".to_string()],
-            success_metrics: vec![foundry_domain::SuccessMetric {
-                name: "转化率".to_string(),
-                baseline: Some(1.0),
-                target: 2.0,
-                unit: "%".to_string(),
-                measurement: "埋点".to_string(),
-                window: "30 天".to_string(),
-                ..Default::default()
-            }],
+            scope: foundry_domain::ProjectScope {
+                in_scope: vec!["范围一".to_string()],
+                out_of_scope: vec!["非目标一".to_string()],
+            },
             risks: vec![foundry_domain::Risk {
                 description: "风险一".to_string(),
                 probability: RiskLevel::High,
                 impact: RiskLevel::Medium,
                 ..Default::default()
             }],
-            stakeholders: vec![foundry_domain::Stakeholder {
-                role: "用户".to_string(),
-                account: "团队".to_string(),
-                decision_rights: vec!["验收".to_string()],
-                ..Default::default()
+            terms: vec![foundry_domain::Term {
+                term: "SLA".to_string(),
+                definition: "服务等级协议".to_string(),
             }],
             ..Default::default()
         };
 
         let html = project_brief_document(&body, false);
 
-        assert!(html.contains("问题 / 为什么做"));
+        assert!(html.contains("<h2>背景</h2>"));
         assert!(html.contains("&lt;原因&gt;"));
         assert!(html.contains("<h2>项目目标</h2>"));
-        assert!(html.contains("转化率"));
+        assert!(html.contains("<h2>非目标</h2>"));
+        assert!(html.contains("非目标一"));
+        assert!(html.contains("<h2>范围</h2>"));
+        assert!(html.contains("范围一"));
         assert!(html.contains("<h2>风险</h2>"));
         assert!(html.contains("高"));
-        assert!(html.contains("<h2>干系人</h2>"));
-        assert!(html.contains("验收"));
+        assert!(html.contains("<h2>术语</h2>"));
+        assert!(html.contains("SLA"));
+        assert!(html.contains("服务等级协议"));
 
         let editable = project_brief_document(&body, true);
         assert!(editable.contains(r#"data-annotate-type="problem""#));
-        assert!(editable.contains(r#"data-annotate-type="success_metrics""#));
-        assert!(editable.contains(r#"data-annotate-type="stakeholders""#));
+        assert!(editable.contains(r#"data-annotate-type="terms""#));
     }
 
     #[test]
@@ -4313,7 +4215,7 @@ mod tests {
             name: "Clarifier <script>".to_string(),
             account_id: account.id,
             account_handle: "agent".to_string(),
-            role: "goal_clarification:clarifier".to_string(),
+            role: "project_brief_writing:clarifier".to_string(),
             model_base_url: "http://127.0.0.1:11434/v1".to_string(),
             model_name: "test-model".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),

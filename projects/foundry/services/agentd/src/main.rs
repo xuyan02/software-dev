@@ -12,7 +12,7 @@ use foundry_agent_runtime::{
     AgentTemplatesListTool, AgentsListTool, Budget, EchoTool, FoundryClient,
     FoundryRequirementsApplyTool, FoundryRequirementsDraftTool, FoundryRequirementsGetTool,
     FoundryRequirementsValidateTool, InMemoryTrajectory, IssueCommentTool, IssueGetTool,
-    LocalSandbox, OpenAiCompatibleConfig, OpenAiCompatibleModel,
+    ListSkillsTool, LoadSkillTool, LocalSandbox, OpenAiCompatibleConfig, OpenAiCompatibleModel,
     ProjectBriefAnnotateTool, ProjectBriefAnnotationsListTool, ProjectBriefDraftApplyTool,
     ProjectBriefDraftCreateTool, ProjectBriefDraftGetTool, ProjectBriefDraftsListTool,
     ProjectBriefDraftSubmitTool, ProjectBriefGetTool, ProjectBriefResolveAnnotationTool,
@@ -203,7 +203,12 @@ async fn run_dispatcher_watcher(
     ));
     let tools = build_tools(definition, &client, config.sandbox_root.as_deref())?;
     let trajectory = Arc::new(InMemoryTrajectory::new());
-    let runtime = AgentRuntime::new(model, Arc::new(tools), trajectory, Budget::default());
+    let runtime = AgentRuntime::new(
+        model,
+        Arc::new(tools),
+        trajectory,
+        Budget::unlimited(),
+    );
 
     loop {
         let mut notifications = match listen_task_changes(&config.database_url).await {
@@ -326,7 +331,7 @@ async fn execute_task(
         model,
         Arc::new(tools),
         Arc::new(InMemoryTrajectory::new()),
-        Budget::default(),
+        Budget::unlimited(),
     );
 
     let task_id = task.task_id.to_string();
@@ -387,6 +392,12 @@ fn build_tools(
     let mut tools = ToolRegistry::new();
     if wants("echo") {
         tools.register(Arc::new(EchoTool));
+    }
+    if wants("list_skills") {
+        tools.register(Arc::new(ListSkillsTool));
+    }
+    if wants("load_skill") {
+        tools.register(Arc::new(LoadSkillTool));
     }
     if wants("project_brief_get") {
         tools.register(Arc::new(ProjectBriefGetTool::new(Arc::clone(client))));

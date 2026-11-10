@@ -1192,9 +1192,6 @@ fn brief_form_operations(body: ProjectBriefBody) -> Vec<ProjectBriefDraftOperati
             value: body.problem,
         },
         ProjectBriefDraftOperation::SetGoals { values: body.goals },
-        ProjectBriefDraftOperation::SetSuccessMetrics {
-            values: body.success_metrics,
-        },
         ProjectBriefDraftOperation::SetScope {
             in_scope: body.scope.in_scope,
             out_of_scope: body.scope.out_of_scope,
@@ -1203,16 +1200,8 @@ fn brief_form_operations(body: ProjectBriefBody) -> Vec<ProjectBriefDraftOperati
             values: body.constraints,
         },
         ProjectBriefDraftOperation::SetRisks { values: body.risks },
-        ProjectBriefDraftOperation::SetStakeholders {
-            values: body.stakeholders,
-        },
+        ProjectBriefDraftOperation::SetTerms { values: body.terms },
         ProjectBriefDraftOperation::SetBudget { value: body.budget },
-        ProjectBriefDraftOperation::SetAssumptions {
-            values: body.assumptions,
-        },
-        ProjectBriefDraftOperation::SetOpenQuestions {
-            values: body.open_questions,
-        },
     ]
 }
 

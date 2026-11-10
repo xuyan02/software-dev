@@ -758,7 +758,7 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|task| task["workflow"] == "goal_clarification")
+        .find(|task| task["workflow"] == "project_brief_writing")
         .and_then(|task| task["id"].as_str())
         .unwrap()
         .to_string();
@@ -770,8 +770,8 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
         .unwrap();
     let (status, _, body) = send(&harness.router, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Clarify project goals"));
-    assert!(body.contains("goal_clarification"));
+    assert!(body.contains("撰写项目简报"));
+    assert!(body.contains("project_brief_writing"));
     assert!(body.contains("智能体"));
 
     let request = Request::builder()
@@ -781,7 +781,7 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
         .unwrap();
     let (status, _, body) = send(&harness.router, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Clarify project goals"));
+    assert!(body.contains("撰写项目简报"));
     assert!(body.contains("Project clarification: Primary"));
     assert!(body.contains("打开议题"));
 }
@@ -851,10 +851,6 @@ async fn project_brief_console_saves_submits_and_approves() {
             ("action".to_string(), action.to_string()),
             ("problem".to_string(), "客服只能整单退款".to_string()),
             ("goals".to_string(), "支持部分退款".to_string()),
-            (
-                "success_metrics".to_string(),
-                "人工处理量 | 700 | 件/月 | 客服看板 | 上线后 3 个月".to_string(),
-            ),
             ("in_scope".to_string(), "部分退款".to_string()),
             ("out_of_scope".to_string(), "多次退款合并".to_string()),
             ("constraints".to_string(), "兼容支付网关".to_string()),
@@ -862,18 +858,9 @@ async fn project_brief_console_saves_submits_and_approves() {
                 "risks".to_string(),
                 "网关风险 | medium | high | 双写校验 | 张三".to_string(),
             ),
-            (
-                "stakeholders".to_string(),
-                "产品 | product-owner | 目标,范围".to_string(),
-            ),
             ("budget_amount".to_string(), "100000".to_string()),
             ("budget_currency".to_string(), "CNY".to_string()),
             ("budget_note".to_string(), "首期".to_string()),
-            (
-                "assumptions".to_string(),
-                "支付网关支持部分退款".to_string(),
-            ),
-            ("open_questions".to_string(), String::new()),
         ]
     };
     let post_page = |revision: &str, action: &str| {
@@ -898,7 +885,7 @@ async fn project_brief_console_saves_submits_and_approves() {
     assert!(body.contains("支持部分退款"));
     assert!(body.contains("多次退款合并"));
 
-    let (status, headers, _) = send(&harness.router, post_page("11", "submit")).await;
+    let (status, headers, _) = send(&harness.router, post_page("8", "submit")).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(
         headers[header::LOCATION].to_str().unwrap(),
@@ -1764,7 +1751,7 @@ async fn create_first_admin_requires_an_empty_account_table() {
 }
 
 #[tokio::test]
-async fn project_creation_creates_the_root_and_goal_clarification() {
+async fn project_creation_creates_the_root_and_project_brief_writing() {
     let harness = harness().await;
 
     let list = body_json(
@@ -1793,11 +1780,11 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
 
     let child = tasks
         .iter()
-        .find(|task| task["workflow"] == "goal_clarification")
+        .find(|task| task["workflow"] == "project_brief_writing")
         .expect("goal clarification child");
     assert_eq!(child["parent_id"], root["id"]);
     assert_eq!(child["state"], "pending");
-    assert_eq!(child["stage"], "work");
+    assert_eq!(child["stage"], "clarify");
     assert_eq!(child["dispatch_state"], "ready");
 
     let detail = body_json(
@@ -1813,7 +1800,7 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
     .await;
     assert_eq!(detail["allowed_operations"], json!([]));
     assert_eq!(detail["actors"], json!([]));
-    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 4);
+    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 5);
 
     let ready = body_json(
         &harness.router,
@@ -1827,7 +1814,7 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
     )
     .await;
     assert_eq!(ready.as_array().unwrap().len(), 1);
-    assert_eq!(ready[0]["workflow"], "goal_clarification");
+    assert_eq!(ready[0]["workflow"], "project_brief_writing");
 
     // The child's `task.created` action creates the clarification Issue and
     // links it to the Task.
@@ -1907,7 +1894,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|task| task["workflow"] == "goal_clarification")
+        .find(|task| task["workflow"] == "project_brief_writing")
         .and_then(|task| task["id"].as_str())
         .unwrap()
         .parse()
@@ -1934,6 +1921,17 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             project_id,
             child_id,
             foundry_domain::RoleKey::new("clarifier"),
+            harness.admin_id,
+            harness.admin_id,
+        )
+        .await
+        .unwrap();
+    harness
+        .tasks
+        .bind_actor(
+            project_id,
+            child_id,
+            foundry_domain::RoleKey::new("brief_writer"),
             harness.admin_id,
             harness.admin_id,
         )
@@ -1992,9 +1990,16 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .collect();
     assert_eq!(allowed_names, vec!["started", "completed"]);
 
-    for (index, operation) in ["started", "completed", "approved", "approved", "approved"]
-        .iter()
-        .enumerate()
+    for (index, operation) in [
+        "started",   // clarify
+        "completed", // clarify → brief
+        "completed", // brief → style_review
+        "approved",  // style_review → content_review
+        "approved",  // content_review → acceptance
+        "approved",  // acceptance → completed
+    ]
+    .iter()
+    .enumerate()
     {
         let (status, _, body) = send(
             &harness.router,
@@ -2018,7 +2023,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:4:approved") }),
+            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:5:approved") }),
         ),
     )
     .await;
@@ -2040,7 +2045,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
     assert_eq!(detail["dispatch_state"], "closed");
     assert_eq!(detail["allowed_operations"], json!([]));
     let actors = detail["actors"].as_array().unwrap();
-    assert_eq!(actors.len(), 4);
+    assert_eq!(actors.len(), 5);
     assert!(actors.iter().all(|actor| actor["active"] == false));
 
     let history = body_json(
@@ -3090,29 +3095,16 @@ async fn project_brief_round_trips_over_http() {
         json!({ "type": "set_problem", "value": "客服只能整单退款" }),
         json!({ "type": "set_goals", "values": ["支持部分退款"] }),
         json!({
-            "type": "set_success_metrics",
-            "values": [{
-                "id": "m1",
-                "name": "人工处理量",
-                "target": 700,
-                "unit": "件/月",
-                "measurement": "客服看板",
-                "window": "上线后 3 个月"
-            }]
-        }),
-        json!({
             "type": "set_scope",
             "in_scope": ["部分退款"],
             "out_of_scope": ["多次退款合并"]
         }),
         json!({ "type": "set_constraints", "values": ["兼容支付网关"] }),
         json!({
-            "type": "set_stakeholders",
+            "type": "set_terms",
             "values": [{
-                "id": "s1",
-                "role": "产品",
-                "account": "product-owner",
-                "decision_rights": ["目标/范围"]
+                "term": "SLA",
+                "definition": "服务等级协议"
             }]
         }),
     ];
@@ -3239,16 +3231,16 @@ async fn project_brief_round_trips_over_http() {
             Some(&harness.admin_token),
             None,
             json!({
-                "target_type": "success_metrics",
-                "target_id": "m1",
-                "field": "target",
-                "body": "目标值需要说明理由",
+                "target_type": "terms",
+                "target_id": "SLA",
+                "field": "definition",
+                "body": "解释需要更清楚",
             }),
         ),
     )
     .await;
     assert_eq!(annotation["status"], "open");
-    assert_eq!(annotation["target_id"], "m1");
+    assert_eq!(annotation["target_id"], "SLA");
     let annotation_id = annotation["id"].as_str().unwrap().to_string();
 
     let open = body_json(

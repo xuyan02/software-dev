@@ -145,9 +145,9 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         ids,
         vec![
             "architecture_design",
-            "goal_clarification",
             "iteration",
             "project",
+            "project_brief_writing",
             "project_review",
             "release",
             "requirements_analysis",
@@ -189,7 +189,7 @@ fn project_root_starts_and_creates_the_first_child() {
     assert_eq!(mutation.children.len(), 1);
     assert_eq!(
         mutation.children[0].task.workflow.as_str(),
-        "goal_clarification"
+        "project_brief_writing"
     );
     assert_eq!(mutation.children[0].task.parent_id, Some(mutation.task.id));
     assert!(mutation.events.iter().any(|event| {
@@ -206,12 +206,13 @@ fn project_root_starts_and_creates_the_first_child() {
 
 #[test]
 fn leaf_workflow_moves_through_reviews_to_completed() {
-    let workflow = builtin("goal_clarification");
+    let workflow = builtin("project_brief_writing");
     let parent = Uuid::now_v7();
-    let mut leaf = task("goal_clarification", TaskState::Pending, None);
+    let mut leaf = task("project_brief_writing", TaskState::Pending, None);
     leaf.parent_id = Some(parent);
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
+    let brief_writer = Uuid::now_v7();
     let style_reviewer = Uuid::now_v7();
     let content_reviewer = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
@@ -219,6 +220,7 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
         leaf,
         vec![
             actor(task_id, "clarifier", clarifier, false),
+            actor(task_id, "brief_writer", brief_writer, false),
             actor(task_id, "style_reviewer", style_reviewer, false),
             actor(task_id, "content_reviewer", content_reviewer, false),
             actor(task_id, "acceptor", acceptor, false),
@@ -229,7 +231,7 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
 
     let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
     assert_eq!(created.task.state, TaskState::Pending);
-    assert_eq!(created.task.stage.as_deref(), Some("work"));
+    assert_eq!(created.task.stage.as_deref(), Some("clarify"));
     assert!(
         created
             .actors
@@ -242,7 +244,25 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
     assert_eq!(started.task.state, TaskState::InProgress);
     state = aggregate_of(started);
 
-    let completed = operation(&workflow, state, "completed", clarifier);
+    // Clarification is finished; the brief writer takes over.
+    let clarified = operation(&workflow, state, "completed", clarifier);
+    assert_eq!(clarified.task.stage.as_deref(), Some("brief"));
+    assert!(
+        clarified
+            .actors
+            .iter()
+            .any(|a| a.account_id == brief_writer && a.active)
+    );
+    assert!(
+        !clarified
+            .actors
+            .iter()
+            .any(|a| a.account_id == clarifier && a.active)
+    );
+    state = aggregate_of(clarified);
+
+    // The brief is written and submitted for style review.
+    let completed = operation(&workflow, state, "completed", brief_writer);
     assert_eq!(completed.task.stage.as_deref(), Some("style_review"));
     assert!(
         completed
@@ -254,7 +274,7 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
         !completed
             .actors
             .iter()
-            .any(|a| a.account_id == clarifier && a.active)
+            .any(|a| a.account_id == brief_writer && a.active)
     );
     state = aggregate_of(completed);
 
@@ -268,7 +288,7 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
     );
 
     state = aggregate_of(operation(&workflow, state, "approved", content_reviewer));
-    assert_eq!(state.task.stage.as_deref(), Some("awaiting_acceptance"));
+    assert_eq!(state.task.stage.as_deref(), Some("acceptance"));
     assert!(
         state
             .actors
@@ -279,6 +299,10 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
     let approved = operation(&workflow, state, "approved", acceptor);
     assert_eq!(approved.task.state, TaskState::Completed);
     assert_eq!(approved.task.result, Some(TaskResult::new("approved")));
+    assert!(
+        approved.task.stage_variables.is_empty(),
+        "stage variables are cleared when the task exits the last stage"
+    );
     assert!(approved.actors.iter().all(|a| !a.active));
     assert!(approved.events.iter().any(|event| {
         event.kind == DomainEventKind::ChildStateChanged && event.aggregate_id == parent
@@ -287,15 +311,17 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
 
 #[test]
 fn reevaluate_applies_a_pending_transition_from_persisted_variables() {
-    let workflow = builtin("goal_clarification");
-    let mut leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
-    leaf.stage_variables
-        .insert("completed".to_string(), VariableValue::Bool(true));
+    let workflow = builtin("project_brief_writing");
+    let mut leaf = task("project_brief_writing", TaskState::InProgress, Some("brief"));
+    leaf.stage_variables.insert(
+        "outcome".to_string(),
+        VariableValue::String("completed".to_string()),
+    );
     let task_id = leaf.id;
-    let clarifier = Uuid::now_v7();
+    let brief_writer = Uuid::now_v7();
     let state = aggregate(
         leaf,
-        vec![actor(task_id, "clarifier", clarifier, true)],
+        vec![actor(task_id, "brief_writer", brief_writer, true)],
         vec![],
         vec![],
     );
@@ -313,17 +339,19 @@ fn reevaluate_applies_a_pending_transition_from_persisted_variables() {
 
 #[test]
 fn stage_entry_bumps_task_updated_at() {
-    let workflow = builtin("goal_clarification");
-    let mut leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
-    leaf.stage_variables
-        .insert("completed".to_string(), VariableValue::Bool(true));
+    let workflow = builtin("project_brief_writing");
+    let mut leaf = task("project_brief_writing", TaskState::InProgress, Some("brief"));
+    leaf.stage_variables.insert(
+        "outcome".to_string(),
+        VariableValue::String("completed".to_string()),
+    );
     let old = time::OffsetDateTime::now_utc() - time::Duration::seconds(60);
     leaf.updated_at = old;
     let task_id = leaf.id;
-    let clarifier = Uuid::now_v7();
+    let brief_writer = Uuid::now_v7();
     let state = aggregate(
         leaf,
-        vec![actor(task_id, "clarifier", clarifier, true)],
+        vec![actor(task_id, "brief_writer", brief_writer, true)],
         vec![],
         vec![],
     );
@@ -335,20 +363,20 @@ fn stage_entry_bumps_task_updated_at() {
 }
 
 #[test]
-fn brief_review_rejection_returns_to_the_clarifier() {
-    let workflow = builtin("goal_clarification");
+fn brief_review_rejection_returns_to_the_brief_writer() {
+    let workflow = builtin("project_brief_writing");
     let leaf = task(
-        "goal_clarification",
+        "project_brief_writing",
         TaskState::InProgress,
         Some("style_review"),
     );
     let task_id = leaf.id;
-    let clarifier = Uuid::now_v7();
+    let brief_writer = Uuid::now_v7();
     let style_reviewer = Uuid::now_v7();
     let state = aggregate(
         leaf,
         vec![
-            actor(task_id, "clarifier", clarifier, false),
+            actor(task_id, "brief_writer", brief_writer, false),
             actor(task_id, "style_reviewer", style_reviewer, true),
         ],
         vec![],
@@ -356,12 +384,12 @@ fn brief_review_rejection_returns_to_the_clarifier() {
     );
 
     let rejected = operation(&workflow, state, "rejected", style_reviewer);
-    assert_eq!(rejected.task.stage.as_deref(), Some("work"));
+    assert_eq!(rejected.task.stage.as_deref(), Some("brief"));
     assert!(
         rejected
             .actors
             .iter()
-            .any(|a| a.account_id == clarifier && a.active)
+            .any(|a| a.account_id == brief_writer && a.active)
     );
     assert!(
         !rejected
@@ -372,20 +400,20 @@ fn brief_review_rejection_returns_to_the_clarifier() {
 }
 
 #[test]
-fn rejection_returns_to_work_with_the_original_worker() {
-    let workflow = builtin("goal_clarification");
+fn acceptance_rejection_returns_to_the_brief_writer() {
+    let workflow = builtin("project_brief_writing");
     let leaf = task(
-        "goal_clarification",
+        "project_brief_writing",
         TaskState::InProgress,
-        Some("awaiting_acceptance"),
+        Some("acceptance"),
     );
     let task_id = leaf.id;
-    let clarifier = Uuid::now_v7();
+    let brief_writer = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
     let state = aggregate(
         leaf,
         vec![
-            actor(task_id, "clarifier", clarifier, false),
+            actor(task_id, "brief_writer", brief_writer, false),
             actor(task_id, "acceptor", acceptor, true),
         ],
         vec![],
@@ -393,13 +421,13 @@ fn rejection_returns_to_work_with_the_original_worker() {
     );
 
     let rejected = operation(&workflow, state, "rejected", acceptor);
-    assert_eq!(rejected.task.stage.as_deref(), Some("work"));
+    assert_eq!(rejected.task.stage.as_deref(), Some("brief"));
     assert_eq!(rejected.task.state, TaskState::InProgress);
     assert!(
         rejected
             .actors
             .iter()
-            .any(|a| a.account_id == clarifier && a.active)
+            .any(|a| a.account_id == brief_writer && a.active)
     );
     assert!(
         !rejected
@@ -411,8 +439,8 @@ fn rejection_returns_to_work_with_the_original_worker() {
 
 #[test]
 fn dependencies_gate_the_start_transition() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::Pending, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::Pending, Some("clarify"));
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
     let state = aggregate(
@@ -441,11 +469,11 @@ fn dependencies_gate_the_start_transition() {
 
 #[test]
 fn parent_cannot_complete_above_an_active_child() {
-    let workflow = builtin("goal_clarification");
+    let workflow = builtin("project_brief_writing");
     let leaf = task(
-        "goal_clarification",
+        "project_brief_writing",
         TaskState::InProgress,
-        Some("awaiting_acceptance"),
+        Some("acceptance"),
     );
     let task_id = leaf.id;
     let acceptor = Uuid::now_v7();
@@ -476,8 +504,8 @@ fn parent_cannot_complete_above_an_active_child() {
 
 #[test]
 fn unauthorized_operation_is_rejected_before_the_workflow_runs() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::InProgress, Some("clarify"));
     let outsider = Uuid::now_v7();
     let state = aggregate(leaf, vec![], vec![], vec![]);
 
@@ -496,8 +524,8 @@ fn unauthorized_operation_is_rejected_before_the_workflow_runs() {
 
 #[test]
 fn authorization_is_stage_level_and_requires_an_active_actor() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::Pending, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::Pending, Some("clarify"));
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
@@ -526,8 +554,8 @@ fn authorization_is_stage_level_and_requires_an_active_actor() {
 
 #[test]
 fn undeclared_operation_is_rejected() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::InProgress, Some("clarify"));
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
     let state = aggregate(
@@ -728,11 +756,11 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
 
     let mutation = apply(&workflow, state.clone(), TaskEvent::Created, now()).unwrap();
     assert_eq!(mutation.task.stage.as_deref(), Some("goal"));
-    assert_eq!(mutation.children[0].task.title, "Clarify project goals");
+    assert_eq!(mutation.children[0].task.title, "撰写项目简报");
     state = absorb(state, mutation);
 
     let steps = [
-        ("goal_clarification", "requirements_analysis"),
+        ("project_brief_writing", "requirements_analysis"),
         ("requirements_analysis", "architecture"),
         ("architecture_design", "roadmap"),
         ("roadmap", "iteration"),
@@ -774,7 +802,7 @@ fn project_failure_branch_completes_with_failed_result() {
         &workflow,
         aggregate(root, vec![], vec![], vec![]),
         child_id,
-        "goal_clarification",
+        "project_brief_writing",
         "failed",
     );
     assert_eq!(mutation.task.stage.as_deref(), Some("goal"));
@@ -871,8 +899,12 @@ fn platform_start_requires_bound_agent_roles() {
 
 #[test]
 fn platform_accept_completes_with_approved_result() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task(
+        "project_brief_writing",
+        TaskState::InProgress,
+        Some("acceptance"),
+    );
     let state = aggregate(leaf, vec![], vec![], vec![]);
 
     let mutation = operation(&workflow, state, ACCEPT_OPERATION, Uuid::now_v7());
@@ -977,8 +1009,8 @@ fn stage_entry_resets_variables() {
 
 #[test]
 fn actor_bound_only_reactivates_roles_of_the_current_stage() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::InProgress, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::InProgress, Some("clarify"));
     let task_id = leaf.id;
     let clarifier = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
@@ -1219,8 +1251,8 @@ fn effects_after_complete_are_rejected() {
 
 #[test]
 fn unknown_role_binding_is_rejected() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::Pending, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::Pending, Some("clarify"));
     let state = aggregate(leaf, vec![], vec![], vec![]);
     let error = apply(
         &workflow,
@@ -1237,8 +1269,8 @@ fn unknown_role_binding_is_rejected() {
 
 #[test]
 fn activation_requires_a_bound_account() {
-    let workflow = builtin("goal_clarification");
-    let leaf = task("goal_clarification", TaskState::Pending, Some("work"));
+    let workflow = builtin("project_brief_writing");
+    let leaf = task("project_brief_writing", TaskState::Pending, Some("clarify"));
     let state = aggregate(leaf, vec![], vec![], vec![]);
     let error = apply(
         &workflow,
@@ -1264,7 +1296,7 @@ fn create_issue_action_emits_issue_create() {
                 "name": "clarify",
                 "events": [{
                     "event": "task.created",
-                    "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = 'Clarify project goals')"
+                    "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project.', relation = 'clarifies', task_workflow = 'project_brief_writing', task_title = 'Clarify project goals')"
                 }]
             }]
         }"#,
@@ -1291,7 +1323,7 @@ fn create_issue_action_emits_issue_create() {
     assert_eq!(issue.relation, "clarifies");
     assert_eq!(mutation.children.len(), 1);
     let child = &mutation.children[0].task;
-    assert_eq!(child.workflow.as_str(), "goal_clarification");
+    assert_eq!(child.workflow.as_str(), "project_brief_writing");
     assert_eq!(child.title, "Clarify project goals");
     assert_eq!(issue.link_task_id, Some(child.id));
 }
