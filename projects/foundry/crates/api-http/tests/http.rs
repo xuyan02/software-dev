@@ -851,16 +851,12 @@ async fn project_brief_console_saves_submits_and_approves() {
             ("action".to_string(), action.to_string()),
             ("problem".to_string(), "客服只能整单退款".to_string()),
             ("goals".to_string(), "支持部分退款".to_string()),
-            ("in_scope".to_string(), "部分退款".to_string()),
-            ("out_of_scope".to_string(), "多次退款合并".to_string()),
+            ("non_goals".to_string(), "多次退款合并".to_string()),
             ("constraints".to_string(), "兼容支付网关".to_string()),
             (
                 "risks".to_string(),
                 "网关风险 | medium | high | 双写校验 | 张三".to_string(),
             ),
-            ("budget_amount".to_string(), "100000".to_string()),
-            ("budget_currency".to_string(), "CNY".to_string()),
-            ("budget_note".to_string(), "首期".to_string()),
         ]
     };
     let post_page = |revision: &str, action: &str| {
@@ -885,7 +881,7 @@ async fn project_brief_console_saves_submits_and_approves() {
     assert!(body.contains("支持部分退款"));
     assert!(body.contains("多次退款合并"));
 
-    let (status, headers, _) = send(&harness.router, post_page("8", "submit")).await;
+    let (status, headers, _) = send(&harness.router, post_page("7", "submit")).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(
         headers[header::LOCATION].to_str().unwrap(),
@@ -897,6 +893,7 @@ async fn project_brief_console_saves_submits_and_approves() {
 
     let annotation = serde_urlencoded::to_string([
         ("target_type", "goals"),
+        ("target_id", "支持部分退款"),
         ("body", "目标需要可衡量"),
     ])
     .unwrap();
@@ -912,6 +909,7 @@ async fn project_brief_console_saves_submits_and_approves() {
     let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
     assert!(body.contains("待处理批注（1）"));
     assert!(body.contains("目标需要可衡量"));
+    assert!(body.contains(r#"<blockquote class="annotation-quote">支持部分退款</blockquote>"#));
 
     let annotations =
         ProjectBriefRepository::annotations(&*harness.store, project_id.parse().unwrap(), true)
@@ -945,6 +943,150 @@ async fn project_brief_console_saves_submits_and_approves() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
     assert!(body.contains("已批准"));
+}
+
+#[tokio::test]
+async fn a_human_can_send_the_project_brief_back() {
+    use foundry_domain::{OperationName, ProjectBriefBody, ProjectBriefStatus, RoleKey};
+
+    let harness = harness().await;
+    let project_id: Uuid = harness.project_id.parse().unwrap();
+    let now = time::OffsetDateTime::now_utc();
+    let body = ProjectBriefBody {
+        problem: "客服只能整单退款".to_string(),
+        goals: vec!["支持部分退款".to_string()],
+        non_goals: vec!["多次退款合并".to_string()],
+        ..Default::default()
+    };
+    let draft = harness
+        .store
+        .create_draft(project_id, &body, harness.admin_id, now)
+        .await
+        .unwrap();
+    let version = match harness
+        .store
+        .submit_draft(project_id, draft.id, draft.revision, harness.admin_id, now)
+        .await
+        .unwrap()
+    {
+        foundry_app::SubmitDraftOutcome::Submitted(version) => version.version,
+        other => panic!("draft should submit: {other:?}"),
+    };
+
+    let task = harness
+        .tasks
+        .list(
+            project_id,
+            foundry_app::TaskFilter::default(),
+            foundry_app::TaskViewer::system(),
+        )
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|task| task.workflow.as_str() == "project_brief_writing")
+        .unwrap();
+    for role in [
+        "clarifier",
+        "brief_writer",
+        "style_reviewer",
+        "content_reviewer",
+        "acceptor",
+    ] {
+        harness
+            .tasks
+            .bind_actor(
+                project_id,
+                task.id,
+                RoleKey::new(role),
+                harness.admin_id,
+                harness.admin_id,
+            )
+            .await
+            .unwrap();
+    }
+    for (index, operation) in [
+        "started",  // clarify
+        "completed", // clarify -> brief
+        "completed", // brief -> style_review
+        "approved",  // style_review -> content_review
+        "approved",  // content_review -> acceptance
+    ]
+    .iter()
+    .enumerate()
+    {
+        harness
+            .tasks
+            .send_operation(
+                project_id,
+                task.id,
+                harness.admin_id,
+                OperationName::new(*operation),
+                format!("brief-reject:{index}:{operation}"),
+            )
+            .await
+            .unwrap();
+    }
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/login")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(
+            "handle=admin&password=admin-password&next=%2F",
+        ))
+        .unwrap();
+    let (status, headers, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let page_uri = format!("/projects/{project_id}/brief");
+    let form = serde_urlencoded::to_string([("version", version.to_string())]).unwrap();
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("{page_uri}/reject"))
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &cookie)
+        .body(Body::from(form))
+        .unwrap();
+    let (status, _, _) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+
+    let current = harness.store.current(project_id).await.unwrap().unwrap();
+    assert_eq!(current.status, ProjectBriefStatus::ChangesRequested);
+
+    let task = harness
+        .tasks
+        .get(
+            project_id,
+            task.id,
+            foundry_app::TaskViewer::system(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.stage.as_deref(), Some("brief"));
+
+    let annotations =
+        ProjectBriefRepository::annotations(&*harness.store, project_id, true)
+            .await
+            .unwrap();
+    assert!(annotations.is_empty());
+
+    let request = Request::builder()
+        .uri(&page_uri)
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("未通过"));
 }
 
 #[tokio::test]
@@ -3095,9 +3237,8 @@ async fn project_brief_round_trips_over_http() {
         json!({ "type": "set_problem", "value": "客服只能整单退款" }),
         json!({ "type": "set_goals", "values": ["支持部分退款"] }),
         json!({
-            "type": "set_scope",
-            "in_scope": ["部分退款"],
-            "out_of_scope": ["多次退款合并"]
+            "type": "set_non_goals",
+            "values": ["多次退款合并"]
         }),
         json!({ "type": "set_constraints", "values": ["兼容支付网关"] }),
         json!({
@@ -3306,6 +3447,23 @@ async fn project_brief_round_trips_over_http() {
                 "target_type": "risks",
                 "target_id": "missing",
                 "body": "unknown risk",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "target_type": "goals",
+                "target_id": "missing goal",
+                "body": "unknown goal",
             }),
         ),
     )

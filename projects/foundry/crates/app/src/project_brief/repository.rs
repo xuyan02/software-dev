@@ -31,6 +31,13 @@ pub enum ApproveBriefOutcome {
     NotInReview,
 }
 
+#[derive(Debug, Clone)]
+pub enum RejectBriefOutcome {
+    Rejected(Box<ProjectBriefVersionDAO>),
+    Conflict { current_version: u32 },
+    NotInReview,
+}
+
 #[async_trait]
 pub trait ProjectBriefRepository: Send + Sync {
     async fn current(&self, project_id: Uuid) -> Result<Option<ProjectBriefVersionDAO>, RepoError>;
@@ -97,6 +104,14 @@ pub trait ProjectBriefRepository: Send + Sync {
         approver_id: Uuid,
         now: OffsetDateTime,
     ) -> Result<ApproveBriefOutcome, RepoError>;
+
+    /// Send the current in-review version back to the writer.
+    async fn reject_current(
+        &self,
+        project_id: Uuid,
+        expected_version: u32,
+        now: OffsetDateTime,
+    ) -> Result<RejectBriefOutcome, RepoError>;
 
     async fn annotations(
         &self,

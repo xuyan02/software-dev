@@ -63,7 +63,7 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 - **Clarifier**（`clarify`）：输入是澄清 Issue（`task_links_list` 找到 `clarifies` 链接，`issue_get` 读取标题、描述和全部评论）。任务是一次只问一个问题：每轮最多发一条 `issue_comment`，评论里只包含一个问题；发完结束本轮，等下一轮再问下一个。没有未回答问题后，先在 Issue 里发一条交接评论，说明澄清结束、接下来将撰写项目简报，然后调用 `completed`。它不写项目简报，也不调用项目简报工具。
 - **Brief Writer**（`brief`）：输入是 Issue 评论、当前项目简报和其批注（`issue_get`、`project_brief_get`、`project_brief_annotations_list`、草稿工具）。任务是在服务端草稿上填写并提交简报。它必须处理每一条批注：接受的修改写进简报，不接受的也要 resolve 并写明理由，不能留下未解决批注。信息不足时先在 Issue 里发 `issue_comment` 列出具体问题，再调用 `continue_clarification` 回到澄清阶段。只有当**没有未解决批注**且 **Issue 中的重点内容已被简报覆盖**时，才能提交草稿并调用 `completed` 进入文风评审。
-- **Style / Content Reviewer**：输入是 `project_brief_get` 和已有批注；任务是用 `project_brief_annotate` 写具体意见。只要添加了任何批注（或仍有上一轮未解决的批注）就调用 `rejected`；只有完全没有批注时才调用 `approved`。打回时任务回到 `brief`，由 Brief Writer 修改。
+- **Style / Content Reviewer**：输入是 `project_brief_get` 和已有批注；任务是用 `project_brief_annotate` 写具体意见。只要添加了任何批注（或仍有上一轮未解决的批注）就调用 `rejected`；只有完全没有批注时才调用 `approved`。未通过时任务回到 `brief`，由 Brief Writer 修改。
 - **Acceptor**：人类或其他账户；批准后任务完成并设置 `result = 'approved'`，拒绝则回到 `brief`。
 
 Clarifier、Brief Writer、Style Reviewer 和 Content Reviewer 都是 agent 角色，由 PM 在任务启动前统一分配。它们都通过通用的 `load_skill` 工具加载名为 `project_brief_writing` 的 [项目简报撰写技能](../../skills/project-brief-writing.md)，该技能定义简报应该写什么、不应该写什么，以及每个字段的质量门槛。人类批准简报后，control-plane 只在任务处于 `acceptance` 时发送保留操作 `accept`，不会跳过评审。
@@ -111,7 +111,7 @@ work (analyst)
   → ended (result = approved)
 ```
 
-每个 review stage 的 `rejected` 回到 `work`；Reviewer 用 `requirements_annotate` 写字段级意见，Analyst 读取并解决后再提交。`human_review` 也支持打回，打回原因作为文档注释保存。
+每个 review stage 的 `rejected` 回到 `work`；Reviewer 用 `requirements_annotate` 写字段级意见，Analyst 读取并解决后再提交。`human_review` 也支持判定未通过，未通过原因作为文档注释保存。
 
 `architecture_design` 多一个评审环节：
 

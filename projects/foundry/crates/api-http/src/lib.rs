@@ -75,6 +75,10 @@ pub fn router(state: AppState) -> Router {
             post(routes::approve_project_brief_form),
         )
         .route(
+            "/projects/{id}/brief/reject",
+            post(routes::reject_project_brief_form),
+        )
+        .route(
             "/projects/{id}/brief/annotations",
             post(routes::annotate_project_brief_form),
         )

@@ -62,10 +62,32 @@ pub fn apply(
             ctx.complete_task(Some(TaskResult::new("approved")))?;
             return Ok(ctx.into_mutation());
         }
-        TaskEvent::Operation { operation, .. } if operation.as_str() == REJECT_OPERATION => {
-            // Platform-level rejection from a human review: return to the
-            // workflow's initial stage (the drafting stage). Annotations carry
-            // the concrete revision feedback.
+        TaskEvent::Operation {
+            operation,
+            actor_id,
+        } if operation.as_str() == REJECT_OPERATION => {
+            // Platform-level rejection from a human review. Use the current
+            // stage's own `rejected` operation when the workflow defines one, so
+            // the workflow decides where the work returns; otherwise fall back
+            // to the workflow's initial stage. Annotations carry the concrete
+            // revision feedback.
+            let stage = task
+                .stage
+                .as_ref()
+                .map(|stage| stage.as_str())
+                .unwrap_or_default();
+            if workflow.operation(stage, "rejected").is_some() {
+                let mut ctx =
+                    WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+                workflow.on_event(
+                    &mut ctx,
+                    TaskEvent::Operation {
+                        operation: OperationName::new("rejected"),
+                        actor_id: *actor_id,
+                    },
+                )?;
+                return Ok(ctx.into_mutation());
+            }
             let mut ctx =
                 WorkflowContext::new(workflow, task, actors, dependencies, children, now);
             let initial = workflow

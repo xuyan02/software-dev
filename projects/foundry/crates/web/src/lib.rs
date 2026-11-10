@@ -111,6 +111,8 @@ a { color: var(--accent); }
 .annotation .markdown { margin:6px 0; }
 .annotation .inline-form { margin-top:8px; }
 .annotation-target { color:var(--accent); }
+.annotation-quote { margin:6px 0; padding:6px 10px; border-left:3px solid var(--accent);
+  background:var(--panel); color:var(--muted); font-size:13px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:13px; }
 .empty { color:var(--muted); padding:24px; text-align:center; }
 ul { padding-left: 20px; }
@@ -1545,17 +1547,6 @@ pub fn project_brief_page(
         .map(|term| format!("{} | {}", term.term, term.definition))
         .collect::<Vec<_>>()
         .join("\n");
-    let (budget_amount, budget_currency, budget_note) = editor_body
-        .budget
-        .as_ref()
-        .map(|budget| {
-            (
-                budget.amount.to_string(),
-                budget.currency.clone(),
-                budget.note.clone().unwrap_or_default(),
-            )
-        })
-        .unwrap_or_default();
     let error_html = data
         .error
         .as_ref()
@@ -1587,9 +1578,22 @@ pub fn project_brief_page(
     };
     let approve = if data.can_approve && data.status == ProjectBriefStatus::InReview && data.has_current {
         format!(
-            r#"<form method="post" action="/projects/{id}/brief/approve">
+            r#"<h2>人工验收</h2>
+<form method="post" action="/projects/{id}/brief/approve">
   <input type="hidden" name="version" value="{version}">
   <div class="actions"><button type="submit">批准当前版本</button></div>
+</form>"#,
+            id = project.id,
+            version = data.revision,
+        )
+    } else {
+        String::new()
+    };
+    let reject = if data.can_approve && data.status == ProjectBriefStatus::InReview && data.has_current {
+        format!(
+            r#"<form method="post" action="/projects/{id}/brief/reject">
+  <input type="hidden" name="version" value="{version}">
+  <div class="actions"><button class="danger" type="submit">评审未通过</button></div>
 </form>"#,
             id = project.id,
             version = data.revision,
@@ -1604,6 +1608,9 @@ pub fn project_brief_page(
             ProjectBriefStatus::Draft => "草稿可以编辑；提交后等待人类批准。",
             ProjectBriefStatus::InReview => {
                 "已提交，先由文风 Reviewer 和内容 Reviewer 审阅；通过后等待 Maintainer/Owner 批准。"
+            }
+            ProjectBriefStatus::ChangesRequested => {
+                "评审未通过，请根据批注修改后重新提交。"
             }
             ProjectBriefStatus::Approved => {
                 "已批准，作为项目基线。变更需要通过新草稿提交新版本。"
@@ -1633,12 +1640,8 @@ pub fn project_brief_page(
     <textarea id="goals" name="goals"{ro}>{goals}</textarea>
   </div>
   <div class="field">
-    <label for="out_of_scope">非目标（每行一个）</label>
-    <textarea id="out_of_scope" name="out_of_scope"{ro}>{out_of_scope}</textarea>
-  </div>
-  <div class="field">
-    <label for="in_scope">范围内（每行一个）</label>
-    <textarea id="in_scope" name="in_scope"{ro}>{in_scope}</textarea>
+    <label for="non_goals">非目标（每行一个）</label>
+    <textarea id="non_goals" name="non_goals"{ro}>{non_goals}</textarea>
   </div>
   <div class="field">
     <label for="constraints">约束（每行一个）</label>
@@ -1652,14 +1655,6 @@ pub fn project_brief_page(
     <label for="terms">术语（每行：术语 | 解释）</label>
     <textarea id="terms" name="terms"{ro}>{terms}</textarea>
   </div>
-  <div class="grid">
-    <div class="field"><label for="budget_amount">预算金额（可选）</label>
-      <input id="budget_amount" name="budget_amount" value="{budget_amount}"{ro}></div>
-    <div class="field"><label for="budget_currency">币种</label>
-      <input id="budget_currency" name="budget_currency" value="{budget_currency}"{ro}></div>
-  </div>
-  <div class="field"><label for="budget_note">预算说明（可选）</label>
-    <input id="budget_note" name="budget_note" value="{budget_note}"{ro}></div>
   {buttons}
 </form>"#,
             project_id = project.id,
@@ -1668,14 +1663,10 @@ pub fn project_brief_page(
             ro = ro,
             problem = escape(&editor_body.problem),
             goals = escape(&editor_body.goals.join("\n")),
-            in_scope = escape(&editor_body.scope.in_scope.join("\n")),
-            out_of_scope = escape(&editor_body.scope.out_of_scope.join("\n")),
+            non_goals = escape(&editor_body.non_goals.join("\n")),
             constraints = escape(&editor_body.constraints.join("\n")),
             risks = escape(&risks),
             terms = escape(&terms),
-            budget_amount = escape(&budget_amount),
-            budget_currency = escape(&budget_currency),
-            budget_note = escape(&budget_note),
             buttons = buttons,
         )
     } else {
@@ -1715,7 +1706,7 @@ pub fn project_brief_page(
     let body = format!(
         r#"<p><a href="/projects/{project_id}">← 返回项目</a></p>
 <h1>{project_name} · 项目简报</h1>
-<p class="sub">项目级承诺：背景、目标、非目标、范围、约束、风险、术语、预算。</p>
+<p class="sub">项目级承诺：背景、目标、非目标、约束、风险、术语。</p>
 <div class="meta">
   <span>当前版本 <strong>{status}</strong></span>
   <span>版本 {revision}</span>
@@ -1731,7 +1722,8 @@ pub fn project_brief_page(
 {annotations}
 {document}
 {editor}
-{approve}"#,
+{approve}
+{reject}"#,
         project_id = project.id,
         project_name = escape(&project.name),
         status = if data.has_current {
@@ -1758,13 +1750,19 @@ pub fn project_brief_page(
         create_draft = create_draft,
         drafts = drafts,
         annotations = if data.has_current {
-            project_brief_annotations_html(project, &data.annotations, data.can_annotate)
+            project_brief_annotations_html(
+                project,
+                &data.body,
+                &data.annotations,
+                data.can_annotate,
+            )
         } else {
             String::new()
         },
         document = document,
         editor = editor,
         approve = approve,
+        reject = reject,
     );
     layout(
         ctx,
@@ -1807,34 +1805,16 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
         out.push_str("</div>");
     }
 
-    out.push_str(&format!(
-        "<h2>项目目标{}</h2>",
-        brief_annotate_link(editable, "goals", None, None)
-    ));
-    out.push_str(&brief_list(&body.goals));
+    out.push_str("<h2>项目目标</h2>");
+    out.push_str(&brief_list(&body.goals, editable, "goals"));
 
-    out.push_str(&format!(
-        "<h2>非目标{}</h2>",
-        brief_annotate_link(editable, "scope", None, Some("out_of_scope"))
-    ));
-    out.push_str(&brief_list(&body.scope.out_of_scope));
+    out.push_str("<h2>非目标</h2>");
+    out.push_str(&brief_list(&body.non_goals, editable, "non_goals"));
 
-    out.push_str(&format!(
-        "<h2>范围{}</h2>",
-        brief_annotate_link(editable, "scope", None, Some("in_scope"))
-    ));
-    out.push_str(&brief_list(&body.scope.in_scope));
+    out.push_str("<h2>约束</h2>");
+    out.push_str(&brief_list(&body.constraints, editable, "constraints"));
 
-    out.push_str(&format!(
-        "<h2>约束{}</h2>",
-        brief_annotate_link(editable, "constraints", None, None)
-    ));
-    out.push_str(&brief_list(&body.constraints));
-
-    out.push_str(&format!(
-        "<h2>风险{}</h2>",
-        brief_annotate_link(editable, "risks", None, None)
-    ));
+    out.push_str("<h2>风险</h2>");
     if body.risks.is_empty() {
         out.push_str(r#"<p class="empty">未填写</p>"#);
     } else {
@@ -1855,10 +1835,7 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
         out.push_str("</tbody></table></div>");
     }
 
-    out.push_str(&format!(
-        "<h2>术语{}</h2>",
-        brief_annotate_link(editable, "terms", None, None)
-    ));
+    out.push_str("<h2>术语</h2>");
     if body.terms.is_empty() {
         out.push_str(r#"<p class="empty">未填写</p>"#);
     } else {
@@ -1876,31 +1853,13 @@ fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
         out.push_str("</tbody></table></div>");
     }
 
-    out.push_str(&format!(
-        "<h2>预算{}</h2>",
-        brief_annotate_link(editable, "budget", None, None)
-    ));
-    if let Some(budget) = &body.budget {
-        out.push_str(&format!(
-            "<p><strong>{}</strong> {}{}</p>",
-            budget.amount,
-            escape(&budget.currency),
-            budget
-                .note
-                .as_ref()
-                .map(|note| format!("（{}）", escape(note)))
-                .unwrap_or_default(),
-        ));
-    } else {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    }
-
     out.push_str("</div>");
     out
 }
 
 fn project_brief_annotations_html(
     project: &Project,
+    body: &ProjectBriefBody,
     annotations: &[ProjectBriefAnnotation],
     editable: bool,
 ) -> String {
@@ -1918,13 +1877,17 @@ fn project_brief_annotations_html(
         out.push_str(r#"<p class="empty">没有待处理批注。</p>"#);
     } else {
         for annotation in open {
-            out.push_str(&project_brief_annotation_card(project, annotation, editable));
+            out.push_str(&project_brief_annotation_card(
+                project, body, annotation, editable,
+            ));
         }
     }
     if !resolved.is_empty() {
         out.push_str(&format!("<h2>历史批注（{}）</h2>", resolved.len()));
         for annotation in resolved {
-            out.push_str(&project_brief_annotation_card(project, annotation, false));
+            out.push_str(&project_brief_annotation_card(
+                project, body, annotation, false,
+            ));
         }
     }
     if editable {
@@ -1932,23 +1895,22 @@ fn project_brief_annotations_html(
             r#"<h2>添加批注</h2>
 <form id="annotation-form" method="post" action="/projects/{project_id}/brief/annotations">
   <div class="grid">
-    <div class="field"><label for="target_type">目标</label>
+    <div class="field"><label for="target_type">章节</label>
       <select id="target_type" name="target_type">
         <option value="document">整个简报</option>
         <option value="problem">背景</option>
         <option value="goals">项目目标</option>
-        <option value="scope">范围与非目标</option>
+        <option value="non_goals">非目标</option>
         <option value="constraints">约束</option>
         <option value="risks">风险</option>
         <option value="terms">术语</option>
-        <option value="budget">预算</option>
       </select>
     </div>
-    <div class="field"><label for="target_id">对象 ID（可选）</label>
-      <input id="target_id" name="target_id" placeholder="例如风险或术语的 id"></div>
+    <div class="field"><label for="target_id">条目（可选）</label>
+      <input id="target_id" name="target_id" placeholder="目标/非目标/约束条目文本、风险 id 或术语名"></div>
   </div>
   <div class="field"><label for="annotation-field">字段（可选）</label>
-    <input id="annotation-field" name="field" placeholder="例如 target / mitigation / decision_rights"></div>
+    <input id="annotation-field" name="field" placeholder="例如 description / mitigation / owner / definition"></div>
   <div class="field"><label for="annotation-body">批注</label>
     <textarea id="annotation-body" name="body" required placeholder="指出不清楚、不一致或需要修改的地方"></textarea></div>
   <div class="actions"><button type="submit">添加批注</button></div>
@@ -1977,16 +1939,22 @@ fn project_brief_annotations_html(
 
 fn project_brief_annotation_card(
     project: &Project,
+    body: &ProjectBriefBody,
     annotation: &ProjectBriefAnnotation,
     can_resolve: bool,
 ) -> String {
     let mut target = project_brief_annotation_target_label(annotation.target_type).to_string();
-    if let Some(target_id) = &annotation.target_id {
-        target.push_str(&format!(" · {}", escape(target_id)));
-    }
     if let Some(field) = &annotation.field {
         target.push_str(&format!(" · {}", escape(field)));
     }
+    let quote = brief_annotation_target_excerpt(body, annotation)
+        .map(|text| {
+            format!(
+                r#"<blockquote class="annotation-quote">{}</blockquote>"#,
+                inline_markdown(&text, 0)
+            )
+        })
+        .unwrap_or_default();
     let resolve = if can_resolve && annotation.status == AnnotationStatus::Open {
         format!(
             r#"<form class="inline-form" method="post" action="/projects/{project_id}/brief/annotations/{annotation_id}/resolve">
@@ -2023,6 +1991,7 @@ fn project_brief_annotation_card(
     format!(
         r#"<div class="card annotation">
 <div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
+{quote}
 <div class="markdown">{body}</div>
 {resolution}
 {resolve}
@@ -2033,6 +2002,7 @@ fn project_brief_annotation_card(
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
         target = target,
+        quote = quote,
         body = markdown_to_html(&annotation.body),
         resolution = resolution,
         resolve = resolve,
@@ -2047,15 +2017,44 @@ fn project_brief_annotation_target_label(
         Document => "整个简报",
         Problem => "背景",
         Goals => "项目目标",
-        Scope => "范围与非目标",
+        NonGoals => "非目标",
         Constraints => "约束",
         Risks => "风险",
         Terms => "术语",
-        Budget => "预算",
     }
 }
 
-fn brief_list(items: &[String]) -> String {
+fn brief_annotation_target_excerpt(
+    body: &ProjectBriefBody,
+    annotation: &ProjectBriefAnnotation,
+) -> Option<String> {
+    use foundry_domain::ProjectBriefAnnotationTarget::*;
+    let target_id = annotation
+        .target_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    match annotation.target_type {
+        Goals | NonGoals | Constraints => Some(target_id.to_string()),
+        Risks => Some(
+            body.risks
+                .iter()
+                .find(|risk| risk.id == target_id)
+                .map(|risk| format!("{} · {}", risk.id, risk.description))
+                .unwrap_or_else(|| target_id.to_string()),
+        ),
+        Terms => Some(
+            body.terms
+                .iter()
+                .find(|term| term.term == target_id)
+                .map(|term| format!("{} — {}", term.term, term.definition))
+                .unwrap_or_else(|| target_id.to_string()),
+        ),
+        Document | Problem => None,
+    }
+}
+
+fn brief_list(items: &[String], editable: bool, target: &str) -> String {
     if items.is_empty() {
         return r#"<p class="empty">无</p>"#.to_string();
     }
@@ -2063,6 +2062,7 @@ fn brief_list(items: &[String]) -> String {
     for item in items {
         out.push_str("<li>");
         out.push_str(&inline_markdown(item, 0));
+        out.push_str(&brief_annotate_link(editable, target, Some(item), None));
         out.push_str("</li>");
     }
     out.push_str("</ul>");
@@ -2112,9 +2112,9 @@ pub fn requirements_document_page(
         format!(
             r#"<h2>人工评审</h2>
 <form method="post" action="/projects/{id}/requirements/reject">
-  <div class="field"><label for="reject-reason">打回原因</label>
+  <div class="field"><label for="reject-reason">未通过原因</label>
     <textarea id="reject-reason" name="reason" required placeholder="说明需要修改的地方；会作为文档注释保存"></textarea></div>
-  <div class="actions"><button class="danger" type="submit">打回给 Analyst</button></div>
+  <div class="actions"><button class="danger" type="submit">评审未通过</button></div>
 </form>"#,
             id = project.id,
         )
@@ -2428,6 +2428,7 @@ fn project_brief_status_label(status: ProjectBriefStatus) -> &'static str {
     match status {
         ProjectBriefStatus::Draft => "草稿",
         ProjectBriefStatus::InReview => "待批准",
+        ProjectBriefStatus::ChangesRequested => "未通过",
         ProjectBriefStatus::Approved => "已批准",
         ProjectBriefStatus::Superseded => "已替代",
     }
@@ -4133,10 +4134,7 @@ mod tests {
         let body = ProjectBriefBody {
             problem: "因为 <原因>".to_string(),
             goals: vec!["目标一".to_string()],
-            scope: foundry_domain::ProjectScope {
-                in_scope: vec!["范围一".to_string()],
-                out_of_scope: vec!["非目标一".to_string()],
-            },
+            non_goals: vec!["非目标一".to_string()],
             risks: vec![foundry_domain::Risk {
                 description: "风险一".to_string(),
                 probability: RiskLevel::High,
@@ -4157,8 +4155,6 @@ mod tests {
         assert!(html.contains("<h2>项目目标</h2>"));
         assert!(html.contains("<h2>非目标</h2>"));
         assert!(html.contains("非目标一"));
-        assert!(html.contains("<h2>范围</h2>"));
-        assert!(html.contains("范围一"));
         assert!(html.contains("<h2>风险</h2>"));
         assert!(html.contains("高"));
         assert!(html.contains("<h2>术语</h2>"));
@@ -4167,7 +4163,63 @@ mod tests {
 
         let editable = project_brief_document(&body, true);
         assert!(editable.contains(r#"data-annotate-type="problem""#));
+        assert!(editable.contains(r#"data-annotate-type="goals" data-annotate-id="目标一""#));
+        assert!(editable.contains(r#"data-annotate-type="non_goals" data-annotate-id="非目标一""#));
         assert!(editable.contains(r#"data-annotate-type="terms""#));
+        assert!(editable.contains(r#"data-annotate-type="terms" data-annotate-id="SLA""#));
+    }
+
+    #[test]
+    fn project_brief_annotations_show_the_annotated_item() {
+        use foundry_domain::ProjectBriefAnnotationTarget;
+
+        let body = ProjectBriefBody {
+            goals: vec!["支持部分退款".to_string()],
+            non_goals: vec!["多次退款合并".to_string()],
+            constraints: vec!["兼容支付网关".to_string()],
+            risks: vec![foundry_domain::Risk {
+                id: "R1".to_string(),
+                description: "网关尚未升级".to_string(),
+                ..Default::default()
+            }],
+            terms: vec![foundry_domain::Term {
+                term: "SLA".to_string(),
+                definition: "服务等级协议".to_string(),
+            }],
+            ..Default::default()
+        };
+        let project = Project::new("测试项目", None, uuid::Uuid::now_v7()).unwrap();
+        let annotation = |target_type, target_id: Option<&str>| ProjectBriefAnnotation {
+            id: uuid::Uuid::now_v7(),
+            project_id: project.id,
+            target_type,
+            target_id: target_id.map(str::to_string),
+            field: None,
+            body: "需要修改".to_string(),
+            author_id: uuid::Uuid::now_v7(),
+            author_handle: "reviewer".to_string(),
+            author_name: "Reviewer".to_string(),
+            status: AnnotationStatus::Open,
+            resolution: None,
+            created_at: time::OffsetDateTime::now_utc(),
+            resolved_at: None,
+            resolved_by: None,
+        };
+        let annotations = vec![
+            annotation(ProjectBriefAnnotationTarget::Goals, Some("支持部分退款")),
+            annotation(ProjectBriefAnnotationTarget::Risks, Some("R1")),
+            annotation(ProjectBriefAnnotationTarget::Terms, Some("SLA")),
+        ];
+
+        let html = project_brief_annotations_html(&project, &body, &annotations, false);
+
+        assert!(html.contains(r#"<blockquote class="annotation-quote">支持部分退款</blockquote>"#));
+        assert!(html.contains(r#"<blockquote class="annotation-quote">R1 · 网关尚未升级</blockquote>"#));
+        assert!(
+            html.contains(
+                r#"<blockquote class="annotation-quote">SLA — 服务等级协议</blockquote>"#
+            )
+        );
     }
 
     #[test]

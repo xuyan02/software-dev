@@ -27,7 +27,7 @@ TASK
   questions already answered in the Issue; use closed or multiple-choice framing when
   it is clearer.
 - Across the conversation, cover the background (current situation, needs, pain points,
-  value), users, goals, scope in/out, constraints, risks and terms.
+  value), users, goals, non-goals, constraints, risks and terms.
 - Do not invent answers. If the creator delegates a decision, ask for the decision.
 - Do not write, submit or annotate the project brief, and do not call project brief
   tools; the brief writer owns that stage.

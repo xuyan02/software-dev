@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use foundry_app::{
-    ApproveBriefOutcome, DraftOperationOutcome, ProjectBriefRepository, RepoError,
-    SubmitDraftOutcome,
+    ApproveBriefOutcome, DraftOperationOutcome, ProjectBriefRepository, RejectBriefOutcome,
+    RepoError, SubmitDraftOutcome,
 };
 use foundry_domain::{
     AnnotationStatus, ProjectBriefAnnotation, ProjectBriefBody, ProjectBriefDraftDAO,
@@ -268,6 +268,35 @@ impl ProjectBriefRepository for InMemoryStore {
         version.approved_by = Some(approver_id);
         version.updated_at = now;
         Ok(ApproveBriefOutcome::Approved(Box::new(version.clone())))
+    }
+
+    async fn reject_current(
+        &self,
+        project_id: Uuid,
+        expected_version: u32,
+        now: OffsetDateTime,
+    ) -> Result<RejectBriefOutcome, RepoError> {
+        let mut briefs = self.project_briefs.write().expect("lock poisoned");
+        let Some(current) = briefs.current.get(&project_id).copied() else {
+            return Err(RepoError::NotFound);
+        };
+        if current != expected_version {
+            return Ok(RejectBriefOutcome::Conflict {
+                current_version: current,
+            });
+        }
+        let Some(versions) = briefs.versions.get_mut(&project_id) else {
+            return Err(RepoError::NotFound);
+        };
+        let Some(version) = versions.iter_mut().find(|item| item.version == current) else {
+            return Err(RepoError::NotFound);
+        };
+        if version.status != ProjectBriefStatus::InReview {
+            return Ok(RejectBriefOutcome::NotInReview);
+        }
+        version.status = ProjectBriefStatus::ChangesRequested;
+        version.updated_at = now;
+        Ok(RejectBriefOutcome::Rejected(Box::new(version.clone())))
     }
 
     async fn annotations(

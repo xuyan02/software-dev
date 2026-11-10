@@ -43,6 +43,7 @@ pub enum DomainEventKind {
     ProjectBriefDrafted,
     ProjectBriefSubmitted,
     ProjectBriefApproved,
+    ProjectBriefChangesRequested,
     TaskLinkAdded,
     TaskLinkRemoved,
 }

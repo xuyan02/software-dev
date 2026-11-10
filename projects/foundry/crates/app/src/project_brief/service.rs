@@ -15,7 +15,8 @@ use uuid::Uuid;
 
 use crate::{
     AccountRepository, ApproveBriefOutcome, DraftOperationOutcome, EventSink,
-    ProjectBriefRepository, ProjectRepository, ServiceError, SubmitDraftOutcome,
+    ProjectBriefRepository, ProjectRepository, RejectBriefOutcome, ServiceError,
+    SubmitDraftOutcome,
 };
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,12 @@ pub struct SubmitProjectBriefDraft {
 
 #[derive(Debug, Clone)]
 pub struct ApproveProjectBrief {
+    pub project_id: Uuid,
+    pub expected_version: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RejectProjectBrief {
     pub project_id: Uuid,
     pub expected_version: u32,
 }
@@ -378,6 +385,45 @@ where
         }
     }
 
+    /// Send the current in-review version back to the brief writer.
+    pub async fn reject(
+        &self,
+        actor: Actor,
+        command: RejectProjectBrief,
+    ) -> Result<ProjectBriefVersionView, ServiceError> {
+        let account = self.require_account(&actor).await?;
+        self.require_human(&account)?;
+        self.project_role(&account, command.project_id, ProjectRole::Maintainer)
+            .await?;
+        match self
+            .repository
+            .reject_current(
+                command.project_id,
+                command.expected_version,
+                OffsetDateTime::now_utc(),
+            )
+            .await?
+        {
+            RejectBriefOutcome::Rejected(version) => {
+                self.emit(
+                    DomainEventKind::ProjectBriefChangesRequested,
+                    command.project_id,
+                    &account,
+                    json!({ "version": version.version }),
+                )
+                .await?;
+                Ok(version_view(*version, false))
+            }
+            RejectBriefOutcome::Conflict { current_version } => Err(ServiceError::Conflict {
+                expected: command.expected_version,
+                actual: current_version,
+            }),
+            RejectBriefOutcome::NotInReview => Err(ServiceError::InvalidTransition(
+                "project brief must be in review before it can be sent back".to_string(),
+            )),
+        }
+    }
+
     pub async fn list_annotations(
         &self,
         actor: Actor,
@@ -579,18 +625,20 @@ fn brief_annotation_target_exists(
         return true;
     };
     match target {
+        ProjectBriefAnnotationTarget::Goals => body.goals.iter().any(|goal| goal == target_id),
+        ProjectBriefAnnotationTarget::NonGoals => {
+            body.non_goals.iter().any(|item| item == target_id)
+        }
+        ProjectBriefAnnotationTarget::Constraints => {
+            body.constraints.iter().any(|item| item == target_id)
+        }
         ProjectBriefAnnotationTarget::Risks => {
             body.risks.iter().any(|risk| risk.id == target_id)
         }
         ProjectBriefAnnotationTarget::Terms => {
             body.terms.iter().any(|term| term.term == target_id)
         }
-        ProjectBriefAnnotationTarget::Document
-        | ProjectBriefAnnotationTarget::Problem
-        | ProjectBriefAnnotationTarget::Goals
-        | ProjectBriefAnnotationTarget::Scope
-        | ProjectBriefAnnotationTarget::Constraints
-        | ProjectBriefAnnotationTarget::Budget => true,
+        ProjectBriefAnnotationTarget::Document | ProjectBriefAnnotationTarget::Problem => true,
     }
 }
 
@@ -642,6 +690,11 @@ pub trait ProjectBriefUseCases: Send + Sync {
         &self,
         actor: Actor,
         command: ApproveProjectBrief,
+    ) -> Result<ProjectBriefVersionView, ServiceError>;
+    async fn reject(
+        &self,
+        actor: Actor,
+        command: RejectProjectBrief,
     ) -> Result<ProjectBriefVersionView, ServiceError>;
     async fn annotations(
         &self,
@@ -741,6 +794,14 @@ where
         command: ApproveProjectBrief,
     ) -> Result<ProjectBriefVersionView, ServiceError> {
         ProjectBriefService::approve(self, actor, command).await
+    }
+
+    async fn reject(
+        &self,
+        actor: Actor,
+        command: RejectProjectBrief,
+    ) -> Result<ProjectBriefVersionView, ServiceError> {
+        ProjectBriefService::reject(self, actor, command).await
     }
 
     async fn annotations(

@@ -13,8 +13,9 @@ use crate::dto::{
     ProjectBriefDraftQuery, ProjectBriefForm, ProjectUpdateForm, PublishWorkflowForm,
     RenameWorkflowForm, RenameWorkflowRequest, RequirementsAnnotationQuery,
     RequirementsRevisionForm, ResolveProjectBriefAnnotationRequest,
-    ResolveRequirementsAnnotationRequest, RejectRequirementsForm, SaveDraftRequest,
-    SelectProjectForm, SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, TaskCommentRequest,
+    ResolveRequirementsAnnotationRequest, RejectProjectBriefForm, RejectRequirementsForm,
+    SaveDraftRequest, SelectProjectForm, SetMemberRoleRequest, SetupAdminForm, SetupLoginForm,
+    TaskCommentRequest,
     TaskListQuery, TaskOperationRequest, TransitionIssueRequest, TransitionRequirementRequest,
     UpdateAccountRequest, UpdateProjectRequest, UpdateRequirementRequest, ValidateWorkflowRequest,
     transition_command,
@@ -33,8 +34,9 @@ use foundry_app::{
     ProjectBriefVersionView, ProjectDetail, ProjectUseCases, PublishRequirementsDocument,
     PublishWorkflow, RemoveProjectMember, RemoveTaskLink, RequirementFilter, RequirementUseCases,
     RequirementsDocumentUseCases, RequirementsDocumentView, RequirementsDraftView,
-    RequirementsPublished, ResolveProjectBriefAnnotation, ResolveRequirementsAnnotation,
-    SaveWorkflowLayout, ServiceError, SubmitProjectBriefDraft, TaskFilter, TaskLinkUseCases,
+    RejectProjectBrief, RequirementsPublished, ResolveProjectBriefAnnotation,
+    ResolveRequirementsAnnotation, SaveWorkflowLayout, ServiceError, SubmitProjectBriefDraft,
+    TaskFilter, TaskLinkUseCases,
     TaskUseCases, TaskViewer, WorkflowUseCases, hash_token, new_session_token,
 };
 use foundry_domain::{
@@ -1192,16 +1194,14 @@ fn brief_form_operations(body: ProjectBriefBody) -> Vec<ProjectBriefDraftOperati
             value: body.problem,
         },
         ProjectBriefDraftOperation::SetGoals { values: body.goals },
-        ProjectBriefDraftOperation::SetScope {
-            in_scope: body.scope.in_scope,
-            out_of_scope: body.scope.out_of_scope,
+        ProjectBriefDraftOperation::SetNonGoals {
+            values: body.non_goals,
         },
         ProjectBriefDraftOperation::SetConstraints {
             values: body.constraints,
         },
         ProjectBriefDraftOperation::SetRisks { values: body.risks },
         ProjectBriefDraftOperation::SetTerms { values: body.terms },
-        ProjectBriefDraftOperation::SetBudget { value: body.budget },
     ]
 }
 
@@ -1560,6 +1560,22 @@ async fn human_review_requirements_task(
         }))
 }
 
+async fn acceptance_brief_task(
+    state: &AppState,
+    project_id: Uuid,
+) -> Result<Option<Task>, ServiceError> {
+    Ok(state
+        .tasks
+        .list(project_id, TaskFilter::default(), TaskViewer::system())
+        .await?
+        .into_iter()
+        .find(|task| {
+            task.workflow.as_str() == "project_brief_writing"
+                && task.state == TaskState::InProgress
+                && task.stage.as_deref() == Some("acceptance")
+        }))
+}
+
 pub async fn reject_requirements_form(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1578,11 +1594,11 @@ pub async fn reject_requirements_form(
             .into_response();
     };
     if !can_publish_requirements(&session, &project) {
-        return auth::web_forbidden("只有项目 Maintainer/Owner 可以打回需求文档。");
+        return auth::web_forbidden("只有项目 Maintainer/Owner 可以判定需求文档未通过。");
     }
     let reason = form.reason.trim();
     if reason.is_empty() {
-        return (StatusCode::UNPROCESSABLE_ENTITY, "打回原因不能为空").into_response();
+        return (StatusCode::UNPROCESSABLE_ENTITY, "未通过原因不能为空").into_response();
     }
     let task = match human_review_requirements_task(&state, id).await {
         Ok(Some(task)) => task,
@@ -1649,6 +1665,74 @@ pub async fn approve_project_brief_form(
         .approve(
             session.account.actor(),
             ApproveProjectBrief {
+                project_id: id,
+                expected_version: form.version,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{id}/brief")).into_response(),
+        Err(error) => {
+            render_brief(&state, &session, &project, None, Some(error.to_string()), Vec::new())
+                .await
+        }
+    }
+}
+
+pub async fn reject_project_brief_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<RejectProjectBriefForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = brief_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let can_reject = session.account.kind == AccountKind::Human
+        && (session.account.is_admin()
+            || project
+                .role_of(session.account.id)
+                .is_some_and(|role| role >= ProjectRole::Maintainer));
+    if !can_reject {
+        return auth::web_forbidden("只有项目 Maintainer/Owner 可以判定项目简报未通过。");
+    }
+    let task = match acceptance_brief_task(&state, id).await {
+        Ok(Some(task)) => task,
+        Ok(None) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "项目简报尚未进入人工验收阶段",
+            )
+                .into_response();
+        }
+        Err(error) => return auth::web_error(error),
+    };
+    if let Err(error) = state
+        .tasks
+        .send_operation(
+            id,
+            task.id,
+            session.account.id,
+            OperationName::new(foundry_domain::REJECT_OPERATION),
+            format!("brief-rejected:{}", task.id),
+        )
+        .await
+    {
+        return auth::web_error(error);
+    }
+    match state
+        .project_brief
+        .reject(
+            session.account.actor(),
+            RejectProjectBrief {
                 project_id: id,
                 expected_version: form.version,
             },

@@ -1,8 +1,9 @@
 use super::definition::{DefinitionWorkflow, WorkflowBody, builtin_workflows, validate};
 use crate::task::script::VariableValue;
 use crate::{
-    ACCEPT_OPERATION, ChildState, DependencyState, DomainEventKind, OperationName, RoleKey,
-    START_OPERATION, StageKey, TaskActorDAO, TaskAggregate, TaskDAO, TaskError, TaskEvent,
+    ACCEPT_OPERATION, ChildState, DependencyState, DomainEventKind, OperationName,
+    REJECT_OPERATION, RoleKey, START_OPERATION, StageKey, TaskActorDAO, TaskAggregate, TaskDAO,
+    TaskError, TaskEvent,
     TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext, WorkflowId, apply,
 };
 use time::OffsetDateTime;
@@ -435,6 +436,22 @@ fn acceptance_rejection_returns_to_the_brief_writer() {
             .iter()
             .any(|a| a.account_id == acceptor && a.active)
     );
+}
+
+#[test]
+fn human_reject_uses_the_stage_rejection_transition() {
+    let workflow = builtin("project_brief_writing");
+    let leaf = task(
+        "project_brief_writing",
+        TaskState::InProgress,
+        Some("acceptance"),
+    );
+    let state = aggregate(leaf, vec![], vec![], vec![]);
+
+    let rejected = operation(&workflow, state, REJECT_OPERATION, Uuid::now_v7());
+
+    assert_eq!(rejected.task.stage.as_deref(), Some("brief"));
+    assert_eq!(rejected.task.state, TaskState::InProgress);
 }
 
 #[test]

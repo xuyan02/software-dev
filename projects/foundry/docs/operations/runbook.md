@@ -138,8 +138,8 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
 2. Analyst 用 `requirements_get` / `requirements_draft` / `requirements_apply_operations` / `requirements_validate` 维护结构化需求文档（users / functions / stories / operations）；
    人类和 Reviewer 可以在需求文档页按对象/字段添加注释，Analyst 用 `requirements_annotations_list` 读取，用 `requirements_resolve_annotation` 在修改后标记解决；
-3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用注释写具体意见，打回时任务回到 `work`，Analyst 读取注释修改后重新提交；
-4. 人类在 `/projects/{id}/requirements` 做最终 review：发布草稿完成评审，或填写打回原因退回 Analyst；
+3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用注释写具体意见，未通过时任务回到 `work`，Analyst 读取注释修改后重新提交；
+4. 人类在 `/projects/{id}/requirements` 做最终 review：发布草稿完成评审，或填写未通过原因，将任务回到 Analyst；
 5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `architecture`。
 
 ### 通过 API 验收

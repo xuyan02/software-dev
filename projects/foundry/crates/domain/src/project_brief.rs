@@ -18,7 +18,7 @@ pub struct ProjectBriefBody {
     #[serde(default)]
     pub goals: Vec<String>,
     #[serde(default)]
-    pub scope: ProjectScope,
+    pub non_goals: Vec<String>,
     #[serde(default)]
     pub constraints: Vec<String>,
     #[serde(default)]
@@ -26,8 +26,6 @@ pub struct ProjectBriefBody {
     /// Terms, acronyms and jargon that need an explicit explanation.
     #[serde(default)]
     pub terms: Vec<Term>,
-    #[serde(default)]
-    pub budget: Option<Budget>,
 }
 
 impl Default for ProjectBriefBody {
@@ -36,22 +34,12 @@ impl Default for ProjectBriefBody {
             schema_version: PROJECT_BRIEF_SCHEMA_VERSION,
             problem: String::new(),
             goals: Vec::new(),
-            scope: ProjectScope::default(),
+            non_goals: Vec::new(),
             constraints: Vec::new(),
             risks: Vec::new(),
             terms: Vec::new(),
-            budget: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProjectScope {
-    #[serde(default)]
-    pub in_scope: Vec<String>,
-    #[serde(default)]
-    pub out_of_scope: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,23 +78,13 @@ pub struct Term {
     pub definition: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Budget {
-    #[serde(default)]
-    pub amount: f64,
-    #[serde(default)]
-    pub currency: String,
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectBriefStatus {
     #[default]
     Draft,
     InReview,
+    ChangesRequested,
     Approved,
     Superseded,
 }
@@ -116,6 +94,7 @@ impl ProjectBriefStatus {
         match self {
             Self::Draft => "draft",
             Self::InReview => "in_review",
+            Self::ChangesRequested => "changes_requested",
             Self::Approved => "approved",
             Self::Superseded => "superseded",
         }
@@ -124,6 +103,7 @@ impl ProjectBriefStatus {
     pub fn parse(value: &str) -> Self {
         match value {
             "in_review" => Self::InReview,
+            "changes_requested" => Self::ChangesRequested,
             "approved" => Self::Approved,
             "superseded" => Self::Superseded,
             _ => Self::Draft,
@@ -168,9 +148,8 @@ pub enum ProjectBriefDraftOperation {
     SetGoals {
         values: Vec<String>,
     },
-    SetScope {
-        in_scope: Vec<String>,
-        out_of_scope: Vec<String>,
+    SetNonGoals {
+        values: Vec<String>,
     },
     SetConstraints {
         values: Vec<String>,
@@ -181,9 +160,6 @@ pub enum ProjectBriefDraftOperation {
     SetTerms {
         values: Vec<Term>,
     },
-    SetBudget {
-        value: Option<Budget>,
-    },
 }
 
 impl ProjectBriefDraftOperation {
@@ -191,19 +167,10 @@ impl ProjectBriefDraftOperation {
         match self {
             Self::SetProblem { value } => body.problem = value,
             Self::SetGoals { values } => body.goals = values,
-            Self::SetScope {
-                in_scope,
-                out_of_scope,
-            } => {
-                body.scope = ProjectScope {
-                    in_scope,
-                    out_of_scope,
-                }
-            }
+            Self::SetNonGoals { values } => body.non_goals = values,
             Self::SetConstraints { values } => body.constraints = values,
             Self::SetRisks { values } => body.risks = values,
             Self::SetTerms { values } => body.terms = values,
-            Self::SetBudget { value } => body.budget = value,
         }
     }
 }
@@ -214,11 +181,10 @@ pub enum ProjectBriefAnnotationTarget {
     Document,
     Problem,
     Goals,
-    Scope,
+    NonGoals,
     Constraints,
     Risks,
     Terms,
-    Budget,
 }
 
 impl ProjectBriefAnnotationTarget {
@@ -227,11 +193,10 @@ impl ProjectBriefAnnotationTarget {
             Self::Document => "document",
             Self::Problem => "problem",
             Self::Goals => "goals",
-            Self::Scope => "scope",
+            Self::NonGoals => "non_goals",
             Self::Constraints => "constraints",
             Self::Risks => "risks",
             Self::Terms => "terms",
-            Self::Budget => "budget",
         }
     }
 
@@ -240,11 +205,10 @@ impl ProjectBriefAnnotationTarget {
             "document" => Some(Self::Document),
             "problem" => Some(Self::Problem),
             "goals" => Some(Self::Goals),
-            "scope" => Some(Self::Scope),
+            "non_goals" => Some(Self::NonGoals),
             "constraints" => Some(Self::Constraints),
             "risks" => Some(Self::Risks),
             "terms" => Some(Self::Terms),
-            "budget" => Some(Self::Budget),
             _ => None,
         }
     }
@@ -291,9 +255,9 @@ pub fn validate_project_brief(body: &ProjectBriefBody) -> Validation {
             "the project must declare at least one goal",
         ));
     }
-    if body.scope.out_of_scope.is_empty() {
+    if body.non_goals.is_empty() {
         validation.errors.push(ValidationIssue::error(
-            "scope.out_of_scope",
+            "non_goals",
             "no_non_goals",
             "the project must declare at least one non-goal",
         ));
@@ -381,10 +345,7 @@ mod tests {
         ProjectBriefBody {
             problem: "客服只能整单退款".to_string(),
             goals: vec!["支持部分退款".to_string()],
-            scope: ProjectScope {
-                in_scope: vec!["部分退款".to_string()],
-                out_of_scope: vec!["多次退款合并".to_string()],
-            },
+            non_goals: vec!["多次退款合并".to_string()],
             ..ProjectBriefBody::default()
         }
     }
@@ -426,7 +387,7 @@ mod tests {
     #[test]
     fn approval_requires_non_goals() {
         let mut body = complete();
-        body.scope.out_of_scope.clear();
+        body.non_goals.clear();
         let validation = validate_project_brief(&body);
         assert!(!validation.is_valid());
         assert!(

@@ -5,9 +5,9 @@ use foundry_app::{
     UpdateRequirement, WorkflowScope,
 };
 use foundry_domain::{
-    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, Budget, IssueKind,
+    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, IssueKind,
     IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, Priority, ProjectBriefBody,
-    ProjectRole, ProjectScope, ProjectStatus, RequirementStatus, Risk, RiskClass, RiskLevel,
+    ProjectRole, ProjectStatus, RequirementStatus, Risk, RiskClass, RiskLevel,
     RoleKey, StageKey, TaskDispatchState, TaskState, Term, WorkflowBody, WorkflowId,
     WorkflowVersionRef,
 };
@@ -1151,21 +1151,13 @@ pub struct ProjectBriefForm {
     #[serde(default)]
     pub goals: String,
     #[serde(default)]
-    pub in_scope: String,
-    #[serde(default)]
-    pub out_of_scope: String,
+    pub non_goals: String,
     #[serde(default)]
     pub constraints: String,
     #[serde(default)]
     pub risks: String,
     #[serde(default)]
     pub terms: String,
-    #[serde(default)]
-    pub budget_amount: String,
-    #[serde(default)]
-    pub budget_currency: String,
-    #[serde(default)]
-    pub budget_note: String,
 }
 
 impl ProjectBriefForm {
@@ -1177,24 +1169,6 @@ impl ProjectBriefForm {
     ) -> Result<(Option<uuid::Uuid>, u64, String, ProjectBriefBody), String> {
         let risks = parse_risks(&self.risks)?;
         let terms = parse_terms(&self.terms)?;
-        let budget = if self.budget_amount.trim().is_empty() {
-            None
-        } else {
-            let amount = self
-                .budget_amount
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| "预算金额必须是数字".to_string())?;
-            Some(Budget {
-                amount,
-                currency: if self.budget_currency.trim().is_empty() {
-                    "CNY".to_string()
-                } else {
-                    self.budget_currency.trim().to_string()
-                },
-                note: optional_text(&self.budget_note),
-            })
-        };
         Ok((
             self.draft_id,
             self.revision,
@@ -1203,14 +1177,10 @@ impl ProjectBriefForm {
                 schema_version: foundry_domain::PROJECT_BRIEF_SCHEMA_VERSION,
                 problem: self.problem.trim().to_string(),
                 goals: lines(&self.goals),
-                scope: ProjectScope {
-                    in_scope: lines(&self.in_scope),
-                    out_of_scope: lines(&self.out_of_scope),
-                },
+                non_goals: lines(&self.non_goals),
                 constraints: lines(&self.constraints),
                 risks,
                 terms,
-                budget,
             },
         ))
     }
@@ -1218,6 +1188,12 @@ impl ProjectBriefForm {
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ProjectBriefApproveForm {
+    #[serde(default)]
+    pub version: u32,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct RejectProjectBriefForm {
     #[serde(default)]
     pub version: u32,
 }

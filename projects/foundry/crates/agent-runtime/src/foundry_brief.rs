@@ -38,8 +38,8 @@ impl Tool for ProjectBriefGetTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "project_brief_get".to_string(),
-            description: "Read the current project brief version: background, goals, scope, \
-                          constraints, risks, terms, budget and open questions."
+            description: "Read the current project brief version: background, goals, \
+                          non-goals, constraints, risks and terms."
                 .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
@@ -257,8 +257,8 @@ impl Tool for ProjectBriefDraftApplyTool {
         ToolSpec {
             name: "project_brief_draft_apply".to_string(),
             description: "Apply exactly one structured operation to a draft. Operation types: \
-                          set_problem, set_goals, set_scope, \
-                          set_constraints, set_risks, set_terms, set_budget. Use the \
+                          set_problem, set_goals, set_non_goals, \
+                          set_constraints, set_risks, set_terms. Use the \
                           revision returned by the previous call."
                 .to_string(),
             input_schema: json!({
@@ -407,8 +407,8 @@ impl Tool for ProjectBriefAnnotateTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "project_brief_annotate".to_string(),
-            description: "Add a review annotation to a project brief section, metric, risk or \
-                          stakeholder."
+            description: "Add a review annotation to a project brief section or to one item \
+                          inside it."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -417,11 +417,11 @@ impl Tool for ProjectBriefAnnotateTool {
                     "target_type": {
                         "type": "string",
                         "enum": [
-                            "document", "problem", "goals", "scope",
-                            "constraints", "risks", "terms", "budget"
+                            "document", "problem", "goals", "non_goals",
+                            "constraints", "risks", "terms"
                         ]
                     },
-                    "target_id": { "type": "string" },
+                    "target_id": { "type": "string", "description": "Item to annotate: goal/non-goal/constraint text, risk id or term name. Omit to target the whole section." },
                     "field": { "type": "string" },
                     "body": { "type": "string" }
                 }

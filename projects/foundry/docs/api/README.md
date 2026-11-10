@@ -555,11 +555,10 @@ POST /api/v1/projects/{project}/brief/annotations/{annotation_id}/resolve
 ```text
 set_problem            { value }                 // 背景：现状、需求、痛点、价值
 set_goals              { values: string[] }       // 描述性目标，按重要程度排序，第一条为核心目标；不写量化标准
-set_scope              { in_scope: string[], out_of_scope: string[] }  // 非目标紧跟目标；一次提交
+set_non_goals          { values: string[] }       // 非目标，紧跟目标之后
 set_constraints        { values: string[] }
 set_risks              { values: Risk[] }
 set_terms              { values: Term[] }        // Term = { term, definition }
-set_budget             { value: Budget | null }
 ```
 
 请求体：
@@ -579,9 +578,9 @@ set_budget             { value: Budget | null }
 
 提交后生成新版本，旧当前版本变为 `superseded`，草稿被删除。**提交成功后必须发送 `task_operation(operation = "completed")`，否则 project_brief_writing 任务仍停在 brief。**
 
-批注用于文风/内容评审：`target_type` 可取值 `document`、`problem`、`goals`、`scope`、`constraints`、`risks`、`terms`、`budget`；`target_id` 和 `field` 可选，用于定位具体风险、术语或字段。批注正文非空，解决时必须填写 `resolution`。
+批注用于文风/内容评审：`target_type` 可取值 `document`、`problem`、`goals`、`non_goals`、`constraints`、`risks`、`terms`；`target_id` 可选，用于定位具体条目：目标/非目标/约束取条目文本，风险取 `id`，术语取术语名；`field` 可选，用于定位条目内的字段。批注正文非空，解决时必须填写 `resolution`。
 
-状态：版本状态为 `in_review → approved / superseded`。提交和批准前校验背景、目标和 non-goals；项目简报不包含成功指标，指标由需求分析阶段定义。Agent 不能批准。
+状态：版本状态为 `in_review → approved / changes_requested / superseded`。人类 Maintainer/Owner 可以批准或在控制台判定未通过；未通过会把简报写作任务送回 brief 阶段，具体修改意见通过批注表达。提交和批准前校验背景、目标和 non-goals；项目简报不包含成功指标，指标由需求分析阶段定义。Agent 不能批准。
 
 MCP 工具：`get_project_brief`、`list_project_brief_versions`、`get_project_brief_version`、`create_project_brief_draft`、`list_project_brief_drafts`、`get_project_brief_draft`、`apply_project_brief_draft_operation`、`submit_project_brief_draft`、`approve_project_brief`、`list_project_brief_annotations`、`annotate_project_brief`、`resolve_project_brief_annotation`。
 

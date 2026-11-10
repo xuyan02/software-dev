@@ -2,8 +2,8 @@
 
 use async_trait::async_trait;
 use foundry_app::{
-    ApproveBriefOutcome, DraftOperationOutcome, ProjectBriefRepository, RepoError,
-    SubmitDraftOutcome,
+    ApproveBriefOutcome, DraftOperationOutcome, ProjectBriefRepository, RejectBriefOutcome,
+    RepoError, SubmitDraftOutcome,
 };
 use foundry_domain::{
     AnnotationStatus, ProjectBriefAnnotation, ProjectBriefAnnotationTarget, ProjectBriefBody,
@@ -405,6 +405,70 @@ impl ProjectBriefRepository for PostgresStore {
         let version = version_from_row(row)?;
         tx.commit().await.map_err(backend)?;
         Ok(ApproveBriefOutcome::Approved(Box::new(version)))
+    }
+
+    async fn reject_current(
+        &self,
+        project_id: Uuid,
+        expected_version: u32,
+        now: OffsetDateTime,
+    ) -> Result<RejectBriefOutcome, RepoError> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let current: Option<i32> = sqlx::query_scalar(
+            "select version from project_brief_current where project_id = $1 for update",
+        )
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some(current) = current else {
+            return Err(RepoError::NotFound);
+        };
+        if current.max(0) as u32 != expected_version {
+            tx.commit().await.map_err(backend)?;
+            return Ok(RejectBriefOutcome::Conflict {
+                current_version: current.max(0) as u32,
+            });
+        }
+        let status: Option<String> = sqlx::query_scalar(
+            "select status from project_briefs where project_id = $1 and version = $2 for update",
+        )
+        .bind(project_id)
+        .bind(current)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some(status) = status else {
+            return Err(RepoError::NotFound);
+        };
+        if status != "in_review" {
+            tx.commit().await.map_err(backend)?;
+            return Ok(RejectBriefOutcome::NotInReview);
+        }
+        let row: VersionRow = sqlx::query_as(
+            "update project_briefs \
+             set status = 'changes_requested', updated_at = $3 \
+             where project_id = $1 and version = $2 \
+             returning project_id, version, status, body, created_by, approved_by, \
+                       created_at, updated_at",
+        )
+        .bind(project_id)
+        .bind(current)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_write_error)?;
+        sqlx::query(
+            "update project_brief_current set updated_at = $2 where project_id = $1",
+        )
+        .bind(project_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_write_error)?;
+        let version = version_from_row(row)?;
+        tx.commit().await.map_err(backend)?;
+        Ok(RejectBriefOutcome::Rejected(Box::new(version)))
     }
 
     async fn annotations(
