@@ -353,7 +353,11 @@ impl AgentRuntime {
             if let Some(outcome) = self.check_stop(state, cancellation.as_ref()) {
                 return Ok(Some(outcome));
             }
-            if state.tool_calls >= self.budget.max_tool_calls {
+            if self
+                .budget
+                .max_tool_calls
+                .is_some_and(|max_calls| state.tool_calls >= max_calls)
+            {
                 return Ok(Some(self.stop_outcome(StopReason::BudgetExceeded, state)));
             }
             state.tool_calls += 1;
@@ -408,10 +412,18 @@ impl AgentRuntime {
         if cancellation.is_some_and(Cancellation::is_cancelled) {
             return Some(self.stop_outcome(StopReason::Cancelled, state));
         }
-        if state.steps >= self.budget.max_steps {
+        if self
+            .budget
+            .max_steps
+            .is_some_and(|max_steps| state.steps >= max_steps)
+        {
             return Some(self.stop_outcome(StopReason::MaxSteps, state));
         }
-        if elapsed_ms(state) > self.budget.max_duration.as_millis() as u64 {
+        if self
+            .budget
+            .max_duration
+            .is_some_and(|max| elapsed_ms(state) > max.as_millis() as u64)
+        {
             return Some(self.stop_outcome(StopReason::BudgetExceeded, state));
         }
         if self.budget.tokens_exceeded(&state.usage) {

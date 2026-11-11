@@ -52,7 +52,6 @@ pub enum Occurrence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemSchema {
     pub key: String,
-    pub title: String,
     #[serde(default)]
     pub text_required: bool,
 }
@@ -907,7 +906,7 @@ fn add_anchor(
             path,
             schema_key: item.key.clone(),
             kind: AnchorKind::Item,
-            title: item.title.clone(),
+            title: String::new(),
             occurrence_key: occurrence_key.clone(),
             content_kind: ContentKind::Text,
             text: text.to_string(),
@@ -1012,9 +1011,7 @@ fn retitle_node(node: &mut AnchorNode, schema: &DocumentSchema, index: usize) {
             }
         }
         AnchorKind::Item => {
-            if let Some(item) = schema.item(&node.schema_key) {
-                node.title = item.title.clone();
-            }
+            node.title.clear();
         }
     }
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -1336,7 +1333,7 @@ pub fn project_document_schema() -> DocumentSchema {
         chapter(key, title, Occurrence::Single, ContentSchema::Text)
     }
 
-    fn list(key: &str, title: &str, item_key: &str, item_title: &str) -> ChapterSchema {
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
         chapter(
             key,
             title,
@@ -1344,13 +1341,29 @@ pub fn project_document_schema() -> DocumentSchema {
             ContentSchema::List {
                 item: ItemSchema {
                     key: item_key.to_string(),
-                    title: item_title.to_string(),
                     text_required: true,
                 },
                 min: 0,
                 max: None,
             },
         )
+    }
+
+    fn required_list(key: &str, title: &str, item_key: &str, min: usize) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min,
+                max: None,
+            },
+        )
+        .required(true)
     }
 
     DocumentSchema {
@@ -1365,37 +1378,13 @@ pub fn project_document_schema() -> DocumentSchema {
         .children(vec![
             text("positioning", "定位").required(true).children(vec![
                 text("what_is", "是什么").required(true).text_required(true),
-                list("what_is_not", "不是什么", "exclusion", "排除项").required(true),
+                list("what_is_not", "不是什么", "exclusion").required(true),
             ]),
             text("background", "背景").required(true).children(vec![
                 text("context", "现状").required(true).text_required(true),
-                text("problems", "问题").children(vec![
-                    chapter("problem", "问题", Occurrence::Multiple, ContentSchema::Text)
-                        .required(true)
-                        .min(1)
-                        .text_required(true)
-                        .title_template("{title} {index}")
-                        .children(vec![
-                            list("affected", "影响对象", "affected_item", "影响对象"),
-                            text("frequency", "频率或规模"),
-                            text("impact", "代价").text_required(true),
-                            list("evidence", "证据", "evidence_item", "证据"),
-                        ]),
-                ]),
+                required_list("problems", "问题", "problem", 1),
             ]),
-            text("goals", "目标").children(vec![
-                chapter("goal", "目标", Occurrence::Multiple, ContentSchema::Text)
-                    .required(true)
-                    .min(1)
-                    .text_required(true)
-                    .title_template("{title} {index}")
-                    .children(vec![list(
-                        "goal_problem_refs",
-                        "对应问题",
-                        "goal_problem_ref",
-                        "问题",
-                    )]),
-            ]),
+            required_list("goals", "目标", "goal", 1),
             text("non_goals", "非目标").children(vec![
                 chapter(
                     "non_goal",
@@ -1412,18 +1401,8 @@ pub fn project_document_schema() -> DocumentSchema {
                         .required(true)
                         .text_required(true),
                     text("reconsider_when", "重新考虑的条件"),
-                    list(
-                        "non_goal_goal_refs",
-                        "对应目标",
-                        "non_goal_goal_ref",
-                        "目标",
-                    ),
-                    list(
-                        "non_goal_problem_refs",
-                        "对应问题",
-                        "non_goal_problem_ref",
-                        "问题",
-                    ),
+                    list("non_goal_goal_refs", "对应目标", "non_goal_goal_ref"),
+                    list("non_goal_problem_refs", "对应问题", "non_goal_problem_ref"),
                 ]),
             ]),
             text("constraints", "约束").children(vec![
@@ -1469,7 +1448,7 @@ pub fn project_document_schema() -> DocumentSchema {
                         text("definition", "定义")
                             .required(true)
                             .text_required(true),
-                        list("aliases", "别名", "alias", "别名"),
+                        list("aliases", "别名", "alias"),
                     ]),
             ]),
         ]),
@@ -1616,20 +1595,7 @@ mod tests {
             schema,
             "background.problems",
             Some("p1"),
-            "员工无法查询报销进度",
-        );
-        snapshot = add(
-            &snapshot,
-            schema,
-            "background.problems/problem/p1.affected",
-            Some("a1"),
-            "员工",
-        );
-        snapshot = update(
-            &snapshot,
-            schema,
-            "background.problems/problem/p1.impact",
-            "平均催问两次",
+            "员工无法查询报销进度，平均催问两次",
         );
         snapshot = add(
             &snapshot,
@@ -1637,13 +1603,6 @@ mod tests {
             "goals",
             Some("g1"),
             "员工可自助查询报销进度",
-        );
-        snapshot = add(
-            &snapshot,
-            schema,
-            "goals/goal/g1.goal_problem_refs",
-            Some("p1"),
-            "p1",
         );
         snapshot = add(&snapshot, schema, "non_goals", Some("n1"), "不做移动端应用");
         snapshot = update(
@@ -1706,7 +1665,7 @@ mod tests {
             )
             .unwrap();
         assert!(created.is_some());
-        assert!(next.find_path("background.problems/problem/p1").is_some());
+        assert!(next.find_path("background.problems/p1").is_some());
         let (next, created) = next
             .apply(
                 &schema,
@@ -1749,11 +1708,7 @@ mod tests {
         assert!(snapshot.find_path("background.context").is_some());
         assert!(snapshot.find_path("background.problems").is_some());
         assert!(snapshot.find_path("goals").is_some());
-        assert!(
-            snapshot
-                .find_path("background.problems/problem/p1")
-                .is_none()
-        );
+        assert!(snapshot.find_path("background.problems/p1").is_none());
     }
 
     #[test]
@@ -1763,11 +1718,11 @@ mod tests {
         let validation = snapshot.validate(&schema);
         assert!(validation.is_valid(), "{:?}", validation.errors);
         assert!(!snapshot.root_id().is_empty());
-        assert!(snapshot.find_path("goals/goal/g1").is_some());
+        assert!(snapshot.find_path("goals/g1").is_some());
         let markdown = snapshot.markdown(&snapshot.root.key).unwrap();
         assert!(markdown.contains("# 定位"));
-        assert!(markdown.contains("# 目标 1"));
-        assert!(markdown.contains("- 员工"));
+        assert!(markdown.contains("# 目标"));
+        assert!(markdown.contains("- 员工可自助查询报销进度"));
     }
 
     #[test]
@@ -1775,19 +1730,19 @@ mod tests {
         let schema = project_document_schema();
         let snapshot = sample(&schema);
         let old_root = snapshot.root_id().to_string();
-        let old_goal = snapshot.find_path("goals/goal/g1").unwrap().id.clone();
+        let old_goal = snapshot.find_path("goals/g1").unwrap().id.clone();
         let (next, _) = snapshot
             .apply(
                 &schema,
                 &AnchorOp::UpdateText {
-                    anchor: "goals/goal/g1".to_string(),
+                    anchor: "goals/g1".to_string(),
                     text: "员工可自助提交并查询报销进度".to_string(),
                 },
             )
             .unwrap();
         assert_ne!(old_root, next.root_id());
-        assert_ne!(old_goal, next.find_path("goals/goal/g1").unwrap().id);
-        assert!(next.find_path("goals/goal/g1").is_some());
+        assert_ne!(old_goal, next.find_path("goals/g1").unwrap().id);
+        assert!(next.find_path("goals/g1").is_some());
         assert!(next.validate(&schema).is_valid());
     }
 
@@ -1844,7 +1799,7 @@ mod tests {
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "goals/goal/g1".to_string(),
+                    anchor: "non_goals/non_goal/n1".to_string(),
                     cascade: false,
                 },
             )
@@ -1854,12 +1809,12 @@ mod tests {
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "goals/goal/g1".to_string(),
+                    anchor: "non_goals/non_goal/n1".to_string(),
                     cascade: true,
                 },
             )
             .unwrap();
-        assert!(next.find_path("goals/goal/g1").is_none());
+        assert!(next.find_path("non_goals/non_goal/n1").is_none());
     }
 
     #[test]

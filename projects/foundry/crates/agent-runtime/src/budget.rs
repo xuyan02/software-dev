@@ -4,39 +4,36 @@ use std::time::Duration;
 
 use crate::Usage;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Budget {
-    pub max_steps: u32,
-    pub max_input_tokens: u64,
-    pub max_output_tokens: u64,
-    pub max_tool_calls: u32,
-    pub max_duration: Duration,
-}
-
-impl Default for Budget {
-    fn default() -> Self {
-        Self {
-            max_steps: 20,
-            max_input_tokens: 200_000,
-            max_output_tokens: 50_000,
-            max_tool_calls: 50,
-            max_duration: Duration::from_secs(600),
-        }
-    }
+    /// `None` means the run has no step limit.
+    pub max_steps: Option<u32>,
+    /// `None` means the run has no input-token limit.
+    pub max_input_tokens: Option<u64>,
+    /// `None` means the run has no output-token limit.
+    pub max_output_tokens: Option<u64>,
+    /// `None` means the run has no tool-call limit.
+    pub max_tool_calls: Option<u32>,
+    /// `None` means the run has no duration limit.
+    pub max_duration: Option<Duration>,
 }
 
 impl Budget {
     pub fn small() -> Self {
         Self {
-            max_steps: 6,
-            max_input_tokens: 20_000,
-            max_output_tokens: 5_000,
-            max_tool_calls: 5,
-            max_duration: Duration::from_secs(60),
+            max_steps: Some(6),
+            max_input_tokens: Some(20_000),
+            max_output_tokens: Some(5_000),
+            max_tool_calls: Some(5),
+            max_duration: Some(Duration::from_secs(60)),
         }
     }
 
     pub fn tokens_exceeded(&self, usage: &Usage) -> bool {
-        usage.input_tokens > self.max_input_tokens || usage.output_tokens > self.max_output_tokens
+        self.max_input_tokens
+            .is_some_and(|max| usage.input_tokens > max)
+            || self
+                .max_output_tokens
+                .is_some_and(|max| usage.output_tokens > max)
     }
 }

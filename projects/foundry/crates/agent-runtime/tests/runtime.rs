@@ -167,7 +167,7 @@ async fn max_steps_stops_the_loop() {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let budget = Budget {
-        max_steps: 2,
+        max_steps: Some(2),
         ..Budget::default()
     };
     let (runtime, _model, _trajectory) = runtime(
@@ -190,8 +190,8 @@ async fn token_budget_stops_the_loop() {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
     let budget = Budget {
-        max_input_tokens: 10,
-        max_steps: 10,
+        max_input_tokens: Some(10),
+        max_steps: Some(10),
         ..Budget::default()
     };
     let (runtime, _model, _trajectory) = runtime(

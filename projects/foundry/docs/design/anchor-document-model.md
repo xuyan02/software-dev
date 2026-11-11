@@ -86,8 +86,8 @@ key = "k:" + sha256(parent_key + schema_key + occurrence_key)
 ```text
 document
 positioning.what_is_not/e1
-background.problems/problem/p1
-goals/goal/g1
+background.problems/p1
+goals/g1
 ```
 
 出现键由创建时确定：有业务 ID 用业务 ID，没有则由服务端生成 UUID，之后不复用。
@@ -100,12 +100,12 @@ goals/goal/g1
 {
   "key": "k:...",
   "schema_key": "goal",
-  "kind": "chapter",
+  "kind": "item",
   "occurrence_key": "g1",
   "content_kind": "text",
   "text": "员工可自助查询报销进度",
   "items": [],
-  "children": ["sha256:..."]
+  "children": []
 }
 ```
 
@@ -186,14 +186,16 @@ GET  /api/v1/projects/{project}/documents/{kind}/versions/{version}
     {
       "op_id": "uuid",
       "type": "add",
-      "parent": "k:<goals 的 key>"
+      "parent": "k:<goals 的 key>",
+      "occurrence_key": "g1",
+      "text": "员工可自助查询报销进度"
     },
     {
       "op_id": "uuid",
       "type": "add",
-      "parent": "k:<goal_problem_refs 的 key>",
+      "parent": "k:<background.problems 的 key>",
       "occurrence_key": "p1",
-      "text": "p1"
+      "text": "员工无法查询报销进度，平均催问两次"
     }
   ]
 }

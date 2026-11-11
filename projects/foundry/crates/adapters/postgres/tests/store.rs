@@ -888,15 +888,8 @@ async fn anchor_document_round_trips_with_annotations() {
             op: foundry_domain::AnchorOp::Add {
                 parent: "background.problems".to_string(),
                 occurrence_key: Some("p1".to_string()),
-                text: "员工无法查询报销进度".to_string(),
+                text: "员工无法查询报销进度，平均催问两次".to_string(),
                 after: None,
-            },
-        },
-        foundry_domain::AnchorOperation {
-            op_id: Uuid::now_v7(),
-            op: foundry_domain::AnchorOp::UpdateText {
-                anchor: "background.problems/problem/p1.impact".to_string(),
-                text: "平均催问两次".to_string(),
             },
         },
         foundry_domain::AnchorOperation {
@@ -974,12 +967,7 @@ async fn anchor_document_round_trips_with_annotations() {
             project_id: project.id,
             kind: "project".to_string(),
             anchor_key: "goals/g1".to_string(),
-            anchor_id: draft
-                .snapshot
-                .find_path("goals/goal/g1")
-                .unwrap()
-                .id
-                .clone(),
+            anchor_id: draft.snapshot.find_path("goals/g1").unwrap().id.clone(),
             quote: None,
             body: "补充查询范围。".to_string(),
             author_id: alice.id,
@@ -1027,7 +1015,7 @@ async fn anchor_document_round_trips_with_annotations() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        version.snapshot.find_path("goals/goal/g1").unwrap().text,
+        version.snapshot.find_path("goals/g1").unwrap().text,
         "员工可自助查询报销进度"
     );
 }

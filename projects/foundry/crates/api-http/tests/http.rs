@@ -3351,13 +3351,7 @@ async fn anchor_document_round_trips_over_http() {
                 "type": "add",
                 "parent": "background.problems",
                 "occurrence_key": "p1",
-                "text": "员工无法查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "background.problems/problem/p1.impact",
-                "text": "平均催问两次"
+                "text": "员工无法查询报销进度，平均催问两次"
             },
             {
                 "op_id": Uuid::now_v7(),
@@ -3365,13 +3359,6 @@ async fn anchor_document_round_trips_over_http() {
                 "parent": "goals",
                 "occurrence_key": "g1",
                 "text": "员工可自助查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "goals/goal/g1.goal_problem_refs",
-                "occurrence_key": "p1",
-                "text": "p1"
             },
             {
                 "op_id": Uuid::now_v7(),
@@ -3506,13 +3493,7 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
                 "type": "add",
                 "parent": "background.problems",
                 "occurrence_key": "p1",
-                "text": "员工无法查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "background.problems/problem/p1.impact",
-                "text": "平均催问两次"
+                "text": "员工无法查询报销进度，平均催问两次"
             },
             {
                 "op_id": Uuid::now_v7(),
@@ -3520,13 +3501,6 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
                 "parent": "goals",
                 "occurrence_key": "g1",
                 "text": "员工可自助查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "goals/goal/g1.goal_problem_refs",
-                "occurrence_key": "p1",
-                "text": "p1"
             },
             {
                 "op_id": Uuid::now_v7(),
@@ -3563,7 +3537,7 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
             Some(&harness.admin_token),
             None,
             json!({
-                "anchor": "goals/goal/g1",
+                "anchor": "goals/g1",
                 "quote": "员工可自助查询报销进度",
                 "body": "这里应该说明查询范围。"
             }),
@@ -3603,7 +3577,7 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
         "operations": [{
             "op_id": Uuid::now_v7(),
             "type": "update_text",
-            "anchor": "goals/goal/g1",
+            "anchor": "goals/g1",
             "text": "员工可自助提交并查询报销进度"
         }]
     });
