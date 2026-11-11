@@ -28,6 +28,9 @@ pub struct StepRecord {
     pub input: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
+    /// Provider-native reasoning for this step, when the model returns it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
     pub usage: Usage,
     pub elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]

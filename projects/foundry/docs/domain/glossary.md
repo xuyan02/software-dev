@@ -5,16 +5,16 @@
 | Control plane（控制平面） | 所有工程动作的必经入口：记录状态、校验权限、调用执行面。 |
 | Execution plane（执行面） | 真正干活的外部系统：Git、CI、沙箱、部署、聊天、模型推理。 |
 | Problem space（问题空间） | 世界上发生了什么、谁想要什么、哪里需要讨论。Issue 属于这一层。 |
-| Commitment space（承诺空间） | 我们决定解决什么、不解决什么、怎样算解决。Requirement 属于这一层。 |
+| Commitment space（承诺空间） | 我们决定解决什么、不解决什么、怎样算解决。项目文档和需求文档属于这一层。 |
 | Issue（议题） | 问题空间的统一入口：反馈、缺陷、问题、想法、任务请求、事故。先收集和讨论，再决定去向。分类在创建时确定。 |
 | Disposition（处置） | Issue 的最终去向：关闭、不处理、重复、转需求分析、转任务等。 |
-| Work item（工作项） | Requirement / Task / Issue 等需要推进的对象的统称。它是可执行契约，不是便签。 |
+| Work item（工作项） | Task / Issue 等需要推进的对象的统称。它是可执行契约，不是便签。 |
 | Evidence（证据） | 支撑某个状态转换的可验证产物：测试报告、契约校验、基准、评审记录。 |
 | Gate（门禁） | 进入下一状态前必须满足的条件集合。由状态机 + 策略 + 证据共同决定。 |
 | Actor | 执行动作的主体：Human、Agent 或 System。它由登录会话账户派生，不由请求体声明。 |
 | Account（账户） | 稳定身份。人类和智能体都是账户；全局角色为 `admin` 或 `member`。 |
 | Session（会话） | 登录后签发的短期凭证。数据库中只保存 token 的 SHA-256 哈希，可过期和撤销。 |
-| Project（项目） | 隔离边界。Issue、Requirement 和事件都属于恰好一个项目。归档后只读；删除会永久移除项目范围内全部数据。 |
+| Project（项目） | 隔离边界。Issue、项目文档、需求文档和事件都属于恰好一个项目。归档后只读；删除会永久移除项目范围内全部数据。 |
 | Project role（项目角色） | `viewer < member < maintainer < owner`，决定读取、贡献、处置和成员管理权限。 |
 | Bootstrap admin | 由启动配置创建的第一个管理员，用于建立后续账户和项目。 |
 | Capability token | 授予智能体在限定范围、限定时间内调用某类工具的短期凭证。 |
@@ -62,8 +62,8 @@
 |---|---|
 | Opportunity | 组合层的机会候选：市场、客户、技术、合规或内部改进。 |
 | Portfolio | 项目组合：预算、容量、依赖、风险和优先级。 |
-| ProjectBrief | 立项简报：问题、目标、成功指标、范围、约束、风险、干系人。 |
-| SuccessMetric | 可度量的成功标准：基线、目标、测量方式、时间窗。 |
+| Project document（项目文档） | 项目级承诺：定位、背景、目标、非目标、约束、风险和术语表。 |
+| GlossaryTerm | 项目文档中的术语表条目：术语、定义和别名。 |
 | KnowledgeItem | 知识条目：约定、术语、模式、FAQ、runbook、摘要。 |
 | Authority（知识） | 知识权威性：canonical / reference / draft / deprecated / stale。 |
 | ContextBundle | 为一次任务组装的上下文包：条目、来源、版本、预算。 |

@@ -6,13 +6,11 @@
 
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
-    AnnotationStatus, Confidence, EntityStatus, Issue, IssueKind, IssueSeverity,
-    IssueSourceKind, IssueStatus, Project, ProjectBriefAnnotation, ProjectBriefBody,
-    ProjectBriefStatus, ProjectRole, ProjectStatus,
-    Requirement, RequirementStatus, RequirementsAnnotation, RequirementsDocumentBody, RiskLevel,
-    RoleKind, StoryPriority,
-    Task, TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState,
-    WorkflowDefinition, WorkflowOption, WorkflowOwner,
+    AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, Confidence, EntityStatus, Issue,
+    IssueKind, IssueSeverity, IssueSourceKind, IssueStatus, Project, ProjectRole, ProjectStatus,
+    RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
+    TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowDefinition,
+    WorkflowOption, WorkflowOwner,
 };
 
 const STYLE: &str = r#"
@@ -224,7 +222,10 @@ fn markdown_to_html(input: &str) -> String {
         if trimmed.starts_with("```") {
             flush_markdown_paragraph(&mut out, &mut paragraph);
             close_markdown_list(&mut out, &mut list);
-            code = Some((trimmed.trim_start_matches('`').trim().to_string(), Vec::new()));
+            code = Some((
+                trimmed.trim_start_matches('`').trim().to_string(),
+                Vec::new(),
+            ));
             index += 1;
             continue;
         }
@@ -239,7 +240,10 @@ fn markdown_to_html(input: &str) -> String {
         if let Some((level, rest)) = markdown_heading(trimmed) {
             flush_markdown_paragraph(&mut out, &mut paragraph);
             close_markdown_list(&mut out, &mut list);
-            out.push_str(&format!("<h{level}>{}</h{level}>", inline_markdown(rest, 0)));
+            out.push_str(&format!(
+                "<h{level}>{}</h{level}>",
+                inline_markdown(rest, 0)
+            ));
             index += 1;
             continue;
         }
@@ -359,13 +363,15 @@ fn close_markdown_list(out: &mut String, list: &mut Option<&'static str>) {
 }
 
 fn markdown_heading(line: &str) -> Option<(usize, &str)> {
-    let level = line.chars().take_while(|character| *character == '#').count();
+    let level = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
     if !(1..=6).contains(&level) {
         return None;
     }
     let rest = &line[level..];
-    rest.starts_with(' ')
-        .then(|| (level, rest.trim_start()))
+    rest.starts_with(' ').then(|| (level, rest.trim_start()))
 }
 
 fn markdown_hr(line: &str) -> bool {
@@ -375,7 +381,8 @@ fn markdown_hr(line: &str) -> bool {
     if !matches!(first, '-' | '*' | '_') {
         return false;
     }
-    line.chars().all(|character| character == first || character == ' ')
+    line.chars()
+        .all(|character| character == first || character == ' ')
         && line.chars().filter(|character| *character == first).count() >= 3
 }
 
@@ -385,11 +392,14 @@ fn markdown_list_item(line: &str) -> Option<(&'static str, &str)> {
             return Some(("ul", rest.trim_start()));
         }
     }
-    let digits = line.chars().take_while(|character| character.is_ascii_digit()).count();
-    if digits > 0 {
-        if let Some(rest) = line[digits..].strip_prefix(". ") {
-            return Some(("ol", rest.trim_start()));
-        }
+    let digits = line
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .count();
+    if digits > 0
+        && let Some(rest) = line[digits..].strip_prefix(". ")
+    {
+        return Some(("ol", rest.trim_start()));
     }
     None
 }
@@ -713,8 +723,8 @@ impl ConsoleContext {
 enum Section {
     Workbench,
     Issues,
+    ProjectDocument,
     Requirements,
-    Brief,
     Tasks,
     Projects,
     Workflows,
@@ -778,15 +788,28 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         )
     };
 
-    let brief_nav = ctx
+    let project_document_nav = ctx
         .current
         .as_ref()
         .map(|project| {
             nav_item(
                 active,
-                Section::Brief,
-                &format!("/projects/{}/brief", project.id),
-                "项目简报",
+                Section::ProjectDocument,
+                &format!("/projects/{}/documents/project", project.id),
+                "项目文档",
+            )
+        })
+        .unwrap_or_default();
+
+    let requirements_nav = ctx
+        .current
+        .as_ref()
+        .map(|project| {
+            nav_item(
+                active,
+                Section::Requirements,
+                &format!("/projects/{}/documents/requirements", project.id),
+                "需求文档",
             )
         })
         .unwrap_or_default();
@@ -805,8 +828,8 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
   </div>
   <div class="nav-group">
     <p class="nav-heading">承诺空间</p>
-    {}
-    {brief_nav}
+    {project_document_nav}
+    {requirements_nav}
   </div>
   <div class="nav-group">
     <p class="nav-heading">执行</p>
@@ -835,7 +858,6 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
 </nav>
 <div class="sidebar-actions">
   {create_issue}
-  {create_requirement}
 </div>
 <div class="sidebar-user">
   <strong>{display_name}</strong>
@@ -844,7 +866,6 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
 </div>"#,
         nav_item(active, Section::Workbench, "/", "工作台"),
         nav_item(active, Section::Issues, "/issues", "议题"),
-        nav_item(active, Section::Requirements, "/requirements", "需求"),
         nav_item(active, Section::Tasks, "/tasks", "任务"),
         nav_item(active, Section::Workflows, "/workflows", "流程"),
         nav_item(active, Section::Projects, "/projects", "项目"),
@@ -859,12 +880,8 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         } else {
             String::new()
         },
-        create_requirement = if ctx.can_contribute() {
-            r#"<a class="button secondary" href="/requirements/new">＋ 新建需求</a>"#
-        } else {
-            ""
-        },
-        brief_nav = brief_nav,
+        project_document_nav = project_document_nav,
+        requirements_nav = requirements_nav,
         display_name = escape(&ctx.viewer.display_name),
         handle = escape(&ctx.viewer.handle),
         kind = if ctx.viewer.kind == AccountKind::Human {
@@ -984,12 +1001,7 @@ pub fn setup_admin_page(handle: &str, display_name: &str, error: Option<&str>) -
     bare_layout("创建管理员", &body)
 }
 
-pub fn workbench(
-    ctx: &ConsoleContext,
-    issues: &[Issue],
-    requirements: &[Requirement],
-    tasks: &[Task],
-) -> String {
+pub fn workbench(ctx: &ConsoleContext, issues: &[Issue], tasks: &[Task]) -> String {
     let fresh = issues
         .iter()
         .filter(|issue| issue.status == IssueStatus::Open)
@@ -1026,24 +1038,6 @@ pub fn workbench(
             .join("\n")
     };
 
-    let requirement_items = if requirements.is_empty() {
-        r#"<div class="empty">还没有需求。</div>"#.to_string()
-    } else {
-        requirements
-            .iter()
-            .take(6)
-            .map(|requirement| {
-                format!(
-                    r#"<div class="list-item"><a href="/requirements/{id}">{title}</a><span class="badge">{status}</span></div>"#,
-                    id = requirement.id,
-                    title = escape(&requirement.title),
-                    status = status_label(requirement.status),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
     let project_line = ctx
         .current
         .as_ref()
@@ -1068,11 +1062,6 @@ pub fn workbench(
     <span class="stat-value">{fresh}<small> 待处理</small></span>
     <span class="stat-foot">{active} 处理中 · {resolved} 待确认</span>
   </a>
-  <a class="stat" href="/requirements">
-    <span class="stat-label">需求（早期实现）</span>
-    <span class="stat-value">{requirement_count}</span>
-    <span class="stat-foot">承诺空间</span>
-  </a>
   <a class="stat" href="/tasks">
     <span class="stat-label">任务</span>
     <span class="stat-value">{task_total}</span>
@@ -1094,71 +1083,15 @@ pub fn workbench(
   <span class="flow-arrow">→</span>
   <span class="flow-step">发布</span>
 </div>
-<p class="hint">当前已接入议题、需求和任务；设计文档、决策和发布尚未接入。</p>
+<p class="hint">当前已接入议题、需求文档和任务；设计文档、决策和发布尚未接入。</p>
 
-<div class="two-col">
-  <section>
-    <h2>最近议题</h2>
-    <div class="list">{issue_items}</div>
-    <p><a href="/issues">查看全部议题 →</a></p>
-  </section>
-  <section>
-    <h2>最近需求</h2>
-    <div class="list">{requirement_items}</div>
-    <p><a href="/requirements">查看全部需求 →</a></p>
-  </section>
-</div>"#,
-        requirement_count = requirements.len(),
+<section>
+  <h2>最近议题</h2>
+  <div class="list">{issue_items}</div>
+  <p><a href="/issues">查看全部议题 →</a></p>
+</section>"#,
     );
     layout(ctx, Section::Workbench, "工作台", &body)
-}
-
-pub fn dashboard(ctx: &ConsoleContext, requirements: &[Requirement]) -> String {
-    let rows = if requirements.is_empty() {
-        r#"<tr><td colspan="5" class="empty">还没有需求。用 API 或 CLI 创建第一条。</td></tr>"#
-            .to_string()
-    } else {
-        requirements
-            .iter()
-            .map(|requirement| {
-                format!(
-                    r#"<tr>
-<td><a href="/requirements/{id}">{title}</a></td>
-<td><span class="badge">{status}</span></td>
-<td>{priority:?}</td>
-<td>{owner}</td>
-<td>{updated}</td>
-</tr>"#,
-                    id = requirement.id,
-                    title = escape(&requirement.title),
-                    status = status_label(requirement.status),
-                    priority = requirement.priority,
-                    owner = escape(requirement.owner.id()),
-                    updated = requirement
-                        .updated_at
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap_or_default(),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let body = format!(
-        r#"<h1>需求</h1>
-<p class="sub">需求是承诺空间：我们决定解决什么、不解决什么、怎样算解决。原始反馈先进入议题。</p>
-{create}
-<table>
-<thead><tr><th>标题</th><th>状态</th><th>优先级</th><th>负责人</th><th>更新时间</th></tr></thead>
-<tbody>{rows}</tbody>
-</table>"#,
-        create = if ctx.can_contribute() {
-            r#"<p><a class="button" href="/requirements/new">＋ 新建需求</a></p>"#
-        } else {
-            ""
-        },
-    );
-    layout(ctx, Section::Requirements, "需求", &body)
 }
 
 pub fn tasks_page(ctx: &ConsoleContext, tasks: &[Task]) -> String {
@@ -1316,11 +1249,7 @@ fn render_task_tree(
     }
 }
 
-pub fn task_page(
-    ctx: &ConsoleContext,
-    task: &Task,
-    links: &[TaskLink],
-) -> String {
+pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> String {
     let role_rows = if task.role_specs.is_empty() {
         r#"<tr><td colspan="4" class="empty">流程没有声明角色。</td></tr>"#.to_string()
     } else {
@@ -1488,689 +1417,201 @@ pub fn task_page(
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectBriefDraftData {
-    pub id: uuid::Uuid,
+pub struct RequirementsApprovalData {
     pub revision: u64,
-    pub body: ProjectBriefBody,
-    pub updated_at: time::OffsetDateTime,
+    pub decision: ApprovalDecision,
+    pub actor_id: uuid::Uuid,
+    pub comment: Option<String>,
+    pub created_at: time::OffsetDateTime,
 }
 
-pub struct ProjectBriefPageData {
-    pub revision: u64,
-    pub status: ProjectBriefStatus,
-    pub body: ProjectBriefBody,
-    pub approved_by: Option<uuid::Uuid>,
-    pub updated_at: time::OffsetDateTime,
-    pub has_current: bool,
-    pub drafts: Vec<ProjectBriefDraftData>,
-    pub selected_draft: Option<ProjectBriefDraftData>,
-    pub can_edit: bool,
-    pub can_annotate: bool,
+pub struct AnchorDocumentPageData<'a> {
+    pub kind: &'a str,
+    pub current_version: u32,
+    pub latest_version: Option<u32>,
+    pub draft_revision: Option<u64>,
+    pub draft_version: Option<u32>,
+    pub root_id: &'a str,
+    pub markdown: &'a str,
+    pub annotations: &'a [AnchorAnnotation],
+    pub approvals: &'a [RequirementsApprovalData],
     pub can_approve: bool,
-    pub annotations: Vec<ProjectBriefAnnotation>,
-    pub error: Option<String>,
-    pub validation: Vec<String>,
+    pub error: Option<&'a str>,
 }
 
-pub fn project_brief_page(
+pub fn anchor_document_page(
     ctx: &ConsoleContext,
     project: &Project,
-    data: &ProjectBriefPageData,
+    data: AnchorDocumentPageData<'_>,
 ) -> String {
-    let editable = data.can_edit && data.selected_draft.is_some();
-    let editor_body = data
-        .selected_draft
-        .as_ref()
-        .map(|draft| &draft.body)
-        .unwrap_or(&data.body);
-    let ro = "";
-    let metrics = editor_body
-        .success_metrics
-        .iter()
-        .map(|metric| {
-            format!(
-                "{} | {} | {} | {} | {} | {}",
-                metric.name,
-                metric.target,
-                metric.unit,
-                metric.measurement,
-                metric.window,
-                metric
-                    .baseline
-                    .map(|value| value.to_string())
-                    .unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let risks = editor_body
-        .risks
-        .iter()
-        .map(|risk| {
-            format!(
-                "{} | {} | {} | {} | {}",
-                risk.description,
-                risk_level_str(risk.probability),
-                risk_level_str(risk.impact),
-                risk.mitigation,
-                risk.owner
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let stakeholders = editor_body
-        .stakeholders
-        .iter()
-        .map(|stakeholder| {
-            format!(
-                "{} | {} | {}",
-                stakeholder.role,
-                stakeholder.account,
-                stakeholder.decision_rights.join(",")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let (budget_amount, budget_currency, budget_note) = editor_body
-        .budget
-        .as_ref()
-        .map(|budget| {
-            (
-                budget.amount.to_string(),
-                budget.currency.clone(),
-                budget.note.clone().unwrap_or_default(),
-            )
-        })
-        .unwrap_or_default();
     let error_html = data
         .error
-        .as_ref()
         .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
         .unwrap_or_default();
-    let validation_html = if data.validation.is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"<div class="error"><strong>简报未通过校验：</strong><ul>{}</ul></div>"#,
-            data.validation
-                .iter()
-                .map(|issue| format!("<li>{}</li>", escape(issue)))
-                .collect::<String>()
-        )
-    };
-    let approved = data
-        .approved_by
-        .map(|id| format!(r#"<span>批准人 <code>{id}</code></span>"#))
+    let draft_already_approved = data
+        .draft_version
+        .map(|version| {
+            format!(
+                r#"<p class="hint">当前草案已批准为版本 <strong>{version}</strong>；修改后需要再次审批。</p>"#
+            )
+        })
         .unwrap_or_default();
-    let buttons = if editable {
-        r#"<div class="actions">
-  <button type="submit" name="action" value="save">保存草稿</button>
-  <button type="submit" name="action" value="submit">提交评审</button>
-</div>"#
-            .to_string()
-    } else {
-        String::new()
-    };
-    let approve = if data.can_approve && data.status == ProjectBriefStatus::InReview && data.has_current {
-        format!(
-            r#"<form method="post" action="/projects/{id}/brief/approve">
-  <input type="hidden" name="version" value="{version}">
-  <div class="actions"><button type="submit">批准当前版本</button></div>
-</form>"#,
-            id = project.id,
-            version = data.revision,
-        )
-    } else {
-        String::new()
-    };
-    let status_note = if !data.has_current {
-        "还没有提交过项目简报。先创建一个草稿并提交评审。"
-    } else {
-        match data.status {
-            ProjectBriefStatus::Draft => "草稿可以编辑；提交后等待人类批准。",
-            ProjectBriefStatus::InReview => {
-                "已提交，先由文风 Reviewer 和内容 Reviewer 审阅；通过后等待 Maintainer/Owner 批准。"
-            }
-            ProjectBriefStatus::Approved => {
-                "已批准，作为项目基线。变更需要通过新草稿提交新版本。"
-            }
-            ProjectBriefStatus::Superseded => "已被新版本取代。",
-        }
-    };
-
-    let document = if data.has_current {
-        project_brief_document(&data.body, data.can_annotate)
-    } else {
-        r#"<p class="empty">还没有提交过项目简报。</p>"#.to_string()
-    };
-    let editor = if editable {
-        let draft = data.selected_draft.as_ref().expect("editable draft");
-        format!(
-            r#"<h2>编辑草稿</h2>
-<form method="post" action="/projects/{project_id}/brief">
-  <input type="hidden" name="draft_id" value="{draft_id}">
+    let approve = if data.can_approve && data.draft_version.is_none() {
+        data.draft_revision
+            .map(|revision| {
+                format!(
+                    r#"<form method="post" action="/projects/{id}/documents/{kind}/approve">
   <input type="hidden" name="revision" value="{revision}">
-  <div class="field">
-    <label for="problem">问题 / 为什么做</label>
-    <textarea id="problem" name="problem"{ro}>{problem}</textarea>
-  </div>
-  <div class="field">
-    <label for="goals">项目目标（每行一个）</label>
-    <textarea id="goals" name="goals"{ro}>{goals}</textarea>
-  </div>
-  <div class="field">
-    <label for="success_metrics">成功指标（每行：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选））</label>
-    <textarea id="success_metrics" name="success_metrics"{ro}>{metrics}</textarea>
-  </div>
-  <div class="grid">
-    <div class="field">
-      <label for="in_scope">范围内（每行一个）</label>
-      <textarea id="in_scope" name="in_scope"{ro}>{in_scope}</textarea>
-    </div>
-    <div class="field">
-      <label for="out_of_scope">非目标（每行一个）</label>
-      <textarea id="out_of_scope" name="out_of_scope"{ro}>{out_of_scope}</textarea>
-    </div>
-  </div>
-  <div class="field">
-    <label for="constraints">约束（每行一个）</label>
-    <textarea id="constraints" name="constraints"{ro}>{constraints}</textarea>
-  </div>
-  <div class="field">
-    <label for="risks">风险（每行：描述 | 概率(low/medium/high) | 影响(low/medium/high) | 缓解 | 负责人）</label>
-    <textarea id="risks" name="risks"{ro}>{risks}</textarea>
-  </div>
-  <div class="field">
-    <label for="stakeholders">干系人（每行：角色 | 账号 | 决策权（逗号分隔））</label>
-    <textarea id="stakeholders" name="stakeholders"{ro}>{stakeholders}</textarea>
-  </div>
-  <div class="grid">
-    <div class="field"><label for="budget_amount">预算金额（可选）</label>
-      <input id="budget_amount" name="budget_amount" value="{budget_amount}"{ro}></div>
-    <div class="field"><label for="budget_currency">币种</label>
-      <input id="budget_currency" name="budget_currency" value="{budget_currency}"{ro}></div>
-  </div>
-  <div class="field"><label for="budget_note">预算说明（可选）</label>
-    <input id="budget_note" name="budget_note" value="{budget_note}"{ro}></div>
-  <div class="field">
-    <label for="assumptions">假设（每行一个）</label>
-    <textarea id="assumptions" name="assumptions"{ro}>{assumptions}</textarea>
-  </div>
-  <div class="field">
-    <label for="open_questions">待决问题（每行一个）</label>
-    <textarea id="open_questions" name="open_questions"{ro}>{open_questions}</textarea>
-  </div>
-  {buttons}
+  <div class="field"><label for="anchor-approve-comment">审批意见（可选）</label>
+    <textarea id="anchor-approve-comment" name="comment" placeholder="记录本次批准的依据"></textarea></div>
+  <div class="actions"><button type="submit">批准当前草案</button></div>
 </form>"#,
-            project_id = project.id,
-            draft_id = draft.id,
-            revision = draft.revision,
-            ro = ro,
-            problem = escape(&editor_body.problem),
-            goals = escape(&editor_body.goals.join("\n")),
-            metrics = escape(&metrics),
-            in_scope = escape(&editor_body.scope.in_scope.join("\n")),
-            out_of_scope = escape(&editor_body.scope.out_of_scope.join("\n")),
-            constraints = escape(&editor_body.constraints.join("\n")),
-            risks = escape(&risks),
-            stakeholders = escape(&stakeholders),
-            budget_amount = escape(&budget_amount),
-            budget_currency = escape(&budget_currency),
-            budget_note = escape(&budget_note),
-            assumptions = escape(&editor_body.assumptions.join("\n")),
-            open_questions = escape(&editor_body.open_questions.join("\n")),
-            buttons = buttons,
-        )
+                    id = project.id,
+                    kind = escape(data.kind),
+                    revision = revision,
+                )
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
-
-    let drafts = if data.drafts.is_empty() {
-        r#"<p class="empty">没有草稿。</p>"#.to_string()
-    } else {
-        let mut out = String::from("<ul>");
-        for draft in &data.drafts {
-            out.push_str(&format!(
-                r#"<li><a href="/projects/{project_id}/brief?draft={draft_id}">草稿 {draft_id}</a> · revision {revision} · 更新 {updated}</li>"#,
-                project_id = project.id,
-                draft_id = draft.id,
-                revision = draft.revision,
-                updated = draft
-                    .updated_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-            ));
-        }
-        out.push_str("</ul>");
-        out
-    };
-    let create_draft = if data.can_edit {
-        format!(
-            r#"<form method="post" action="/projects/{id}/brief/drafts">
-  <div class="actions"><button type="submit">新建草稿</button></div>
+    let reject = if data.can_approve && data.draft_version.is_none() {
+        data.draft_revision
+            .map(|revision| {
+                format!(
+                    r#"<form method="post" action="/projects/{id}/documents/{kind}/reject">
+  <input type="hidden" name="revision" value="{revision}">
+  <div class="field"><label for="anchor-reject-reason">打回原因</label>
+    <textarea id="anchor-reject-reason" name="reason" required placeholder="说明需要修改的地方"></textarea></div>
+  <div class="actions"><button class="danger" type="submit">打回当前草案</button></div>
 </form>"#,
-            id = project.id,
-        )
+                    id = project.id,
+                    kind = escape(data.kind),
+                    revision = revision,
+                )
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
-
-    let body = format!(
-        r#"<p><a href="/projects/{project_id}">← 返回项目</a></p>
-<h1>{project_name} · 项目简报</h1>
-<p class="sub">项目级承诺：为什么做、目标、成功指标、范围和非目标、约束、风险、干系人。</p>
+    let annotation_form = format!(
+        r#"<form method="post" action="/projects/{id}/documents/{kind}/annotations">
+  <div class="field"><label for="anchor-key">锚点键</label>
+    <input id="anchor-key" name="anchor" value="document" required></div>
+  <div class="field"><label for="anchor-quote">引用原文（可选）</label>
+    <input id="anchor-quote" name="quote"></div>
+  <div class="field"><label for="anchor-body">评审批注</label>
+    <textarea id="anchor-body" name="body" required></textarea></div>
+  <div class="actions"><button type="submit">添加标注</button></div>
+</form>"#,
+        id = project.id,
+        kind = escape(data.kind),
+    );
+    let annotations = if data.annotations.is_empty() {
+        "<p class=\"hint\">暂无标注。</p>".to_string()
+    } else {
+        let items = data
+            .annotations
+            .iter()
+            .map(|annotation| {
+                let status = match annotation.status {
+                    AnchorAnnotationStatus::Open => "open",
+                    AnchorAnnotationStatus::Resolved => "resolved",
+                    AnchorAnnotationStatus::Stale => "stale",
+                    AnchorAnnotationStatus::Orphaned => "orphaned",
+                };
+                let resolve = if annotation.status == AnchorAnnotationStatus::Resolved {
+                    String::new()
+                } else {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/projects/{id}/documents/{kind}/annotations/{annotation_id}/resolve">
+  <input type="hidden" name="resolution" value="已处理">
+  <button class="link" type="submit">标记已解决</button>
+</form>"#,
+                        id = project.id,
+                        kind = escape(data.kind),
+                        annotation_id = annotation.id,
+                    )
+                };
+                format!(
+                    r#"<li><span class="badge">{status}</span> <code>{key}</code>
+<p>{body}</p><p class="hint">@{handle} · {created}</p>{resolve}</li>"#,
+                    status = status,
+                    key = escape(&annotation.anchor_key),
+                    body = inline_markdown(&annotation.body, 0),
+                    handle = escape(&annotation.author_handle),
+                    created = annotation.created_at.date(),
+                    resolve = resolve,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        format!("<ul>{items}</ul>")
+    };
+    let label = match data.kind {
+        "project" => "项目文档",
+        "requirements" => "需求文档",
+        _ => "文档",
+    };
+    let section = if data.kind == "requirements" {
+        Section::Requirements
+    } else {
+        Section::ProjectDocument
+    };
+    let page = format!(
+        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/documents/{kind}">{label}</a></p>
+<h1>{name} · {label}</h1>
+<p class="sub">描述文件驱动的文档；每个锚点有稳定键和内容哈希。</p>
 <div class="meta">
-  <span>当前版本 <strong>{status}</strong></span>
-  <span>版本 {revision}</span>
-  <span>更新 {updated}</span>
-  {approved}
+  <span>类型 <strong>{kind}</strong></span>
+  <span>已批准版本 <strong>{current_version}</strong></span>
+  <span>最新版本 <strong>{latest_version}</strong></span>
+  <span>草稿 revision <strong>{draft_revision}</strong></span>
+  <span>根锚点 <code>{root_id}</code></span>
 </div>
-<p class="hint">{status_note}</p>
 {error_html}
-{validation_html}
-<h2>我的草稿</h2>
-{create_draft}
-{drafts}
-{annotations}
-{document}
-{editor}
-{approve}"#,
-        project_id = project.id,
-        project_name = escape(&project.name),
-        status = if data.has_current {
-            project_brief_status_label(data.status)
-        } else {
-            "无"
-        },
-        revision = if data.has_current {
-            data.revision.to_string()
-        } else {
-            "—".to_string()
-        },
-        updated = if data.has_current {
-            data.updated_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default()
-        } else {
-            "—".to_string()
-        },
-        approved = approved,
-        status_note = status_note,
+{draft_already_approved}
+{approval_actions}
+{approval_history}
+<div class="markdown">{markdown}</div>
+<h2>标注</h2>
+{annotation_form}
+{annotations}"#,
+        id = project.id,
+        name = escape(&project.name),
+        kind = escape(data.kind),
+        label = label,
+        current_version = data.current_version,
+        latest_version = data
+            .latest_version
+            .map(|version| version.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        draft_revision = data
+            .draft_revision
+            .map(|revision| revision.to_string())
+            .unwrap_or_else(|| "—".to_string()),
+        root_id = escape(data.root_id),
         error_html = error_html,
-        validation_html = validation_html,
-        create_draft = create_draft,
-        drafts = drafts,
-        annotations = if data.has_current {
-            project_brief_annotations_html(project, &data.annotations, data.can_annotate)
-        } else {
+        draft_already_approved = draft_already_approved,
+        approval_actions = if approve.is_empty() && reject.is_empty() {
             String::new()
+        } else {
+            format!("<h2>审批当前草案</h2>{approve}{reject}")
         },
-        document = document,
-        editor = editor,
-        approve = approve,
+        approval_history = requirements_approvals_html(data.approvals),
+        markdown = markdown_to_html(data.markdown),
+        annotation_form = annotation_form,
+        annotations = annotations,
     );
     layout(
         ctx,
-        Section::Brief,
-        &format!("{} · 项目简报", project.name),
-        &body,
+        section,
+        &format!("{} · {}", project.name, label),
+        &page,
     )
 }
 
-fn brief_annotate_link(
-    editable: bool,
-    target: &str,
-    target_id: Option<&str>,
-    field: Option<&str>,
-) -> String {
-    if !editable {
-        return String::new();
-    }
-    let mut attrs = format!(r#"data-annotate-type="{}""#, escape(target));
-    if let Some(target_id) = target_id {
-        attrs.push_str(&format!(r#" data-annotate-id="{}""#, escape(target_id)));
-    }
-    if let Some(field) = field {
-        attrs.push_str(&format!(r#" data-annotate-field="{}""#, escape(field)));
-    }
-    format!(r##" <a href="#annotation-form" {attrs}>批注</a>"##)
-}
-
-fn project_brief_document(body: &ProjectBriefBody, editable: bool) -> String {
-    let mut out = String::from(r#"<div class="brief">"#);
-    out.push_str(&format!(
-        "<h2>问题 / 为什么做{}</h2>",
-        brief_annotate_link(editable, "problem", None, None)
-    ));
-    if body.problem.trim().is_empty() {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    } else {
-        out.push_str(r#"<div class="card markdown">"#);
-        out.push_str(&markdown_to_html(&body.problem));
-        out.push_str("</div>");
-    }
-
-    out.push_str(&format!(
-        "<h2>项目目标{}</h2>",
-        brief_annotate_link(editable, "goals", None, None)
-    ));
-    out.push_str(&brief_list(&body.goals));
-
-    out.push_str(&format!(
-        "<h2>成功指标{}</h2>",
-        brief_annotate_link(editable, "success_metrics", None, None)
-    ));
-    if body.success_metrics.is_empty() {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    } else {
-        out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>指标</th><th>基线</th><th>目标</th><th>单位</th><th>测量方式</th><th>窗口</th></tr></thead><tbody>"#,
-        );
-        for metric in &body.success_metrics {
-            out.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                inline_markdown(&metric.name, 0),
-                brief_annotate_link(editable, "success_metrics", Some(&metric.id), None),
-                metric
-                    .baseline
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "—".to_string()),
-                metric.target,
-                inline_markdown(&metric.unit, 0),
-                inline_markdown(&metric.measurement, 0),
-                inline_markdown(&metric.window, 0),
-            ));
-        }
-        out.push_str("</tbody></table></div>");
-    }
-
-    out.push_str(&format!(
-        r#"<h2>范围与非目标{}</h2><div class="two-col"><div><h3>范围内{}</h3>"#,
-        brief_annotate_link(editable, "scope", None, None),
-        brief_annotate_link(editable, "scope", None, Some("in_scope"))
-    ));
-    out.push_str(&brief_list(&body.scope.in_scope));
-    out.push_str(&format!(
-        r#"</div><div><h3>非目标{}</h3>"#,
-        brief_annotate_link(editable, "scope", None, Some("out_of_scope"))
-    ));
-    out.push_str(&brief_list(&body.scope.out_of_scope));
-    out.push_str("</div></div>");
-
-    out.push_str(&format!(
-        "<h2>约束{}</h2>",
-        brief_annotate_link(editable, "constraints", None, None)
-    ));
-    out.push_str(&brief_list(&body.constraints));
-
-    out.push_str(&format!(
-        "<h2>风险{}</h2>",
-        brief_annotate_link(editable, "risks", None, None)
-    ));
-    if body.risks.is_empty() {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    } else {
-        out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>风险</th><th>概率</th><th>影响</th><th>缓解</th><th>负责人</th></tr></thead><tbody>"#,
-        );
-        for risk in &body.risks {
-            out.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                inline_markdown(&risk.description, 0),
-                brief_annotate_link(editable, "risks", Some(&risk.id), None),
-                risk_level_label(risk.probability),
-                risk_level_label(risk.impact),
-                inline_markdown(&risk.mitigation, 0),
-                inline_markdown(&risk.owner, 0),
-            ));
-        }
-        out.push_str("</tbody></table></div>");
-    }
-
-    out.push_str(&format!(
-        "<h2>干系人{}</h2>",
-        brief_annotate_link(editable, "stakeholders", None, None)
-    ));
-    if body.stakeholders.is_empty() {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    } else {
-        out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>角色</th><th>账号</th><th>决策权</th></tr></thead><tbody>"#,
-        );
-        for stakeholder in &body.stakeholders {
-            let rights = if stakeholder.decision_rights.is_empty() {
-                "—".to_string()
-            } else {
-                stakeholder.decision_rights.join("、")
-            };
-            out.push_str(&format!(
-                "<tr><td>{}{}</td><td>{}</td><td>{}</td></tr>",
-                inline_markdown(&stakeholder.role, 0),
-                brief_annotate_link(editable, "stakeholders", Some(&stakeholder.id), None),
-                inline_markdown(&stakeholder.account, 0),
-                escape(&rights),
-            ));
-        }
-        out.push_str("</tbody></table></div>");
-    }
-
-    out.push_str(&format!(
-        "<h2>预算{}</h2>",
-        brief_annotate_link(editable, "budget", None, None)
-    ));
-    if let Some(budget) = &body.budget {
-        out.push_str(&format!(
-            "<p><strong>{}</strong> {}{}</p>",
-            budget.amount,
-            escape(&budget.currency),
-            budget
-                .note
-                .as_ref()
-                .map(|note| format!("（{}）", escape(note)))
-                .unwrap_or_default(),
-        ));
-    } else {
-        out.push_str(r#"<p class="empty">未填写</p>"#);
-    }
-
-    out.push_str(&format!(
-        "<h2>假设{}</h2>",
-        brief_annotate_link(editable, "assumptions", None, None)
-    ));
-    out.push_str(&brief_list(&body.assumptions));
-    out.push_str(&format!(
-        "<h2>待决问题{}</h2>",
-        brief_annotate_link(editable, "open_questions", None, None)
-    ));
-    out.push_str(&brief_list(&body.open_questions));
-    out.push_str("</div>");
-    out
-}
-
-fn project_brief_annotations_html(
-    project: &Project,
-    annotations: &[ProjectBriefAnnotation],
-    editable: bool,
-) -> String {
-    let open: Vec<&ProjectBriefAnnotation> = annotations
-        .iter()
-        .filter(|annotation| annotation.status == AnnotationStatus::Open)
-        .collect();
-    let resolved: Vec<&ProjectBriefAnnotation> = annotations
-        .iter()
-        .filter(|annotation| annotation.status == AnnotationStatus::Resolved)
-        .collect();
-    let mut out = String::new();
-    out.push_str(&format!("<h2>待处理批注（{}）</h2>", open.len()));
-    if open.is_empty() {
-        out.push_str(r#"<p class="empty">没有待处理批注。</p>"#);
-    } else {
-        for annotation in open {
-            out.push_str(&project_brief_annotation_card(project, annotation, editable));
-        }
-    }
-    if !resolved.is_empty() {
-        out.push_str(&format!("<h2>历史批注（{}）</h2>", resolved.len()));
-        for annotation in resolved {
-            out.push_str(&project_brief_annotation_card(project, annotation, false));
-        }
-    }
-    if editable {
-        out.push_str(&format!(
-            r#"<h2>添加批注</h2>
-<form id="annotation-form" method="post" action="/projects/{project_id}/brief/annotations">
-  <div class="grid">
-    <div class="field"><label for="target_type">目标</label>
-      <select id="target_type" name="target_type">
-        <option value="document">整个简报</option>
-        <option value="problem">问题 / 为什么做</option>
-        <option value="goals">项目目标</option>
-        <option value="success_metrics">成功指标</option>
-        <option value="scope">范围与非目标</option>
-        <option value="constraints">约束</option>
-        <option value="risks">风险</option>
-        <option value="stakeholders">干系人</option>
-        <option value="budget">预算</option>
-        <option value="assumptions">假设</option>
-        <option value="open_questions">待决问题</option>
-      </select>
-    </div>
-    <div class="field"><label for="target_id">对象 ID（可选）</label>
-      <input id="target_id" name="target_id" placeholder="例如指标、风险或干系人的 id"></div>
-  </div>
-  <div class="field"><label for="annotation-field">字段（可选）</label>
-    <input id="annotation-field" name="field" placeholder="例如 target / mitigation / decision_rights"></div>
-  <div class="field"><label for="annotation-body">批注</label>
-    <textarea id="annotation-body" name="body" required placeholder="指出不清楚、不一致或需要修改的地方"></textarea></div>
-  <div class="actions"><button type="submit">添加批注</button></div>
-</form>"#,
-            project_id = project.id,
-        ));
-        out.push_str(
-            r#"<script>
-(() => {
-  const form = document.getElementById('annotation-form');
-  if (!form) return;
-  document.querySelectorAll('[data-annotate-type]').forEach((link) => {
-    link.addEventListener('click', () => {
-      form.querySelector('[name="target_type"]').value = link.dataset.annotateType;
-      form.querySelector('[name="target_id"]').value = link.dataset.annotateId || '';
-      form.querySelector('[name="field"]').value = link.dataset.annotateField || '';
-      form.querySelector('[name="body"]').focus();
-    });
-  });
-})();
-</script>"#,
-        );
-    }
-    out
-}
-
-fn project_brief_annotation_card(
-    project: &Project,
-    annotation: &ProjectBriefAnnotation,
-    can_resolve: bool,
-) -> String {
-    let mut target = project_brief_annotation_target_label(annotation.target_type).to_string();
-    if let Some(target_id) = &annotation.target_id {
-        target.push_str(&format!(" · {}", escape(target_id)));
-    }
-    if let Some(field) = &annotation.field {
-        target.push_str(&format!(" · {}", escape(field)));
-    }
-    let resolve = if can_resolve && annotation.status == AnnotationStatus::Open {
-        format!(
-            r#"<form class="inline-form" method="post" action="/projects/{project_id}/brief/annotations/{annotation_id}/resolve">
-  <input name="resolution" placeholder="解决说明" required>
-  <button class="secondary" type="submit">标记已解决</button>
-</form>"#,
-            project_id = project.id,
-            annotation_id = annotation.id,
-        )
-    } else {
-        String::new()
-    };
-    let resolution = if annotation.status == AnnotationStatus::Resolved {
-        let at = annotation
-            .resolved_at
-            .map(|value| {
-                value
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        format!(
-            r#"<div class="meta">已解决 · {at}</div><div class="markdown">{}</div>"#,
-            markdown_to_html(annotation.resolution.as_deref().unwrap_or("")),
-        )
-    } else {
-        String::new()
-    };
-    let author = format!(
-        "{} (@{})",
-        escape(&annotation.author_name),
-        escape(&annotation.author_handle)
-    );
-    format!(
-        r#"<div class="card annotation">
-<div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
-<div class="markdown">{body}</div>
-{resolution}
-{resolve}
-</div>"#,
-        author = author,
-        at = annotation
-            .created_at
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
-        target = target,
-        body = markdown_to_html(&annotation.body),
-        resolution = resolution,
-        resolve = resolve,
-    )
-}
-
-fn project_brief_annotation_target_label(
-    target: foundry_domain::ProjectBriefAnnotationTarget,
-) -> &'static str {
-    use foundry_domain::ProjectBriefAnnotationTarget::*;
-    match target {
-        Document => "整个简报",
-        Problem => "问题 / 为什么做",
-        Goals => "项目目标",
-        SuccessMetrics => "成功指标",
-        Scope => "范围与非目标",
-        Constraints => "约束",
-        Risks => "风险",
-        Stakeholders => "干系人",
-        Budget => "预算",
-        Assumptions => "假设",
-        OpenQuestions => "待决问题",
-    }
-}
-
-fn brief_list(items: &[String]) -> String {
-    if items.is_empty() {
-        return r#"<p class="empty">无</p>"#.to_string();
-    }
-    let mut out = String::from("<ul>");
-    for item in items {
-        out.push_str("<li>");
-        out.push_str(&inline_markdown(item, 0));
-        out.push_str("</li>");
-    }
-    out.push_str("</ul>");
-    out
-}
-
-fn risk_level_label(level: RiskLevel) -> &'static str {
-    match level {
-        RiskLevel::Low => "低",
-        RiskLevel::Medium => "中",
-        RiskLevel::High => "高",
-    }
-}
-
+#[allow(clippy::too_many_arguments)]
 pub fn requirements_document_page(
     ctx: &ConsoleContext,
     project: &Project,
@@ -2178,21 +1619,28 @@ pub fn requirements_document_page(
     current_version: u32,
     latest_version: Option<u32>,
     draft_revision: Option<u64>,
+    draft_version: Option<u32>,
     editable: bool,
-    can_publish: bool,
+    can_approve: bool,
     annotations: &[RequirementsAnnotation],
+    approvals: &[RequirementsApprovalData],
     error: Option<&str>,
 ) -> String {
     let error_html = error
         .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
         .unwrap_or_default();
-    let publish = if can_publish {
+    let draft_already_approved = draft_version
+        .map(|version| format!(r#"<p class="hint">当前草案已批准为版本 <strong>{version}</strong>；修改后需要再次审批。</p>"#))
+        .unwrap_or_default();
+    let approve = if can_approve && draft_version.is_none() {
         draft_revision
             .map(|revision| {
                 format!(
-                    r#"<form method="post" action="/projects/{id}/requirements/publish">
+                    r#"<form method="post" action="/projects/{id}/requirements/approve">
   <input type="hidden" name="revision" value="{revision}">
-  <div class="actions"><button type="submit">发布当前草稿</button></div>
+  <div class="field"><label for="approve-comment">审批意见（可选）</label>
+    <textarea id="approve-comment" name="comment" placeholder="记录本次批准的依据"></textarea></div>
+  <div class="actions"><button type="submit">批准当前草案</button></div>
 </form>"#,
                     id = project.id,
                     revision = revision,
@@ -2202,31 +1650,37 @@ pub fn requirements_document_page(
     } else {
         String::new()
     };
-    let reject = if can_publish {
-        format!(
-            r#"<h2>人工评审</h2>
-<form method="post" action="/projects/{id}/requirements/reject">
+    let reject = if can_approve && draft_version.is_none() {
+        draft_revision
+            .map(|revision| {
+                format!(
+                    r#"<form method="post" action="/projects/{id}/requirements/reject">
+  <input type="hidden" name="revision" value="{revision}">
   <div class="field"><label for="reject-reason">打回原因</label>
-    <textarea id="reject-reason" name="reason" required placeholder="说明需要修改的地方；会作为文档注释保存"></textarea></div>
-  <div class="actions"><button class="danger" type="submit">打回给 Analyst</button></div>
+    <textarea id="reject-reason" name="reason" required placeholder="说明需要修改的地方"></textarea></div>
+  <div class="actions"><button class="danger" type="submit">打回当前草案</button></div>
 </form>"#,
-            id = project.id,
-        )
+                    id = project.id,
+                    revision = revision,
+                )
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
     let page = format!(
-        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/brief">项目简报</a></p>
+        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/documents/project">项目文档</a></p>
 <h1>{name} · 需求文档</h1>
-<p class="sub">用户、功能、故事、操作的结构化需求模型。Agent 编辑草稿，人类发布版本。</p>
+<p class="sub">项目问题、目标、用户、功能、故事和操作的结构化真相。Agent 编辑草稿，人类批准版本。</p>
 <div class="meta">
-  <span>已发布版本 <strong>{current_version}</strong></span>
+  <span>已批准版本 <strong>{current_version}</strong></span>
   <span>最新版本 <strong>{latest_version}</strong></span>
   <span>草稿 revision <strong>{draft_revision}</strong></span>
 </div>
 {error_html}
-{publish}
-{reject}
+{draft_already_approved}
+{approval_actions}
+{approval_history}
 {annotations}
 {document}"#,
         id = project.id,
@@ -2239,17 +1693,64 @@ pub fn requirements_document_page(
             .map(|revision| revision.to_string())
             .unwrap_or_else(|| "—".to_string()),
         error_html = error_html,
-        publish = publish,
-        reject = reject,
+        draft_already_approved = draft_already_approved,
+        approval_actions = if approve.is_empty() && reject.is_empty() {
+            String::new()
+        } else {
+            format!("<h2>审批当前草案</h2>{approve}{reject}")
+        },
+        approval_history = requirements_approvals_html(approvals),
         annotations = requirements_annotations_html(project, annotations, editable),
         document = requirements_document_html(body, editable),
     );
     layout(
         ctx,
-        Section::Projects,
+        Section::Requirements,
         &format!("{} · 需求文档", project.name),
         &page,
     )
+}
+
+fn requirements_approvals_html(approvals: &[RequirementsApprovalData]) -> String {
+    if approvals.is_empty() {
+        return String::new();
+    }
+    let rows = approvals
+        .iter()
+        .rev()
+        .map(|approval| {
+            format!(
+                "<tr><td>{revision}</td><td>{decision}</td><td><code>{actor}</code></td><td>{at}</td><td>{comment}</td></tr>",
+                revision = approval.revision,
+                decision = approval_decision_label(approval.decision),
+                actor = escape(&approval.actor_id.to_string()),
+                at = approval
+                    .created_at
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+                comment = approval
+                    .comment
+                    .as_deref()
+                    .map(escape)
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"<h2>审批历史</h2>
+<table>
+<thead><tr><th>Revision</th><th>决定</th><th>审批人</th><th>时间</th><th>意见</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>"#
+    )
+}
+
+fn approval_decision_label(decision: ApprovalDecision) -> &'static str {
+    match decision {
+        ApprovalDecision::Approved => "批准",
+        ApprovalDecision::Rejected => "打回",
+    }
 }
 
 fn requirements_document_html(body: &RequirementsDocumentBody, editable: bool) -> String {
@@ -2307,7 +1808,10 @@ fn requirements_document_html(body: &RequirementsDocumentBody, editable: bool) -
             annotate,
         ));
         if let Some(description) = function.description.as_deref() {
-            out.push_str(&format!(r#"<div class="markdown">{}</div>"#, markdown_to_html(description)));
+            out.push_str(&format!(
+                r#"<div class="markdown">{}</div>"#,
+                markdown_to_html(description)
+            ));
         }
         out.push_str(&format!(
             r#"<p class="hint">状态：{}</p>"#,
@@ -2395,17 +1899,17 @@ fn requirements_annotations_html(
         for annotation in annotations {
             let target = match &annotation.target_id {
                 Some(target_id) => {
-                    let mut label = format!(
-                        "{} {}",
-                        annotation.target_type.as_str(),
-                        escape(target_id)
-                    );
+                    let mut label =
+                        format!("{} {}", annotation.target_type.as_str(), escape(target_id));
                     if let Some(field) = &annotation.field {
                         label.push_str(&format!(" · {}", escape(field)));
                     }
                     label
                 }
-                None => "整个文档".to_string(),
+                None => match &annotation.field {
+                    Some(field) => format!("整个文档 · {}", escape(field)),
+                    None => "整个文档".to_string(),
+                },
             };
             let resolve = if editable {
                 format!(
@@ -2419,17 +1923,18 @@ fn requirements_annotations_html(
             } else {
                 String::new()
             };
+            let author = format!(
+                "{} (@{})",
+                escape(&annotation.author_name),
+                escape(&annotation.author_handle)
+            );
             out.push_str(&format!(
                 r#"<div class="card annotation">
 <div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
 <div class="markdown">{body}</div>
 {resolve}
 </div>"#,
-                author = format!(
-                    "{} (@{})",
-                    escape(&annotation.author_name),
-                    escape(&annotation.author_handle)
-                ),
+                author = author,
                 at = annotation
                     .created_at
                     .format(&time::format_description::well_known::Rfc3339)
@@ -2516,236 +2021,6 @@ fn entity_status_label(status: EntityStatus) -> &'static str {
         EntityStatus::Deprecated => "弃用",
         EntityStatus::Retired => "退役",
     }
-}
-
-fn project_brief_status_label(status: ProjectBriefStatus) -> &'static str {
-    match status {
-        ProjectBriefStatus::Draft => "草稿",
-        ProjectBriefStatus::InReview => "待批准",
-        ProjectBriefStatus::Approved => "已批准",
-        ProjectBriefStatus::Superseded => "已替代",
-    }
-}
-
-fn risk_level_str(level: RiskLevel) -> &'static str {
-    match level {
-        RiskLevel::Low => "low",
-        RiskLevel::Medium => "medium",
-        RiskLevel::High => "high",
-    }
-}
-
-pub fn requirement_page(ctx: &ConsoleContext, requirement: &Requirement) -> String {
-    let acceptance = if requirement.acceptance.is_empty() {
-        "<li>未定义</li>".to_string()
-    } else {
-        requirement
-            .acceptance
-            .iter()
-            .map(|scenario| {
-                format!(
-                    "<li><strong>{}</strong><br><code>given</code> {} → <code>when</code> {} → <code>then</code> {}</li>",
-                    escape(&scenario.title),
-                    escape(&scenario.given.join("; ")),
-                    escape(&scenario.when.join("; ")),
-                    escape(&scenario.then.join("; ")),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    let history = if requirement.history.is_empty() {
-        "<li>无状态变更</li>".to_string()
-    } else {
-        requirement
-            .history
-            .iter()
-            .map(|change| {
-                format!(
-                    "<li>{:?} → {:?} · {} · {}</li>",
-                    change.from,
-                    change.to,
-                    escape(change.actor.id()),
-                    change
-                        .at
-                        .format(&time::format_description::well_known::Rfc3339)
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    let body = format!(
-        r#"<p><a href="/requirements">← 返回需求列表</a></p>
-<h1>{title}</h1>
-<p class="sub"><span class="badge">{status}</span> · 版本 {version}</p>
-<div class="meta">
-  <span>优先级 <code>{priority:?}</code></span>
-  <span>风险 <code>{risk:?}</code></span>
-  <span>负责人 <code>{owner}</code></span>
-  <span>项目 ID <code>{project_id}</code></span>
-  <span>ID <code>{id}</code></span>
-</div>
-<h2>问题</h2><div class="card">{problem}</div>
-<h2>用户</h2><div class="card">{users}</div>
-<h2>验收场景</h2><ul>{acceptance}</ul>
-<h2>非目标</h2><div class="card">{non_goals}</div>
-<h2>约束</h2><div class="card">{constraints}</div>
-<h2>状态历史</h2><ul>{history}</ul>"#,
-        title = escape(&requirement.title),
-        status = status_label(requirement.status),
-        version = requirement.version,
-        priority = requirement.priority,
-        risk = requirement.risk,
-        owner = escape(requirement.owner.id()),
-        project_id = requirement.project_id,
-        id = requirement.id,
-        problem = escape(&requirement.problem),
-        users = if requirement.users.is_empty() {
-            "未定义".to_string()
-        } else {
-            escape(&requirement.users.join("、"))
-        },
-        acceptance = acceptance,
-        non_goals = if requirement.non_goals.is_empty() {
-            "未定义".to_string()
-        } else {
-            escape(&requirement.non_goals.join("、"))
-        },
-        constraints = if requirement.constraints.is_empty() {
-            "未定义".to_string()
-        } else {
-            escape(&requirement.constraints.join("、"))
-        },
-        history = history,
-    );
-    layout(ctx, Section::Requirements, &requirement.title, &body)
-}
-
-/// Values retained when the creation form is re-rendered after an error.
-#[derive(Debug, Clone)]
-pub struct RequirementFormValues {
-    pub title: String,
-    pub problem: String,
-    pub users: String,
-    pub scenario_title: String,
-    pub given: String,
-    pub when: String,
-    pub then: String,
-    pub non_goals: String,
-    pub constraints: String,
-    pub priority: String,
-    pub risk: String,
-}
-
-impl Default for RequirementFormValues {
-    fn default() -> Self {
-        Self {
-            title: String::new(),
-            problem: String::new(),
-            users: String::new(),
-            scenario_title: String::new(),
-            given: String::new(),
-            when: String::new(),
-            then: String::new(),
-            non_goals: String::new(),
-            constraints: String::new(),
-            priority: "p3".to_string(),
-            risk: "medium".to_string(),
-        }
-    }
-}
-
-pub fn new_requirement_page(
-    ctx: &ConsoleContext,
-    values: &RequirementFormValues,
-    error: Option<&str>,
-) -> String {
-    let error_html = error
-        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
-        .unwrap_or_default();
-
-    let body = format!(
-        r#"<p><a href="/requirements">← 返回需求列表</a></p>
-<h1>新建需求</h1>
-<p class="sub">需求是契约：说清问题、用户、验收场景，以及明确不做什么。</p>
-{error_html}
-<form method="post" action="/requirements">
-  {title}
-  {problem}
-  <div class="grid">
-    {priority}
-    {risk}
-  </div>
-  {users}
-  {non_goals}
-  {constraints}
-  <fieldset>
-    <legend>验收场景（至少一条）</legend>
-    {scenario_title}
-    {given}
-    {when}
-    {then}
-    <p class="hint">given / when / then 每行一条。场景编号自动生成为 S-1。</p>
-  </fieldset>
-  <p class="hint">将以 {viewer} 的身份记录创建者。</p>
-  <div class="actions"><button type="submit">创建需求</button></div>
-</form>"#,
-        title = input_field("title", "标题 *", &values.title, true),
-        problem = textarea_field(
-            "problem",
-            "问题 *",
-            &values.problem,
-            Some("描述当前的问题，而不是预设的解决方案。"),
-        ),
-        priority = select_field(
-            "priority",
-            "优先级",
-            &values.priority,
-            &[
-                ("p0", "P0 · 最高"),
-                ("p1", "P1 · 高"),
-                ("p2", "P2 · 中"),
-                ("p3", "P3 · 低")
-            ],
-        ),
-        risk = select_field(
-            "risk",
-            "风险",
-            &values.risk,
-            &[
-                ("low", "低"),
-                ("medium", "中"),
-                ("high", "高"),
-                ("critical", "严重")
-            ],
-        ),
-        users = textarea_field(
-            "users",
-            "用户 / 角色",
-            &values.users,
-            Some("每行一个。批准前必须填写。"),
-        ),
-        non_goals = textarea_field(
-            "non_goals",
-            "非目标",
-            &values.non_goals,
-            Some("每行一个。明确不做什么，批准前必须填写。"),
-        ),
-        constraints = textarea_field(
-            "constraints",
-            "约束",
-            &values.constraints,
-            Some("每行一个：兼容性、性能、合规等硬约束。"),
-        ),
-        scenario_title = input_field("scenario_title", "场景标题", &values.scenario_title, false,),
-        given = textarea_field("given", "Given（前置条件）", &values.given, None),
-        when = textarea_field("when", "When（动作）", &values.when, None),
-        then = textarea_field("then", "Then（预期结果）", &values.then, None),
-        viewer = escape(&ctx.viewer.display_name),
-    );
-    layout(ctx, Section::Requirements, "新建需求", &body)
 }
 
 pub fn issue_dashboard(ctx: &ConsoleContext, issues: &[Issue]) -> String {
@@ -3269,7 +2544,7 @@ pub fn projects_page(
             .map(|project| {
                 format!(
                     r#"<tr>
-<td><a href="/projects/{id}">{name}</a> · <a href="/projects/{id}/brief">简报</a></td>
+<td><a href="/projects/{id}">{name}</a></td>
 <td><span class="badge">{status}</span></td>
 <td>{role}</td>
 <td>{current}</td>
@@ -3499,7 +2774,7 @@ pub fn project_page(
   <span>版本 {version}</span>
 </div>
 <h2>描述</h2><div class="card">{description}</div>
-<p><a class="button secondary" href="/projects/{id}/brief">项目简报</a> <a class="button secondary" href="/projects/{id}/requirements">需求文档</a></p>
+<p><a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a></p>
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>
@@ -3618,7 +2893,7 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
         r#"<h1>智能体</h1>
 <p class="sub">智能体由平台定义，用户不能新建或修改；这里只管理运行状态。</p>
 {error_html}
-<p class="hint">目标澄清任务（<code>goal_clarification / clarifier</code>）由 PM Agent 自动承接。</p>
+<p class="hint">项目文档撰写任务（<code>goal_clarification / clarifier / writer</code>）由 PM Agent 分配智能体。</p>
 <table>
 <thead><tr><th>名称 / 账户</th><th>模型</th><th>启用</th><th>进程</th><th>心跳 / 错误</th><th></th></tr></thead>
 <tbody>{definition_rows}</tbody>
@@ -3629,11 +2904,7 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
     layout(ctx, Section::Agents, "智能体", &body)
 }
 
-pub fn agent_logs_page(
-    ctx: &ConsoleContext,
-    definition: &AgentDefinition,
-    log: &str,
-) -> String {
+pub fn agent_logs_page(ctx: &ConsoleContext, definition: &AgentDefinition, log: &str) -> String {
     let content = if log.trim().is_empty() {
         r#"<p class="empty">还没有日志。智能体启动后，进程的 stdout/stderr 会写入这里。</p>"#
             .to_string()
@@ -4172,22 +3443,6 @@ fn select_field(name: &str, label: &str, current: &str, options: &[(&str, &str)]
     )
 }
 
-fn status_label(status: RequirementStatus) -> &'static str {
-    use RequirementStatus::*;
-    match status {
-        Draft => "草稿",
-        InReview => "评审中",
-        Approved => "已批准",
-        InDesign => "设计中",
-        InDevelopment => "开发中",
-        InVerification => "验证中",
-        Done => "已完成",
-        Rejected => "已拒绝",
-        Deferred => "已搁置",
-        Superseded => "已被取代",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4220,52 +3475,6 @@ mod tests {
         assert!(html.contains(r#"<th style="text-align:right">B</th>"#));
         assert!(html.contains("<td>1</td>"));
         assert!(html.contains(r#"<td style="text-align:right"><strong>2</strong></td>"#));
-    }
-
-    #[test]
-    fn project_brief_document_renders_structured_sections() {
-        let body = ProjectBriefBody {
-            problem: "因为 <原因>".to_string(),
-            goals: vec!["目标一".to_string()],
-            success_metrics: vec![foundry_domain::SuccessMetric {
-                name: "转化率".to_string(),
-                baseline: Some(1.0),
-                target: 2.0,
-                unit: "%".to_string(),
-                measurement: "埋点".to_string(),
-                window: "30 天".to_string(),
-                ..Default::default()
-            }],
-            risks: vec![foundry_domain::Risk {
-                description: "风险一".to_string(),
-                probability: RiskLevel::High,
-                impact: RiskLevel::Medium,
-                ..Default::default()
-            }],
-            stakeholders: vec![foundry_domain::Stakeholder {
-                role: "用户".to_string(),
-                account: "团队".to_string(),
-                decision_rights: vec!["验收".to_string()],
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let html = project_brief_document(&body, false);
-
-        assert!(html.contains("问题 / 为什么做"));
-        assert!(html.contains("&lt;原因&gt;"));
-        assert!(html.contains("<h2>项目目标</h2>"));
-        assert!(html.contains("转化率"));
-        assert!(html.contains("<h2>风险</h2>"));
-        assert!(html.contains("高"));
-        assert!(html.contains("<h2>干系人</h2>"));
-        assert!(html.contains("验收"));
-
-        let editable = project_brief_document(&body, true);
-        assert!(editable.contains(r#"data-annotate-type="problem""#));
-        assert!(editable.contains(r#"data-annotate-type="success_metrics""#));
-        assert!(editable.contains(r#"data-annotate-type="stakeholders""#));
     }
 
     #[test]
@@ -4319,6 +3528,7 @@ mod tests {
             api_key_env: "OPENAI_API_KEY".to_string(),
             system_prompt: String::new(),
             tools: Vec::new(),
+            skills: Vec::new(),
             enabled: true,
             created_at: time::OffsetDateTime::now_utc(),
             updated_at: time::OffsetDateTime::now_utc(),

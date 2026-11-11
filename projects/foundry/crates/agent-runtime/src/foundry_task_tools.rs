@@ -63,15 +63,10 @@ impl Tool for TasksReadyListTool {
                 if let Some(roles) = entry.get("roles").and_then(Value::as_array) {
                     for role in roles {
                         let name = role.get("name").and_then(Value::as_str).unwrap_or("");
-                        let task_role = role
-                            .get("task_role")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
+                        let task_role = role.get("task_role").and_then(Value::as_str).unwrap_or("");
                         let kind = role.get("kind").and_then(Value::as_str).unwrap_or("");
-                        let min_actors = role
-                            .get("min_actors")
-                            .and_then(Value::as_u64)
-                            .unwrap_or(0);
+                        let min_actors =
+                            role.get("min_actors").and_then(Value::as_u64).unwrap_or(0);
                         let agent = role.get("agent");
                         let agent_name = agent
                             .and_then(|agent| agent.get("name"))
@@ -118,10 +113,8 @@ impl Tool for TasksReadyListTool {
                                 .get("dispatch_state")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            let parent = entry
-                                .get("parent_id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("");
+                            let parent =
+                                entry.get("parent_id").and_then(Value::as_str).unwrap_or("");
                             let bound = entry
                                 .get("actors")
                                 .and_then(Value::as_array)

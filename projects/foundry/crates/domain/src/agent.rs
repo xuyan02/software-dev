@@ -26,6 +26,9 @@ pub struct AgentDefinition {
     pub system_prompt: String,
     /// Tool names the process may register. Empty means the default set.
     pub tools: Vec<String>,
+    /// Skill IDs appended to the system prompt at runtime.
+    #[serde(default)]
+    pub skills: Vec<String>,
     pub enabled: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -78,6 +81,7 @@ pub struct CreateAgentDefinition {
     pub api_key_env: String,
     pub system_prompt: String,
     pub tools: Vec<String>,
+    pub skills: Vec<String>,
     pub enabled: bool,
 }
 

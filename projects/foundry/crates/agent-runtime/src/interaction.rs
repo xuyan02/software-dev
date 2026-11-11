@@ -184,7 +184,7 @@ mod tests {
         let tool = HumanAskTool::new(interaction.clone());
         let output = tool
             .call(
-                json!({ "prompt": "成功指标的目标值是多少？" }),
+                json!({ "prompt": "问题的影响有多大？" }),
                 &ToolContext {
                     agent_id: "a".to_string(),
                     task_id: "t".to_string(),
@@ -195,7 +195,7 @@ mod tests {
         assert_eq!(output.content, "700 件/月");
         let questions = interaction.questions.lock().unwrap();
         assert_eq!(questions.len(), 1);
-        assert_eq!(questions[0].prompt, "成功指标的目标值是多少？");
+        assert_eq!(questions[0].prompt, "问题的影响有多大？");
     }
 
     #[tokio::test]

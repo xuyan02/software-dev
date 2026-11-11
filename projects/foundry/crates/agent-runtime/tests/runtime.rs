@@ -73,6 +73,42 @@ async fn tool_call_then_final_answer() {
 }
 
 #[tokio::test]
+async fn model_reasoning_is_replayed_to_the_next_turn() {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool));
+    let (runtime, model, trajectory) = runtime(
+        vec![
+            ModelResponse::tool_call("echo", json!({ "text": "hello" }))
+                .with_reasoning("I need to call echo."),
+            ModelResponse::final_answer("done"),
+        ],
+        tools,
+        Budget::default(),
+    );
+
+    runtime
+        .run_to_completion(AgentRunRequest::new("agent", "task", "system", "user"))
+        .await
+        .unwrap();
+
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[1].messages[2].reasoning_content.as_deref(),
+        Some("I need to call echo.")
+    );
+    let model_step = trajectory
+        .steps()
+        .into_iter()
+        .find(|step| step.kind == StepKind::Model)
+        .expect("model step");
+    assert_eq!(
+        model_step.reasoning.as_deref(),
+        Some("I need to call echo.")
+    );
+}
+
+#[tokio::test]
 async fn tool_errors_are_fed_back_to_the_model() {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(FailingTool));
@@ -262,7 +298,7 @@ async fn human_ask_tool_runs_inside_the_loop() {
     )));
     let (runtime, _model, trajectory) = runtime(
         vec![
-            ModelResponse::tool_call("human_ask", json!({ "prompt": "成功指标的目标值是多少？" })),
+            ModelResponse::tool_call("human_ask", json!({ "prompt": "问题的影响有多大？" })),
             ModelResponse::final_answer("目标值已确认：700 件/月"),
         ],
         tools,
@@ -287,7 +323,7 @@ async fn human_ask_tool_runs_inside_the_loop() {
     assert_eq!(tool_step.output.as_deref(), Some("700 件/月"));
     let questions = interaction.questions.lock().unwrap();
     assert_eq!(questions.len(), 1);
-    assert_eq!(questions[0].prompt, "成功指标的目标值是多少？");
+    assert_eq!(questions[0].prompt, "问题的影响有多大？");
 }
 
 struct PausingTool;

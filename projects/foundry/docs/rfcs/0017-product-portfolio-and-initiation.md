@@ -1,13 +1,16 @@
 # RFC 0017：产品、组合与立项管理
 
-- 状态：Draft，设计待评审
+- 状态：Draft；ProjectBrief 部分已被 RFC 0020 取代
 - 日期：2026-11-09
-- 关联：[RFC 0008 软件生命周期模型](0008-software-lifecycle-model.md)、[RFC 0009 产物血缘、基线与变更管理](0009-artifact-lineage-baselines-and-change.md)、[RFC 0011 需求管理与需求分析](0011-requirements-management.md)、[RFC 0016 度量、成本与自举](0016-metrics-cost-and-self-hosting.md)
+- 关联：[RFC 0008 软件生命周期模型](0008-software-lifecycle-model.md)、[RFC 0009 产物血缘、基线与变更管理](0009-artifact-lineage-baselines-and-change.md)、[RFC 0011 需求管理与需求分析](0011-requirements-management.md)、[RFC 0016 度量、成本与自举](0016-metrics-cost-and-self-hosting.md)、[RFC 0020 需求子系统](0020-requirements-subsystem.md)
+
+> 2026-11-11 更新：独立的 `ProjectBrief` 聚合已删除，项目级内容（定位、background：context / problems；goals / non_goals / constraints / risks、glossary）现在属于独立的项目文档，见 RFC 0020 和 `docs/api/README.md`。预算和干系人字段不再属于项目文档。本文以下关于 ProjectBrief 的描述保留为历史设计记录。
+
 - 作用：本文补全生命周期最前端：产品判断、组合管理、项目立项和目标澄清。它回答“为什么做、做哪个、做到什么程度算成功”。
 
 ## 实现状态（2026-11-09，第一切片）
 
-已实现 ProjectBrief：
+已实现 ProjectBrief（已被 RFC 0020 合并取代）：
 
 - 领域模型：问题、目标、成功指标、范围/non-goals、约束、风险、干系人、预算、假设、开放问题。
 - 状态：`draft → in_review → approved`；校验在提交和批准时执行。

@@ -87,8 +87,9 @@ pub const START_OPERATION: &str = "start";
 
 /// Reserved platform operation that completes a task with result `approved`.
 ///
-/// Used by the project-brief approval path to close its goal-clarification
-/// task without requiring the acceptor role to be bound as a task actor.
+/// Used by the requirements-document project-layer approval path to close its
+/// goal-clarification task without requiring the acceptor role to be bound as
+/// a task actor.
 pub const ACCEPT_OPERATION: &str = "accept";
 
 /// Reserved platform operation that returns a task to its initial stage.

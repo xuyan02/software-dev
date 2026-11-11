@@ -162,7 +162,7 @@
   {
     "create_child": {
       "workflow": "goal_clarification",
-      "title": "Clarify project goals"
+      "title": "项目文档撰写"
     }
   }
 ]

@@ -1,6 +1,9 @@
 pub mod auth;
 pub mod dto;
 pub mod error;
+// Legacy requirements-document handlers remain while those routes are retired;
+// requirements documents now use the generic anchor-document routes.
+#[allow(dead_code)]
 mod routes;
 
 pub use error::ApiError;
@@ -51,56 +54,38 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/{id}", get(routes::task_page))
         .route("/tasks/{id}/state", get(routes::task_state))
         .route(
-            "/requirements",
-            get(routes::requirements_index).post(routes::create_requirement_form),
-        )
-        .route("/requirements/new", get(routes::new_requirement_form))
-        .route("/requirements/{id}", get(routes::requirement_page))
-        .route(
             "/projects",
             get(routes::projects_index).post(routes::create_project_form),
         )
         .route("/projects/select", post(routes::select_project_form))
         .route("/projects/{id}", get(routes::project_page))
         .route(
-            "/projects/{id}/brief",
-            get(routes::project_brief_page).post(routes::save_project_brief_form),
-        )
-        .route(
-            "/projects/{id}/brief/drafts",
-            post(routes::create_project_brief_draft_form),
-        )
-        .route(
-            "/projects/{id}/brief/approve",
-            post(routes::approve_project_brief_form),
-        )
-        .route(
-            "/projects/{id}/brief/annotations",
-            post(routes::annotate_project_brief_form),
-        )
-        .route(
-            "/projects/{id}/brief/annotations/{annotation_id}/resolve",
-            post(routes::resolve_project_brief_annotation_form),
-        )
-        .route(
             "/projects/{id}/requirements",
             get(routes::requirements_document_page),
         )
         .route(
-            "/projects/{id}/requirements/publish",
-            post(routes::publish_requirements_form),
+            "/projects/{id}/documents/{kind}",
+            get(routes::anchor_document_page),
         )
         .route(
-            "/projects/{id}/requirements/reject",
-            post(routes::reject_requirements_form),
+            "/projects/{id}/documents/{kind}/approve",
+            post(routes::approve_anchor_document_form),
         )
         .route(
-            "/projects/{id}/requirements/annotations",
-            post(routes::annotate_requirements_form),
+            "/projects/{id}/documents/{kind}/reject",
+            post(routes::reject_anchor_document_form),
         )
         .route(
-            "/projects/{id}/requirements/annotations/{annotation_id}/resolve",
-            post(routes::resolve_requirements_annotation_form),
+            "/projects/{id}/documents/{kind}/annotations",
+            post(routes::annotate_anchor_document_form),
+        )
+        .route(
+            "/projects/{id}/documents/{kind}/annotations/{annotation_id}/resolve",
+            post(routes::resolve_anchor_annotation_form),
+        )
+        .route(
+            "/projects/{id}/project-document",
+            get(routes::project_document_redirect),
         )
         .route("/projects/{id}/edit", post(routes::update_project_form))
         .route("/projects/{id}/delete", post(routes::delete_project_form))
@@ -199,93 +184,44 @@ pub fn router(state: AppState) -> Router {
             get(routes::get_workflow_layout).put(routes::save_workflow_layout),
         )
         .route(
-            "/api/v1/projects/{project}/brief",
-            get(routes::get_project_brief),
+            "/api/v1/projects/{project}/documents/{kind}",
+            get(routes::get_anchor_document),
         )
         .route(
-            "/api/v1/projects/{project}/brief/versions",
-            get(routes::list_project_brief_versions),
+            "/api/v1/projects/{project}/documents/{kind}/draft",
+            get(routes::open_anchor_draft).post(routes::create_anchor_draft),
         )
         .route(
-            "/api/v1/projects/{project}/brief/versions/{version}",
-            get(routes::get_project_brief_version),
+            "/api/v1/projects/{project}/documents/{kind}/content",
+            get(routes::get_anchor_content),
         )
         .route(
-            "/api/v1/projects/{project}/brief/drafts",
-            get(routes::list_project_brief_drafts).post(routes::create_project_brief_draft),
+            "/api/v1/projects/{project}/documents/{kind}/draft/operations",
+            post(routes::apply_anchor_operations),
         )
         .route(
-            "/api/v1/projects/{project}/brief/drafts/{draft_id}",
-            get(routes::get_project_brief_draft),
+            "/api/v1/projects/{project}/documents/{kind}/draft/validate",
+            post(routes::validate_anchor_document),
         )
         .route(
-            "/api/v1/projects/{project}/brief/drafts/{draft_id}/operations",
-            post(routes::apply_project_brief_draft_operation),
+            "/api/v1/projects/{project}/documents/{kind}/draft/approvals",
+            get(routes::list_anchor_approvals).post(routes::decide_anchor_document),
         )
         .route(
-            "/api/v1/projects/{project}/brief/drafts/{draft_id}/submit",
-            post(routes::submit_project_brief_draft),
+            "/api/v1/projects/{project}/documents/{kind}/annotations",
+            get(routes::list_anchor_annotations).post(routes::annotate_anchor),
         )
         .route(
-            "/api/v1/projects/{project}/brief/approve",
-            post(routes::approve_project_brief),
+            "/api/v1/projects/{project}/documents/{kind}/annotations/{annotation_id}/resolve",
+            post(routes::resolve_anchor_annotation),
         )
         .route(
-            "/api/v1/projects/{project}/brief/annotations",
-            get(routes::list_project_brief_annotations).post(routes::annotate_project_brief),
+            "/api/v1/projects/{project}/documents/{kind}/versions",
+            get(routes::list_anchor_versions),
         )
         .route(
-            "/api/v1/projects/{project}/brief/annotations/{id}/resolve",
-            post(routes::resolve_project_brief_annotation),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document",
-            get(routes::get_requirements_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/draft",
-            get(routes::get_requirements_draft),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/draft/operations",
-            post(routes::apply_requirements_operations),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/draft/validate",
-            post(routes::validate_requirements_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/draft/publish",
-            post(routes::publish_requirements_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/annotations",
-            get(routes::list_requirements_annotations)
-                .post(routes::annotate_requirements),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/annotations/{id}/resolve",
-            post(routes::resolve_requirements_annotation),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/versions",
-            get(routes::list_requirements_versions),
-        )
-        .route(
-            "/api/v1/projects/{project}/requirements-document/versions/{version}",
-            get(routes::get_requirements_version),
-        )
-        .route(
-            "/api/v1/requirements",
-            get(routes::list_requirements).post(routes::create_requirement),
-        )
-        .route(
-            "/api/v1/requirements/{id}",
-            get(routes::get_requirement).patch(routes::update_requirement),
-        )
-        .route(
-            "/api/v1/requirements/{id}/transitions",
-            post(routes::transition_requirement),
+            "/api/v1/projects/{project}/documents/{kind}/versions/{version}",
+            get(routes::get_anchor_version),
         )
         .route(
             "/api/v1/issues",

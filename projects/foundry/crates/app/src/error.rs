@@ -46,14 +46,16 @@ pub enum ServiceError {
     WorkflowTooLarge,
     #[error("workflow {0} has no draft")]
     DraftNotFound(String),
+    #[error("draft already exists: {0}")]
+    DraftExists(String),
     #[error("requirements document is invalid")]
     RequirementsInvalid(Validation),
     #[error("requirements document exceeds the size limit")]
     RequirementsTooLarge,
-    #[error("project brief is invalid")]
-    ProjectBriefInvalid(Validation),
-    #[error("project brief exceeds the size limit")]
-    ProjectBriefTooLarge,
+    #[error("anchor document is invalid")]
+    AnchorDocumentInvalid(Validation),
+    #[error("anchor document exceeds the size limit")]
+    AnchorDocumentTooLarge,
     #[error("draft revision conflict: expected {expected}, current is {current}")]
     DraftConflict {
         expected: u64,

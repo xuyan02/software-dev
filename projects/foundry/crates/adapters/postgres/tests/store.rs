@@ -16,20 +16,17 @@ use foundry_adapter_postgres::{
     PostgresEventSink, PostgresStore, PostgresTaskDispatcher, PostgresWorkflowCatalog,
 };
 use foundry_app::{
-    AccountRepository, DraftOperationOutcome, EventSink, IssueFilter, IssueRepository,
-    ProjectBriefRepository, ProjectRepository, RepoError, RequirementFilter,
-    RequirementRepository, RequirementsApplyOutcome, RequirementsDocumentRepository,
-    RequirementsPublishOutcome, SubmitDraftOutcome, TaskDispatcher, TaskFilter,
-    TaskLinkRepository, TaskRepository, TaskService, TaskViewer, WorkflowCatalog,
+    AccountRepository, EventSink, IssueFilter, IssueRepository, ProjectRepository, RepoError,
+    RequirementsApplyOutcome, RequirementsApprovalOutcome, RequirementsDocumentRepository,
+    TaskDispatcher, TaskFilter, TaskLinkRepository, TaskRepository, TaskService, TaskViewer,
+    WorkflowCatalog,
 };
 use foundry_domain::{
-    AcceptanceScenario, Account, AccountKind, AccountRole, Actor, AnnotationStatus, Confidence,
-    CreateAgentDefinition, DomainEvent, DomainEventKind, EntityStatus, Function, Issue,
-    IssueComment, IssueKind, IssueSource, IssueSourceKind, Operation, OperationName, Priority,
-    Project, ProjectBriefAnnotation, ProjectBriefAnnotationTarget, ProjectBriefBody,
-    ProjectBriefDraftOperation, ProjectBriefStatus, ProjectRole, Requirement, RequirementOp,
-    RequirementsOperation, RiskClass, RoleKey, Story, StoryPriority, TaskDAO, TaskLink,
-    TaskLinkKind, TaskLinkRelation, TaskState, UserModel, WorkflowId,
+    Account, AccountKind, AccountRole, Actor, Confidence, CreateAgentDefinition, DomainEvent,
+    DomainEventKind, EntityStatus, Function, Issue, IssueComment, IssueKind, IssueSource,
+    IssueSourceKind, Operation, OperationName, Project, ProjectRole, RequirementOp,
+    RequirementsOperation, RoleKey, Story, StoryPriority, TaskDAO, TaskLink, TaskLinkKind,
+    TaskLinkRelation, TaskState, UserModel, WorkflowId,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -75,25 +72,6 @@ fn account(prefix: &str) -> Account {
         Some("hash".to_string()),
     )
     .expect("valid account")
-}
-
-fn requirement(project_id: Uuid) -> Requirement {
-    Requirement::new(
-        project_id,
-        "部分退款",
-        "用户只能全额退款",
-        vec![AcceptanceScenario {
-            id: "S-1".to_string(),
-            title: "部分退款".to_string(),
-            given: Vec::new(),
-            when: Vec::new(),
-            then: vec!["退款金额等于请求金额".to_string()],
-        }],
-        Actor::human("owner"),
-        Priority::P1,
-        RiskClass::Medium,
-    )
-    .expect("valid requirement")
 }
 
 fn issue(project_id: Uuid, title: &str) -> Issue {
@@ -151,37 +129,6 @@ async fn aggregates_round_trip_with_optimistic_concurrency() {
         .unwrap();
     assert_eq!(loaded.role_of(alice.id), Some(ProjectRole::Owner));
     assert_eq!(loaded.description.as_deref(), Some("persisted"));
-
-    let mut requirement = requirement(project.id);
-    RequirementRepository::insert(&store, &requirement)
-        .await
-        .unwrap();
-    requirement.title = "部分退款（更新）".to_string();
-    requirement.version = 2;
-    RequirementRepository::save(&store, &requirement, 1)
-        .await
-        .unwrap();
-    let stale = RequirementRepository::save(&store, &requirement, 1).await;
-    assert!(matches!(
-        stale,
-        Err(RepoError::Conflict {
-            expected: 1,
-            actual: 2
-        })
-    ));
-
-    let found = RequirementRepository::list(
-        &store,
-        project.id,
-        RequirementFilter {
-            text: Some("部分退款".to_string()),
-            ..Default::default()
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].title, "部分退款（更新）");
 
     let mut issue = issue(project.id, "退款太慢");
     issue.comments.push(IssueComment {
@@ -319,7 +266,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
         .await
         .unwrap()
         .expect("child task");
-    assert_eq!(child_after.stage.as_deref(), Some("work"));
+    assert_eq!(child_after.stage.as_deref(), Some("clarification"));
     let child_view = tasks
         .get(project.id, child.id, TaskViewer::system())
         .await
@@ -361,6 +308,11 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
             && role.agent.is_none()
     }));
     assert!(view.roles.iter().any(|role| {
+        role.name == "writer"
+            && role.kind == foundry_domain::RoleKind::Agent
+            && role.agent.is_none()
+    }));
+    assert!(view.roles.iter().any(|role| {
         role.name == "style_reviewer"
             && role.kind == foundry_domain::RoleKind::Agent
             && role.agent.is_none()
@@ -395,6 +347,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 system_prompt: "Clarify the project.".to_string(),
                 tools: Vec::new(),
+                skills: Vec::new(),
                 enabled: true,
             },
             clarifier_account.id,
@@ -416,10 +369,11 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
         .iter()
         .find(|role| role.name == "clarifier")
         .expect("clarifier role");
-    assert!(role
-        .agent
-        .as_ref()
-        .is_some_and(|agent| agent.agent_definition_id == clarifier.id && agent.enabled));
+    assert!(
+        role.agent
+            .as_ref()
+            .is_some_and(|agent| agent.agent_definition_id == clarifier.id && agent.enabled)
+    );
     sqlx::query("update tasks set state = 'in_progress', updated_at = now() where id = $1")
         .bind(child.id)
         .execute(store.pool())
@@ -442,6 +396,16 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
             project.id,
             child.id,
             RoleKey::new("clarifier"),
+            owner.id,
+            owner.id,
+        )
+        .await
+        .unwrap();
+    tasks
+        .bind_actor(
+            project.id,
+            child.id,
+            RoleKey::new("writer"),
             owner.id,
             owner.id,
         )
@@ -478,9 +442,17 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
         .await
         .unwrap();
 
-    for (index, operation) in ["started", "completed", "approved", "approved", "approved"]
-        .iter()
-        .enumerate()
+    for (index, operation) in [
+        "started",
+        "completed",
+        "started",
+        "completed",
+        "approved",
+        "approved",
+        "approved",
+    ]
+    .iter()
+    .enumerate()
     {
         tasks
             .send_operation(
@@ -500,7 +472,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
             child.id,
             owner.id,
             OperationName::new("approved"),
-            format!("{}:4:approved", child.id),
+            format!("{}:6:approved", child.id),
         )
         .await
         .unwrap();
@@ -670,12 +642,18 @@ async fn requirements_document_round_trips_idempotently_and_conflicts() {
         other => panic!("unexpected replay outcome: {other:?}"),
     }
 
-    match store.publish(project.id, 2, alice.id, now).await.unwrap() {
-        RequirementsPublishOutcome::Published { version, revision } => {
+    match store
+        .approve(project.id, 2, alice.id, Some("looks good"), now)
+        .await
+        .unwrap()
+    {
+        RequirementsApprovalOutcome::Approved {
+            version, revision, ..
+        } => {
             assert_eq!(version, 1);
-            assert_eq!(revision, 3);
+            assert_eq!(revision, 2);
         }
-        other => panic!("unexpected publish outcome: {other:?}"),
+        other => panic!("unexpected approve outcome: {other:?}"),
     }
 
     let version = RequirementsDocumentRepository::version(&store, project.id, 1)
@@ -699,7 +677,7 @@ async fn requirements_document_round_trips_idempotently_and_conflicts() {
     {
         RequirementsApplyOutcome::Conflict {
             current_revision, ..
-        } => assert_eq!(current_revision, 3),
+        } => assert_eq!(current_revision, 2),
         other => panic!("unexpected conflict outcome: {other:?}"),
     }
 }
@@ -781,10 +759,6 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
         .await
         .unwrap();
 
-    let requirement = requirement(project.id);
-    RequirementRepository::insert(&store, &requirement)
-        .await
-        .unwrap();
     let mut issue = issue(project.id, "delete with the project");
     issue.comments.push(IssueComment {
         id: Uuid::now_v7(),
@@ -829,19 +803,24 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
         .await
         .unwrap();
 
-    assert!(ProjectRepository::get(&store, project.id)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(TaskRepository::get(&store, root.id).await.unwrap().is_none());
-    assert!(RequirementRepository::get(&store, requirement.id)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(IssueRepository::get(&store, issue.id)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        ProjectRepository::get(&store, project.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        TaskRepository::get(&store, root.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        IssueRepository::get(&store, issue.id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let remaining: i64 = sqlx::query_scalar(
         "select (select count(*) from project_members where project_id = $1) \
@@ -860,151 +839,195 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
 }
 
 #[tokio::test]
-async fn project_brief_annotations_round_trip() {
+async fn anchor_document_round_trips_with_annotations() {
     let Some(store) = test_store().await else {
         eprintln!("TEST_DATABASE_URL is unset; skipping Postgres integration test");
         return;
     };
 
-    let author = account("brief-reviewer");
-    AccountRepository::insert(&store, &author).await.unwrap();
-    let project = Project::new(format!("Brief annotations {}", suffix()), None, author.id).unwrap();
+    let alice = account("anchordoc");
+    AccountRepository::insert(&store, &alice).await.unwrap();
+    let project = Project::new(format!("Anchor document {}", suffix()), None, alice.id).unwrap();
     ProjectRepository::insert(&store, &project).await.unwrap();
-    ProjectBriefRepository::create_draft(
-        &store,
-        project.id,
-        &ProjectBriefBody::default(),
-        author.id,
-        OffsetDateTime::now_utc(),
+
+    let schema = foundry_domain::project_document_schema();
+    let now = OffsetDateTime::now_utc();
+    let (_document, draft) = foundry_app::AnchorDocumentRepository::ensure_document(
+        &store, project.id, "project", &schema, alice.id, now,
     )
     .await
     .unwrap();
+    assert_eq!(draft.revision, 1);
 
-    let annotation = ProjectBriefAnnotation {
-        id: Uuid::now_v7(),
-        project_id: project.id,
-        target_type: ProjectBriefAnnotationTarget::SuccessMetrics,
-        target_id: Some("m1".to_string()),
-        field: Some("target".to_string()),
-        body: "目标值需要说明理由".to_string(),
-        author_id: author.id,
-        author_handle: author.handle.clone(),
-        author_name: author.display_name.clone(),
-        status: AnnotationStatus::Open,
-        resolution: None,
-        created_at: OffsetDateTime::now_utc(),
-        resolved_at: None,
-        resolved_by: None,
-    };
-    ProjectBriefRepository::insert_annotation(&store, &annotation)
-        .await
-        .unwrap();
-    let open = ProjectBriefRepository::annotations(&store, project.id, false)
-        .await
-        .unwrap();
-    assert_eq!(open.len(), 1);
-    assert_eq!(open[0].target_type, ProjectBriefAnnotationTarget::SuccessMetrics);
+    let operations = vec![
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::UpdateText {
+                anchor: "positioning.what_is".to_string(),
+                text: "企业费用报销系统".to_string(),
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::Add {
+                parent: "positioning.what_is_not".to_string(),
+                occurrence_key: Some("e1".to_string()),
+                text: "财务总账系统".to_string(),
+                after: None,
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::UpdateText {
+                anchor: "background.context".to_string(),
+                text: "报销目前由员工填写纸质单。".to_string(),
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::Add {
+                parent: "background.problems".to_string(),
+                occurrence_key: Some("p1".to_string()),
+                text: "员工无法查询报销进度".to_string(),
+                after: None,
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::UpdateText {
+                anchor: "background.problems/problem/p1.impact".to_string(),
+                text: "平均催问两次".to_string(),
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::Add {
+                parent: "goals".to_string(),
+                occurrence_key: Some("g1".to_string()),
+                text: "员工可自助查询报销进度".to_string(),
+                after: None,
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::Add {
+                parent: "non_goals".to_string(),
+                occurrence_key: Some("n1".to_string()),
+                text: "不做移动端应用".to_string(),
+                after: None,
+            },
+        },
+        foundry_domain::AnchorOperation {
+            op_id: Uuid::now_v7(),
+            op: foundry_domain::AnchorOp::UpdateText {
+                anchor: "non_goals/non_goal/n1.non_goal_reason".to_string(),
+                text: "首期只覆盖桌面端".to_string(),
+            },
+        },
+    ];
 
-    let resolved = ProjectBriefRepository::resolve_annotation(
+    match foundry_app::AnchorDocumentRepository::apply_operations(
         &store,
         project.id,
-        annotation.id,
-        author.id,
-        "补充了理由",
-        OffsetDateTime::now_utc(),
+        "project",
+        1,
+        &operations,
+        alice.id,
+        now,
+        &schema,
     )
     .await
     .unwrap()
-    .expect("annotation resolved");
-    assert_eq!(resolved.status, AnnotationStatus::Resolved);
+    {
+        foundry_app::AnchorApplyOutcome::Applied { revision, .. } => assert_eq!(revision, 2),
+        other => panic!("unexpected apply outcome: {other:?}"),
+    }
 
-    assert!(
-        ProjectBriefRepository::annotations(&store, project.id, false)
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert_eq!(
-        ProjectBriefRepository::annotations(&store, project.id, true)
-            .await
-            .unwrap()
-            .len(),
-        1
-    );
-}
-
-#[tokio::test]
-async fn project_brief_drafts_and_versions_round_trip() {
-    let Some(store) = test_store().await else {
-        eprintln!("TEST_DATABASE_URL is unset; skipping Postgres integration test");
-        return;
-    };
-
-    let author = account("brief-author");
-    AccountRepository::insert(&store, &author).await.unwrap();
-    let project = Project::new(format!("Brief drafts {}", suffix()), None, author.id).unwrap();
-    ProjectRepository::insert(&store, &project).await.unwrap();
-
-    let draft = ProjectBriefRepository::create_draft(
-        &store,
-        project.id,
-        &ProjectBriefBody::default(),
-        author.id,
-        OffsetDateTime::now_utc(),
-    )
-    .await
-    .unwrap();
-    let mut body = draft.body.clone();
-    body.problem = "退款太慢".to_string();
-    let applied = ProjectBriefRepository::commit_draft_operation(
-        &store,
-        project.id,
-        draft.id,
-        draft.revision,
-        Uuid::now_v7(),
-        &ProjectBriefDraftOperation::SetProblem {
-            value: body.problem.clone(),
-        },
-        &body,
-        author.id,
-        OffsetDateTime::now_utc(),
-    )
-    .await
-    .unwrap();
-    let draft = match applied {
-        DraftOperationOutcome::Applied(draft) => draft,
-        other => panic!("unexpected outcome: {other:?}"),
-    };
-    assert_eq!(draft.revision, 2);
-
-    let submitted = ProjectBriefRepository::submit_draft(
-        &store,
-        project.id,
-        draft.id,
-        draft.revision,
-        author.id,
-        OffsetDateTime::now_utc(),
-    )
-    .await
-    .unwrap();
-    let version = match submitted {
-        SubmitDraftOutcome::Submitted(version) => version,
-        other => panic!("unexpected outcome: {other:?}"),
-    };
-    assert_eq!(version.version, 1);
-    assert_eq!(version.status, ProjectBriefStatus::InReview);
-
-    let current = ProjectBriefRepository::current(&store, project.id)
+    let draft = foundry_app::AnchorDocumentRepository::draft(&store, project.id, "project")
         .await
         .unwrap()
-        .expect("current version");
-    assert_eq!(current.version, 1);
+        .unwrap();
+    let validation = draft.snapshot.validate(&schema);
+    assert!(validation.is_valid(), "{:?}", validation.errors);
+
+    match foundry_app::AnchorDocumentRepository::approve(
+        &store,
+        project.id,
+        "project",
+        2,
+        alice.id,
+        Some("项目基线"),
+        now,
+        &schema,
+    )
+    .await
+    .unwrap()
+    {
+        foundry_app::AnchorApprovalOutcome::Approved { version, .. } => assert_eq!(version, 1),
+        other => panic!("unexpected approve outcome: {other:?}"),
+    }
+
+    let annotation = foundry_app::AnchorDocumentRepository::insert_annotation(
+        &store,
+        foundry_domain::AnchorAnnotation {
+            id: Uuid::now_v7(),
+            project_id: project.id,
+            kind: "project".to_string(),
+            anchor_key: "goals/g1".to_string(),
+            anchor_id: draft
+                .snapshot
+                .find_path("goals/goal/g1")
+                .unwrap()
+                .id
+                .clone(),
+            quote: None,
+            body: "补充查询范围。".to_string(),
+            author_id: alice.id,
+            author_handle: alice.handle.clone(),
+            author_name: alice.display_name.clone(),
+            status: foundry_domain::AnchorAnnotationStatus::Open,
+            resolution: None,
+            created_at: now,
+            resolved_at: None,
+            resolved_by: None,
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        ProjectBriefRepository::versions(&store, project.id)
+        annotation.status,
+        foundry_domain::AnchorAnnotationStatus::Open
+    );
+
+    let annotations =
+        foundry_app::AnchorDocumentRepository::annotations(&store, project.id, "project")
             .await
-            .unwrap()
-            .len(),
-        1
+            .unwrap();
+    assert_eq!(annotations.len(), 1);
+
+    let resolved = foundry_app::AnchorDocumentRepository::resolve_annotation(
+        &store,
+        project.id,
+        "project",
+        annotation.id,
+        "已补充。",
+        alice.id,
+        now,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        resolved.status,
+        foundry_domain::AnchorAnnotationStatus::Resolved
+    );
+
+    let version = foundry_app::AnchorDocumentRepository::version(&store, project.id, "project", 1)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        version.snapshot.find_path("goals/goal/g1").unwrap().text,
+        "员工可自助查询报销进度"
     );
 }
-

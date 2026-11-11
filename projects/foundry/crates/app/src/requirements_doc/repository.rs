@@ -5,8 +5,9 @@
 
 use async_trait::async_trait;
 use foundry_domain::{
-    RequirementsAnnotation, RequirementsDocumentBody, RequirementsDocumentDAO, RequirementsDraftDAO,
-    RequirementsOperation, RequirementsVersionDAO, RequirementsVersionRow,
+    RequirementsAnnotation, RequirementsApprovalDAO, RequirementsDocumentBody,
+    RequirementsDocumentDAO, RequirementsDraftDAO, RequirementsOperation, RequirementsVersionDAO,
+    RequirementsVersionRow,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -29,10 +30,18 @@ pub enum RequirementsApplyOutcome {
 }
 
 #[derive(Debug, Clone)]
-pub enum RequirementsPublishOutcome {
-    Published {
+pub enum RequirementsApprovalOutcome {
+    Approved {
         version: u32,
         revision: u64,
+        approval_id: Uuid,
+    },
+    Rejected {
+        approval_id: Uuid,
+    },
+    /// The revision was already approved and a version exists.
+    AlreadyPublished {
+        version: u32,
     },
     NoDraft,
     Conflict {
@@ -72,14 +81,28 @@ pub trait RequirementsDocumentRepository: Send + Sync {
         now: OffsetDateTime,
     ) -> Result<RequirementsApplyOutcome, RepoError>;
 
-    /// Publish the current draft as an immutable version.
-    async fn publish(
+    /// Approve the current draft revision and publish it as an immutable
+    /// version in one transaction.
+    async fn approve(
         &self,
         project_id: Uuid,
         expected_revision: u64,
         actor_id: Uuid,
+        comment: Option<&str>,
         now: OffsetDateTime,
-    ) -> Result<RequirementsPublishOutcome, RepoError>;
+    ) -> Result<RequirementsApprovalOutcome, RepoError>;
+
+    /// Record a rejection. The draft stays editable and no version is created.
+    async fn reject(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        actor_id: Uuid,
+        comment: &str,
+        now: OffsetDateTime,
+    ) -> Result<RequirementsApprovalOutcome, RepoError>;
+
+    async fn approvals(&self, project_id: Uuid) -> Result<Vec<RequirementsApprovalDAO>, RepoError>;
 
     async fn versions(&self, project_id: Uuid) -> Result<Vec<RequirementsVersionRow>, RepoError>;
 
@@ -117,7 +140,8 @@ pub trait RequirementsDocumentRepository: Send + Sync {
         id: Uuid,
     ) -> Result<Option<RequirementsAnnotation>, RepoError>;
 
-    async fn insert_annotation(&self, annotation: &RequirementsAnnotation) -> Result<(), RepoError>;
+    async fn insert_annotation(&self, annotation: &RequirementsAnnotation)
+    -> Result<(), RepoError>;
 
     /// Resolve an open annotation. Returns the updated annotation, or `None`
     /// when it does not exist or is already resolved.

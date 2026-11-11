@@ -193,25 +193,28 @@ pub fn requirements_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiEr
     })
 }
 
-/// Maps project-brief use-case results to their wire contract.
-pub fn project_brief_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
-    result.map_err(|error| match error {
-        ServiceError::ProjectBriefInvalid(validation) => ApiError::new(
+/// Maps anchor-document use-case results to their wire contract.
+pub fn anchor_document_api_error(error: ServiceError) -> ApiError {
+    match error {
+        ServiceError::AnchorDocumentInvalid(validation) => ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "project_brief_invalid",
-            "project brief is invalid",
+            "anchor_document_invalid",
+            "anchor document is invalid",
         )
         .with_details(json!({
             "errors": validation.errors,
             "warnings": validation.warnings,
         })),
-        ServiceError::ProjectBriefTooLarge => ApiError::new(
+        ServiceError::AnchorDocumentTooLarge => ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,
-            "project_brief_too_large",
+            "anchor_document_too_large",
             error.to_string(),
         ),
         ServiceError::DraftNotFound(_) => {
-            ApiError::new(StatusCode::CONFLICT, "brief_not_found", error.to_string())
+            ApiError::new(StatusCode::CONFLICT, "draft_not_found", error.to_string())
+        }
+        ServiceError::DraftExists(_) => {
+            ApiError::new(StatusCode::CONFLICT, "draft_exists", error.to_string())
         }
         ServiceError::DraftConflict {
             expected,
@@ -227,5 +230,9 @@ pub fn project_brief_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiE
             "current_updated_at": rfc3339(current_updated_at),
         })),
         other => other.into(),
-    })
+    }
+}
+
+pub fn anchor_document_error<T>(result: Result<T, ServiceError>) -> Result<T, ApiError> {
+    result.map_err(anchor_document_api_error)
 }

@@ -48,6 +48,7 @@ type DefinitionRow = (
     String,
     String,
     serde_json::Value,
+    serde_json::Value,
     bool,
     OffsetDateTime,
     OffsetDateTime,
@@ -169,7 +170,7 @@ impl PostgresStore {
     pub async fn list_agent_definitions(&self) -> Result<Vec<AgentDefinition>, RepoError> {
         let rows: Vec<DefinitionRow> = sqlx::query_as(
             "select d.id, d.name, d.account_id, a.handle, d.role, d.model_base_url, d.model_name, \
-             d.api_key_env, d.system_prompt, d.tools, d.enabled, d.created_at, d.updated_at \
+             d.api_key_env, d.system_prompt, d.tools, d.skills, d.enabled, d.created_at, d.updated_at \
              from agent_definitions d join accounts a on a.id = d.account_id order by d.name",
         )
         .fetch_all(&self.pool)
@@ -181,7 +182,7 @@ impl PostgresStore {
     pub async fn agent_definition(&self, id: Uuid) -> Result<Option<AgentDefinition>, RepoError> {
         let row: Option<DefinitionRow> = sqlx::query_as(
             "select d.id, d.name, d.account_id, a.handle, d.role, d.model_base_url, d.model_name, \
-             d.api_key_env, d.system_prompt, d.tools, d.enabled, d.created_at, d.updated_at \
+             d.api_key_env, d.system_prompt, d.tools, d.skills, d.enabled, d.created_at, d.updated_at \
              from agent_definitions d join accounts a on a.id = d.account_id where d.id = $1",
         )
         .bind(id)
@@ -201,11 +202,13 @@ impl PostgresStore {
         let now = OffsetDateTime::now_utc();
         let tools = serde_json::to_value(&command.tools)
             .map_err(|error| RepoError::Backend(error.to_string()))?;
+        let skills = serde_json::to_value(&command.skills)
+            .map_err(|error| RepoError::Backend(error.to_string()))?;
         sqlx::query(
             "insert into agent_definitions \
              (id, name, account_id, role, model_base_url, model_name, api_key_env, system_prompt, \
-              tools, enabled, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)",
+              tools, skills, enabled, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)",
         )
         .bind(id)
         .bind(name)
@@ -216,6 +219,7 @@ impl PostgresStore {
         .bind(&command.api_key_env)
         .bind(&command.system_prompt)
         .bind(tools)
+        .bind(skills)
         .bind(command.enabled)
         .bind(now)
         .execute(&self.pool)
@@ -233,10 +237,12 @@ impl PostgresStore {
     ) -> Result<(), RepoError> {
         let tools = serde_json::to_value(&command.tools)
             .map_err(|error| RepoError::Backend(error.to_string()))?;
+        let skills = serde_json::to_value(&command.skills)
+            .map_err(|error| RepoError::Backend(error.to_string()))?;
         let affected = sqlx::query(
             "update agent_definitions set \
                model_base_url = $2, model_name = $3, api_key_env = $4, system_prompt = $5, \
-               tools = $6, enabled = $7, role = $8, updated_at = now() \
+               tools = $6, skills = $7, enabled = $8, role = $9, updated_at = now() \
              where id = $1",
         )
         .bind(id)
@@ -245,6 +251,7 @@ impl PostgresStore {
         .bind(&command.api_key_env)
         .bind(&command.system_prompt)
         .bind(tools)
+        .bind(skills)
         .bind(command.enabled)
         .bind(&command.role)
         .execute(&self.pool)
@@ -517,8 +524,8 @@ impl PostgresStore {
         let Some((Some(stage_name), body)) = row else {
             return Ok(Vec::new());
         };
-        let body: WorkflowBody = serde_json::from_value(body)
-            .map_err(|error| RepoError::Backend(error.to_string()))?;
+        let body: WorkflowBody =
+            serde_json::from_value(body).map_err(|error| RepoError::Backend(error.to_string()))?;
         Ok(body
             .stages
             .into_iter()
@@ -554,13 +561,12 @@ impl PostgresStore {
             .await?
             .iter()
             .any(|role| role == role_key);
-        let account_id: Option<Uuid> = sqlx::query_scalar(
-            "select account_id from agent_definitions where id = $1",
-        )
-        .bind(agent_definition_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
+        let account_id: Option<Uuid> =
+            sqlx::query_scalar("select account_id from agent_definitions where id = $1")
+                .bind(agent_definition_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(backend)?;
         if let Some(account_id) = account_id {
             sqlx::query(
                 "insert into task_actors (task_id, role_key, account_id, active, work) \
@@ -806,12 +812,15 @@ fn definition_from_row(row: DefinitionRow) -> Result<AgentDefinition, RepoError>
         api_key_env,
         system_prompt,
         tools,
+        skills,
         enabled,
         created_at,
         updated_at,
     ) = row;
     let tools: Vec<String> =
         serde_json::from_value(tools).map_err(|error| RepoError::Backend(error.to_string()))?;
+    let skills: Vec<String> =
+        serde_json::from_value(skills).map_err(|error| RepoError::Backend(error.to_string()))?;
     Ok(AgentDefinition {
         id,
         name,
@@ -823,6 +832,7 @@ fn definition_from_row(row: DefinitionRow) -> Result<AgentDefinition, RepoError>
         api_key_env,
         system_prompt,
         tools,
+        skills,
         enabled,
         created_at,
         updated_at,

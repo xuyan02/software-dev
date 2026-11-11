@@ -13,11 +13,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pool = sqlx::PgPool::connect(&url).await?;
 
     println!("== tasks ==");
-    let rows = sqlx::query(
-        "select id, title, workflow, stage, state from tasks order by created_at",
-    )
-    .fetch_all(&pool)
-    .await?;
+    let rows =
+        sqlx::query("select id, title, workflow, stage, state from tasks order by created_at")
+            .fetch_all(&pool)
+            .await?;
     for row in &rows {
         let id: Uuid = row.try_get("id")?;
         let title: String = row.try_get("title")?;

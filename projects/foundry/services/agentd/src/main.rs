@@ -8,20 +8,15 @@
 
 use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
 use foundry_agent_runtime::{
-    AgentAssignTool, AgentCreateForRoleTool, AgentRunRequest, AgentRuntime,
-    AgentTemplatesListTool, AgentsListTool, Budget, EchoTool, FoundryClient,
-    FoundryRequirementsApplyTool, FoundryRequirementsDraftTool, FoundryRequirementsGetTool,
-    FoundryRequirementsValidateTool, InMemoryTrajectory, IssueCommentTool, IssueGetTool,
-    LocalSandbox, OpenAiCompatibleConfig, OpenAiCompatibleModel,
-    ProjectBriefAnnotateTool, ProjectBriefAnnotationsListTool, ProjectBriefDraftApplyTool,
-    ProjectBriefDraftCreateTool, ProjectBriefDraftGetTool, ProjectBriefDraftsListTool,
-    ProjectBriefDraftSubmitTool, ProjectBriefGetTool, ProjectBriefResolveAnnotationTool,
-    ProjectBriefVersionGetTool, ProjectBriefVersionsListTool, RequirementsAnnotateTool,
+    AgentAssignTool, AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool,
+    AgentsListTool, Budget, DocumentTool, EchoTool, FoundryClient, FoundryRequirementsApplyTool,
+    FoundryRequirementsDraftTool, FoundryRequirementsGetTool, FoundryRequirementsValidateTool,
+    InMemoryTrajectory, IssueCommentTool, IssueGetTool, LocalSandbox, OpenAiCompatibleConfig,
+    OpenAiCompatibleModel, ProjectGetTool, RequirementsAnnotateTool,
     RequirementsAnnotationsListTool, RequirementsResolveAnnotationTool, RunOutcome,
-    TaskAddLinkTool,
-    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskCommentTool, TaskGetTool, TaskHistoryTool,
-    TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool, TaskStartTool, TasksListTool,
-    TasksReadyListTool, ToolRegistry,
+    TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskCommentTool, TaskGetTool,
+    TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool, TaskStartTool,
+    TasksListTool, TasksReadyListTool, ToolRegistry, compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
 use serde_json::json;
@@ -216,10 +211,18 @@ async fn run_dispatcher_watcher(
         };
         loop {
             let _ = store.agent_process_busy(config.agent_id).await;
+            let system_prompt = match system_prompt_for(definition) {
+                Ok(prompt) => prompt,
+                Err(error) => {
+                    tracing::warn!(agent = %definition.name, %error, "cannot compose skills");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
             let request = AgentRunRequest::new(
                 definition.name.clone(),
                 String::new(),
-                definition.system_prompt.clone(),
+                system_prompt,
                 "Inspect the task pool now: call tasks_ready_list, assign every agent role \
                  that has no enabled agent, then call task_start for every task.",
             );
@@ -259,11 +262,7 @@ async fn run_dispatcher_watcher(
 /// Fetch the task and its allowed operations when this agent is one of its
 /// active actors. The agent should not have to discover its own context with
 /// an extra tool call before deciding what to do.
-async fn task_context(
-    client: &FoundryClient,
-    task_id: Uuid,
-    account_id: Uuid,
-) -> Option<String> {
+async fn task_context(client: &FoundryClient, task_id: Uuid, account_id: Uuid) -> Option<String> {
     let task = match client.get_task(None, task_id).await {
         Ok(task) => task,
         Err(error) => {
@@ -279,10 +278,7 @@ async fn task_context(
             actors.iter().any(|actor| {
                 actor.get("account_id").and_then(serde_json::Value::as_str)
                     == Some(account.as_str())
-                    && actor
-                        .get("active")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
+                    && actor.get("active").and_then(serde_json::Value::as_bool) == Some(true)
             })
         });
     if !active {
@@ -330,10 +326,11 @@ async fn execute_task(
     );
 
     let task_id = task.task_id.to_string();
+    let system_prompt = system_prompt_for(definition).map_err(|error| anyhow::anyhow!(error))?;
     let mut request = AgentRunRequest::new(
         definition.name.clone(),
         task_id.clone(),
-        definition.system_prompt.clone(),
+        system_prompt,
         "Inspect the task and decide what to do.",
     );
     request.context.push(
@@ -342,8 +339,7 @@ async fn execute_task(
         format!("task_id = {task_id}"),
     );
     if let Some(details) = task_context(&client, task.task_id, definition.account_id).await {
-        request.context
-            .push("task", task_id.clone(), details);
+        request.context.push("task", task_id.clone(), details);
     }
 
     match runtime.run(request).await {
@@ -368,6 +364,19 @@ async fn execute_task(
     Ok(())
 }
 
+fn system_prompt_for(definition: &AgentDefinition) -> Result<String, String> {
+    let identity = format!(
+        "你的身份：\n- agent_id: {}\n- account_id: {}\n- handle: {}\n- name: {}\n- role: {}\n\n",
+        definition.id,
+        definition.account_id,
+        definition.account_handle,
+        definition.name,
+        definition.role
+    );
+    let base = format!("{identity}{}", definition.system_prompt);
+    compose_system_prompt(&base, &definition.skills).map_err(|error| error.to_string())
+}
+
 fn truncate(text: &str, limit: usize) -> String {
     if text.chars().count() <= limit {
         return text.to_string();
@@ -388,65 +397,20 @@ fn build_tools(
     if wants("echo") {
         tools.register(Arc::new(EchoTool));
     }
-    if wants("project_brief_get") {
-        tools.register(Arc::new(ProjectBriefGetTool::new(Arc::clone(client))));
-    }
-    if wants("project_brief_versions_list") {
-        tools.register(Arc::new(ProjectBriefVersionsListTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_version_get") {
-        tools.register(Arc::new(ProjectBriefVersionGetTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_drafts_list") {
-        tools.register(Arc::new(ProjectBriefDraftsListTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_draft_create") {
-        tools.register(Arc::new(ProjectBriefDraftCreateTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_draft_get") {
-        tools.register(Arc::new(ProjectBriefDraftGetTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_draft_apply") {
-        tools.register(Arc::new(ProjectBriefDraftApplyTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_draft_submit") {
-        tools.register(Arc::new(ProjectBriefDraftSubmitTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_annotations_list") {
-        tools.register(Arc::new(ProjectBriefAnnotationsListTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("project_brief_annotate") {
-        tools.register(Arc::new(ProjectBriefAnnotateTool::new(Arc::clone(client))));
-    }
-    if wants("project_brief_resolve_annotation") {
-        tools.register(Arc::new(ProjectBriefResolveAnnotationTool::new(
-            Arc::clone(client),
-        )));
-    }
     if wants("task_links_list") {
         tools.register(Arc::new(TaskLinksListTool::new(Arc::clone(client))));
+    }
+    if wants("project_get") {
+        tools.register(Arc::new(ProjectGetTool::new(Arc::clone(client))));
     }
     if wants("issue_get") {
         tools.register(Arc::new(IssueGetTool::new(Arc::clone(client))));
     }
     if wants("issue_comment") {
         tools.register(Arc::new(IssueCommentTool::new(Arc::clone(client))));
+    }
+    if wants("document") {
+        tools.register(Arc::new(DocumentTool::new(Arc::clone(client))));
     }
     if wants("requirements_get") {
         tools.register(Arc::new(FoundryRequirementsGetTool::new(Arc::clone(

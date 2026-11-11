@@ -271,6 +271,7 @@ impl AgentRuntime {
             };
             let ModelResponse {
                 content,
+                reasoning_content,
                 tool_calls,
                 usage: response_usage,
                 ..
@@ -283,6 +284,7 @@ impl AgentRuntime {
                 name: None,
                 input: None,
                 output: content.clone(),
+                reasoning: reasoning_content.clone(),
                 usage: response_usage,
                 elapsed_ms: elapsed_ms(&state),
                 error: None,
@@ -297,6 +299,7 @@ impl AgentRuntime {
                     name: None,
                     input: None,
                     output: Some(final_message.clone()),
+                    reasoning: reasoning_content.clone(),
                     usage: response_usage,
                     elapsed_ms: elapsed_ms(&state),
                     error: None,
@@ -304,9 +307,11 @@ impl AgentRuntime {
                 .await?;
                 if let Some(pause) = state.pause.clone() {
                     let elapsed = elapsed_ms(&state);
-                    state
-                        .messages
-                        .push(Message::assistant(final_message, Vec::new()));
+                    state.messages.push(Message::assistant_with_reasoning(
+                        final_message,
+                        Vec::new(),
+                        reasoning_content,
+                    ));
                     let checkpoint = AgentCheckpoint {
                         messages: state.messages,
                         usage: state.usage,
@@ -329,9 +334,10 @@ impl AgentRuntime {
                 }));
             }
 
-            state.messages.push(Message::assistant(
+            state.messages.push(Message::assistant_with_reasoning(
                 content.unwrap_or_default(),
                 tool_calls.clone(),
+                reasoning_content,
             ));
             pending_calls = tool_calls;
         }
@@ -371,6 +377,7 @@ impl AgentRuntime {
                 name: Some(call.name.clone()),
                 input: Some(call.arguments.clone()),
                 output: Some(output.content.clone()),
+                reasoning: None,
                 usage: Usage::default(),
                 elapsed_ms: elapsed_ms(state),
                 error: output.is_error.then(|| output.content.clone()),

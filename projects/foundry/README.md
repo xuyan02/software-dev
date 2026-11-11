@@ -19,15 +19,17 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 
 - Issue 聚合（问题空间）：反馈、缺陷、问题、想法、任务请求、事故；评论、处置、状态机、乐观并发、历史。
 - **账户与登录会话**：人类账户、智能体账户、全局 Admin/Member 角色、Argon2 密码哈希、可撤销会话、Web Cookie 与 REST/MCP Bearer Token。
-- **项目与隔离**：项目成员及 Viewer / Member / Maintainer / Owner 角色；Issue 和 Requirement 全部按项目隔离，跨项目读取返回 404。
-- 人类控制台：登录、侧边导航、**工作台**、议题收件箱、**任务**、**项目简报**、项目切换、项目成员管理、账户管理（Admin）、**智能体管理（Admin）**。
+- **项目与隔离**：项目成员及 Viewer / Member / Maintainer / Owner 角色；Issue、项目文档和需求文档全部按项目隔离，跨项目读取返回 404。
+- 人类控制台：登录、侧边导航、**工作台**、议题收件箱、**任务**、**项目文档**、**需求文档**、项目切换、项目成员管理、账户管理（Admin）、**智能体管理（Admin）**。
 - **智能体管理**：每个智能体一个常驻 `foundry-agentd` 进程；控制平面 supervisor 负责启动/停止/重启、心跳和进程状态；PM Agent 作为调度者把 Ready 任务纳入派发：按 role 分配 Agent，没有合适的就从平台模板创建，然后调用 `task_start` 把任务置为 `in_progress`；用户不配置智能体。
-- Requirement 聚合（承诺空间）：校验、状态机、乐观并发、状态历史。**当前为早期实现，后续重新设计。**
+- **通用锚点文档引擎**：描述文件定义章节树；文档、章节和列表项都是锚点，每个锚点有稳定键和 SHA-256 内容 ID；共享草案、不可变版本、操作日志、审批、按项标注和乐观并发。
+- 项目文档（承诺空间）：使用 `kind = project` 的锚点文档，包含定位（是什么、不是什么）、背景（现状、问题）、目标、非目标、约束、风险和术语表。
+- 需求文档：每个项目一份锚点需求文档，包含用户、功能、操作、故事、交互规格、交互流、界面和图片；与项目文档分开审批和发布。
 - Task / DesignDoc / ADR / Contract / Decision / Link 的领域模型与状态机。缺陷不再单独建模，它是 `IssueKind::Bug`。
-- 用例层与端口：`AccountRepository`、`SessionRepository`、`ProjectRepository`、`IssueRepository`、`RequirementRepository`、`EventSink`、`PolicyEngine`。
+- 用例层与端口：`AccountRepository`、`SessionRepository`、`ProjectRepository`、`IssueRepository`、`EventSink`、`PolicyEngine`。
 - 内存适配器（测试用）与 **Postgres 适配器**（运行时不失数据、乐观并发、事件持久化）。
 - HTTP REST API + 服务端渲染控制台 + MCP JSON-RPC。
-- CLI：登录、项目/账户列表、议题 list / get / create / comment / transition；需求旧命令保留。
+- CLI：登录、项目/账户列表、议题 list / get / create / comment / transition、流程定义与项目创建。
 - Postgres schema 与启动时自动迁移。
 
 尚未实现：AgentDefinition 版本、评测和绑定审批，沙箱与 CI 集成。详见 [RFC 0015](docs/rfcs/0015-agent-architecture-and-evaluation.md)。
@@ -41,7 +43,7 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 | [RFC 0008](docs/rfcs/0008-software-lifecycle-model.md) | 生命周期总纲：阶段、对象分类、门禁、证据、阶段与流程映射 |
 | [RFC 0009](docs/rfcs/0009-artifact-lineage-baselines-and-change.md) | 产物血缘、基线、变更请求、配置与版本 |
 | [RFC 0010](docs/rfcs/0010-auxiliary-systems-and-evidence.md) | 辅助系统注册、能力契约、调用记录、证据与信任等级 |
-| [RFC 0011](docs/rfcs/0011-requirements-management.md) | 需求池、需求分析、验收场景、holdout、需求基线 |
+| [RFC 0011](docs/rfcs/0011-requirements-management.md) | 历史：需求池、需求分析、验收场景、holdout、需求基线（已被 RFC 0020 取代） |
 | [RFC 0012](docs/rfcs/0012-architecture-and-design-management.md) | 架构基线、ADR、契约、质量属性、约束、技术债、详细设计 |
 | [RFC 0013](docs/rfcs/0013-implementation-review-testing-and-quality.md) | 实现、评审、测试、覆盖率、质量与安全门禁、豁免 |
 | [RFC 0014](docs/rfcs/0014-release-deployment-operations-and-retirement.md) | 发布、部署、环境、运维、事故、复盘、反馈、退役 |
@@ -50,7 +52,7 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 | [RFC 0017](docs/rfcs/0017-product-portfolio-and-initiation.md) | 产品、组合、立项、目标澄清、成功指标 |
 | [RFC 0018](docs/rfcs/0018-knowledge-documentation-and-context.md) | 知识、文档、代码索引、上下文组装、记忆 |
 | [RFC 0019](docs/rfcs/0019-governance-security-compliance-and-data.md) | 治理、策略、审批、审计、安全、合规、风险、数据 |
-| [RFC 0020](docs/rfcs/0020-requirements-subsystem.md) | 需求子系统：项目唯一需求文档、用户/功能/故事/操作、版本/草案/冲突 |
+| [RFC 0020](docs/rfcs/0020-requirements-subsystem.md) | 需求子系统：项目文档与需求文档、用户/功能/故事/操作、版本/草案/冲突 |
 
 设计原则见 [ADR 0007](docs/adr/0007-management-backbone-and-auxiliary-systems.md)（管理主干与辅助系统分离）和 [ADR 0008](docs/adr/0008-artifact-lineage-baselines-change.md)（产物血缘、基线与变更是贯穿主线）。这些 RFC 是设计稿，不代表已实现；实施顺序见 RFC 0008 §13。
 
@@ -282,7 +284,7 @@ services/* → 组合根
 - `crates/agent-runtime`：Foundry 自己的 Agent 运行时（模型/工具/轨迹/预算/循环）；Phase 0 骨架。
 - `web/workflow-editor`：独立的流程编辑器 SPA（Vite + React + React Flow）；构建产物部署到 `/workflows/editor/`。
 - `services/*`：可执行程序。
-- `migrations/`：Postgres schema（`accounts`、`sessions`、`projects`、`project_members`、`issues`、`work_items`、`events`、`decisions`、`links`、`tasks`、`workflow_definitions`、`workflow_versions`、`workflow_drafts`、`workflow_layouts`）。
+- `migrations/`：Postgres schema（`accounts`、`sessions`、`projects`、`project_members`、`issues`、`events`、`decisions`、`links`、`tasks`、`workflow_definitions`、`workflow_versions`、`workflow_drafts`、`workflow_layouts`）。
 
 ## 开发
 

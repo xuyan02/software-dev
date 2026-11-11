@@ -31,35 +31,6 @@ Open ──► InProgress ──► Resolved ──► Closed
 - 只有 `Resolved` 可以进入 `Closed`。
 - Bug 在创建时必须提供 `severity`；没有分诊步骤，分类和严重度在创建时确定。
 
-## Requirement
-
-```
-Draft ──► InReview ──► Approved ──► InDesign ──► InDevelopment ──► InVerification ──► Done
-  │          │  ▲          │            │  ▲            │                │  ▲
-  │          │  └──────────┘            │  └────────────┘                │  └───────────┐
-  │          ▼                          ▼                               ▼              │
-  └──────► Rejected ◄───────────────────┴─────────────────────────── Deferred ◄────────┘
-             │                                                          │
-             └──────────────────► Draft ◄───────────────────────────────┘
-```
-
-允许的转换：
-
-| From | To |
-|---|---|
-| Draft | InReview, Rejected, Deferred |
-| InReview | Approved, Draft, Rejected, Deferred |
-| Approved | InDesign, Deferred, Superseded |
-| InDesign | InDevelopment, Approved, Deferred, Superseded |
-| InDevelopment | InVerification, InDesign, Deferred |
-| InVerification | Done, InDevelopment, Deferred |
-| Done | Superseded |
-| Rejected | Draft, Superseded |
-| Deferred | Draft, InReview, Superseded |
-| Superseded | — |
-
-`InReview → Approved` 额外要求 `users` 和 `non_goals` 非空。
-
 ## Task
 
 | From | To |
@@ -141,8 +112,8 @@ Draft ──► InReview ──► Approved ──► InDesign ──► InDevel
 | 动作 | Viewer | Member | Maintainer | Owner | 全局 Admin |
 |---|---|---|---|---|---|
 | 读取项目对象 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 创建 Issue / Requirement、评论 | ❌ | ✅ | ✅ | ✅ | ✅ |
-| 处置 Issue、编辑/转换 Requirement | ❌ | ❌ | ✅ | ✅ | ✅ |
+| 创建 Issue、评论 | ❌ | ✅ | ✅ | ✅ | ✅ |
+| 处置 Issue | ❌ | ❌ | ✅ | ✅ | ✅ |
 | 修改项目、管理成员 | ❌ | ❌ | ❌ | ✅ | ✅ |
 
 ## 默认权限矩阵（DemoPolicy）
@@ -155,18 +126,10 @@ Draft ──► InReview ──► Approved ──► InDesign ──► InDevel
 | Resolved → Closed | ✅ | ❌ | ❌ |
 | 任意 → Rejected / Duplicate | ✅ | ❌ | ❌ |
 | Closed / Rejected / Duplicate → Open | ✅ | ❌ | ❌ |
-| 创建需求 | ✅ | ✅ | ❌ |
-| Draft → InReview | ✅ | ✅ | ❌ |
-| Approved → InDesign | ✅ | ✅ | ❌ |
-| InDesign → InDevelopment | ✅ | ✅ | ❌ |
-| InDevelopment → InVerification | ✅ | ✅ | ❌ |
-| InReview → Approved | ✅ | ❌ | ❌ |
-| 任意 → Rejected / Deferred / Superseded | ✅ | ❌ | ❌ |
-| InVerification → Done | ✅ | ❌ | ❌ |
 
 这张表是 `crates/adapters/policy` 中的演示策略，生产环境应替换为 OPA/Cedar 策略，并把“谁有权批准”绑定到项目角色、风险等级和变更影响面。
 
-请求必须先通过项目角色检查，再进入这张策略表；两层都通过才执行转换。因此一个 `member` 智能体即使策略允许 `Resolved → Closed` 之外的动作，也不能执行处置，因为项目角色不足。全局 admin 只覆盖项目角色检查，不会绕过 DemoPolicy 的业务限制。
+请求必须先通过项目角色检查，再进入这张策略表；两层都通过才执行转换。因此一个 `member` 智能体即使策略允许某些 Issue 转换，也不能执行处置，因为项目角色不足。全局 admin 只覆盖项目角色检查，不会绕过 DemoPolicy 的业务限制。
 
 ## 生命周期对象状态机（设计稿，RFC 0008–0019）
 
@@ -277,17 +240,6 @@ Draft ──► InReview ──► Approved ──► InDesign ──► InDevel
 | Superseded / Cancelled | — |
 
 同一项目最多一个 `Active` 架构基线。
-
-### ProjectBrief
-
-| From | To |
-|---|---|
-| Draft | InReview, Cancelled |
-| InReview | Approved, Rejected, Draft |
-| Approved | Superseded |
-| Rejected / Cancelled / Superseded | — |
-
-批准后不可原地修改；变更走 ChangeRequest。
 
 ### Opportunity
 

@@ -2,12 +2,13 @@
 
 use async_trait::async_trait;
 use foundry_app::{
-    RepoError, RequirementsApplyOutcome, RequirementsDocumentRepository, RequirementsPublishOutcome,
+    RepoError, RequirementsApplyOutcome, RequirementsApprovalOutcome,
+    RequirementsDocumentRepository,
 };
 use foundry_domain::{
-    AnnotationStatus, AnnotationTarget, RequirementsAnnotation, RequirementsDocumentBody,
-    RequirementsDocumentDAO, RequirementsDraftDAO, RequirementsOperation, RequirementsVersionDAO,
-    RequirementsVersionRow,
+    AnnotationStatus, AnnotationTarget, ApprovalDecision, RequirementsAnnotation,
+    RequirementsApprovalDAO, RequirementsDocumentBody, RequirementsDocumentDAO,
+    RequirementsDraftDAO, RequirementsOperation, RequirementsVersionDAO, RequirementsVersionRow,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -261,13 +262,14 @@ impl RequirementsDocumentRepository for PostgresStore {
         })
     }
 
-    async fn publish(
+    async fn approve(
         &self,
         project_id: Uuid,
         expected_revision: u64,
         actor_id: Uuid,
+        comment: Option<&str>,
         now: OffsetDateTime,
-    ) -> Result<RequirementsPublishOutcome, RepoError> {
+    ) -> Result<RequirementsApprovalOutcome, RepoError> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let document: Option<(Uuid, i32)> = sqlx::query_as(
             "select id, current_version from requirements_documents where project_id = $1 for update",
@@ -277,21 +279,35 @@ impl RequirementsDocumentRepository for PostgresStore {
         .await
         .map_err(backend)?;
         let Some((document_id, current_version)) = document else {
-            return Ok(RequirementsPublishOutcome::NoDraft);
+            return Ok(RequirementsApprovalOutcome::NoDraft);
         };
-        let draft: Option<(Uuid, i64, i32, Value, OffsetDateTime)> = sqlx::query_as(
-            "select id, revision, base_version, body, updated_at \
+        let draft: Option<(Uuid, i64, Value, OffsetDateTime)> = sqlx::query_as(
+            "select id, revision, body, updated_at \
              from requirements_document_drafts where document_id = $1 for update",
         )
         .bind(document_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(backend)?;
-        let Some((draft_id, revision, _base_version, body, updated_at)) = draft else {
-            return Ok(RequirementsPublishOutcome::NoDraft);
+        let Some((draft_id, revision, body, updated_at)) = draft else {
+            return Ok(RequirementsApprovalOutcome::NoDraft);
         };
+        let existing: Option<i32> = sqlx::query_scalar(
+            "select version from requirements_document_versions \
+             where document_id = $1 and source_revision = $2",
+        )
+        .bind(document_id)
+        .bind(expected_revision as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(version) = existing {
+            return Ok(RequirementsApprovalOutcome::AlreadyPublished {
+                version: version as u32,
+            });
+        }
         if revision as u64 != expected_revision {
-            return Ok(RequirementsPublishOutcome::Conflict {
+            return Ok(RequirementsApprovalOutcome::Conflict {
                 current_revision: revision as u64,
                 current_updated_at: updated_at,
             });
@@ -311,22 +327,41 @@ impl RequirementsDocumentRepository for PostgresStore {
         }
         let bytes = serde_json::to_vec(&body).map_err(backend)?;
         if bytes.len() > foundry_domain::MAX_REQUIREMENTS_BYTES {
-            return Ok(RequirementsPublishOutcome::TooLarge);
+            return Ok(RequirementsApprovalOutcome::TooLarge);
         }
         let version = (current_version + 1) as u32;
         let value = serde_json::to_value(&body).map_err(backend)?;
         let hash = content_hash(&bytes);
+        let approval_id = Uuid::now_v7();
+        sqlx::query(
+            "insert into requirements_document_approvals \
+             (id, project_id, revision, decision, actor_id, comment, content_hash, created_at) \
+             values ($1, $2, $3, 'approved', $4, $5, $6, $7)",
+        )
+        .bind(approval_id)
+        .bind(project_id)
+        .bind(expected_revision as i64)
+        .bind(actor_id)
+        .bind(comment)
+        .bind(&hash)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
         sqlx::query(
             "insert into requirements_document_versions \
-             (id, document_id, version, body, content_hash, created_by, approved_by, created_at, published_at) \
-             values ($1, $2, $3, $4, $5, $6, $6, $7, $7)",
+             (id, document_id, version, body, content_hash, source_revision, created_by, \
+              approved_by, approval_comment, created_at, published_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $7, $8, $9, $9)",
         )
         .bind(Uuid::now_v7())
         .bind(document_id)
         .bind(version as i32)
         .bind(&value)
         .bind(hash)
+        .bind(expected_revision as i64)
         .bind(actor_id)
+        .bind(comment)
         .bind(now)
         .execute(&mut *tx)
         .await
@@ -341,12 +376,10 @@ impl RequirementsDocumentRepository for PostgresStore {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        let new_revision = revision + 1;
         sqlx::query(
             "update requirements_document_drafts \
-             set revision = $1, base_version = $2, updated_at = $3 where id = $4",
+             set base_version = $1, updated_at = $2 where id = $3",
         )
-        .bind(new_revision)
         .bind(version as i32)
         .bind(now)
         .bind(draft_id)
@@ -354,30 +387,160 @@ impl RequirementsDocumentRepository for PostgresStore {
         .await
         .map_err(backend)?;
         tx.commit().await.map_err(backend)?;
-        Ok(RequirementsPublishOutcome::Published {
+        Ok(RequirementsApprovalOutcome::Approved {
             version,
-            revision: new_revision as u64,
+            revision: expected_revision,
+            approval_id,
         })
     }
 
+    async fn reject(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        actor_id: Uuid,
+        comment: &str,
+        now: OffsetDateTime,
+    ) -> Result<RequirementsApprovalOutcome, RepoError> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let document_id: Option<Uuid> = sqlx::query_scalar(
+            "select id from requirements_documents where project_id = $1 for update",
+        )
+        .bind(project_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some(document_id) = document_id else {
+            return Ok(RequirementsApprovalOutcome::NoDraft);
+        };
+        let draft: Option<(i64, Value, OffsetDateTime)> = sqlx::query_as(
+            "select revision, body, updated_at from requirements_document_drafts \
+             where document_id = $1 for update",
+        )
+        .bind(document_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let Some((revision, body, updated_at)) = draft else {
+            return Ok(RequirementsApprovalOutcome::NoDraft);
+        };
+        let existing: Option<i32> = sqlx::query_scalar(
+            "select version from requirements_document_versions \
+             where document_id = $1 and source_revision = $2",
+        )
+        .bind(document_id)
+        .bind(expected_revision as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(version) = existing {
+            return Ok(RequirementsApprovalOutcome::AlreadyPublished {
+                version: version as u32,
+            });
+        }
+        if revision as u64 != expected_revision {
+            return Ok(RequirementsApprovalOutcome::Conflict {
+                current_revision: revision as u64,
+                current_updated_at: updated_at,
+            });
+        }
+        let body: RequirementsDocumentBody = serde_json::from_value(body).map_err(backend)?;
+        let bytes = serde_json::to_vec(&body).map_err(backend)?;
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "select id from requirements_document_approvals \
+             where project_id = $1 and revision = $2 and decision = 'rejected'",
+        )
+        .bind(project_id)
+        .bind(expected_revision as i64)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(approval_id) = existing {
+            return Ok(RequirementsApprovalOutcome::Rejected { approval_id });
+        }
+        let approval_id = Uuid::now_v7();
+        sqlx::query(
+            "insert into requirements_document_approvals \
+             (id, project_id, revision, decision, actor_id, comment, content_hash, created_at) \
+             values ($1, $2, $3, 'rejected', $4, $5, $6, $7)",
+        )
+        .bind(approval_id)
+        .bind(project_id)
+        .bind(expected_revision as i64)
+        .bind(actor_id)
+        .bind(comment)
+        .bind(content_hash(&bytes))
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
+        Ok(RequirementsApprovalOutcome::Rejected { approval_id })
+    }
+
+    async fn approvals(&self, project_id: Uuid) -> Result<Vec<RequirementsApprovalDAO>, RepoError> {
+        let rows: Vec<(Uuid, Uuid, i64, String, Uuid, Option<String>, String, OffsetDateTime)> =
+            sqlx::query_as(
+                "select id, project_id, revision, decision, actor_id, comment, content_hash, created_at \
+                 from requirements_document_approvals where project_id = $1 order by created_at, id",
+            )
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
+        rows.into_iter()
+            .map(
+                |(
+                    id,
+                    project_id,
+                    revision,
+                    decision,
+                    actor_id,
+                    comment,
+                    content_hash,
+                    created_at,
+                )| {
+                    let decision = ApprovalDecision::parse(&decision).ok_or_else(|| {
+                        RepoError::Backend(format!("unknown approval decision {decision}"))
+                    })?;
+                    Ok(RequirementsApprovalDAO {
+                        id,
+                        project_id,
+                        revision: revision as u64,
+                        decision,
+                        actor_id,
+                        comment,
+                        content_hash,
+                        created_at,
+                    })
+                },
+            )
+            .collect()
+    }
+
     async fn versions(&self, project_id: Uuid) -> Result<Vec<RequirementsVersionRow>, RepoError> {
-        let rows: Vec<(i32, Uuid, Option<OffsetDateTime>)> = sqlx::query_as(
-            "select v.version, v.created_by, v.published_at \
+        let rows: Vec<(i32, Uuid, Option<Uuid>, Option<i64>, Option<OffsetDateTime>)> =
+            sqlx::query_as(
+                "select v.version, v.created_by, v.approved_by, v.source_revision, v.published_at \
              from requirements_document_versions v \
              join requirements_documents d on d.id = v.document_id \
              where d.project_id = $1 order by v.version desc",
-        )
-        .bind(project_id)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
+            )
+            .bind(project_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(backend)?;
         Ok(rows
             .into_iter()
             .map(
-                |(version, created_by, published_at)| RequirementsVersionRow {
-                    version: version as u32,
-                    created_by,
-                    published_at,
+                |(version, created_by, approved_by, source_revision, published_at)| {
+                    RequirementsVersionRow {
+                        version: version as u32,
+                        created_by,
+                        approved_by,
+                        source_revision: source_revision.map(|value| value as u64),
+                        published_at,
+                    }
                 },
             )
             .collect())
@@ -388,19 +551,10 @@ impl RequirementsDocumentRepository for PostgresStore {
         project_id: Uuid,
         version: u32,
     ) -> Result<Option<RequirementsVersionDAO>, RepoError> {
-        let row: Option<(
-            Uuid,
-            Uuid,
-            i32,
-            Value,
-            String,
-            Uuid,
-            Option<Uuid>,
-            OffsetDateTime,
-            Option<OffsetDateTime>,
-        )> = sqlx::query_as(
+        let row: Option<VersionRow> = sqlx::query_as(
             "select v.document_id, d.project_id, v.version, v.body, v.content_hash, \
-                    v.created_by, v.approved_by, v.created_at, v.published_at \
+                    v.source_revision, v.created_by, v.approved_by, v.approval_comment, \
+                    v.created_at, v.published_at \
              from requirements_document_versions v \
              join requirements_documents d on d.id = v.document_id \
              where d.project_id = $1 and v.version = $2",
@@ -417,19 +571,10 @@ impl RequirementsDocumentRepository for PostgresStore {
         &self,
         project_id: Uuid,
     ) -> Result<Option<RequirementsVersionDAO>, RepoError> {
-        let row: Option<(
-            Uuid,
-            Uuid,
-            i32,
-            Value,
-            String,
-            Uuid,
-            Option<Uuid>,
-            OffsetDateTime,
-            Option<OffsetDateTime>,
-        )> = sqlx::query_as(
+        let row: Option<VersionRow> = sqlx::query_as(
             "select v.document_id, d.project_id, v.version, v.body, v.content_hash, \
-                    v.created_by, v.approved_by, v.created_at, v.published_at \
+                    v.source_revision, v.created_by, v.approved_by, v.approval_comment, \
+                    v.created_at, v.published_at \
              from requirements_document_versions v \
              join requirements_documents d on d.id = v.document_id \
              where d.project_id = $1 order by v.version desc limit 1",
@@ -546,7 +691,10 @@ impl RequirementsDocumentRepository for PostgresStore {
         row.map(annotation_from_row).transpose()
     }
 
-    async fn insert_annotation(&self, annotation: &RequirementsAnnotation) -> Result<(), RepoError> {
+    async fn insert_annotation(
+        &self,
+        annotation: &RequirementsAnnotation,
+    ) -> Result<(), RepoError> {
         sqlx::query(
             "insert into requirements_draft_annotations \
              (id, project_id, target_type, target_id, field, body, author_id, status, created_at) \
@@ -647,29 +795,33 @@ fn document_from_row(
     }
 }
 
-fn version_from_row(
-    row: (
-        Uuid,
-        Uuid,
-        i32,
-        Value,
-        String,
-        Uuid,
-        Option<Uuid>,
-        OffsetDateTime,
-        Option<OffsetDateTime>,
-    ),
-) -> Result<RequirementsVersionDAO, RepoError> {
+type VersionRow = (
+    Uuid,
+    Uuid,
+    i32,
+    Value,
+    String,
+    Option<i64>,
+    Uuid,
+    Option<Uuid>,
+    Option<String>,
+    OffsetDateTime,
+    Option<OffsetDateTime>,
+);
+
+fn version_from_row(row: VersionRow) -> Result<RequirementsVersionDAO, RepoError> {
     Ok(RequirementsVersionDAO {
         document_id: row.0,
         project_id: row.1,
         version: row.2 as u32,
         body: serde_json::from_value(row.3).map_err(backend)?,
         content_hash: row.4,
-        created_by: row.5,
-        approved_by: row.6,
-        created_at: row.7,
-        published_at: row.8,
+        source_revision: row.5.unwrap_or(0) as u64,
+        created_by: row.6,
+        approved_by: row.7,
+        approval_comment: row.8,
+        created_at: row.9,
+        published_at: row.10,
     })
 }
 

@@ -20,7 +20,6 @@ pub enum LinkRelation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "id", rename_all = "snake_case")]
 pub enum LinkTarget {
-    Requirement(Uuid),
     Issue(Uuid),
     Task(Uuid),
     DesignDoc(Uuid),

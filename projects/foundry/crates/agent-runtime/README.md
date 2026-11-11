@@ -84,7 +84,7 @@ cargo run -p foundry-agent-runtime --bin foundry-agent -- clarify \
 ### Phase 1：真实世界
 
 - `OpenAiCompatibleModel`：OpenAI / DeepSeek / Ollama / vLLM，重试、超时、工具调用、usage。
-- `FoundryClient` 和 `requirements_get` / `.draft` / `.apply_operations` / `.validate` 工具。
+- `FoundryClient` 和统一的 `document` 工具（`kind = "project"` / `"requirements"`）。
 - `project_brief_get` / `project_brief_versions_list` / `project_brief_version_get` / `project_brief_drafts_list` / `project_brief_draft_create` / `project_brief_draft_get` / `project_brief_draft_apply` / `project_brief_draft_submit` 工具。
 - `McpClient`：initialize、tools/list、tools/call，stdio transport、JSON-RPC、错误处理。
 - 轨迹使用内存 sink；管理型 Agent 不再持久化 `agent_runs` / `agent_steps`。

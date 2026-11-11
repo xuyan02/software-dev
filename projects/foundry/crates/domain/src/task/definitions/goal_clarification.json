@@ -2,14 +2,15 @@
   "schema_version": 1,
   "roles": [
     {"name": "clarifier", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "writer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "content_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
   ],
-  "initial_stage": "work",
+  "initial_stage": "clarification",
   "stages": [
     {
-      "name": "work",
+      "name": "clarification",
       "active_roles": ["clarifier"],
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
@@ -18,15 +19,41 @@
         {
           "name": "started",
           "display_name": "Start",
-          "description": "Claim and start clarifying the goal.",
+          "description": "Start the clarification interview.",
           "roles": ["clarifier"],
           "action": ""
         },
         {
           "name": "completed",
-          "display_name": "Submit for review",
-          "description": "The goal is clarified and the project brief is submitted for style review.",
+          "display_name": "Finish clarification",
+          "description": "The clarification is complete; start writing the project document.",
           "roles": ["clarifier"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "writing"}
+      ]
+    },
+    {
+      "name": "writing",
+      "active_roles": ["writer"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Start writing the project document.",
+          "roles": ["writer"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Submit project document",
+          "description": "The project document draft is ready for style review.",
+          "roles": ["writer"],
           "action": "completed = true"
         }
       ],
@@ -44,21 +71,21 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "The project brief is clear; move to content review.",
+          "description": "The project document is clear; move to content review.",
           "roles": ["style_reviewer"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "The wording is unclear or ambiguous; return to the clarifier.",
+          "description": "The wording is unclear or ambiguous; return to the writer.",
           "roles": ["style_reviewer"],
           "action": "decision = 'rejected'"
         }
       ],
       "transitions": [
         {"on": "decision == 'approved'", "to": "content_review"},
-        {"on": "decision == 'rejected'", "to": "work"}
+        {"on": "decision == 'rejected'", "to": "writing"}
       ]
     },
     {
@@ -71,21 +98,21 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "The project brief is complete and consistent; move to human acceptance.",
+          "description": "The project document is complete and consistent; move to human approval.",
           "roles": ["content_reviewer"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "The content is incomplete, inconsistent or unmeasurable; return to the clarifier.",
+          "description": "The content is incomplete, inconsistent or unmeasurable; return to the writer.",
           "roles": ["content_reviewer"],
           "action": "decision = 'rejected'"
         }
       ],
       "transitions": [
         {"on": "decision == 'approved'", "to": "awaiting_acceptance"},
-        {"on": "decision == 'rejected'", "to": "work"}
+        {"on": "decision == 'rejected'", "to": "writing"}
       ]
     },
     {
@@ -98,21 +125,21 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "Accept the clarification and complete the task.",
+          "description": "Accept the project document and complete the task.",
           "roles": ["acceptor"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "Reject the clarification and return to work.",
+          "description": "Reject the project document and return to the writer.",
           "roles": ["acceptor"],
           "action": "decision = 'rejected'"
         }
       ],
       "transitions": [
         {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
-        {"on": "decision == 'rejected'", "to": "work"}
+        {"on": "decision == 'rejected'", "to": "writing"}
       ]
     }
   ]

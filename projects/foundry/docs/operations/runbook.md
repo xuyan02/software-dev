@@ -114,30 +114,34 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 启动时，control-plane 会对所有 `in_progress` Task 执行一次 transition 重算：按当前 stage 变量和 active actors 重新求值，条件满足则推进 stage 或完成任务。正常运行时 transition 只在 TaskEvent 处理过程中检查，这个启动扫描只用于恢复“已持久化的变量满足转移条件、但服务在事件后停止”的任务。
 
-### 项目澄清
+### 项目文档撰写
 
 项目创建后，根 Task 创建 `goal_clarification` 子 Task 和统一的澄清 Issue：
 
-1. PM 按 `goal_clarification:clarifier` 分配或创建 **Clarifier**；
-2. Clarifier 在澄清 Issue 中与创建者对话；用 `project_brief_draft_create` 创建服务端草稿，用
-   `project_brief_draft_apply` 每次只提交一个结构化 operation（problem/goals/metrics/scope/...），
-   再用 `project_brief_draft_submit` 提交草稿。提交会生成新版本并删除草稿，但**不会推进 Task**；
-   Clarifier 必须紧接着调用 `task_operation(operation = "completed")`；
-3. 简报提交后依次经过 **Brief Style Reviewer** 和 **Brief Content Reviewer**（都是 Agent）；
-   两个 Reviewer 不修改简报，用 `project_brief_annotate` 把意见挂到具体字段或对象上，打回时任务回到 `work`；
-4. Clarifier 用 `project_brief_annotations_list` 读取评审批注，逐条解决后创建新草稿、逐部分修改、重新提交，
-   然后再次发送 `completed`；
-5. 两位 Reviewer 通过后，人类在项目简报页批准；control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`。
+1. PM 在任务开始时按 `goal_clarification:clarifier` 和 `goal_clarification:writer`
+   分配或创建 **Clarifier** 和 **Project Document Writer**；
+2. Clarifier 在澄清 Issue 中与创建者对话，只负责提问；澄清完毕后发送总结评论并调用
+   `task_operation(operation = "completed")` 进入项目文档撰写；
+3. Writer 读取澄清 Issue、项目信息和确认过的结论，用 `document` 工具维护项目文档
+   （定位、背景、目标、非目标、约束、风险、术语表），再用 `validate` 校验；
+   写完后调用 `task_operation(operation = "completed")` 进入文风审查；
+4. 项目文档依次经过 **Project Layer Style Reviewer** 和 **Project Layer Content Reviewer**
+   （都是 Agent）；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"`
+   阅读，用 `action = "annotate"` 写锚点标注，打回时任务回到 `writing`；
+5. Writer 读取文档标注，逐条处理后修改草稿，再次发送 `completed`；
+6. 两位 Reviewer 通过后，人类在 `/projects/{id}/documents/project` 批准当前草案。
+   **批准即发布不可变版本**；control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作
+   `accept`。第一个批准版本就是项目基线。
 
 ### 需求分析
 
-项目简报通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
+项目文档通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
 
 1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
-2. Analyst 用 `requirements_get` / `requirements_draft` / `requirements_apply_operations` / `requirements_validate` 维护结构化需求文档（users / functions / stories / operations）；
-   人类和 Reviewer 可以在需求文档页按对象/字段添加注释，Analyst 用 `requirements_annotations_list` 读取，用 `requirements_resolve_annotation` 在修改后标记解决；
-3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用注释写具体意见，打回时任务回到 `work`，Analyst 读取注释修改后重新提交；
-4. 人类在 `/projects/{id}/requirements` 做最终 review：发布草稿完成评审，或填写打回原因退回 Analyst；
+2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（用户 / 功能 / 操作 / 故事 / 交互规格 / 交互流 / 界面 / 图片）；
+   人类和 Reviewer 可以在需求文档页写锚点标注，Analyst 用 `action = "annotations_list"` 读取，用 `action = "resolve_annotation"` 在修改后标记解决；
+3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用标注写具体意见，打回时任务回到 `work`，Analyst 读取标注修改后重新提交；
+4. 人类在 `/projects/{id}/documents/requirements` 做最终 review：**批准当前草案**会生成新的不可变版本，或填写打回原因退回 Analyst。项目文档和需求文档分别审批，每个草案 revision 都需要审批；
 5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `architecture`。
 
 ### 通过 API 验收
@@ -202,14 +206,6 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   -H 'content-type: application/json' -d '{"to":"closed"}'
 ```
 
-需求（早期实现）的 API 仍可用，同样需要认证和项目头：
-
-```bash
-curl -s localhost:8080/api/v1/requirements "${AUTH[@]}" \
-  -H 'content-type: application/json' \
-  -d @fixtures/requirements/partial-refund.json
-```
-
 ## CLI
 
 ```bash
@@ -226,12 +222,6 @@ cargo run -q -p foundry-cli -- issue get <ID>
 cargo run -q -p foundry-cli -- issue create fixtures/issues/partial-refund-bug.json
 cargo run -q -p foundry-cli -- issue comment <ID> "已复现"
 cargo run -q -p foundry-cli -- issue transition <ID> --to in_progress
-
-# 需求（早期实现）
-cargo run -q -p foundry-cli -- list
-cargo run -q -p foundry-cli -- get <ID>
-cargo run -q -p foundry-cli -- create fixtures/requirements/partial-refund.json
-cargo run -q -p foundry-cli -- transition <ID> --to in_review --version 1
 ```
 
 CLI 不再接受 `--actor-kind` / `--actor-id`：身份来自 `FOUNDRY_TOKEN`。
@@ -252,10 +242,18 @@ export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
 - `0005_drop_outbox.sql`：删除已废弃、无消费者的 `outbox` 表。
 - `0006_tasks.sql`：Task、actor 绑定、子 Task 与事件投影。
 - `0007_workflow_definitions.sql`：流程定义/版本/草稿/布局、Task 的 `workflow_version` 和项目 `root_task_id`；外键先以 `not valid` 创建，由启动引导校验。
+- `0028_drop_work_items.sql`：删除已被需求文档取代的早期 `work_items` 表。
+- `0029_requirements_approvals.sql`：需求文档审批记录。
+- `0030_requirements_background.sql`：需求文档项目层字段（后续被 `0035` 移除）。
+- `0034_project_documents.sql`：旧项目文档表；`0036` 之后接口不再读取，历史数据保留。
+- `0035_remove_requirements_project_layer.sql`：从需求文档版本和草案中移除项目层字段；项目级内容由项目文档承载。
+- `0036_anchor_documents.sql`：通用锚点文档、草案、版本、操作日志和审批记录。
+- `0037_anchor_document_annotations.sql`：按锚点键和内容哈希记录的标注。
+- `0038_agent_skills.sql`：智能体定义的技能 ID 列表。
 
 存储布局：
 
-- `work_items.body` / `issues.body`：聚合 JSONB 快照；标量列用于过滤和索引。
+- `issues.body`：聚合 JSONB 快照；标量列用于过滤和索引。
 - `project_members`：项目成员与角色。
 - `issue_comments`：评论投影，便于不反序列化聚合也能查询讨论。
 - `sessions`：只保存 token 的 SHA-256；原始 token 只在登录响应中出现一次。

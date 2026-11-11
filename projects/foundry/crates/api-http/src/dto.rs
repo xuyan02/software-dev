@@ -1,15 +1,12 @@
 use foundry_app::{
     AddProjectMemberByHandle, CommentIssue, CreateAccount, CreateIssue, CreateProject,
-    CreateRequirement, CreateWorkflow, RenameWorkflow, SaveWorkflowDraft, SetProjectMemberRole,
-    TaskFilter, TransitionIssue, TransitionRequirement, UpdateAccount, UpdateProject,
-    UpdateRequirement, WorkflowScope,
+    CreateWorkflow, RenameWorkflow, SaveWorkflowDraft, SetProjectMemberRole, TaskFilter,
+    TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
 };
 use foundry_domain::{
-    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, Budget, IssueKind,
-    IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, Priority, ProjectBriefBody,
-    ProjectRole, ProjectScope, ProjectStatus, RequirementStatus, Risk, RiskClass, RiskLevel,
-    RoleKey, StageKey, Stakeholder, SuccessMetric, TaskDispatchState, TaskState, WorkflowBody,
-    WorkflowId, WorkflowVersionRef,
+    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, IssueKind, IssueSeverity,
+    IssueSource, IssueSourceKind, IssueStatus, ProjectRole, ProjectStatus, RoleKey, StageKey,
+    TaskDispatchState, TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -349,223 +346,6 @@ impl MemberRoleForm {
             project_id,
             account_id,
             role: parse_project_role(&self.role),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Requirements
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct CreateRequirementRequest {
-    pub title: String,
-    pub problem: String,
-    #[serde(default)]
-    pub users: Vec<String>,
-    #[serde(default)]
-    pub acceptance: Vec<AcceptanceScenario>,
-    #[serde(default)]
-    pub non_goals: Vec<String>,
-    #[serde(default)]
-    pub constraints: Vec<String>,
-    #[serde(default)]
-    pub priority: Priority,
-    #[serde(default)]
-    pub risk: RiskClass,
-}
-
-impl CreateRequirementRequest {
-    pub fn into_command(self, project_id: uuid::Uuid) -> CreateRequirement {
-        CreateRequirement {
-            project_id,
-            title: self.title,
-            problem: self.problem,
-            users: self.users,
-            acceptance: self.acceptance,
-            non_goals: self.non_goals,
-            constraints: self.constraints,
-            priority: self.priority,
-            risk: self.risk,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TransitionRequirementRequest {
-    pub to: RequirementStatus,
-    #[serde(default)]
-    pub expected_version: Option<u32>,
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateRequirementRequest {
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub problem: Option<String>,
-    #[serde(default)]
-    pub users: Option<Vec<String>>,
-    #[serde(default)]
-    pub acceptance: Option<Vec<AcceptanceScenario>>,
-    #[serde(default)]
-    pub non_goals: Option<Vec<String>>,
-    #[serde(default)]
-    pub constraints: Option<Vec<String>>,
-    #[serde(default)]
-    pub priority: Option<Priority>,
-    #[serde(default)]
-    pub risk: Option<RiskClass>,
-    #[serde(default)]
-    pub expected_version: Option<u32>,
-}
-
-impl UpdateRequirementRequest {
-    pub fn into_command(
-        self,
-        project_id: uuid::Uuid,
-        id: uuid::Uuid,
-        actor: Actor,
-    ) -> UpdateRequirement {
-        UpdateRequirement {
-            project_id,
-            id,
-            actor,
-            title: self.title,
-            problem: self.problem,
-            users: self.users,
-            acceptance: self.acceptance,
-            non_goals: self.non_goals,
-            constraints: self.constraints,
-            priority: self.priority,
-            risk: self.risk,
-            expected_version: self.expected_version,
-        }
-    }
-}
-
-pub fn transition_command(
-    project_id: uuid::Uuid,
-    id: uuid::Uuid,
-    actor: Actor,
-    request: TransitionRequirementRequest,
-) -> TransitionRequirement {
-    TransitionRequirement {
-        project_id,
-        id,
-        to: request.to,
-        actor,
-        expected_version: request.expected_version,
-        reason: request.reason,
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ListQuery {
-    #[serde(default)]
-    pub status: Option<RequirementStatus>,
-    #[serde(default)]
-    pub owner: Option<String>,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    pub project: Option<String>,
-}
-
-/// HTML form submission for creating a requirement from the web console.
-///
-/// Everything is a string so a validation failure can re-render the form with
-/// the user's input intact instead of returning a bare 400.
-#[derive(Debug, Clone, Deserialize)]
-pub struct NewRequirementForm {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub problem: String,
-    #[serde(default)]
-    pub users: String,
-    #[serde(default)]
-    pub scenario_title: String,
-    #[serde(default)]
-    pub given: String,
-    #[serde(default)]
-    pub when: String,
-    #[serde(default)]
-    pub then: String,
-    #[serde(default)]
-    pub non_goals: String,
-    #[serde(default)]
-    pub constraints: String,
-    #[serde(default)]
-    pub priority: String,
-    #[serde(default)]
-    pub risk: String,
-}
-
-impl NewRequirementForm {
-    pub fn values(&self) -> foundry_web::RequirementFormValues {
-        foundry_web::RequirementFormValues {
-            title: self.title.clone(),
-            problem: self.problem.clone(),
-            users: self.users.clone(),
-            scenario_title: self.scenario_title.clone(),
-            given: self.given.clone(),
-            when: self.when.clone(),
-            then: self.then.clone(),
-            non_goals: self.non_goals.clone(),
-            constraints: self.constraints.clone(),
-            priority: if self.priority.is_empty() {
-                "p3".to_string()
-            } else {
-                self.priority.clone()
-            },
-            risk: if self.risk.is_empty() {
-                "medium".to_string()
-            } else {
-                self.risk.clone()
-            },
-        }
-    }
-
-    pub fn into_command(self, project_id: uuid::Uuid) -> CreateRequirement {
-        let acceptance = if self.scenario_title.trim().is_empty()
-            && self.given.trim().is_empty()
-            && self.when.trim().is_empty()
-            && self.then.trim().is_empty()
-        {
-            Vec::new()
-        } else {
-            vec![AcceptanceScenario {
-                id: "S-1".to_string(),
-                title: self.scenario_title.trim().to_string(),
-                given: lines(&self.given),
-                when: lines(&self.when),
-                then: lines(&self.then),
-            }]
-        };
-
-        CreateRequirement {
-            project_id,
-            title: self.title.trim().to_string(),
-            problem: self.problem.trim().to_string(),
-            users: lines(&self.users),
-            acceptance,
-            non_goals: lines(&self.non_goals),
-            constraints: lines(&self.constraints),
-            priority: match self.priority.as_str() {
-                "p0" => Priority::P0,
-                "p1" => Priority::P1,
-                "p2" => Priority::P2,
-                _ => Priority::P3,
-            },
-            risk: match self.risk.as_str() {
-                "low" => RiskClass::Low,
-                "high" => RiskClass::High,
-                "critical" => RiskClass::Critical,
-                _ => RiskClass::Medium,
-            },
         }
     }
 }
@@ -1118,6 +898,71 @@ impl SaveDraftRequest {
 }
 
 // ---------------------------------------------------------------------------
+// Project document
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyAnchorOperationsRequest {
+    #[serde(default)]
+    pub operations: Vec<foundry_domain::AnchorOperation>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DecideAnchorDocumentRequest {
+    pub decision: ApprovalDecision,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct AnchorQuery {
+    #[serde(default)]
+    pub anchor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct AnchorAnnotationQuery {
+    #[serde(default)]
+    pub include_resolved: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddAnchorAnnotationRequest {
+    pub anchor: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResolveAnchorAnnotationRequest {
+    pub resolution: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApproveDocumentForm {
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RejectDocumentForm {
+    #[serde(default)]
+    pub revision: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnchorAnnotationForm {
+    pub anchor: String,
+    #[serde(default)]
+    pub quote: Option<String>,
+    pub body: String,
+}
+
+// ---------------------------------------------------------------------------
 // Requirements document
 // ---------------------------------------------------------------------------
 
@@ -1125,148 +970,6 @@ impl SaveDraftRequest {
 pub struct ApplyRequirementsOperationsRequest {
     #[serde(default)]
     pub operations: Vec<foundry_domain::RequirementsOperation>,
-}
-
-// ---------------------------------------------------------------------------
-// Project brief
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct ApplyProjectBriefDraftOperationRequest {
-    pub op_id: uuid::Uuid,
-    pub base_revision: u64,
-    pub operation: foundry_domain::ProjectBriefDraftOperation,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ProjectBriefForm {
-    #[serde(default)]
-    pub draft_id: Option<uuid::Uuid>,
-    #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
-    pub action: String,
-    #[serde(default)]
-    pub problem: String,
-    #[serde(default)]
-    pub goals: String,
-    #[serde(default)]
-    pub success_metrics: String,
-    #[serde(default)]
-    pub in_scope: String,
-    #[serde(default)]
-    pub out_of_scope: String,
-    #[serde(default)]
-    pub constraints: String,
-    #[serde(default)]
-    pub risks: String,
-    #[serde(default)]
-    pub stakeholders: String,
-    #[serde(default)]
-    pub budget_amount: String,
-    #[serde(default)]
-    pub budget_currency: String,
-    #[serde(default)]
-    pub budget_note: String,
-    #[serde(default)]
-    pub assumptions: String,
-    #[serde(default)]
-    pub open_questions: String,
-}
-
-impl ProjectBriefForm {
-    /// Parse the text form into the structured brief body.
-    ///
-    /// Lists use one entry per line; structured rows use `|` between fields.
-    pub fn into_parts(
-        self,
-    ) -> Result<(Option<uuid::Uuid>, u64, String, ProjectBriefBody), String> {
-        let metrics = parse_success_metrics(&self.success_metrics)?;
-        let risks = parse_risks(&self.risks)?;
-        let stakeholders = parse_stakeholders(&self.stakeholders)?;
-        let budget = if self.budget_amount.trim().is_empty() {
-            None
-        } else {
-            let amount = self
-                .budget_amount
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| "预算金额必须是数字".to_string())?;
-            Some(Budget {
-                amount,
-                currency: if self.budget_currency.trim().is_empty() {
-                    "CNY".to_string()
-                } else {
-                    self.budget_currency.trim().to_string()
-                },
-                note: optional_text(&self.budget_note),
-            })
-        };
-        Ok((
-            self.draft_id,
-            self.revision,
-            self.action,
-            ProjectBriefBody {
-                schema_version: foundry_domain::PROJECT_BRIEF_SCHEMA_VERSION,
-                problem: self.problem.trim().to_string(),
-                goals: lines(&self.goals),
-                success_metrics: metrics,
-                scope: ProjectScope {
-                    in_scope: lines(&self.in_scope),
-                    out_of_scope: lines(&self.out_of_scope),
-                },
-                constraints: lines(&self.constraints),
-                risks,
-                stakeholders,
-                budget,
-                assumptions: lines(&self.assumptions),
-                open_questions: lines(&self.open_questions),
-            },
-        ))
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ProjectBriefApproveForm {
-    #[serde(default)]
-    pub version: u32,
-}
-
-#[derive(Debug, Default, Deserialize)]
-pub struct ProjectBriefDraftQuery {
-    #[serde(default)]
-    pub draft: Option<uuid::Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnnotateProjectBriefRequest {
-    pub target_type: foundry_domain::ProjectBriefAnnotationTarget,
-    #[serde(default)]
-    pub target_id: Option<String>,
-    #[serde(default)]
-    pub field: Option<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnnotateProjectBriefForm {
-    pub target_type: String,
-    #[serde(default)]
-    pub target_id: Option<String>,
-    #[serde(default)]
-    pub field: Option<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ResolveProjectBriefAnnotationRequest {
-    pub resolution: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ProjectBriefAnnotationQuery {
-    #[serde(default)]
-    pub include_resolved: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1307,109 +1010,25 @@ pub struct RequirementsAnnotationQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct DecideRequirementsRequest {
+    pub decision: ApprovalDecision,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApproveRequirementsForm {
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct RejectRequirementsForm {
+    #[serde(default)]
+    pub revision: u64,
     pub reason: String,
-}
-
-fn parse_success_metrics(value: &str) -> Result<Vec<SuccessMetric>, String> {
-    let mut metrics = Vec::new();
-    for (index, line) in lines(value).iter().enumerate() {
-        let parts = split_row(line);
-        if parts.len() < 5 {
-            return Err(format!(
-                "成功指标第 {} 行需要：名称 | 目标值 | 单位 | 测量方式 | 窗口 | 基线（可选）",
-                index + 1
-            ));
-        }
-        let target = parts[1]
-            .parse::<f64>()
-            .map_err(|_| format!("成功指标第 {} 行的目标值不是数字", index + 1))?;
-        let baseline = parts
-            .get(5)
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<f64>()
-                    .map_err(|_| format!("成功指标第 {} 行的基线不是数字", index + 1))
-            })
-            .transpose()?;
-        metrics.push(SuccessMetric {
-            id: format!("m{}", index + 1),
-            name: parts[0].to_string(),
-            baseline,
-            target,
-            unit: parts[2].to_string(),
-            measurement: parts[3].to_string(),
-            window: parts[4].to_string(),
-        });
-    }
-    Ok(metrics)
-}
-
-fn parse_risks(value: &str) -> Result<Vec<Risk>, String> {
-    let mut risks = Vec::new();
-    for (index, line) in lines(value).iter().enumerate() {
-        let parts = split_row(line);
-        if parts.len() < 5 {
-            return Err(format!(
-                "风险第 {} 行需要：描述 | 概率(low/medium/high) | 影响(low/medium/high) | 缓解 | 负责人",
-                index + 1
-            ));
-        }
-        risks.push(Risk {
-            id: format!("r{}", index + 1),
-            description: parts[0].to_string(),
-            probability: parse_risk_level(&parts[1]),
-            impact: parse_risk_level(&parts[2]),
-            mitigation: parts[3].to_string(),
-            owner: parts[4].to_string(),
-        });
-    }
-    Ok(risks)
-}
-
-fn parse_stakeholders(value: &str) -> Result<Vec<Stakeholder>, String> {
-    let mut stakeholders = Vec::new();
-    for (index, line) in lines(value).iter().enumerate() {
-        let parts = split_row(line);
-        if parts.len() < 2 {
-            return Err(format!(
-                "干系人第 {} 行需要：角色 | 账号 | 决策权（逗号分隔，可选）",
-                index + 1
-            ));
-        }
-        stakeholders.push(Stakeholder {
-            id: format!("s{}", index + 1),
-            role: parts[0].to_string(),
-            account: parts[1].to_string(),
-            decision_rights: parts
-                .get(2)
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        });
-    }
-    Ok(stakeholders)
-}
-
-fn split_row(line: &str) -> Vec<String> {
-    line.split('|')
-        .map(|part| part.trim().to_string())
-        .collect()
-}
-
-fn parse_risk_level(value: &str) -> RiskLevel {
-    match value.to_ascii_lowercase().as_str() {
-        "low" => RiskLevel::Low,
-        "high" => RiskLevel::High,
-        _ => RiskLevel::Medium,
-    }
 }
 
 // ---------------------------------------------------------------------------

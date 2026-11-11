@@ -2,11 +2,13 @@
 
 use async_trait::async_trait;
 use foundry_app::{
-    RepoError, RequirementsApplyOutcome, RequirementsDocumentRepository, RequirementsPublishOutcome,
+    RepoError, RequirementsApplyOutcome, RequirementsApprovalOutcome,
+    RequirementsDocumentRepository,
 };
 use foundry_domain::{
-    AnnotationStatus, RequirementsAnnotation, RequirementsDocumentBody, RequirementsDocumentDAO,
-    RequirementsDraftDAO, RequirementsOperation, RequirementsVersionDAO, RequirementsVersionRow,
+    AnnotationStatus, ApprovalDecision, RequirementsAnnotation, RequirementsApprovalDAO,
+    RequirementsDocumentBody, RequirementsDocumentDAO, RequirementsDraftDAO, RequirementsOperation,
+    RequirementsVersionDAO, RequirementsVersionRow,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -20,6 +22,7 @@ pub(crate) struct MemoryRequirementDocs {
     documents: HashMap<Uuid, RequirementsDocumentDAO>,
     drafts: HashMap<Uuid, RequirementsDraftDAO>,
     versions: HashMap<(Uuid, u32), RequirementsVersionDAO>,
+    approvals: Vec<RequirementsApprovalDAO>,
     applied_ops: HashSet<(Uuid, Uuid)>,
     annotations: Vec<RequirementsAnnotation>,
 }
@@ -29,6 +32,8 @@ impl MemoryRequirementDocs {
         self.documents.remove(&project_id);
         self.drafts.remove(&project_id);
         self.versions.retain(|(id, _), _| *id != project_id);
+        self.approvals
+            .retain(|approval| approval.project_id != project_id);
         self.applied_ops.retain(|(id, _)| *id != project_id);
         self.annotations
             .retain(|annotation| annotation.project_id != project_id);
@@ -150,22 +155,35 @@ impl RequirementsDocumentRepository for InMemoryStore {
         })
     }
 
-    async fn publish(
+    async fn approve(
         &self,
         project_id: Uuid,
         expected_revision: u64,
         actor_id: Uuid,
+        comment: Option<&str>,
         now: OffsetDateTime,
-    ) -> Result<RequirementsPublishOutcome, RepoError> {
+    ) -> Result<RequirementsApprovalOutcome, RepoError> {
         let mut docs = self.requirements_docs.write().expect("lock poisoned");
         let Some(document) = docs.documents.get(&project_id).cloned() else {
-            return Ok(RequirementsPublishOutcome::NoDraft);
+            return Ok(RequirementsApprovalOutcome::NoDraft);
         };
         let Some(draft) = docs.drafts.get(&project_id).cloned() else {
-            return Ok(RequirementsPublishOutcome::NoDraft);
+            return Ok(RequirementsApprovalOutcome::NoDraft);
         };
+        if let Some(existing) = docs
+            .versions
+            .values()
+            .find(|version| {
+                version.project_id == project_id && version.source_revision == expected_revision
+            })
+            .cloned()
+        {
+            return Ok(RequirementsApprovalOutcome::AlreadyPublished {
+                version: existing.version,
+            });
+        }
         if draft.revision != expected_revision {
-            return Ok(RequirementsPublishOutcome::Conflict {
+            return Ok(RequirementsApprovalOutcome::Conflict {
                 current_revision: draft.revision,
                 current_updated_at: draft.updated_at,
             });
@@ -184,9 +202,21 @@ impl RequirementsDocumentRepository for InMemoryStore {
         }
         let bytes = serde_json::to_vec(&draft.body).map_err(memory_backend)?;
         if bytes.len() > foundry_domain::MAX_REQUIREMENTS_BYTES {
-            return Ok(RequirementsPublishOutcome::TooLarge);
+            return Ok(RequirementsApprovalOutcome::TooLarge);
         }
         let version = document.current_version + 1;
+        let approval_id = Uuid::now_v7();
+        let hash = content_hash(&bytes);
+        docs.approvals.push(RequirementsApprovalDAO {
+            id: approval_id,
+            project_id,
+            revision: draft.revision,
+            decision: ApprovalDecision::Approved,
+            actor_id,
+            comment: comment.map(str::to_string),
+            content_hash: hash.clone(),
+            created_at: now,
+        });
         docs.versions.insert(
             (project_id, version),
             RequirementsVersionDAO {
@@ -194,9 +224,11 @@ impl RequirementsDocumentRepository for InMemoryStore {
                 project_id,
                 version,
                 body: draft.body.clone(),
-                content_hash: content_hash(&bytes),
+                content_hash: hash,
+                source_revision: draft.revision,
                 created_by: actor_id,
                 approved_by: Some(actor_id),
+                approval_comment: comment.map(str::to_string),
                 created_at: now,
                 published_at: Some(now),
             },
@@ -210,17 +242,85 @@ impl RequirementsDocumentRepository for InMemoryStore {
                 ..document
             },
         );
-        let revision = draft.revision + 1;
         docs.drafts.insert(
             project_id,
             RequirementsDraftDAO {
-                revision,
                 base_version: version,
                 updated_at: now,
-                ..draft
+                ..draft.clone()
             },
         );
-        Ok(RequirementsPublishOutcome::Published { version, revision })
+        Ok(RequirementsApprovalOutcome::Approved {
+            version,
+            revision: draft.revision,
+            approval_id,
+        })
+    }
+
+    async fn reject(
+        &self,
+        project_id: Uuid,
+        expected_revision: u64,
+        actor_id: Uuid,
+        comment: &str,
+        now: OffsetDateTime,
+    ) -> Result<RequirementsApprovalOutcome, RepoError> {
+        let mut docs = self.requirements_docs.write().expect("lock poisoned");
+        let Some(draft) = docs.drafts.get(&project_id).cloned() else {
+            return Ok(RequirementsApprovalOutcome::NoDraft);
+        };
+        if let Some(existing) = docs
+            .versions
+            .values()
+            .find(|version| {
+                version.project_id == project_id && version.source_revision == expected_revision
+            })
+            .cloned()
+        {
+            return Ok(RequirementsApprovalOutcome::AlreadyPublished {
+                version: existing.version,
+            });
+        }
+        if draft.revision != expected_revision {
+            return Ok(RequirementsApprovalOutcome::Conflict {
+                current_revision: draft.revision,
+                current_updated_at: draft.updated_at,
+            });
+        }
+        let bytes = serde_json::to_vec(&draft.body).map_err(memory_backend)?;
+        if let Some(existing) = docs.approvals.iter().find(|approval| {
+            approval.project_id == project_id
+                && approval.revision == expected_revision
+                && approval.decision == ApprovalDecision::Rejected
+        }) {
+            return Ok(RequirementsApprovalOutcome::Rejected {
+                approval_id: existing.id,
+            });
+        }
+        let approval_id = Uuid::now_v7();
+        docs.approvals.push(RequirementsApprovalDAO {
+            id: approval_id,
+            project_id,
+            revision: draft.revision,
+            decision: ApprovalDecision::Rejected,
+            actor_id,
+            comment: Some(comment.to_string()),
+            content_hash: content_hash(&bytes),
+            created_at: now,
+        });
+        Ok(RequirementsApprovalOutcome::Rejected { approval_id })
+    }
+
+    async fn approvals(&self, project_id: Uuid) -> Result<Vec<RequirementsApprovalDAO>, RepoError> {
+        let docs = self.requirements_docs.read().expect("lock poisoned");
+        let mut approvals: Vec<RequirementsApprovalDAO> = docs
+            .approvals
+            .iter()
+            .filter(|approval| approval.project_id == project_id)
+            .cloned()
+            .collect();
+        approvals.sort_by_key(|approval| approval.created_at);
+        Ok(approvals)
     }
 
     async fn versions(&self, project_id: Uuid) -> Result<Vec<RequirementsVersionRow>, RepoError> {
@@ -232,6 +332,8 @@ impl RequirementsDocumentRepository for InMemoryStore {
             .map(|version| RequirementsVersionRow {
                 version: version.version,
                 created_by: version.created_by,
+                approved_by: version.approved_by,
+                source_revision: Some(version.source_revision),
                 published_at: version.published_at,
             })
             .collect();
@@ -338,7 +440,10 @@ impl RequirementsDocumentRepository for InMemoryStore {
             .cloned())
     }
 
-    async fn insert_annotation(&self, annotation: &RequirementsAnnotation) -> Result<(), RepoError> {
+    async fn insert_annotation(
+        &self,
+        annotation: &RequirementsAnnotation,
+    ) -> Result<(), RepoError> {
         self.requirements_docs
             .write()
             .expect("lock poisoned")

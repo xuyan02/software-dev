@@ -18,7 +18,7 @@ Web 控制台使用 `HttpOnly` 的 `foundry_session` Cookie。会话 token 只�
 2. `foundry_project` Cookie；
 3. 账户可见的第一个活跃项目。
 
-Issue、Requirement 和 MCP 请求如果没有任何可见项目，返回 `400 project_required`。项目边界优先于一切：跨项目读取按 `404 not_found` 处理，不泄露对象是否存在。
+Issue、需求文档和 MCP 请求如果没有任何可见项目，返回 `400 project_required`。项目边界优先于一切：跨项目读取按 `404 not_found` 处理，不泄露对象是否存在。
 
 > 仍然只支持本机/受信网络：没有 TLS、CSRF token、速率限制。不要把服务暴露到不可信网络。
 
@@ -102,16 +102,6 @@ Issue、Requirement 和 MCP 请求如果没有任何可见项目，返回 `400 p
 | `GET` | `/api/v1/projects/{id}` | 项目成员或全局 admin，返回项目详情和成员 |
 | `PATCH` | `/api/v1/projects/{id}` | Owner 或全局 admin |
 | `DELETE` | `/api/v1/projects/{id}` | Owner 或全局 admin；永久删除项目和项目范围内全部数据 |
-| `GET` | `/api/v1/projects/{id}/brief` | 读取当前简报版本 |
-| `GET` | `/api/v1/projects/{id}/brief/versions` | 列出所有简报版本 |
-| `POST` | `/api/v1/projects/{id}/brief/drafts` | Member 或以上；创建自己的新草稿 |
-| `GET` | `/api/v1/projects/{id}/brief/drafts` | 列出自己创建的草稿 |
-| `GET` | `/api/v1/projects/{id}/brief/drafts/{draft_id}` | 读取自己的草稿 |
-| `POST` | `/api/v1/projects/{id}/brief/drafts/{draft_id}/operations` | Member 或以上；提交一个结构化编辑 |
-| `POST` | `/api/v1/projects/{id}/brief/drafts/{draft_id}/submit` | Member 或以上；生成新版本并删除草稿 |
-| `GET` | `/api/v1/projects/{id}/brief/annotations` | 项目成员或全局 admin；读取简报批注 |
-| `POST` | `/api/v1/projects/{id}/brief/annotations` | Member 或以上；添加简报批注 |
-| `POST` | `/api/v1/projects/{id}/brief/annotations/{annotation_id}/resolve` | Member 或以上；解决简报批注 |
 | `POST` | `/api/v1/projects/{id}/members` | Owner 或全局 admin |
 | `PATCH` | `/api/v1/projects/{id}/members/{account_id}` | Owner 或全局 admin |
 | `DELETE` | `/api/v1/projects/{id}/members/{account_id}` | Owner 或全局 admin |
@@ -222,71 +212,6 @@ GET /api/v1/issues/{id}
 | `closed` | 只能从 `resolved` 进入，且已有 resolution |
 
 项目角色之外，DemoPolicy 仍然限制智能体：不能关闭、拒绝、判重或重开议题，也不能批准需求。最终处置由人类完成。
-
-## Requirement
-
-> Requirement 当前仍是早期实现，后续会按“承诺空间”重新设计。原始反馈应先进入 Issue。
-
-创建需要 `member` 及以上；编辑和状态转换需要 `maintainer` 及以上。
-
-### 创建需求
-
-`POST /api/v1/requirements` → `201 Created`
-
-```json
-{
-  "title": "支持部分退款",
-  "problem": "用户只能全额退款，客服需要手工处理。",
-  "users": ["买家", "客服"],
-  "acceptance": [
-    {
-      "id": "S-1",
-      "title": "部分退款成功",
-      "given": ["订单已支付 100 元"],
-      "when": ["用户申请退款 30 元"],
-      "then": ["退款成功且订单余额为 70 元"]
-    }
-  ],
-  "non_goals": ["不支持跨币种退款"],
-  "constraints": ["退款接口 P99 < 800ms"],
-  "priority": "p1",
-  "risk": "medium"
-}
-```
-
-必填：`title`、`problem`、`acceptance`（至少一条，且每条有 `id`、`title`、`then`）。
-
-`priority`：`p0` / `p1` / `p2` / `p3`（默认 `p3`）。
-`risk`：`low` / `medium` / `high` / `critical`（默认 `medium`）。
-
-### 查询
-
-```http
-GET /api/v1/requirements?status=in_review&owner=<account-id>&text=退款
-GET /api/v1/requirements/{id}
-```
-
-`status` 取值：`draft`、`in_review`、`approved`、`in_design`、`in_development`、`in_verification`、`done`、`rejected`、`deferred`、`superseded`。
-
-### 编辑
-
-`PATCH /api/v1/requirements/{id}`
-
-只允许编辑 `draft` / `in_review`。已批准的需求发生范围变化时，必须走新的评审或取代流程。支持字段：`title`、`problem`、`users`、`acceptance`、`non_goals`、`constraints`、`priority`、`risk`，以及可选的 `expected_version`。
-
-### 状态转换
-
-`POST /api/v1/requirements/{id}/transitions`
-
-```json
-{
-  "to": "in_review",
-  "expected_version": 1,
-  "reason": "需求已补充验收场景"
-}
-```
-
-返回转换后的完整需求。
 
 ## Workflow 定义
 
@@ -419,10 +344,6 @@ MCP 没有 workflow 写工具；定义只能由人类通过 REST 或编辑器修
 | `list_issues` | `{ "status"?, "kind"?, "source"?, "assignee"?, "text"? }` |
 | `comment_issue` | `{ "id", "body", "internal"?, "expected_version"? }` |
 | `transition_issue` | `{ "id", "to", "resolution"?, "duplicate_of"?, "expected_version"? }` |
-| `create_requirement` | 创建需求，参数同 REST（无 `actor`） |
-| `get_requirement` | `{ "id": "..." }` |
-| `list_requirements` | `{ "status"?, "owner"?, "text"? }` |
-| `request_transition` | `{ "id", "to", "expected_version"?, "reason"? }` |
 
 工具只操作当前项目。账号的项目角色不足时，`tools/call` 返回 `isError: true`，错误文本在 `content[0].text`，不产生 JSON-RPC 协议错误。
 
@@ -451,21 +372,18 @@ curl -s http://127.0.0.1:8080/mcp \
 
 - `GET /login`、`POST /login`：登录；成功后写入会话 Cookie 并跳转到 `next`（仅允许站内路径）。
 - `POST /logout`：撤销会话并清除 Cookie。
-- `GET /`：工作台，汇总当前项目的议题和需求，并提供项目切换与侧边导航。
+- `GET /`：工作台，汇总当前项目的议题和任务，并提供项目切换与侧边导航。
 - `GET /issues`：议题收件箱，带「新建议题」入口。
 - `GET /issues/new`：新建议题表单。
 - `POST /issues`：表单提交（`application/x-www-form-urlencoded`）。成功返回 `303 See Other` 并跳转到新议题详情；校验失败返回 `422` 并回填表单。
 - `GET /issues/{id}`：议题详情、讨论和状态转换表单。
 - `POST /issues/{id}/comments`：添加评论。
 - `POST /issues/{id}/transitions`：执行状态转换。
-- `GET /requirements`：需求列表（早期实现）。
-- `GET /requirements/new`、`POST /requirements`、`GET /requirements/{id}`：需求创建和查看。
 - `GET /projects`、`POST /projects`：项目列表和创建。
 - `POST /projects/select`：切换当前项目 Cookie。
 - `GET /projects/{id}`：项目设置与成员管理。
 - `POST /projects/{id}/edit`、`POST /projects/{id}/members`、成员角色/移除表单。
 - `POST /projects/{id}/delete`：删除项目及其关联数据；需要 Owner 或全局管理员。
-- `GET /projects/{id}/brief`、`POST /projects/{id}/brief/drafts`、`POST /projects/{id}/brief`：项目简报、创建草稿、保存/提交草稿；表单内部拆成结构化 operations。
 - `GET /accounts`、`GET /accounts/{id}`、账户创建和修改（Admin）。
 - `GET /workflows`：流程列表；人类账户可新建或从平台版本复制。
 - `POST /workflows`、`POST /workflows/{id}/rename`、`POST /workflows/{id}/publish`：表单创建、重命名和发布。
@@ -473,120 +391,73 @@ curl -s http://127.0.0.1:8080/mcp \
 
 控制台是服务端渲染，不需要 JavaScript 构建。页面按钮按项目角色隐藏或禁用；服务端仍会独立校验，不能靠隐藏按钮绕过权限。
 
-## 需求文档（RFC 0020 第一切片）
+## 文档（锚点模型）
 
-每个项目一份结构化需求文档。人类文档是投影；Agent 通过结构化操作修改。
+通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前只注册了 `project` 类型。
 
 ```text
-GET  /api/v1/projects/{project}/requirements-document
-GET  /api/v1/projects/{project}/requirements-document/draft
-POST /api/v1/projects/{project}/requirements-document/draft/operations
-POST /api/v1/projects/{project}/requirements-document/draft/validate
-POST /api/v1/projects/{project}/requirements-document/draft/publish
-GET  /api/v1/projects/{project}/requirements-document/versions
-GET  /api/v1/projects/{project}/requirements-document/versions/{version}
+GET  /api/v1/projects/{project}/documents/{kind}?anchor={key|id}
+GET  /api/v1/projects/{project}/documents/{kind}/draft      # open
+POST /api/v1/projects/{project}/documents/{kind}/draft      # create
+GET  /api/v1/projects/{project}/documents/{kind}/content?anchor={key|id}
+POST /api/v1/projects/{project}/documents/{kind}/draft/operations
+POST /api/v1/projects/{project}/documents/{kind}/draft/validate
+GET  /api/v1/projects/{project}/documents/{kind}/draft/approvals
+POST /api/v1/projects/{project}/documents/{kind}/draft/approvals
+GET  /api/v1/projects/{project}/documents/{kind}/annotations
+POST /api/v1/projects/{project}/documents/{kind}/annotations
+POST /api/v1/projects/{project}/documents/{kind}/annotations/{id}/resolve
+GET  /api/v1/projects/{project}/documents/{kind}/versions
+GET  /api/v1/projects/{project}/documents/{kind}/versions/{version}
 ```
 
-操作和发布使用 `If-Match: "<revision>"`；冲突返回 `409 draft_conflict`。操作请求体：
+旧的 `/api/v1/projects/{project}/project-document` 接口已移除；控制台的 `/projects/{id}/project-document` 会重定向到 `/projects/{id}/documents/project`。
+
+`anchor` 省略时返回根锚点。`GET /documents/{kind}` 返回 `text/markdown`：标题、元数据和 Markdown 目录；目录中每个条目带稳定位置键（`k:...`）。`content` 返回该锚点子树的 Markdown。单次章节由系统按描述文件预生成，`add` 只用于新增多项章节实例和列表项；已有锚点使用 `update_text`、`delete`、`move`，其中 `parent`/`anchor` 使用目录中的 `key`。单次章节是结构骨架，不能删除；`delete` 只用于多项章节实例和列表项。一个多项章节必须是父节点的唯一子章节。`add` 的子类型由父锚点推断。操作使用 `If-Match: "<revision>"`。标注绑定锚点键和写入时的内容哈希；内容变化后状态为 `stale`，锚点消失后为 `orphaned`。
+
+MCP 工具：`document`。通过 `action` 选择操作：`toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`。
+
+Agent 工具：`document`，使用与 MCP 完全相同的 `action` 和参数。
+
+控制台页面：`/projects/{id}/documents/{kind}`。
+
+设计见 [锚点文档模型](../design/anchor-document-model.md)。
+
+## 需求文档
+
+每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：用户、功能、操作、故事、交互规格、交互流、界面、图片。项目层内容属于项目文档，不在这里重复。
+
+需求文档使用与项目文档完全相同的锚点文档接口：
+
+```text
+GET  /api/v1/projects/{project}/documents/requirements
+GET  /api/v1/projects/{project}/documents/requirements/content
+GET  /api/v1/projects/{project}/documents/requirements/draft
+POST /api/v1/projects/{project}/documents/requirements/draft/operations
+POST /api/v1/projects/{project}/documents/requirements/draft/validate
+POST /api/v1/projects/{project}/documents/requirements/draft/approvals
+GET  /api/v1/projects/{project}/documents/requirements/draft/approvals
+GET  /api/v1/projects/{project}/documents/requirements/versions
+GET  /api/v1/projects/{project}/documents/requirements/versions/{version}
+```
+
+草案操作、审批、标注和版本规则与项目文档相同。示例：向「用户」章节添加一个列表项：
 
 ```json
 {
   "operations": [
     {
       "op_id": "uuid",
-      "type": "user_add",
-      "user": { "id": "persona-1", "name": "张先生", "goals": ["快速找到商品"] }
-    },
-    {
-      "op_id": "uuid",
-      "type": "function_add",
-      "function": { "id": "func-shopping", "name": "购物" }
-    },
-    {
-      "op_id": "uuid",
-      "type": "operation_add",
-      "function_id": "func-shopping",
-      "operation": { "id": "op-search", "name": "搜索", "actor_user_ids": ["persona-1"] }
-    },
-    {
-      "op_id": "uuid",
-      "type": "story_add",
-      "function_id": "func-shopping",
-      "story": {
-        "id": "story-search",
-        "title": "搜索商品",
-        "user_ids": ["persona-1"],
-        "scenario": "客户想买某件商品",
-        "goal": "找到商品",
-        "operation_ids": ["op-search"]
-      }
+      "type": "add",
+      "parent": "users",
+      "occurrence_key": "persona-1",
+      "text": "张先生：需要随时查看订单状态"
     }
   ]
 }
 ```
 
-同一 `op_id` 重放是幂等的。发布前校验结构、引用、覆盖和外部依赖；错误阻止发布。
-
-MCP 工具：`get_requirements_document`、`get_requirements_draft`、`apply_requirements_operations`、`validate_requirements_document`、`publish_requirements_document`。
-
-## 项目简报（ProjectBrief）
-
-项目澄清的产物，按版本保存。编辑在服务端草稿上进行；每次创建草稿都会生成一个新的 `draft_id`，草稿只对创建者可见。提交草稿会生成新版本并删除草稿，但**不会推进 Task**。
-
-```text
-GET  /api/v1/projects/{project}/brief
-GET  /api/v1/projects/{project}/brief/versions
-GET  /api/v1/projects/{project}/brief/versions/{version}
-
-POST /api/v1/projects/{project}/brief/drafts
-GET  /api/v1/projects/{project}/brief/drafts
-GET  /api/v1/projects/{project}/brief/drafts/{draft_id}
-POST /api/v1/projects/{project}/brief/drafts/{draft_id}/operations
-POST /api/v1/projects/{project}/brief/drafts/{draft_id}/submit
-
-POST /api/v1/projects/{project}/brief/approve
-GET  /api/v1/projects/{project}/brief/annotations?include_resolved=false
-POST /api/v1/projects/{project}/brief/annotations
-POST /api/v1/projects/{project}/brief/annotations/{annotation_id}/resolve
-```
-
-草稿编辑每次只接受一个 operation：
-
-```text
-set_problem            { value }
-set_goals              { values: string[] }
-set_success_metrics    { values: SuccessMetric[] }
-set_scope              { in_scope: string[], out_of_scope: string[] }
-set_constraints        { values: string[] }
-set_risks              { values: Risk[] }
-set_stakeholders       { values: Stakeholder[] }
-set_budget             { value: Budget | null }
-set_assumptions        { values: string[] }
-set_open_questions     { values: string[] }
-```
-
-请求体：
-
-```json
-{
-  "op_id": "uuid",
-  "base_revision": 3,
-  "operation": { "type": "set_goals", "values": ["支持部分退款"] }
-}
-```
-
-`op_id` 幂等；`base_revision` 必须等于草稿当前 revision。提交草稿和批准使用 `If-Match`：
-
-- `POST .../drafts/{draft_id}/submit`，`If-Match: "<draft revision>"`
-- `POST .../approve`，`If-Match: "<version>"`
-
-提交后生成新版本，旧当前版本变为 `superseded`，草稿被删除。**提交成功后必须发送 `task_operation(operation = "completed")`，否则 goal_clarification 任务仍停在 work。**
-
-批注用于文风/内容评审：`target_type` 可取值 `document`、`problem`、`goals`、`success_metrics`、`scope`、`constraints`、`risks`、`stakeholders`、`budget`、`assumptions`、`open_questions`；`target_id` 和 `field` 可选，用于定位具体指标、风险、干系人或字段。批注正文非空，解决时必须填写 `resolution`。
-
-状态：版本状态为 `in_review → approved / superseded`。提交和批准前校验问题、目标、成功指标、non-goals 和干系人。Agent 不能批准。
-
-MCP 工具：`get_project_brief`、`list_project_brief_versions`、`get_project_brief_version`、`create_project_brief_draft`、`list_project_brief_drafts`、`get_project_brief_draft`、`apply_project_brief_draft_operation`、`submit_project_brief_draft`、`approve_project_brief`、`list_project_brief_annotations`、`annotate_project_brief`、`resolve_project_brief_annotation`。
+MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "requirements"`。
 
 ## Task 链接
 

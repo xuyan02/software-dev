@@ -3,10 +3,6 @@
 //! `DemoPolicy` encodes the MVP separation of duties:
 //!
 //! * humans may do anything the domain state machine allows;
-//! * agents may create requirements and move them forward along the
-//!   implementation path;
-//! * agents may never approve, reject, defer, mark done or supersede a
-//!   requirement;
 //! * agents may receive, classify, discuss and work issues, but may not reject
 //!   a product-level issue or confirm it closed;
 //! * the system itself may not initiate user-facing changes.
@@ -14,7 +10,7 @@
 //! Replace it with an OPA/Cedar client when the policy outgrows code.
 
 use foundry_app::{Action, ActionContext, PolicyDenied, PolicyEngine};
-use foundry_domain::{Actor, IssueStatus, RequirementStatus};
+use foundry_domain::{Actor, IssueStatus};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DemoPolicy;
@@ -23,19 +19,7 @@ impl PolicyEngine for DemoPolicy {
     fn check(&self, context: &ActionContext) -> Result<(), PolicyDenied> {
         match (&context.actor, &context.action) {
             (Actor::Human { .. }, _) => Ok(()),
-            (
-                Actor::Agent { .. },
-                Action::CreateRequirement | Action::CreateIssue | Action::CommentIssue,
-            ) => Ok(()),
-            (Actor::Agent { .. }, Action::TransitionRequirement { from, to }) => {
-                if agent_transition_allowed(*from, *to) {
-                    Ok(())
-                } else {
-                    Err(PolicyDenied::new(format!(
-                        "agents may not move a requirement from {from:?} to {to:?}"
-                    )))
-                }
-            }
+            (Actor::Agent { .. }, Action::CreateIssue | Action::CommentIssue) => Ok(()),
             (Actor::Agent { .. }, Action::TransitionIssue { from, to }) => {
                 if agent_issue_transition_allowed(*from, *to) {
                     Ok(())
@@ -50,17 +34,6 @@ impl PolicyEngine for DemoPolicy {
             )),
         }
     }
-}
-
-fn agent_transition_allowed(from: RequirementStatus, to: RequirementStatus) -> bool {
-    use RequirementStatus::*;
-    matches!(
-        (from, to),
-        (Draft, InReview)
-            | (Approved, InDesign)
-            | (InDesign, InDevelopment)
-            | (InDevelopment, InVerification)
-    )
 }
 
 /// Agents can start and move work forward, but cannot make the disposition
@@ -78,46 +51,6 @@ mod tests {
     use super::*;
     use foundry_app::Resource;
     use uuid::Uuid;
-
-    fn context(actor: Actor, from: RequirementStatus, to: RequirementStatus) -> ActionContext {
-        ActionContext {
-            actor,
-            action: Action::TransitionRequirement { from, to },
-            resource: Resource::Requirement(Uuid::now_v7()),
-        }
-    }
-
-    #[test]
-    fn agent_can_move_to_review() {
-        DemoPolicy
-            .check(&context(
-                Actor::agent("agent-1", "analyst"),
-                RequirementStatus::Draft,
-                RequirementStatus::InReview,
-            ))
-            .unwrap();
-    }
-
-    #[test]
-    fn agent_cannot_approve() {
-        let result = DemoPolicy.check(&context(
-            Actor::agent("agent-1", "analyst"),
-            RequirementStatus::InReview,
-            RequirementStatus::Approved,
-        ));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn human_can_approve() {
-        DemoPolicy
-            .check(&context(
-                Actor::human("alice"),
-                RequirementStatus::InReview,
-                RequirementStatus::Approved,
-            ))
-            .unwrap();
-    }
 
     fn issue_context(actor: Actor, from: IssueStatus, to: IssueStatus) -> ActionContext {
         ActionContext {

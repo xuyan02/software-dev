@@ -5,28 +5,26 @@
 //! against both.
 
 use foundry_app::{
-    AccountFilter, AccountRepository, AgentAdminUseCases, EventError, EventSink,
-    IssueFilter, IssueRepository, ProjectFilter, ProjectRepository, RepoError, RequirementFilter,
-    RequirementQuery, RequirementRepository, ServiceError, SessionRepository,
+    AccountFilter, AccountRepository, AgentAdminUseCases, EventError, EventSink, IssueFilter,
+    IssueRepository, ProjectFilter, ProjectRepository, RepoError, ServiceError, SessionRepository,
 };
 use foundry_domain::{
     Account, Actor, AgentDefinition, AgentOverview, AgentTemplateView, AssignAgentToTask,
     CreateAgentFromTemplate, DomainEvent, Issue, IssueKind, IssueSource, IssueSourceKind, Project,
-    ReadyTaskView, Requirement, Session, TaskDAO, TaskIssueCreate, TaskLink, TaskLinkKind,
-    TaskLinkRelation,
+    ReadyTaskView, Session, TaskDAO, TaskIssueCreate, TaskLink, TaskLinkKind, TaskLinkRelation,
 };
 use std::collections::HashMap;
 use std::sync::RwLock;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-mod project_brief;
+mod anchor_document;
 mod requirements_doc;
 mod task;
 mod task_link;
 mod workflow;
 
-use project_brief::MemoryProjectBriefs;
+use anchor_document::MemoryAnchorDocuments;
 use requirements_doc::MemoryRequirementDocs;
 pub use task::*;
 use task_link::MemoryTaskLinks;
@@ -34,29 +32,20 @@ use workflow::MemoryWorkflows;
 
 #[derive(Default)]
 pub struct InMemoryStore {
-    requirements: RwLock<HashMap<Uuid, Requirement>>,
     issues: RwLock<HashMap<Uuid, Issue>>,
     accounts: RwLock<HashMap<Uuid, Account>>,
     projects: RwLock<HashMap<Uuid, Project>>,
     sessions: RwLock<HashMap<Uuid, Session>>,
     pub(crate) tasks: RwLock<MemoryTasks>,
     pub(crate) workflows: RwLock<MemoryWorkflows>,
+    pub(crate) anchor_documents: RwLock<MemoryAnchorDocuments>,
     pub(crate) requirements_docs: RwLock<MemoryRequirementDocs>,
-    pub(crate) project_briefs: RwLock<MemoryProjectBriefs>,
     pub(crate) task_links: RwLock<MemoryTaskLinks>,
 }
 
 impl InMemoryStore {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn len(&self) -> usize {
-        self.requirements.read().expect("lock poisoned").len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     pub fn issue_count(&self) -> usize {
@@ -176,78 +165,6 @@ impl AgentAdminUseCases for MemoryAgentAdmin {
 
     async fn restart(&self, _actor: Actor, _id: Uuid) -> Result<(), ServiceError> {
         Ok(())
-    }
-}
-
-#[async_trait::async_trait]
-impl RequirementRepository for InMemoryStore {
-    async fn insert(&self, requirement: &Requirement) -> Result<(), RepoError> {
-        let mut requirements = self.requirements.write().expect("lock poisoned");
-        if requirements.contains_key(&requirement.id) {
-            return Err(RepoError::Backend(format!(
-                "requirement {} already exists",
-                requirement.id
-            )));
-        }
-        requirements.insert(requirement.id, requirement.clone());
-        Ok(())
-    }
-
-    async fn save(
-        &self,
-        requirement: &Requirement,
-        expected_version: u32,
-    ) -> Result<(), RepoError> {
-        let mut requirements = self.requirements.write().expect("lock poisoned");
-        let stored = requirements
-            .get(&requirement.id)
-            .ok_or(RepoError::NotFound)?;
-        if stored.version != expected_version {
-            return Err(RepoError::Conflict {
-                expected: expected_version,
-                actual: stored.version,
-            });
-        }
-        requirements.insert(requirement.id, requirement.clone());
-        Ok(())
-    }
-
-    async fn get(&self, id: Uuid) -> Result<Option<Requirement>, RepoError> {
-        Ok(self
-            .requirements
-            .read()
-            .expect("lock poisoned")
-            .get(&id)
-            .cloned())
-    }
-
-    async fn list(
-        &self,
-        project_id: Uuid,
-        filter: RequirementFilter,
-    ) -> Result<Vec<Requirement>, RepoError> {
-        let requirements = self.requirements.read().expect("lock poisoned");
-        let mut result: Vec<Requirement> = requirements
-            .values()
-            .filter(|requirement| requirement.project_id == project_id)
-            .filter(|requirement| {
-                filter
-                    .status
-                    .is_none_or(|status| requirement.status == status)
-                    && filter
-                        .owner
-                        .as_ref()
-                        .is_none_or(|owner| requirement.owner.id() == owner)
-                    && filter.text.as_ref().is_none_or(|text| {
-                        let needle = text.to_lowercase();
-                        requirement.title.to_lowercase().contains(&needle)
-                            || requirement.problem.to_lowercase().contains(&needle)
-                    })
-            })
-            .cloned()
-            .collect();
-        result.sort_by_key(|requirement| requirement.created_at);
-        Ok(result)
     }
 }
 
@@ -460,18 +377,14 @@ impl ProjectRepository for InMemoryStore {
             .write()
             .expect("lock poisoned")
             .delete_tasks(&task_ids);
-        self.requirements
+        self.anchor_documents
             .write()
             .expect("lock poisoned")
-            .retain(|_, requirement| requirement.project_id != id);
+            .delete_project(id);
         self.issues
             .write()
             .expect("lock poisoned")
             .retain(|_, issue| issue.project_id != id);
-        self.project_briefs
-            .write()
-            .expect("lock poisoned")
-            .delete_project(id);
         self.requirements_docs
             .write()
             .expect("lock poisoned")
@@ -529,21 +442,6 @@ impl SessionRepository for InMemoryStore {
     }
 }
 
-#[async_trait::async_trait]
-impl RequirementQuery for InMemoryStore {
-    async fn get(&self, id: Uuid) -> Result<Option<Requirement>, RepoError> {
-        RequirementRepository::get(self, id).await
-    }
-
-    async fn list(
-        &self,
-        project_id: Uuid,
-        filter: RequirementFilter,
-    ) -> Result<Vec<Requirement>, RepoError> {
-        RequirementRepository::list(self, project_id, filter).await
-    }
-}
-
 #[derive(Default)]
 pub struct InMemoryEventSink {
     events: RwLock<Vec<DomainEvent>>,
@@ -573,10 +471,10 @@ impl EventSink for InMemoryEventSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foundry_app::{IssueRepository, RequirementRepository};
+    use foundry_app::IssueRepository;
     use foundry_domain::{
-        AcceptanceScenario, AccountKind, AccountRole, Actor, IssueKind, IssueSource,
-        IssueSourceKind, Priority, Project, ProjectRole, Requirement, RiskClass,
+        AccountKind, AccountRole, Actor, IssueKind, IssueSource, IssueSourceKind, Project,
+        ProjectRole,
     };
 
     fn project() -> Project {
@@ -590,87 +488,6 @@ mod tests {
         )
         .unwrap();
         Project::new("Foundry", None, owner.id).unwrap()
-    }
-
-    fn requirement(project_id: Uuid) -> Requirement {
-        Requirement::new(
-            project_id,
-            "退款",
-            "用户只能全额退款",
-            vec![AcceptanceScenario {
-                id: "S-1".to_string(),
-                title: "部分退款".to_string(),
-                given: vec![],
-                when: vec![],
-                then: vec!["退款金额等于请求金额".to_string()],
-            }],
-            Actor::human("alice"),
-            Priority::P1,
-            RiskClass::Medium,
-        )
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn save_rejects_stale_version() {
-        let store = InMemoryStore::new();
-        let project = project();
-        let original = requirement(project.id);
-        RequirementRepository::insert(&store, &original)
-            .await
-            .unwrap();
-
-        let mut updated = original.clone();
-        updated.title = "新标题".to_string();
-        updated.version = 2;
-        RequirementRepository::save(&store, &updated, 1)
-            .await
-            .unwrap();
-
-        let stale = RequirementRepository::save(&store, &updated, 1).await;
-        assert!(matches!(
-            stale,
-            Err(RepoError::Conflict {
-                expected: 1,
-                actual: 2
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn list_filters_by_project_text_and_status() {
-        let store = InMemoryStore::new();
-        let project = project();
-        let other_project = Project::new("Other", None, Uuid::now_v7()).unwrap();
-        let first = requirement(project.id);
-        let mut second = requirement(project.id);
-        second.title = "导出报表".to_string();
-        let foreign = requirement(other_project.id);
-        RequirementRepository::insert(&store, &first).await.unwrap();
-        RequirementRepository::insert(&store, &second)
-            .await
-            .unwrap();
-        RequirementRepository::insert(&store, &foreign)
-            .await
-            .unwrap();
-
-        let found = RequirementRepository::list(
-            &store,
-            project.id,
-            RequirementFilter {
-                text: Some("导出".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].title, "导出报表");
-
-        let visible = RequirementRepository::list(&store, project.id, RequirementFilter::default())
-            .await
-            .unwrap();
-        assert_eq!(visible.len(), 2);
     }
 
     fn issue(project_id: Uuid, title: &str) -> Issue {

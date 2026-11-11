@@ -1,7 +1,7 @@
 use foundry_domain::{
-    AcceptanceScenario, AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssueSeverity,
-    IssueSource, IssueStatus, Priority, ProjectRole, ProjectStatus, RequirementStatus, RiskClass,
-    WorkflowBody, WorkflowId, WorkflowLayout, WorkflowVersionRef,
+    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssueSeverity, IssueSource,
+    IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId, WorkflowLayout,
+    WorkflowVersionRef,
 };
 
 #[derive(Debug, Clone)]
@@ -105,46 +105,6 @@ pub struct SetProjectMemberRole {
 pub struct RemoveProjectMember {
     pub project_id: uuid::Uuid,
     pub account_id: uuid::Uuid,
-}
-
-#[derive(Debug, Clone)]
-pub struct CreateRequirement {
-    pub project_id: uuid::Uuid,
-    pub title: String,
-    pub problem: String,
-    pub users: Vec<String>,
-    pub acceptance: Vec<AcceptanceScenario>,
-    pub non_goals: Vec<String>,
-    pub constraints: Vec<String>,
-    pub priority: Priority,
-    pub risk: RiskClass,
-}
-
-#[derive(Debug, Clone)]
-pub struct TransitionRequirement {
-    pub project_id: uuid::Uuid,
-    pub id: uuid::Uuid,
-    pub to: RequirementStatus,
-    pub actor: Actor,
-    /// When set, the transition fails if the stored version differs.
-    pub expected_version: Option<u32>,
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct UpdateRequirement {
-    pub project_id: uuid::Uuid,
-    pub id: uuid::Uuid,
-    pub actor: Actor,
-    pub title: Option<String>,
-    pub problem: Option<String>,
-    pub users: Option<Vec<String>>,
-    pub acceptance: Option<Vec<AcceptanceScenario>>,
-    pub non_goals: Option<Vec<String>>,
-    pub constraints: Option<Vec<String>>,
-    pub priority: Option<Priority>,
-    pub risk: Option<RiskClass>,
-    pub expected_version: Option<u32>,
 }
 
 /// The reporter describes what happened and classifies it at intake.

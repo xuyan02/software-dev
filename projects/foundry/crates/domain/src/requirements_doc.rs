@@ -466,8 +466,10 @@ pub struct RequirementsVersionDAO {
     pub version: u32,
     pub body: RequirementsDocumentBody,
     pub content_hash: String,
+    pub source_revision: u64,
     pub created_by: Uuid,
     pub approved_by: Option<Uuid>,
+    pub approval_comment: Option<String>,
     pub created_at: OffsetDateTime,
     pub published_at: Option<OffsetDateTime>,
 }
@@ -482,10 +484,49 @@ pub struct RequirementsDraftDAO {
     pub updated_at: OffsetDateTime,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approved,
+    Rejected,
+}
+
+impl ApprovalDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "approved" => Some(Self::Approved),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequirementsApprovalDAO {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub revision: u64,
+    pub decision: ApprovalDecision,
+    pub actor_id: Uuid,
+    pub comment: Option<String>,
+    pub content_hash: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RequirementsVersionRow {
     pub version: u32,
     pub created_by: Uuid,
+    pub approved_by: Option<Uuid>,
+    pub source_revision: Option<u64>,
     #[serde(with = "time::serde::rfc3339::option")]
     pub published_at: Option<OffsetDateTime>,
 }
@@ -890,17 +931,17 @@ pub fn validate_requirements_document(body: &RequirementsDocumentBody) -> Valida
         ));
     }
     if body.users.is_empty() {
-        validation.errors.push(ValidationIssue::error(
+        validation.warnings.push(ValidationIssue::error(
             "users",
             "no_users",
-            "the document must declare at least one user model",
+            "the document declares no user models",
         ));
     }
     if body.functions.is_empty() {
-        validation.errors.push(ValidationIssue::error(
+        validation.warnings.push(ValidationIssue::error(
             "functions",
             "no_functions",
-            "the document must declare at least one function",
+            "the document declares no functions",
         ));
     }
 
@@ -1328,6 +1369,10 @@ fn allowed_image_mime(mime: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn header() -> RequirementsDocumentBody {
+        RequirementsDocumentBody::default()
+    }
+
     fn user(id: &str) -> UserModel {
         UserModel {
             id: id.to_string(),
@@ -1430,7 +1475,7 @@ mod tests {
                 },
             },
         ];
-        let body = apply_operations(&RequirementsDocumentBody::default(), &operations).unwrap();
+        let body = apply_operations(&header(), &operations).unwrap();
         assert_eq!(body.users.len(), 1);
         assert_eq!(body.functions.len(), 1);
         assert_eq!(body.functions[0].stories.len(), 1);

@@ -1,28 +1,61 @@
 # RFC 0020：需求子系统
 
-- 状态：Draft，设计待评审
-- 日期：2026-11-09
+- 状态：已接受；已修订为项目文档与需求文档两个独立聚合
+- 日期：2026-11-09（2026-11-11 修订）
 - 关联：[ADR 0004 Issue 是问题空间，Requirement 是承诺空间](../adr/0004-issue-vs-requirement.md)、[RFC 0008 软件生命周期模型](0008-software-lifecycle-model.md)、[RFC 0009 产物血缘、基线与变更管理](0009-artifact-lineage-baselines-and-change.md)、[RFC 0010 辅助系统注册与产物契约](0010-auxiliary-systems-and-evidence.md)、[RFC 0011 需求管理与需求分析](0011-requirements-management.md)、[RFC 0012 架构与设计管理](0012-architecture-and-design-management.md)
-- 取代：本 RFC 取代 RFC 0011 中以 Requirement 聚合为中心的需求管理模型和“需求文档为自由文本”的假设。Issue 仍是未批准候选的问题空间；需求分析的结构化真相改为项目唯一的需求文档。
+- 取代：本 RFC 取代 RFC 0011 中以 Requirement 聚合为中心的需求管理模型、“需求文档为自由文本”的假设，以及 RFC 0017 中独立的 ProjectBrief 聚合。
 
-## 实现状态（2026-11-09，第一切片）
+> 2026-11-11 修订：项目层不再并入需求文档。项目文档（定位、背景、目标、非目标、约束、风险、术语表）与需求文档（用户、功能、操作、故事、交互规格、交互流、界面、图片）是两个独立聚合，各自有草案、版本和审批。本文下面描述“合并为一份文档”的章节保留为设计历史；实现与 API 以 `docs/api/README.md`、`docs/design/project-document-writing-guide.md` 和迁移 `0034`、`0035` 为准。
+
+## 实现状态（2026-11-11）
 
 已实现：
 
-- 领域模型：users / functions / operations / stories / interactions / screens / images，结构化操作与校验。
-- 应用服务与端口：读取文档、草案、应用操作、校验、发布、版本查询。
-- 存储：Postgres（迁移 `0010_requirements_documents.sql`）和内存适配器；版本不可变、草案 revision、操作日志、幂等、冲突。
-- HTTP API：GET 文档/草案/版本，POST 操作/校验/发布（`If-Match` 传递 revision）。
-- MCP 工具：`get_requirements_document`、`get_requirements_draft`、`apply_requirements_operations`、`validate_requirements_document`、`publish_requirements_document`。
+- 领域模型：项目文档（positioning、background：context / problems、goals / non_goals / constraints / risks / glossary）和需求文档（users / functions / operations / stories / interactions / screens / images）。
+- 应用服务与端口：读取文档、草案、应用操作、校验、审批、版本查询、审批历史，两个文档各自独立。
+- 存储：Postgres（迁移 `0010_requirements_documents.sql`、`0029_requirements_approvals.sql`、`0034_project_documents.sql`、`0035_remove_requirements_project_layer.sql`）和内存适配器；版本不可变、草案 revision、操作日志、审批记录、幂等、冲突。
+- 审批：每个草案 revision 必须审批；批准和发布在同一事务中完成，拒绝只记录审批记录。项目文档先审批，需求文档再审批。
+- HTTP API：GET 文档/草案/版本/审批历史，POST 操作/校验/审批（`If-Match` 传递 revision）。
+- MCP 工具：项目文档使用通用 `document` 工具，通过 `action` 选择 `toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`（`kind = project`）；需求文档 `get_requirements_document`、`get_requirements_draft`、`apply_requirements_operations`、`validate_requirements_document`、`decide_requirements_draft`、`list_requirements_approvals`。
+- Web：项目文档页和需求文档页分别渲染，支持批准、打回和审批历史。
 - 测试：领域单元测试、HTTP 端到端测试、Postgres 集成测试（无 `TEST_DATABASE_URL` 时跳过）。
 
 尚未实现：
 
-- Web 人类文档渲染和结构化编辑器。
 - 图片二进制上传与对象存储；当前只有图片元数据和引用模型。
 - 交互设计/UI 设计的独立阶段评审门禁和阶段版本；当前操作已支持这些内容，但阶段审批未强制。
 - CLI 命令。
 - Postgres 集成测试尚未在本地数据库上运行。
+
+## 0. 结论
+
+系统为每个项目维护**唯一的“需求文档”**。它是项目层和需求层的结构化真相：人类看到的是渲染后的文档，Agent 操作的是结构化对象。
+
+核心决定：
+
+1. **一个项目一份需求文档。** 文档属于项目，不存在跨项目需求，也不存在项目之外的需求。
+2. **文档分两层。** 项目层回答“为什么做、边界是什么、怎样算成功”；需求层回答“为谁做、做什么、怎样算做到”。
+3. **项目层字段。** background（context、problems）、goals、non_goals、constraints、risks。没有独立的 ProjectBrief。
+4. **需求层两个维度：用户和功能。** 用户是用户模型（persona）；功能是功能模块。
+5. **每个功能下面有故事和操作两个维度。** 操作归属功能模块；故事引用用户和操作。
+6. **操作是用户的一次不可分割交互。** 例如“搜索”：输入关键字和点击搜索按钮是交互概念，在操作层面不区分。
+7. **故事是一个场景下用户为实现一个目标进行的操作的总和。** 故事有场景、目标、用户、操作序列和优先级。
+8. **用户模型是想象中的具体的人。** 包含姓名、年龄、性别、职业、爱好、习惯、目标、痛点、权限、场景、证据和置信度，不是抽象角色。
+9. **结构化数据是唯一真相。** 人类文档由结构化数据渲染生成；Agent 不编辑文档文本，只发结构化操作。
+10. **每次修改都要审批。** 任何修改产生新的草案 revision；只有被批准的 revision 才能发布为不可变版本。批准和发布在同一事务中完成。
+11. **先批项目层，再批整体。** 第一次审批可以只包含项目层，形成项目基线；第二次审批在加入需求层后进行。审批不区分 scope，审批对象永远是当时的完整 revision。
+12. **多 Agent 并发采用乐观并发和显式冲突。** 不同对象可顺序应用；同一对象/字段冲突返回 409 和 diff；不允许 last-write-wins 静默覆盖。
+13. **Issue 管理未批准候选。** 需求文档的批准版本是需求基线；未批准的需求、讨论和证据留在 Issue。
+14. **没有跨项目需求。** 外部系统是当前需求的依赖、约束或假设，不是另一个项目的需求；新系统/新产品由人类决定是否新建项目。
+15. **Agent 默认做需求分析。** Agent 建立和更新项目层、用户模型、写故事、发现操作、检查覆盖；人类评审和批准。
+16. **需求设计的三个阶段都写在同一个需求文档里。** 需求分析产出项目层、用户/功能/故事/操作；交互设计产出交互规格和交互流程；UI 设计产出界面和 UI 规格。三个阶段各自评审，但文档只有一个。
+17. **文档是项目产物。** 它进入产物血缘，可被基线、变更和下游设计引用。
+18. **交互和 UI 是文档的结构化维度。** 每个操作可以有交互规格；每个故事可以有交互流程；每个功能可以有界面；界面引用设计系统、组件和原型，不把像素数据塞进文档。
+19. **阶段评审是文档版本的一部分。** 每个阶段通过后形成审批记录和版本快照；下游发现上游问题，回到对应阶段，不在下游打补丁。
+20. **交互/UI 设计不能改变已批准的需求分析。** 发现需求问题回到需求分析/需求管理；交互和 UI 只细化和实现已批准的用户、功能、故事、操作。
+21. **像素级设计工具不进入 Foundry。** Foundry 管结构化规格、界面结构和外部设计引用；具体视觉稿可以在 Figma 等工具中完成。
+22. **UI 设计支持图片。** 界面可以关联界面稿、截图、线框、视觉参考、图标、插图和标注图；图片存对象存储，按 SHA-256 内容寻址，文档只存引用、元数据、标注和版本哈希。
+23. **图片是补充，不是行为真相。** 行为、状态和交互规则仍以结构化规格为准；图片帮助评审视觉和布局，不能替代结构化需求。
 
 ## 0. 结论
 
@@ -129,6 +162,15 @@
 ```text
 Project
 └─ RequirementsDocument
+   ├─ project layer
+   │    ├─ background
+   │    │    ├─ context: String
+   │    │    └─ problems: Problem[]
+   │    ├─ goals: String[]
+   │    ├─ non_goals: String[]
+   │    ├─ constraints: String[]
+   │    ├─ risks: Risk[]
+   ├─ glossary: GlossaryTerm[]
    ├─ users: UserModel[]
    └─ functions: Function[]
         ├─ operations: Operation[]
@@ -475,7 +517,8 @@ UISpec 是界面、组件、设计 token 和资源的集合：
 | `document.get` | 读取当前草案或指定版本 |
 | `document.diff` | 比较草案与版本、或两个版本 |
 | `document.validate` | 校验结构和覆盖 |
-| `draft.publish` | 发布草案为新版本（需评审/批准） |
+| `draft.decide` | 批准或打回当前草案 revision；批准即发布新版本 |
+| `approval.list` | 查看审批历史 |
 | `conflict.list` / `conflict.resolve` | 查看和解决冲突 |
 
 ### 4.2 操作格式
@@ -572,17 +615,19 @@ UISpec 是界面、组件、设计 token 和资源的集合：
 
 ### 6.1 版本
 
-- 文档有 `version`，从 1 开始；每次发布递增。
-- DocumentVersion 保存完整结构化快照、操作日志区间、评审记录和批准人。
+- 文档有 `version`，从 1 开始；每次批准递增。
+- DocumentVersion 保存完整结构化快照、`content_hash`、`source_revision`、批准人和批准意见。
 - 已发布版本不可变；旧版本保留用于追溯。
+- 唯一约束 `(project_id, version)` 和 `(project_id, source_revision)`：一个 revision 最多生成一个版本。
 - 需求基线引用具体版本。
 
 ### 6.2 草案
 
-- 每个项目一份当前草案，带 `revision` 和 `base_version`。
-- 草案从某个已发布版本派生；也可以是初始草案。
+- 每个项目一份当前共享草案，带 `revision` 和 `base_version`。
+- `revision` 全局单调递增；每次结构化修改 +1。批准时不递增，下一次修改才递增。
+- 草案从某个已批准版本派生；也可以是初始草案。
 - 草案可编辑，不直接影响基线。
-- 发布前必须通过校验和评审。
+- 审批前必须通过校验。
 - 草案可以放弃；放弃后回到 base_version 或新的草案。
 
 ### 6.3 多 Agent 并发
@@ -605,16 +650,18 @@ Agent C: op 3 (base_revision 17) → 409，返回当前 diff
 5. 操作日志支持审计和重放；重放不产生副作用。
 6. 冲突解决写入日志，记录解决者和理由。
 
-### 6.4 发布与批准
+### 6.4 审批与发布
 
 ```text
-draft → validate → review → approve → publish(version+1)
+draft revision R → validate → 人工审批 → 同一事务创建 version N
 ```
 
-- 校验必须通过。
-- 评审由产品、用户代表、技术、QA 等参与。
+- 每一次修改都产生新的草案 revision；每个 revision 都必须审批。
+- 批准和发布在同一事务中完成，不存在“已批准但未发布”的中间态。
+- 拒绝只记录审批记录和意见，不生成版本；草案继续修改，revision 前进。
+- 审批记录存 `project_id / revision / decision / actor / comment / content_hash / created_at`。
 - 批准由人或授权角色完成；Agent 不能批准。
-- 发布后可创建需求基线。
+- 先批项目层、再批整体：第一次批准可以只包含项目层，形成项目基线；第二次批准在加入需求层后进行。没有 ApprovalScope，审批对象永远是当时的完整 revision。
 - 发布失败不改变已发布版本。
 
 ### 6.5 阶段版本与评审
@@ -652,7 +699,7 @@ draft → validate → review → approve → publish(version+1)
 
 ### 7.1 输入
 
-- 项目 ProjectBrief 和项目级 non-goals；
+- 需求文档项目层（background：context / problems；goals / non_goals / constraints / risks）；
 - 已批准的需求/Issue；
 - 用户研究、工单、数据、访谈；
 - 外部依赖和约束；
@@ -744,7 +791,7 @@ draft → validate → review → approve → publish(version+1)
 ### 7.5 派生需求
 
 - 同项目派生：新建功能、操作、故事、交互规格或界面；链接 `derives_from` / `refines` / `depends_on`。
-- 外部依赖：记录在需求的 assumptions/dependencies，写清外部系统、负责人、状态、契约；不是跨项目需求。
+- 外部依赖：记录在需求的约束中，写清外部系统、负责人、状态、契约；不是跨项目需求。
 - 新系统/新产品：由人类决定是否新建项目；当前项目记录提案/依赖。
 - 派生需求不能静默扩大范围；独立走优先级和批准。
 - 交互/UI 阶段发现的新需求回到阶段 1，不在下游直接补需求。
@@ -853,7 +900,7 @@ draft → validate → review → approve → publish(version+1)
 
 - Agent 可以：建立/更新 persona、添加功能/操作/故事、设置操作序列、编写交互规格和界面结构、上传/关联图片资产、设置 alt text 和标注、校验、生成 diff、发现缺口。
 - Agent 不能：批准任何阶段、发布版本、创建项目、接受外部依赖、绕过校验、把敏感图片标记为公开。
-- Agent 起草的内容标记来源和置信度；假设和开放问题不能写成事实。
+- Agent 起草的内容标记来源和置信度；待确认内容不能写成事实。
 - 实现者不能是唯一评审者；holdout/外部验证由独立方负责（如适用）。
 
 ### 9.4 审计
@@ -875,16 +922,19 @@ create table requirements_documents (
 );
 
 create table requirements_document_versions (
-  id            uuid primary key,
-  document_id   uuid not null references requirements_documents (id),
-  version       integer not null,
-  content       jsonb not null,
-  content_hash  text not null,
-  created_by    jsonb not null,
-  approved_by   jsonb,
-  created_at    timestamptz not null default now(),
-  published_at  timestamptz,
-  unique (document_id, version)
+  id               uuid primary key,
+  document_id      uuid not null references requirements_documents (id),
+  version          integer not null,
+  body             jsonb not null,
+  content_hash     text not null,
+  source_revision  bigint,
+  created_by       uuid not null references accounts (id),
+  approved_by      uuid references accounts (id),
+  approval_comment text,
+  created_at       timestamptz not null default now(),
+  published_at     timestamptz,
+  unique (document_id, version),
+  unique (document_id, source_revision)
 );
 
 create table requirements_document_drafts (
@@ -911,15 +961,16 @@ create table requirements_operations (
   unique (draft_id, op_id)
 );
 
-create table requirements_reviews (
+create table requirements_document_approvals (
   id            uuid primary key,
-  document_id   uuid not null references requirements_documents (id),
-  version       integer,
-  status        text not null,
-  reviewers     jsonb not null default '[]'::jsonb,
-  findings      jsonb not null default '[]'::jsonb,
+  project_id    uuid not null references projects (id) on delete cascade,
+  revision      bigint not null,
+  decision      text not null check (decision in ('approved', 'rejected')),
+  actor_id      uuid not null references accounts (id),
+  comment       text,
+  content_hash  text not null,
   created_at    timestamptz not null default now(),
-  decided_at    timestamptz
+  unique (project_id, revision, decision)
 );
 
 create index requirements_operations_draft_idx
@@ -1053,7 +1104,8 @@ POST   /api/v1/projects/{project}/requirements-document/draft/operations
 POST   /api/v1/projects/{project}/requirements-document/draft/validate
 POST   /api/v1/projects/{project}/requirements-document/draft/stages/{stage}/review
 POST   /api/v1/projects/{project}/requirements-document/draft/stages/{stage}/approve
-POST   /api/v1/projects/{project}/requirements-document/draft/publish
+GET    /api/v1/projects/{project}/requirements-document/draft/approvals
+POST   /api/v1/projects/{project}/requirements-document/draft/approvals
 POST   /api/v1/projects/{project}/requirements-document/draft/abandon
 GET    /api/v1/projects/{project}/requirements-document/diff?from=&to=
 GET    /api/v1/projects/{project}/requirements-document/conflicts
@@ -1082,8 +1134,8 @@ POST   /api/v1/projects/{project}/requirements-document/conflicts/{id}/resolve
 - `reqdoc.diff`
 - `reqdoc.conflict.list`
 - `reqdoc.stage.review` / `reqdoc.stage.approve`（approve 仅人类/授权角色）
-- `reqdoc.publish`（默认仅人类/授权角色）
-- `reqdoc.approve`（仅人类/授权角色）
+- `reqdoc.decide_draft`（仅人类/授权角色；approve 即发布）
+- `reqdoc.approvals`
 
 MCP 调用带项目、actor 和 idempotency key；Agent 不能批准/发布，除非策略显式授权。
 
@@ -1104,12 +1156,12 @@ foundry reqdoc validate <project>
 foundry reqdoc stage review <project> --stage interaction
 foundry reqdoc stage approve <project> --stage interaction
 foundry reqdoc diff <project> --from 2 --to draft
-foundry reqdoc publish <project>
+foundry reqdoc decide <project> --decision approved
 ```
 
 ### 11.4 Web
 
-- 渲染文档：用户模型、功能、故事、操作、交互规格、交互流程、界面、UI 规格、追溯、开放问题。
+- 渲染文档：用户模型、功能、故事、操作、交互规格、交互流程、界面、UI 规格、追溯、术语表。
 - 结构化编辑器：增删改用户/功能/故事/操作/交互/界面，设置操作序列和交互流程。
 - 阶段视图：需求分析、交互设计、UI 设计各自的状态、评审和批准。
 - 图片：上传、关联界面、内联缩略图/灯箱、caption、alt text、标注、替换 diff、下载/预览。
@@ -1159,7 +1211,7 @@ Issue / 来源
 ## 13. 与现有实现的关系
 
 - 现有 Issue 继续作为问题空间和未批准候选。
-- 现有早期 Requirement 聚合和 RFC 0011 的 Requirement 字段模型被本 RFC 取代；迁移为需求文档中的功能/故事/操作，或保留为兼容视图。
+- 早期 Requirement 聚合已删除；`work_items` 表由迁移 `0028_drop_work_items.sql` 删除，不保留兼容视图。存量数据丢弃。
 - 现有 `documents` 表可作为渲染投影/元数据；结构化真相在需求文档表。
 - 图片资产使用对象存储适配器（`crates/adapters/storage`）；Foundry 存哈希、尺寸、alt text、分类和引用，不存二进制。
 - 现有 Workflow 的“AST 真相 + 草案 revision + 冲突不自动合并”模式可直接复用。
@@ -1243,7 +1295,7 @@ Issue / 来源
 | Persona 质量 | 虚构、刻板印象 | 证据锚点、置信度、用户验证 |
 | 文档膨胀 | 功能/故事/操作过多 | 分层、搜索、投影、归档；发布前校验 |
 | 并发冲突 | 多 Agent 同时编辑 | 乐观并发、对象级冲突、操作日志、可选租约 |
-| 迁移成本 | 旧 Requirement 数据 | 只读导入、逐步切换、兼容视图 |
+| 迁移成本 | 旧 Requirement / ProjectBrief 数据 | 直接丢弃并删除表；当前为早期环境，无生产数据 |
 | 评审负担 | 文档太长 | diff、校验定位、按功能评审 |
 | 交互/UI 结构过重 | 结构化文档难以表达视觉细节 | 只存结构、状态和外部引用；视觉稿在 Figma 等工具 |
 | 阶段混杂 | 交互/UI 内容过早进入需求分析 | 阶段状态和校验隔离；阶段批准后才进入下一步 |
@@ -1262,7 +1314,7 @@ Issue / 来源
 1. 草案是项目共享一份，还是每个 Agent 一份再合并？当前建议共享一份 + revision。
 2. 是否需要批量操作？建议支持，但每个子操作有独立 id。
 3. 渲染格式是 Markdown 还是 HTML？建议 Markdown 为默认，HTML/PDF 为导出。
-4. 旧 Requirement 聚合是否保留为兼容视图？建议保留只读视图，逐步迁移。
+4. 旧 Requirement 聚合和 ProjectBrief 数据已丢弃并删除表，不保留兼容视图。
 5. 验收场景和 holdout 放在需求文档还是下游测试？建议故事带验收要点，完整场景和 holdout 在下游测试/验证。
 6. 用户模型是否需要独立的生命周期（draft/active/retired）？建议需要。
 7. 跨功能故事是否允许一个故事引用多个功能的操作？当前建议默认不允许，用链接组合。

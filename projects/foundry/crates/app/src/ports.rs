@@ -1,39 +1,9 @@
 use crate::error::{EventError, RepoError, ServiceError};
 use foundry_domain::{
     Account, AccountKind, AccountStatus, Actor, DomainEvent, Issue, IssueKind, IssueSourceKind,
-    IssueStatus, Project, ProjectStatus, Requirement, RequirementStatus, Session,
+    IssueStatus, Project, ProjectStatus, Session,
 };
 use uuid::Uuid;
-
-/// Storage for requirements.
-///
-/// `save` takes the version the caller read so the adapter can implement
-/// optimistic concurrency control (compare-and-swap). An adapter that cannot
-/// detect conflicts must still return `RepoError::Conflict` on mismatch.
-#[async_trait::async_trait]
-pub trait RequirementRepository: Send + Sync {
-    async fn insert(&self, requirement: &Requirement) -> Result<(), RepoError>;
-
-    async fn save(&self, requirement: &Requirement, expected_version: u32)
-    -> Result<(), RepoError>;
-
-    async fn get(&self, id: Uuid) -> Result<Option<Requirement>, RepoError>;
-
-    /// Listing always requires a project. There is no cross-project query path.
-    async fn list(
-        &self,
-        project_id: Uuid,
-        filter: RequirementFilter,
-    ) -> Result<Vec<Requirement>, RepoError>;
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct RequirementFilter {
-    pub status: Option<RequirementStatus>,
-    pub owner: Option<String>,
-    /// Case-insensitive substring match on title and problem statement.
-    pub text: Option<String>,
-}
 
 /// Storage for issues. Same optimistic concurrency contract as requirements.
 #[async_trait::async_trait]
@@ -127,23 +97,13 @@ pub trait EventSink: Send + Sync {
 /// What an actor is trying to do. Policies are evaluated against this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    CreateRequirement,
-    TransitionRequirement {
-        from: RequirementStatus,
-        to: RequirementStatus,
-    },
     CreateIssue,
     CommentIssue,
-    TransitionIssue {
-        from: IssueStatus,
-        to: IssueStatus,
-    },
+    TransitionIssue { from: IssueStatus, to: IssueStatus },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resource {
-    Requirements,
-    Requirement(Uuid),
     Issues,
     Issue(Uuid),
 }

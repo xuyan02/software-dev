@@ -40,26 +40,6 @@ enum Command {
     Projects,
     /// List accounts (admin only).
     Accounts,
-    /// List requirements in the current project.
-    List {
-        #[arg(long)]
-        status: Option<String>,
-        #[arg(long)]
-        text: Option<String>,
-    },
-    /// Show one requirement as JSON.
-    Get { id: String },
-    /// Create a requirement from a JSON file (see docs/api/README.md).
-    Create { file: String },
-    /// Request a state transition.
-    Transition {
-        id: String,
-        #[arg(long)]
-        to: String,
-        /// Fail if the stored version differs.
-        #[arg(long)]
-        version: Option<u32>,
-    },
     /// Work with issues: the problem space.
     Issue {
         #[command(subcommand)]
@@ -176,53 +156,6 @@ async fn main() -> Result<()> {
         Command::Accounts => {
             let auth = auth.require()?;
             print_response(&url, auth, "GET", "/api/v1/accounts", None).await?;
-        }
-        Command::List { status, text } => {
-            let auth = auth.require()?;
-            let mut query = Vec::new();
-            if let Some(status) = status {
-                query.push(format!("status={}", encode(&status)));
-            }
-            if let Some(text) = text {
-                query.push(format!("text={}", encode(&text)));
-            }
-            let path = if query.is_empty() {
-                "/api/v1/requirements".to_string()
-            } else {
-                format!("/api/v1/requirements?{}", query.join("&"))
-            };
-            print_response(&url, auth, "GET", &path, None).await?;
-        }
-        Command::Get { id } => {
-            let auth = auth.require()?;
-            print_response(
-                &url,
-                auth,
-                "GET",
-                &format!("/api/v1/requirements/{id}"),
-                None,
-            )
-            .await?;
-        }
-        Command::Create { file } => {
-            let auth = auth.require()?;
-            let body = read_json(&file)?;
-            print_response(&url, auth, "POST", "/api/v1/requirements", Some(body)).await?;
-        }
-        Command::Transition { id, to, version } => {
-            let auth = auth.require()?;
-            let body = json!({
-                "to": to,
-                "expected_version": version,
-            });
-            print_response(
-                &url,
-                auth,
-                "POST",
-                &format!("/api/v1/requirements/{id}/transitions"),
-                Some(body.to_string()),
-            )
-            .await?;
         }
         Command::Issue { command } => match command {
             IssueCommand::List {

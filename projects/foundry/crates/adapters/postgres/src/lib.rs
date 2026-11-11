@@ -17,12 +17,11 @@
 use async_trait::async_trait;
 use foundry_app::{
     AccountFilter, AccountRepository, EventError, EventSink, IssueFilter, IssueRepository,
-    ProjectFilter, ProjectRepository, RepoError, RequirementFilter, RequirementQuery,
-    RequirementRepository, SessionRepository,
+    ProjectFilter, ProjectRepository, RepoError, SessionRepository,
 };
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, Actor, DomainEvent, Issue, Project,
-    ProjectMember, Requirement, Session,
+    ProjectMember, Session,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -35,7 +34,7 @@ use uuid::Uuid;
 
 mod agent_runs;
 mod agents;
-mod project_brief;
+mod anchor_document;
 mod requirements_doc;
 mod task;
 mod task_link;
@@ -156,119 +155,6 @@ impl PostgresStore {
             .map_err(backend)?;
         }
         Ok(())
-    }
-}
-
-#[async_trait]
-impl RequirementRepository for PostgresStore {
-    async fn insert(&self, requirement: &Requirement) -> Result<(), RepoError> {
-        let body = to_json(requirement)?;
-        sqlx::query(
-            "insert into work_items \
-             (id, project_id, kind, status, title, owner_kind, owner_id, priority, risk, \
-              version, body, created_at, updated_at) \
-             values ($1, $2, 'requirement', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
-        )
-        .bind(requirement.id)
-        .bind(requirement.project_id)
-        .bind(enum_text(&requirement.status)?)
-        .bind(&requirement.title)
-        .bind(actor_kind(&requirement.owner))
-        .bind(requirement.owner.id())
-        .bind(enum_text(&requirement.priority)?)
-        .bind(enum_text(&requirement.risk)?)
-        .bind(requirement.version as i32)
-        .bind(body)
-        .bind(requirement.created_at)
-        .bind(requirement.updated_at)
-        .execute(&self.pool)
-        .await
-        .map_err(map_write_error)?;
-        Ok(())
-    }
-
-    async fn save(
-        &self,
-        requirement: &Requirement,
-        expected_version: u32,
-    ) -> Result<(), RepoError> {
-        let body = to_json(requirement)?;
-        let result = sqlx::query(
-            "update work_items set status = $3, title = $4, owner_kind = $5, owner_id = $6, \
-             priority = $7, risk = $8, version = $9, body = $10, updated_at = $11 \
-             where id = $1 and version = $2 and kind = 'requirement'",
-        )
-        .bind(requirement.id)
-        .bind(expected_version as i32)
-        .bind(enum_text(&requirement.status)?)
-        .bind(&requirement.title)
-        .bind(actor_kind(&requirement.owner))
-        .bind(requirement.owner.id())
-        .bind(enum_text(&requirement.priority)?)
-        .bind(enum_text(&requirement.risk)?)
-        .bind(requirement.version as i32)
-        .bind(body)
-        .bind(requirement.updated_at)
-        .execute(&self.pool)
-        .await
-        .map_err(map_write_error)?;
-        if result.rows_affected() == 0 {
-            return Err(self
-                .cas_error("work_items", requirement.id, expected_version)
-                .await);
-        }
-        Ok(())
-    }
-
-    async fn get(&self, id: Uuid) -> Result<Option<Requirement>, RepoError> {
-        let body: Option<Value> = sqlx::query_scalar(
-            "select body from work_items where id = $1 and kind = 'requirement'",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
-        body.map(from_json).transpose()
-    }
-
-    async fn list(
-        &self,
-        project_id: Uuid,
-        filter: RequirementFilter,
-    ) -> Result<Vec<Requirement>, RepoError> {
-        let status = filter.status.map(|status| enum_text(&status)).transpose()?;
-        let bodies: Vec<Value> = sqlx::query_scalar(
-            "select body from work_items where project_id = $1 and kind = 'requirement' \
-             and ($2::text is null or status = $2) \
-             and ($3::text is null or owner_id = $3) \
-             and ($4::text is null or strpos(lower(title || ' ' || coalesce(body->>'problem', '')), lower($4)) > 0) \
-             order by created_at",
-        )
-        .bind(project_id)
-        .bind(status)
-        .bind(filter.owner)
-        .bind(filter.text)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(backend)?;
-        bodies.into_iter().map(from_json).collect()
-    }
-}
-
-/// `RequirementQuery` is the read side used by the HTTP layer. The store is
-/// already a `RequirementRepository`; delegate so both traits share one path.
-#[async_trait]
-impl RequirementQuery for PostgresStore {
-    async fn get(&self, id: Uuid) -> Result<Option<Requirement>, RepoError> {
-        RequirementRepository::get(self, id).await
-    }
-
-    async fn list(
-        &self,
-        project_id: Uuid,
-        filter: RequirementFilter,
-    ) -> Result<Vec<Requirement>, RepoError> {
-        RequirementRepository::list(self, project_id, filter).await
     }
 }
 
@@ -666,13 +552,12 @@ impl ProjectRepository for PostgresStore {
 
     async fn delete(&self, id: Uuid, expected_version: u32) -> Result<(), RepoError> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
-        let current: Option<i32> = sqlx::query_scalar(
-            "select version from projects where id = $1 for update",
-        )
-        .bind(id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(backend)?;
+        let current: Option<i32> =
+            sqlx::query_scalar("select version from projects where id = $1 for update")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(backend)?;
         let Some(current) = current else {
             return Err(RepoError::NotFound);
         };
@@ -691,7 +576,6 @@ impl ProjectRepository for PostgresStore {
              where project_id = $1 \
                 or aggregate_id = $1 \
                 or aggregate_id in (select id from issues where project_id = $1) \
-                or aggregate_id in (select id from work_items where project_id = $1) \
                 or aggregate_id in (select id from tasks where project_id = $1)",
         )
         .bind(id)
@@ -702,11 +586,9 @@ impl ProjectRepository for PostgresStore {
             "delete from links \
              where from_id in ( \
                  select id from issues where project_id = $1 \
-                 union all select id from work_items where project_id = $1 \
                  union all select id from tasks where project_id = $1 \
              ) or to_id in ( \
                  select id from issues where project_id = $1 \
-                 union all select id from work_items where project_id = $1 \
                  union all select id from tasks where project_id = $1 \
              )",
         )
@@ -749,6 +631,89 @@ impl ProjectRepository for PostgresStore {
             .await
             .map_err(backend)?;
 
+        sqlx::query(
+            "delete from anchor_document_operations \
+             where draft_id in ( \
+                 select drafts.id from anchor_document_drafts drafts \
+                 join anchor_documents documents on documents.id = drafts.document_id \
+                 where documents.project_id = $1 \
+             )",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from anchor_document_drafts \
+             where document_id in (select id from anchor_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from anchor_document_versions \
+             where document_id in (select id from anchor_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query("delete from anchor_document_annotations where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from anchor_document_approvals where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from anchor_documents where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        // Legacy project-document tables are no longer read, but their rows
+        // still reference projects; remove them so project deletion works.
+        sqlx::query(
+            "delete from project_document_operations \
+             where draft_id in ( \
+                 select drafts.id from project_document_drafts drafts \
+                 join project_documents documents on documents.id = drafts.document_id \
+                 where documents.project_id = $1 \
+             )",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from project_document_drafts \
+             where document_id in (select id from project_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query(
+            "delete from project_document_versions \
+             where document_id in (select id from project_documents where project_id = $1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        sqlx::query("delete from project_documents where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        sqlx::query("delete from project_document_approvals where project_id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
         sqlx::query(
             "delete from requirements_operations \
              where draft_id in ( \
@@ -805,27 +770,12 @@ impl ProjectRepository for PostgresStore {
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
-        sqlx::query("delete from work_items where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
         sqlx::query("delete from documents where project_id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
         sqlx::query("delete from decisions where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from project_briefs where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from project_brief_annotations where project_id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await

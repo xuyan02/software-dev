@@ -9,12 +9,11 @@ use foundry_adapter_memory::{
 use foundry_adapter_policy::DemoPolicy;
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountFilter, AccountRepository, AccountService, AuthService, CreateProject,
-    IssueRepository, IssueService, ProjectBriefRepository, ProjectBriefService,
-    ProjectBriefUseCases, ProjectRepository, ProjectService, RequirementService,
-    RequirementsDocumentService, RequirementsDocumentUseCases, TaskDispatcher, TaskLinkService,
-    TaskLinkUseCases, TaskRepository, TaskService, WorkflowCatalog, WorkflowService,
-    WorkflowUseCases,
+    AccountFilter, AccountRepository, AccountService, AnchorDocumentService,
+    AnchorDocumentUseCases, AuthService, CreateProject, IssueRepository, IssueService,
+    ProjectRepository, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases,
+    TaskDispatcher, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
+    WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::WorkflowId;
 use http_body_util::BodyExt;
@@ -49,8 +48,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
     let policy = Arc::new(DemoPolicy);
     store.seed_builtin_workflows().unwrap();
 
-    let requirements =
-        RequirementService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), policy);
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
 
@@ -80,6 +77,11 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+    ));
     let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
         Arc::new(RequirementsDocumentService::new(
             Arc::clone(&store),
@@ -87,12 +89,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             Arc::clone(&store),
             Arc::clone(&events),
         ));
-    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&events),
-    ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -116,7 +112,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
     dispatcher.process_pending(100).await.unwrap();
 
     let router = foundry_api_http::router(AppState {
-        requirements: Arc::new(requirements),
         issues: Arc::new(issues),
         accounts,
         projects,
@@ -126,8 +121,8 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
         )),
         workflows: workflows_admin,
+        anchor_docs,
         requirements_doc,
-        project_brief,
         task_links,
         auth,
         setup: Arc::new(SetupState::new(
@@ -373,10 +368,7 @@ async fn project_console_delete_redirects_and_clears_the_project_cookie() {
             header::AUTHORIZATION,
             format!("Bearer {}", harness.admin_token),
         )
-        .header(
-            header::COOKIE,
-            format!("foundry_project={project_id}"),
-        )
+        .header(header::COOKIE, format!("foundry_project={project_id}"))
         .body(Body::from(""))
         .unwrap();
     let (status, headers, _) = send(&harness.router, request).await;
@@ -390,10 +382,12 @@ async fn project_console_delete_redirects_and_clears_the_project_cookie() {
             .filter_map(|value| value.to_str().ok())
             .any(|value| value.contains("foundry_project=;"))
     );
-    assert!(ProjectRepository::get(&*harness.store, Uuid::parse_str(&project_id).unwrap())
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        ProjectRepository::get(&*harness.store, Uuid::parse_str(&project_id).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -534,6 +528,12 @@ async fn body_json(router: &Router, request: Request<Body>) -> Value {
     let (status, _, body) = send(router, request).await;
     assert!(status.is_success(), "request failed {status}: {body}");
     serde_json::from_str(&body).unwrap()
+}
+
+async fn body_text(router: &Router, request: Request<Body>) -> String {
+    let (status, _, body) = send(router, request).await;
+    assert!(status.is_success(), "request failed {status}: {body}");
+    body
 }
 
 fn error_body(body: &str) -> Value {
@@ -770,7 +770,7 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
         .unwrap();
     let (status, _, body) = send(&harness.router, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Clarify project goals"));
+    assert!(body.contains("项目文档撰写"));
     assert!(body.contains("goal_clarification"));
     assert!(body.contains("智能体"));
 
@@ -781,183 +781,9 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
         .unwrap();
     let (status, _, body) = send(&harness.router, request).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("Clarify project goals"));
+    assert!(body.contains("项目文档撰写"));
     assert!(body.contains("Project clarification: Primary"));
     assert!(body.contains("打开议题"));
-}
-
-#[tokio::test]
-async fn project_brief_console_saves_submits_and_approves() {
-    let harness = harness().await;
-
-    let request = Request::builder()
-        .method("POST")
-        .uri("/login")
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .body(Body::from("handle=admin&password=admin-password&next=%2F"))
-        .unwrap();
-    let (status, headers, _) = send(&harness.router, request).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let cookie = headers
-        .get(header::SET_COOKIE)
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap()
-        .to_string();
-    let project_id = harness.project_id.clone();
-    let page_uri = format!("/projects/{project_id}/brief");
-
-    let get_page = |uri: &str| {
-        Request::builder()
-            .uri(uri)
-            .header(header::COOKIE, &cookie)
-            .body(Body::empty())
-            .unwrap()
-    };
-    let (status, _, body) = send(&harness.router, get_page(&page_uri)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("项目简报"));
-    assert!(body.contains("我的草稿"));
-    assert!(body.contains("新建草稿"));
-
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("{page_uri}/drafts"))
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, &cookie)
-        .body(Body::from(""))
-        .unwrap();
-    let (status, headers, _) = send(&harness.router, request).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let draft_uri = headers[header::LOCATION].to_str().unwrap().to_string();
-    assert!(draft_uri.starts_with(&format!("{page_uri}?draft=")));
-    let (status, _, body) = send(&harness.router, get_page(&draft_uri)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("编辑草稿"));
-    assert!(body.contains("非目标"));
-    let draft_id = draft_uri
-        .split_once("?draft=")
-        .unwrap()
-        .1
-        .to_string();
-
-    let fields = |revision: &str, action: &str| -> Vec<(String, String)> {
-        vec![
-            ("draft_id".to_string(), draft_id.clone()),
-            ("revision".to_string(), revision.to_string()),
-            ("action".to_string(), action.to_string()),
-            ("problem".to_string(), "客服只能整单退款".to_string()),
-            ("goals".to_string(), "支持部分退款".to_string()),
-            (
-                "success_metrics".to_string(),
-                "人工处理量 | 700 | 件/月 | 客服看板 | 上线后 3 个月".to_string(),
-            ),
-            ("in_scope".to_string(), "部分退款".to_string()),
-            ("out_of_scope".to_string(), "多次退款合并".to_string()),
-            ("constraints".to_string(), "兼容支付网关".to_string()),
-            (
-                "risks".to_string(),
-                "网关风险 | medium | high | 双写校验 | 张三".to_string(),
-            ),
-            (
-                "stakeholders".to_string(),
-                "产品 | product-owner | 目标,范围".to_string(),
-            ),
-            ("budget_amount".to_string(), "100000".to_string()),
-            ("budget_currency".to_string(), "CNY".to_string()),
-            ("budget_note".to_string(), "首期".to_string()),
-            (
-                "assumptions".to_string(),
-                "支付网关支持部分退款".to_string(),
-            ),
-            ("open_questions".to_string(), String::new()),
-        ]
-    };
-    let post_page = |revision: &str, action: &str| {
-        let body = serde_urlencoded::to_string(fields(revision, action)).unwrap();
-        Request::builder()
-            .method("POST")
-            .uri(page_uri.as_str())
-            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(header::COOKIE, &cookie)
-            .body(Body::from(body))
-            .unwrap()
-    };
-
-    let (status, headers, _) = send(&harness.router, post_page("1", "save")).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        headers[header::LOCATION].to_str().unwrap(),
-        draft_uri.as_str()
-    );
-    let (status, _, body) = send(&harness.router, get_page(&draft_uri)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("支持部分退款"));
-    assert!(body.contains("多次退款合并"));
-
-    let (status, headers, _) = send(&harness.router, post_page("11", "submit")).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        headers[header::LOCATION].to_str().unwrap(),
-        page_uri.as_str()
-    );
-    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
-    assert!(body.contains("待批准"));
-    assert!(body.contains("支持部分退款"));
-
-    let annotation = serde_urlencoded::to_string([
-        ("target_type", "goals"),
-        ("body", "目标需要可衡量"),
-    ])
-    .unwrap();
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("{page_uri}/annotations"))
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, &cookie)
-        .body(Body::from(annotation))
-        .unwrap();
-    let (status, _, _) = send(&harness.router, request).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
-    assert!(body.contains("待处理批注（1）"));
-    assert!(body.contains("目标需要可衡量"));
-
-    let annotations =
-        ProjectBriefRepository::annotations(&*harness.store, project_id.parse().unwrap(), true)
-            .await
-            .unwrap();
-    let annotation_id = annotations[0].id;
-    let resolution = serde_urlencoded::to_string([("resolution", "已补充可衡量目标")]).unwrap();
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("{page_uri}/annotations/{annotation_id}/resolve"))
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, &cookie)
-        .body(Body::from(resolution))
-        .unwrap();
-    let (status, _, _) = send(&harness.router, request).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
-    assert!(body.contains("待处理批注（0）"));
-    assert!(body.contains("历史批注（1）"));
-    assert!(body.contains("已补充可衡量目标"));
-
-    let body = serde_urlencoded::to_string([("version", "1")]).unwrap();
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("{page_uri}/approve"))
-        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-        .header(header::COOKIE, &cookie)
-        .body(Body::from(body))
-        .unwrap();
-    let (status, _, _) = send(&harness.router, request).await;
-    assert_eq!(status, StatusCode::SEE_OTHER);
-    let (_, _, body) = send(&harness.router, get_page(&page_uri)).await;
-    assert!(body.contains("已批准"));
 }
 
 #[tokio::test]
@@ -1462,6 +1288,11 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+    ));
     let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
         Arc::new(RequirementsDocumentService::new(
             Arc::clone(&store),
@@ -1469,12 +1300,6 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
             Arc::clone(&store),
             Arc::clone(&events),
         ));
-    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&events),
-    ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -1482,11 +1307,6 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
-    let requirements = RequirementService::new(
-        Arc::clone(&store),
-        Arc::clone(&events),
-        Arc::new(DemoPolicy),
-    );
     let issues = IssueService::new(
         Arc::clone(&store),
         Arc::clone(&events),
@@ -1501,7 +1321,6 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Some("setup-pass"),
     ));
     let router = foundry_api_http::router(AppState {
-        requirements: Arc::new(requirements),
         issues: Arc::new(issues),
         accounts: accounts.clone(),
         projects,
@@ -1511,8 +1330,8 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
         )),
         workflows: workflows_admin,
+        anchor_docs,
         requirements_doc,
-        project_brief,
         task_links,
         auth: auth.clone(),
         setup: Arc::clone(&setup),
@@ -1797,7 +1616,7 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
         .expect("goal clarification child");
     assert_eq!(child["parent_id"], root["id"]);
     assert_eq!(child["state"], "pending");
-    assert_eq!(child["stage"], "work");
+    assert_eq!(child["stage"], "clarification");
     assert_eq!(child["dispatch_state"], "ready");
 
     let detail = body_json(
@@ -1813,7 +1632,7 @@ async fn project_creation_creates_the_root_and_goal_clarification() {
     .await;
     assert_eq!(detail["allowed_operations"], json!([]));
     assert_eq!(detail["actors"], json!([]));
-    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 4);
+    assert_eq!(detail["role_specs"].as_array().unwrap().len(), 5);
 
     let ready = body_json(
         &harness.router,
@@ -1944,6 +1763,17 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .bind_actor(
             project_id,
             child_id,
+            foundry_domain::RoleKey::new("writer"),
+            harness.admin_id,
+            harness.admin_id,
+        )
+        .await
+        .unwrap();
+    harness
+        .tasks
+        .bind_actor(
+            project_id,
+            child_id,
             foundry_domain::RoleKey::new("style_reviewer"),
             harness.admin_id,
             harness.admin_id,
@@ -1992,9 +1822,17 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .collect();
     assert_eq!(allowed_names, vec!["started", "completed"]);
 
-    for (index, operation) in ["started", "completed", "approved", "approved", "approved"]
-        .iter()
-        .enumerate()
+    for (index, operation) in [
+        "started",
+        "completed",
+        "started",
+        "completed",
+        "approved",
+        "approved",
+        "approved",
+    ]
+    .iter()
+    .enumerate()
     {
         let (status, _, body) = send(
             &harness.router,
@@ -2018,7 +1856,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:4:approved") }),
+            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:6:approved") }),
         ),
     )
     .await;
@@ -2040,7 +1878,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
     assert_eq!(detail["dispatch_state"], "closed");
     assert_eq!(detail["allowed_operations"], json!([]));
     let actors = detail["actors"].as_array().unwrap();
-    assert_eq!(actors.len(), 4);
+    assert_eq!(actors.len(), 5);
     assert!(actors.iter().all(|actor| actor["active"] == false));
 
     let history = body_json(
@@ -2887,6 +2725,7 @@ async fn an_account_workflow_goes_from_creation_to_a_project_root() {
     assert_eq!(root["workflow_version"], 1);
 }
 
+#[ignore = "legacy structured requirements API replaced by anchor documents"]
 #[tokio::test]
 async fn requirements_document_round_trips_over_http() {
     let harness = harness().await;
@@ -2997,19 +2836,20 @@ async fn requirements_document_round_trips_over_http() {
     .await;
     assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
 
-    let published = body_json(
+    let approved = body_json(
         &harness.router,
         workflow_request(
             "POST",
-            &format!("{base}/draft/publish"),
+            &format!("{base}/draft/approvals"),
             &harness.admin_token,
             Some("2"),
-            json!({}),
+            json!({ "decision": "approved", "comment": "looks good" }),
         ),
     )
     .await;
-    assert_eq!(published["version"], 1);
-    assert_eq!(published["revision"], 3);
+    assert_eq!(approved["decision"], "approved");
+    assert_eq!(approved["version"], 1);
+    assert_eq!(approved["revision"], 2);
 
     let document = body_json(
         &harness.router,
@@ -3032,6 +2872,21 @@ async fn requirements_document_round_trips_over_http() {
     .await;
     assert_eq!(version["version"], 1);
     assert_eq!(version["body"]["users"][0]["name"], "张先生");
+    assert_eq!(version["source_revision"], 2);
+
+    let approvals = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/draft/approvals"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(approvals[0]["revision"], 2);
+    assert_eq!(approvals[0]["decision"], "approved");
 
     let stale_result = send(
         &harness.router,
@@ -3054,169 +2909,105 @@ async fn requirements_document_round_trips_over_http() {
     assert_eq!(error_body(&stale_result.2)["code"], "draft_conflict");
 }
 
+#[ignore = "legacy structured requirements API replaced by anchor documents"]
 #[tokio::test]
-async fn project_brief_round_trips_over_http() {
+async fn requirements_draft_requires_approval_after_each_change() {
     let harness = harness().await;
-    let base = format!("/api/v1/projects/{}/brief", harness.project_id);
+    let base = format!(
+        "/api/v1/projects/{}/requirements-document",
+        harness.project_id
+    );
 
-    let first = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/drafts"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    let second = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/drafts"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_ne!(first["id"], second["id"]);
-    assert_eq!(first["revision"], 1);
-
-    let draft_id = first["id"].as_str().unwrap().to_string();
-    let mut revision = 1;
-    let operations = [
-        json!({ "type": "set_problem", "value": "客服只能整单退款" }),
-        json!({ "type": "set_goals", "values": ["支持部分退款"] }),
-        json!({
-            "type": "set_success_metrics",
-            "values": [{
-                "id": "m1",
-                "name": "人工处理量",
-                "target": 700,
-                "unit": "件/月",
-                "measurement": "客服看板",
-                "window": "上线后 3 个月"
-            }]
-        }),
-        json!({
-            "type": "set_scope",
-            "in_scope": ["部分退款"],
-            "out_of_scope": ["多次退款合并"]
-        }),
-        json!({ "type": "set_constraints", "values": ["兼容支付网关"] }),
-        json!({
-            "type": "set_stakeholders",
-            "values": [{
-                "id": "s1",
-                "role": "产品",
-                "account": "product-owner",
-                "decision_rights": ["目标/范围"]
-            }]
-        }),
-    ];
-    for operation in operations {
-        let updated = body_json(
-            &harness.router,
-            json_request(
-                "POST",
-                &format!("{base}/drafts/{draft_id}/operations"),
-                Some(&harness.admin_token),
-                None,
-                json!({
-                    "op_id": Uuid::now_v7(),
-                    "base_revision": revision,
-                    "operation": operation,
-                }),
-            ),
-        )
-        .await;
-        revision += 1;
-        assert_eq!(updated["revision"], revision);
-    }
-
-    let drafts = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/drafts"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(drafts.as_array().unwrap().len(), 2);
-
-    create_account(&harness, "brief-observer", "human").await;
-    body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!(
-                "/api/v1/projects/{}/members",
-                harness.project_id
-            ),
-            Some(&harness.admin_token),
-            None,
-            json!({ "handle": "brief-observer", "role": "member" }),
-        ),
-    )
-    .await;
-    let observer_token = login(&harness.router, "brief-observer", "brief-observer-password").await;
-    let (status, _, _) = send(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/drafts/{}", second["id"].as_str().unwrap()),
-            Some(&observer_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let observer_drafts = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/drafts"),
-            Some(&observer_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(observer_drafts.as_array().unwrap().len(), 0);
-
-    let submitted = body_json(
+    let first_change = json!({
+        "operations": [
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "user_add",
+                "user": { "id": "persona-customer", "name": "张先生" }
+            }
+        ]
+    });
+    let saved = body_json(
         &harness.router,
         workflow_request(
             "POST",
-            &format!("{base}/drafts/{draft_id}/submit"),
+            &format!("{base}/draft/operations"),
             &harness.admin_token,
-            Some(&revision.to_string()),
-            json!({}),
+            Some("1"),
+            first_change,
         ),
     )
     .await;
-    assert_eq!(submitted["status"], "in_review");
-    assert_eq!(submitted["version"], 1);
+    assert_eq!(saved["revision"], 2);
 
-    let current = body_json(
+    let rejected = body_json(
         &harness.router,
-        json_request(
-            "GET",
-            &base,
-            Some(&harness.admin_token),
-            None,
-            json!({}),
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/approvals"),
+            &harness.admin_token,
+            Some("2"),
+            json!({ "decision": "rejected", "comment": "补充用户" }),
         ),
     )
     .await;
-    assert_eq!(current["version"], 1);
-    assert_eq!(current["status"], "in_review");
+    assert_eq!(rejected["decision"], "rejected");
+    assert!(rejected["version"].is_null());
+
+    let document = body_json(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert_eq!(document["current_version"], 0);
+
+    let edited = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("2"),
+            json!({
+                "operations": [{
+                    "op_id": Uuid::now_v7(),
+                    "type": "user_update",
+                    "user": { "id": "persona-customer", "name": "张先生（更新）" }
+                }]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(edited["revision"], 3);
+
+    let approved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/approvals"),
+            &harness.admin_token,
+            Some("3"),
+            json!({ "decision": "approved" }),
+        ),
+    )
+    .await;
+    assert_eq!(approved["version"], 1);
+    assert_eq!(approved["revision"], 3);
+
+    // Approving the same revision again is idempotent and does not create a
+    // second version.
+    let again = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/approvals"),
+            &harness.admin_token,
+            Some("3"),
+            json!({ "decision": "approved" }),
+        ),
+    )
+    .await;
+    assert_eq!(again["version"], 1);
 
     let versions = body_json(
         &harness.router,
@@ -3230,110 +3021,160 @@ async fn project_brief_round_trips_over_http() {
     )
     .await;
     assert_eq!(versions.as_array().unwrap().len(), 1);
+    assert_eq!(versions[0]["source_revision"], 3);
+}
 
-    let annotation = body_json(
+#[tokio::test]
+async fn requirements_anchor_document_round_trips_over_http() {
+    let harness = harness().await;
+    let base = format!(
+        "/api/v1/projects/{}/documents/requirements",
+        harness.project_id
+    );
+
+    let saved = body_json(
         &harness.router,
-        json_request(
+        workflow_request(
             "POST",
-            &format!("{base}/annotations"),
-            Some(&harness.admin_token),
-            None,
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
             json!({
-                "target_type": "success_metrics",
-                "target_id": "m1",
-                "field": "target",
-                "body": "目标值需要说明理由",
+                "operations": [
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "users",
+                        "occurrence_key": "persona-customer",
+                        "text": "张先生：需要随时查看订单状态"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "subsystems",
+                        "occurrence_key": "orders",
+                        "text": "订单子系统"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "subsystems/subsystem/orders",
+                        "occurrence_key": "core",
+                        "text": "订单核心功能集"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "subsystems/subsystem/orders/function_set/core.stories",
+                        "occurrence_key": "track-order",
+                        "text": "作为张先生，我希望查看订单状态，以便知道商品什么时候到达"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "subsystems/subsystem/orders/function_set/core.functions",
+                        "occurrence_key": "track-order",
+                        "text": "订单查询"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.function_description",
+                        "text": "按订单号查询当前状态和物流信息"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.interaction_design",
+                        "text": "输入订单号后展示状态时间线"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.ui_design",
+                        "text": "订单详情页顶部展示状态时间线"
+                    }
+                ]
             }),
         ),
     )
     .await;
-    assert_eq!(annotation["status"], "open");
-    assert_eq!(annotation["target_id"], "m1");
-    let annotation_id = annotation["id"].as_str().unwrap().to_string();
+    assert_eq!(saved["revision"], 2);
+    assert!(saved["root_id"].as_str().unwrap().starts_with("sha256:"));
 
-    let open = body_json(
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("# 需求文档"));
+    assert!(toc.contains("## 目录"));
+    assert!(toc.contains("- 用户"));
+    assert!(toc.contains("- 故事"));
+    assert!(toc.contains("k:"));
+
+    let content = body_json(
         &harness.router,
         json_request(
             "GET",
-            &format!("{base}/annotations"),
+            &format!("{base}/content"),
             Some(&harness.admin_token),
             None,
             json!({}),
         ),
     )
     .await;
-    assert_eq!(open.as_array().unwrap().len(), 1);
+    assert_eq!(content["format"], "md");
+    let markdown = content["markdown"].as_str().unwrap();
+    assert!(markdown.contains("# 用户"));
+    assert!(markdown.contains("张先生"));
 
-    let resolved = body_json(
+    let validation = body_json(
         &harness.router,
         json_request(
             "POST",
-            &format!("{base}/annotations/{annotation_id}/resolve"),
-            Some(&harness.admin_token),
-            None,
-            json!({ "resolution": "补充了基线说明" }),
-        ),
-    )
-    .await;
-    assert_eq!(resolved["status"], "resolved");
-
-    let open = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/annotations"),
+            &format!("{base}/draft/validate"),
             Some(&harness.admin_token),
             None,
             json!({}),
         ),
     )
     .await;
-    assert_eq!(open.as_array().unwrap().len(), 0);
-
-    let all = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/annotations?include_resolved=true"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(all.as_array().unwrap().len(), 1);
-
-    let (status, _, _) = send(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/annotations"),
-            Some(&harness.admin_token),
-            None,
-            json!({
-                "target_type": "risks",
-                "target_id": "missing",
-                "body": "unknown risk",
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
 
     let approved = body_json(
         &harness.router,
         workflow_request(
             "POST",
-            &format!("{base}/approve"),
+            &format!("{base}/draft/approvals"),
             &harness.admin_token,
-            Some("1"),
+            Some("2"),
+            json!({ "decision": "approved", "comment": "需求基线" }),
+        ),
+    )
+    .await;
+    assert_eq!(approved["version"], 1);
+    assert_eq!(approved["revision"], 2);
+
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("- current_version: 1"));
+
+    let versions = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/versions"),
+            Some(&harness.admin_token),
+            None,
             json!({}),
         ),
     )
     .await;
-    assert_eq!(approved["status"], "approved");
-    assert_eq!(approved["version"], 1);
-    assert!(approved["approved_by"].is_string());
+    assert_eq!(versions[0]["version"], 1);
 }
 
 #[tokio::test]
@@ -3417,4 +3258,377 @@ async fn task_links_round_trip_over_http() {
     )
     .await;
     assert!(list.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn anchor_draft_create_and_open_are_distinct() {
+    let harness = harness().await;
+    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/draft"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error_body(&body)["code"], "draft_not_found");
+
+    let created = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(created["revision"], 1);
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(error_body(&body)["code"], "draft_exists");
+
+    let opened = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/draft"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(opened["revision"], 1);
+}
+
+#[tokio::test]
+async fn anchor_document_round_trips_over_http() {
+    let harness = harness().await;
+    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
+
+    let operations = json!({
+        "operations": [
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "positioning.what_is",
+                "text": "企业费用报销系统"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "positioning.what_is_not",
+                "occurrence_key": "e1",
+                "text": "财务总账系统"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "background.context",
+                "text": "报销目前由员工填写纸质单，主管签字后交财务录入。"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "background.problems",
+                "occurrence_key": "p1",
+                "text": "员工无法查询报销进度"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "background.problems/problem/p1.impact",
+                "text": "平均催问两次"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "goals",
+                "occurrence_key": "g1",
+                "text": "员工可自助查询报销进度"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "goals/goal/g1.goal_problem_refs",
+                "occurrence_key": "p1",
+                "text": "p1"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "non_goals",
+                "occurrence_key": "n1",
+                "text": "不做移动端应用"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "non_goals/non_goal/n1.non_goal_reason",
+                "text": "首期只覆盖桌面端"
+            }
+        ]
+    });
+
+    let saved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            operations,
+        ),
+    )
+    .await;
+    assert_eq!(saved["revision"], 2);
+    assert!(saved["root_id"].as_str().unwrap().starts_with("sha256:"));
+
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("# 项目文档"));
+    assert!(toc.contains("## 目录"));
+    assert!(toc.contains("- 定位"));
+    assert!(toc.contains("k:"));
+
+    let content = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/content"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(content["format"], "md");
+    assert!(content["markdown"].as_str().unwrap().contains("# 定位"));
+
+    let validation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft/validate"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
+
+    let approved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/approvals"),
+            &harness.admin_token,
+            Some("2"),
+            json!({ "decision": "approved", "comment": "项目基线" }),
+        ),
+    )
+    .await;
+    assert_eq!(approved["version"], 1);
+    assert_eq!(approved["revision"], 2);
+
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("- current_version: 1"));
+
+    let versions = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/versions"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(versions[0]["version"], 1);
+}
+
+#[tokio::test]
+async fn anchor_annotations_are_anchored_and_become_stale() {
+    let harness = harness().await;
+    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
+
+    let operations = json!({
+        "operations": [
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "positioning.what_is",
+                "text": "企业费用报销系统"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "positioning.what_is_not",
+                "occurrence_key": "e1",
+                "text": "财务总账系统"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "background.context",
+                "text": "报销目前由员工填写纸质单，主管签字后交财务录入。"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "background.problems",
+                "occurrence_key": "p1",
+                "text": "员工无法查询报销进度"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "background.problems/problem/p1.impact",
+                "text": "平均催问两次"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "goals",
+                "occurrence_key": "g1",
+                "text": "员工可自助查询报销进度"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "goals/goal/g1.goal_problem_refs",
+                "occurrence_key": "p1",
+                "text": "p1"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "add",
+                "parent": "non_goals",
+                "occurrence_key": "n1",
+                "text": "不做移动端应用"
+            },
+            {
+                "op_id": Uuid::now_v7(),
+                "type": "update_text",
+                "anchor": "non_goals/non_goal/n1.non_goal_reason",
+                "text": "首期只覆盖桌面端"
+            }
+        ]
+    });
+    body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            operations,
+        ),
+    )
+    .await;
+
+    let annotation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "anchor": "goals/goal/g1",
+                "quote": "员工可自助查询报销进度",
+                "body": "这里应该说明查询范围。"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(annotation["status"], "open");
+    let annotation_id = annotation["id"].as_str().unwrap().to_string();
+
+    let listed = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/annotations"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    let resolved = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/annotations/{annotation_id}/resolve"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "resolution": "已补充。" }),
+        ),
+    )
+    .await;
+    assert_eq!(resolved["status"], "resolved");
+
+    let update = json!({
+        "operations": [{
+            "op_id": Uuid::now_v7(),
+            "type": "update_text",
+            "anchor": "goals/goal/g1",
+            "text": "员工可自助提交并查询报销进度"
+        }]
+    });
+    body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("2"),
+            update,
+        ),
+    )
+    .await;
+
+    let stale = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/annotations?include_resolved=true"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(stale[0]["status"], "stale");
 }

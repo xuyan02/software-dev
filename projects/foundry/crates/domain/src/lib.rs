@@ -6,34 +6,32 @@
 
 pub mod account;
 pub mod agent;
+pub mod anchor_document;
 pub mod decision;
 pub mod document;
 pub mod event;
 pub mod issue;
 pub mod link;
 pub mod project;
-pub mod project_brief;
 pub mod requirements_doc;
 pub mod state_machine;
 pub mod task;
 pub mod task_link;
-pub mod work_item;
 pub mod workflow;
 
 pub use account::*;
 pub use agent::*;
+pub use anchor_document::*;
 pub use decision::*;
 pub use document::*;
 pub use event::*;
 pub use issue::*;
 pub use link::*;
 pub use project::*;
-pub use project_brief::*;
 pub use requirements_doc::*;
 pub use state_machine::*;
 pub use task::*;
 pub use task_link::*;
-pub use work_item::*;
 pub use workflow::*;
 
 use serde::{Deserialize, Serialize};

@@ -50,136 +50,6 @@ impl FoundryClient {
         )
     }
 
-    fn brief_url(&self) -> String {
-        format!(
-            "{}/api/v1/projects/{}/brief",
-            self.base_url.trim_end_matches('/'),
-            self.project_id
-        )
-    }
-
-    pub async fn get_project_brief(&self) -> Result<Value, FoundryError> {
-        self.get(&self.brief_url()).await
-    }
-
-    pub async fn list_project_brief_versions(&self) -> Result<Value, FoundryError> {
-        self.get(&format!("{}/versions", self.brief_url())).await
-    }
-
-    pub async fn get_project_brief_version(&self, version: u32) -> Result<Value, FoundryError> {
-        self.get(&format!("{}/versions/{version}", self.brief_url()))
-            .await
-    }
-
-    pub async fn list_project_brief_drafts(&self) -> Result<Value, FoundryError> {
-        self.get(&format!("{}/drafts", self.brief_url())).await
-    }
-
-    pub async fn create_project_brief_draft(&self) -> Result<Value, FoundryError> {
-        self.post(
-            &format!("{}/drafts", self.brief_url()),
-            Value::Object(Default::default()),
-            None,
-        )
-        .await
-    }
-
-    pub async fn get_project_brief_draft(&self, draft_id: Uuid) -> Result<Value, FoundryError> {
-        self.get(&format!("{}/drafts/{draft_id}", self.brief_url()))
-            .await
-    }
-
-    pub async fn apply_project_brief_draft_operation(
-        &self,
-        draft_id: Uuid,
-        op_id: Uuid,
-        base_revision: u64,
-        operation: Value,
-    ) -> Result<Value, FoundryError> {
-        self.post(
-            &format!("{}/drafts/{draft_id}/operations", self.brief_url()),
-            serde_json::json!({
-                "op_id": op_id,
-                "base_revision": base_revision,
-                "operation": operation,
-            }),
-            None,
-        )
-        .await
-    }
-
-    pub async fn submit_project_brief_draft(
-        &self,
-        draft_id: Uuid,
-        expected_revision: u64,
-    ) -> Result<Value, FoundryError> {
-        self.post(
-            &format!("{}/drafts/{draft_id}/submit", self.brief_url()),
-            Value::Object(Default::default()),
-            Some(expected_revision),
-        )
-        .await
-    }
-
-    pub async fn approve_project_brief(
-        &self,
-        expected_version: u64,
-    ) -> Result<Value, FoundryError> {
-        self.post(
-            &format!("{}/approve", self.brief_url()),
-            Value::Object(Default::default()),
-            Some(expected_version),
-        )
-        .await
-    }
-
-    pub async fn list_brief_annotations(
-        &self,
-        include_resolved: bool,
-    ) -> Result<Value, FoundryError> {
-        self.get(&format!(
-            "{}/annotations?include_resolved={include_resolved}",
-            self.brief_url()
-        ))
-        .await
-    }
-
-    pub async fn annotate_brief(
-        &self,
-        target_type: &str,
-        target_id: Option<&str>,
-        field: Option<&str>,
-        body: &str,
-    ) -> Result<Value, FoundryError> {
-        self.post(
-            &format!("{}/annotations", self.brief_url()),
-            serde_json::json!({
-                "target_type": target_type,
-                "target_id": target_id,
-                "field": field,
-                "body": body,
-            }),
-            None,
-        )
-        .await
-    }
-
-    pub async fn resolve_brief_annotation(
-        &self,
-        annotation_id: Uuid,
-        resolution: &str,
-    ) -> Result<Value, FoundryError> {
-        self.post(
-            &format!(
-                "{}/annotations/{annotation_id}/resolve",
-                self.brief_url()
-            ),
-            serde_json::json!({ "resolution": resolution }),
-            None,
-        )
-        .await
-    }
-
     pub async fn get_document(&self) -> Result<Value, FoundryError> {
         self.get(&self.document_url()).await
     }
@@ -206,6 +76,172 @@ impl FoundryClient {
         self.post(
             &format!("{}/draft/operations", self.document_url()),
             body,
+            Some(expected_revision),
+        )
+        .await
+    }
+
+    pub async fn get_project(&self) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/api/v1/projects/{}",
+            self.base_url.trim_end_matches('/'),
+            self.project_id
+        ))
+        .await
+    }
+
+    fn anchor_document_url(&self, kind: &str) -> String {
+        format!(
+            "{}/api/v1/projects/{}/documents/{}",
+            self.base_url.trim_end_matches('/'),
+            self.project_id,
+            kind
+        )
+    }
+
+    pub async fn get_anchor_document_toc(
+        &self,
+        kind: &str,
+        anchor: Option<&str>,
+    ) -> Result<String, FoundryError> {
+        match anchor {
+            Some(anchor) => {
+                self.get_text(&format!(
+                    "{}?anchor={anchor}",
+                    self.anchor_document_url(kind)
+                ))
+                .await
+            }
+            None => self.get_text(&self.anchor_document_url(kind)).await,
+        }
+    }
+
+    pub async fn open_anchor_document_draft(&self, kind: &str) -> Result<Value, FoundryError> {
+        self.get(&format!("{}/draft", self.anchor_document_url(kind)))
+            .await
+    }
+
+    pub async fn create_anchor_document_draft(&self, kind: &str) -> Result<Value, FoundryError> {
+        self.post(
+            &format!("{}/draft", self.anchor_document_url(kind)),
+            Value::Object(Default::default()),
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_anchor_document_content(
+        &self,
+        kind: &str,
+        anchor: Option<&str>,
+    ) -> Result<Value, FoundryError> {
+        match anchor {
+            Some(anchor) => {
+                self.get(&format!(
+                    "{}/content?anchor={anchor}",
+                    self.anchor_document_url(kind)
+                ))
+                .await
+            }
+            None => {
+                self.get(&format!("{}/content", self.anchor_document_url(kind)))
+                    .await
+            }
+        }
+    }
+
+    pub async fn validate_anchor_document(&self, kind: &str) -> Result<Value, FoundryError> {
+        self.post(
+            &format!("{}/draft/validate", self.anchor_document_url(kind)),
+            Value::Object(Default::default()),
+            None,
+        )
+        .await
+    }
+
+    pub async fn apply_anchor_document_operations(
+        &self,
+        kind: &str,
+        expected_revision: u64,
+        operations: Value,
+    ) -> Result<Value, FoundryError> {
+        let body = serde_json::json!({ "operations": operations });
+        self.post(
+            &format!("{}/draft/operations", self.anchor_document_url(kind)),
+            body,
+            Some(expected_revision),
+        )
+        .await
+    }
+
+    pub async fn list_anchor_annotations(
+        &self,
+        kind: &str,
+        include_resolved: bool,
+    ) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/annotations?include_resolved={include_resolved}",
+            self.anchor_document_url(kind)
+        ))
+        .await
+    }
+
+    pub async fn annotate_anchor_document(
+        &self,
+        kind: &str,
+        body: Value,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!("{}/annotations", self.anchor_document_url(kind)),
+            body,
+            None,
+        )
+        .await
+    }
+
+    pub async fn resolve_anchor_annotation(
+        &self,
+        kind: &str,
+        annotation_id: &str,
+        resolution: &str,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/annotations/{annotation_id}/resolve",
+                self.anchor_document_url(kind)
+            ),
+            serde_json::json!({ "resolution": resolution }),
+            None,
+        )
+        .await
+    }
+
+    pub async fn list_anchor_approvals(&self, kind: &str) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/draft/approvals",
+            self.anchor_document_url(kind)
+        ))
+        .await
+    }
+
+    pub async fn list_anchor_versions(&self, kind: &str) -> Result<Value, FoundryError> {
+        self.get(&format!("{}/versions", self.anchor_document_url(kind)))
+            .await
+    }
+
+    pub async fn decide_anchor_document(
+        &self,
+        kind: &str,
+        expected_revision: u64,
+        decision: &str,
+        comment: Option<&str>,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!("{}/draft/approvals", self.anchor_document_url(kind)),
+            serde_json::json!({
+                "decision": decision,
+                "comment": comment,
+            }),
             Some(expected_revision),
         )
         .await
@@ -374,11 +410,7 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn start_task(
-        &self,
-        project_id: &str,
-        task_id: Uuid,
-    ) -> Result<Value, FoundryError> {
+    pub async fn start_task(&self, project_id: &str, task_id: Uuid) -> Result<Value, FoundryError> {
         self.post_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/start",
@@ -538,6 +570,29 @@ impl FoundryClient {
             .await
             .map_err(|error| FoundryError::Http(error.to_string()))?;
         parse_response(response).await
+    }
+
+    async fn get_text(&self, url: &str) -> Result<String, FoundryError> {
+        let mut request = self.http.get(url).bearer_auth(&self.token);
+        if !self.project_id.is_empty() {
+            request = request.header("X-Foundry-Project", self.project_id.as_str());
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| FoundryError::Http(error.to_string()))?;
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| FoundryError::Http(error.to_string()))?;
+        if !status.is_success() {
+            return Err(FoundryError::Status {
+                status: status.as_u16(),
+                body: text,
+            });
+        }
+        Ok(text)
     }
 
     async fn post(

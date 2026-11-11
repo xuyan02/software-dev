@@ -2,15 +2,11 @@
 
 use clap::{Args, Parser, Subcommand};
 use foundry_agent_runtime::{
-    AgentRunRequest, AgentRuntime, Budget, CLARIFY_SYSTEM_PROMPT, ContextBundle, EchoTool,
-    FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
+    AgentRunRequest, AgentRuntime, Budget, CLARIFY_SYSTEM_PROMPT, ContextBundle, DocumentTool,
+    EchoTool, FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
     FoundryRequirementsGetTool, FoundryRequirementsValidateTool, InMemoryTrajectory,
     IssueCommentTool, IssueGetTool, LocalSandbox, ModelResponse, OpenAiCompatibleConfig,
-    OpenAiCompatibleModel, Pricing, ProjectBriefAnnotateTool, ProjectBriefAnnotationsListTool,
-    ProjectBriefDraftApplyTool, ProjectBriefDraftCreateTool, ProjectBriefDraftGetTool,
-    ProjectBriefDraftsListTool, ProjectBriefDraftSubmitTool, ProjectBriefGetTool,
-    ProjectBriefResolveAnnotationTool, ProjectBriefVersionGetTool,
-    ProjectBriefVersionsListTool, RequirementsGetTool, RunOutcome, ScriptedModel,
+    OpenAiCompatibleModel, Pricing, RequirementsGetTool, RunOutcome, ScriptedModel,
     TaskAllowedOperationsTool, TaskCommentTool, TaskLinksListTool, TaskOperationTool, ToolRegistry,
 };
 use serde_json::json;
@@ -31,7 +27,7 @@ enum Command {
     Demo,
     /// Run an agent against an OpenAI-compatible endpoint.
     Run(Box<RunArgs>),
-    /// Clarify a project through its unified Issue and draft its ProjectBrief.
+    /// Clarify a project through its unified Issue and draft its requirements document.
     Clarify(Box<ClarifyArgs>),
 }
 
@@ -204,37 +200,6 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
-    tools.register(Arc::new(ProjectBriefGetTool::new(Arc::clone(&client))));
-    tools.register(Arc::new(ProjectBriefVersionsListTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefVersionGetTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefDraftsListTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefDraftCreateTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefDraftGetTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefDraftApplyTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefDraftSubmitTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefAnnotationsListTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefAnnotateTool::new(Arc::clone(
-        &client,
-    ))));
-    tools.register(Arc::new(ProjectBriefResolveAnnotationTool::new(
-        Arc::clone(&client),
-    )));
     tools.register(Arc::new(TaskAllowedOperationsTool::new(Arc::clone(
         &client,
     ))));
@@ -249,12 +214,8 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut context = ContextBundle::default();
-    if let Ok(brief) = client.get_project_brief().await {
-        context.push(
-            "project_brief",
-            args.project_id.clone(),
-            serde_json::to_string_pretty(&brief)?,
-        );
+    if let Ok(document) = client.get_anchor_document_toc("project", None).await {
+        context.push("project_document", args.project_id.clone(), document);
     }
     if let Ok(document) = client.get_document().await {
         context.push(
@@ -312,26 +273,11 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("{}", serde_json::to_string_pretty(&trajectory.steps())?);
 
-    let brief = client.get_project_brief().await?;
-    let status = brief
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
-    if status == "in_review" {
-        let revision = brief
-            .get("revision")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or_default();
-        let answer = prompt.ask("批准这份项目简报吗？[y/N]: ").await?;
-        if matches!(answer.trim(), "y" | "Y" | "yes" | "批准") {
-            let approved = client.approve_project_brief(revision).await?;
-            println!("{}", serde_json::to_string_pretty(&approved)?);
-        }
-    }
     Ok(())
 }
 
 fn register_foundry_tools(tools: &mut ToolRegistry, client: &Arc<FoundryClient>) {
+    tools.register(Arc::new(DocumentTool::new(Arc::clone(client))));
     tools.register(Arc::new(FoundryRequirementsGetTool::new(Arc::clone(
         client,
     ))));

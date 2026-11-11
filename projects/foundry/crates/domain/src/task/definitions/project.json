@@ -14,7 +14,7 @@
       "events": [
         {
           "event": "task.created",
-          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = 'Clarify project goals')"
+          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = '项目文档撰写')"
         },
         {
           "event": "child.state_changed",

@@ -187,6 +187,11 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
                     api_key_env: "OPENAI_API_KEY".to_string(),
                     system_prompt: template.system_prompt.to_string(),
                     tools: template.tools.iter().map(|tool| tool.to_string()).collect(),
+                    skills: template
+                        .skills
+                        .iter()
+                        .map(|skill| skill.to_string())
+                        .collect(),
                     enabled: true,
                 },
                 account.id,

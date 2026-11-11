@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use foundry_domain::{
-    Account, AccountStatus, Actor, AnnotationStatus, AnnotationTarget, DomainEvent,
-    DomainEventKind, ProjectRole, ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody,
-    RequirementsDraftDAO, RequirementsOperation, Validation, ValidationIssue,
+    Account, AccountStatus, Actor, AnnotationStatus, AnnotationTarget, ApprovalDecision,
+    DomainEvent, DomainEventKind, ProjectRole, ProjectStatus, RequirementsAnnotation,
+    RequirementsApprovalDAO, RequirementsDocumentBody, RequirementsDraftDAO, RequirementsOperation,
+    Validation, ValidationIssue,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -14,7 +15,7 @@ use uuid::Uuid;
 
 use crate::{
     AccountRepository, EventSink, ProjectRepository, RepoError, RequirementsApplyOutcome,
-    RequirementsDocumentRepository, RequirementsPublishOutcome, ServiceError,
+    RequirementsApprovalOutcome, RequirementsDocumentRepository, ServiceError,
 };
 
 #[derive(Debug, Clone)]
@@ -25,9 +26,11 @@ pub struct ApplyRequirementsOperations {
 }
 
 #[derive(Debug, Clone)]
-pub struct PublishRequirementsDocument {
+pub struct DecideRequirementsDraft {
     pub project_id: Uuid,
     pub expected_revision: u64,
+    pub decision: ApprovalDecision,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +56,8 @@ pub struct RequirementsDocumentView {
     pub current_version: u32,
     pub latest_version: Option<u32>,
     pub draft_revision: Option<u64>,
+    /// Set when the current draft revision has already been approved.
+    pub draft_version: Option<u32>,
     pub editable: bool,
     pub body: RequirementsDocumentBody,
 }
@@ -73,13 +78,27 @@ pub struct RequirementsVersionView {
     pub version: u32,
     pub body: RequirementsDocumentBody,
     pub created_by: Uuid,
+    pub approved_by: Option<Uuid>,
+    pub source_revision: Option<u64>,
     pub published_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RequirementsPublished {
-    pub version: u32,
+pub struct RequirementsApprovalView {
+    pub id: Uuid,
     pub revision: u64,
+    pub decision: ApprovalDecision,
+    pub actor_id: Uuid,
+    pub comment: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RequirementsApprovalResult {
+    pub decision: ApprovalDecision,
+    pub revision: u64,
+    pub version: Option<u32>,
     pub warnings: Vec<ValidationIssue>,
 }
 
@@ -118,6 +137,13 @@ where
         let document = self.repository.document(project_id).await?;
         let draft = self.repository.draft(project_id).await?;
         let latest = self.repository.latest_version(project_id).await?;
+        let versions = self.repository.versions(project_id).await?;
+        let draft_version = draft.as_ref().and_then(|draft| {
+            versions
+                .iter()
+                .find(|version| version.source_revision == Some(draft.revision))
+                .map(|version| version.version)
+        });
         let body = if let Some(draft) = &draft {
             draft.body.clone()
         } else if let Some(latest) = &latest {
@@ -134,6 +160,7 @@ where
                 .unwrap_or(0),
             latest_version: latest.as_ref().map(|version| version.version),
             draft_revision: draft.as_ref().map(|draft| draft.revision),
+            draft_version,
             editable: role >= ProjectRole::Member,
             body,
         })
@@ -233,11 +260,11 @@ where
         Ok(foundry_domain::validate_requirements_document(&body))
     }
 
-    pub async fn publish(
+    pub async fn decide(
         &self,
         actor: Actor,
-        command: PublishRequirementsDocument,
-    ) -> Result<RequirementsPublished, ServiceError> {
+        command: DecideRequirementsDraft,
+    ) -> Result<RequirementsApprovalResult, ServiceError> {
         let account = self.require_account(&actor).await?;
         self.require_human(&account)?;
         self.project_role(&account, command.project_id, ProjectRole::Maintainer)
@@ -254,52 +281,162 @@ where
                 current_updated_at: draft.updated_at,
             });
         }
-        let validation = foundry_domain::validate_requirements_document(&draft.body);
-        if !validation.is_valid() {
-            return Err(ServiceError::RequirementsInvalid(validation));
-        }
-        match self
-            .repository
-            .publish(
-                command.project_id,
-                command.expected_revision,
-                account.id,
-                OffsetDateTime::now_utc(),
-            )
-            .await
-            .map_err(requirements_repo_error)?
-        {
-            RequirementsPublishOutcome::Published { version, revision } => {
-                self.emit(
-                    DomainEventKind::RequirementsVersionPublished,
-                    command.project_id,
-                    &account,
-                    json!({
-                        "project_id": command.project_id,
-                        "version": version,
-                        "revision": revision,
+        let comment = command
+            .comment
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let now = OffsetDateTime::now_utc();
+        let mut warnings = Vec::new();
+        match command.decision {
+            ApprovalDecision::Approved => {
+                let validation = foundry_domain::validate_requirements_document(&draft.body);
+                if !validation.is_valid() {
+                    return Err(ServiceError::RequirementsInvalid(validation));
+                }
+                warnings = validation.warnings;
+                match self
+                    .repository
+                    .approve(
+                        command.project_id,
+                        command.expected_revision,
+                        account.id,
+                        comment,
+                        now,
+                    )
+                    .await
+                    .map_err(requirements_repo_error)?
+                {
+                    RequirementsApprovalOutcome::Approved {
+                        version, revision, ..
+                    } => {
+                        self.emit(
+                            DomainEventKind::RequirementsVersionPublished,
+                            command.project_id,
+                            &account,
+                            json!({
+                                "project_id": command.project_id,
+                                "version": version,
+                                "revision": revision,
+                            }),
+                        )
+                        .await?;
+                        Ok(RequirementsApprovalResult {
+                            decision: ApprovalDecision::Approved,
+                            revision,
+                            version: Some(version),
+                            warnings,
+                        })
+                    }
+                    RequirementsApprovalOutcome::AlreadyPublished { version } => {
+                        Ok(RequirementsApprovalResult {
+                            decision: ApprovalDecision::Approved,
+                            revision: command.expected_revision,
+                            version: Some(version),
+                            warnings,
+                        })
+                    }
+                    RequirementsApprovalOutcome::Conflict {
+                        current_revision,
+                        current_updated_at,
+                    } => Err(ServiceError::DraftConflict {
+                        expected: command.expected_revision,
+                        current: current_revision,
+                        current_updated_at,
                     }),
-                )
-                .await?;
-                Ok(RequirementsPublished {
-                    version,
-                    revision,
-                    warnings: validation.warnings,
-                })
+                    RequirementsApprovalOutcome::NoDraft => {
+                        Err(ServiceError::DraftNotFound(command.project_id.to_string()))
+                    }
+                    RequirementsApprovalOutcome::TooLarge => {
+                        Err(ServiceError::RequirementsTooLarge)
+                    }
+                    RequirementsApprovalOutcome::Rejected { .. } => Err(ServiceError::Internal(
+                        "unexpected rejection outcome".to_string(),
+                    )),
+                }
             }
-            RequirementsPublishOutcome::Conflict {
-                current_revision,
-                current_updated_at,
-            } => Err(ServiceError::DraftConflict {
-                expected: command.expected_revision,
-                current: current_revision,
-                current_updated_at,
-            }),
-            RequirementsPublishOutcome::NoDraft => {
-                Err(ServiceError::DraftNotFound(command.project_id.to_string()))
+            ApprovalDecision::Rejected => {
+                let Some(comment) = comment else {
+                    return Err(ServiceError::Validation(
+                        "rejection requires a comment".to_string(),
+                    ));
+                };
+                match self
+                    .repository
+                    .reject(
+                        command.project_id,
+                        command.expected_revision,
+                        account.id,
+                        comment,
+                        now,
+                    )
+                    .await
+                    .map_err(requirements_repo_error)?
+                {
+                    RequirementsApprovalOutcome::Rejected { .. } => {
+                        self.emit(
+                            DomainEventKind::RequirementsDraftRejected,
+                            command.project_id,
+                            &account,
+                            json!({
+                                "project_id": command.project_id,
+                                "revision": command.expected_revision,
+                                "comment": comment,
+                            }),
+                        )
+                        .await?;
+                        Ok(RequirementsApprovalResult {
+                            decision: ApprovalDecision::Rejected,
+                            revision: command.expected_revision,
+                            version: None,
+                            warnings,
+                        })
+                    }
+                    RequirementsApprovalOutcome::AlreadyPublished { version } => {
+                        Ok(RequirementsApprovalResult {
+                            decision: ApprovalDecision::Approved,
+                            revision: command.expected_revision,
+                            version: Some(version),
+                            warnings,
+                        })
+                    }
+                    RequirementsApprovalOutcome::Conflict {
+                        current_revision,
+                        current_updated_at,
+                    } => Err(ServiceError::DraftConflict {
+                        expected: command.expected_revision,
+                        current: current_revision,
+                        current_updated_at,
+                    }),
+                    RequirementsApprovalOutcome::NoDraft => {
+                        Err(ServiceError::DraftNotFound(command.project_id.to_string()))
+                    }
+                    RequirementsApprovalOutcome::TooLarge => {
+                        Err(ServiceError::RequirementsTooLarge)
+                    }
+                    RequirementsApprovalOutcome::Approved { .. } => Err(ServiceError::Internal(
+                        "unexpected approval outcome".to_string(),
+                    )),
+                }
             }
-            RequirementsPublishOutcome::TooLarge => Err(ServiceError::RequirementsTooLarge),
         }
+    }
+
+    pub async fn approvals(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+    ) -> Result<Vec<RequirementsApprovalView>, ServiceError> {
+        let account = self.require_account(&actor).await?;
+        self.project_role(&account, project_id, ProjectRole::Viewer)
+            .await?;
+        Ok(self
+            .repository
+            .approvals(project_id)
+            .await?
+            .into_iter()
+            .map(approval_view)
+            .collect())
     }
 
     pub async fn versions(
@@ -337,6 +474,12 @@ where
             version: version.version,
             body: version.body,
             created_by: version.created_by,
+            approved_by: version.approved_by,
+            source_revision: if version.source_revision == 0 {
+                None
+            } else {
+                Some(version.source_revision)
+            },
             published_at: version.published_at,
         })
     }
@@ -350,7 +493,10 @@ where
         let account = self.require_account(&actor).await?;
         self.project_role(&account, project_id, ProjectRole::Viewer)
             .await?;
-        Ok(self.repository.annotations(project_id, include_resolved).await?)
+        Ok(self
+            .repository
+            .annotations(project_id, include_resolved)
+            .await?)
     }
 
     pub async fn add_annotation(
@@ -462,7 +608,7 @@ where
     fn require_human(&self, account: &Account) -> Result<(), ServiceError> {
         if account.kind != foundry_domain::AccountKind::Human {
             return Err(ServiceError::Forbidden(
-                "agent accounts cannot publish requirements documents".to_string(),
+                "agent accounts cannot approve requirements documents".to_string(),
             ));
         }
         Ok(())
@@ -521,7 +667,10 @@ fn annotation_target_exists(
     match target {
         AnnotationTarget::Document => true,
         AnnotationTarget::User => body.users.iter().any(|user| user.id == target_id),
-        AnnotationTarget::Function => body.functions.iter().any(|function| function.id == target_id),
+        AnnotationTarget::Function => body
+            .functions
+            .iter()
+            .any(|function| function.id == target_id),
         AnnotationTarget::Story => body
             .functions
             .iter()
@@ -552,6 +701,17 @@ fn draft_view(draft: RequirementsDraftDAO) -> RequirementsDraftView {
     }
 }
 
+fn approval_view(approval: RequirementsApprovalDAO) -> RequirementsApprovalView {
+    RequirementsApprovalView {
+        id: approval.id,
+        revision: approval.revision,
+        decision: approval.decision,
+        actor_id: approval.actor_id,
+        comment: approval.comment,
+        created_at: approval.created_at,
+    }
+}
+
 #[async_trait]
 pub trait RequirementsDocumentUseCases: Send + Sync {
     async fn get(
@@ -574,11 +734,17 @@ pub trait RequirementsDocumentUseCases: Send + Sync {
 
     async fn validate(&self, actor: Actor, project_id: Uuid) -> Result<Validation, ServiceError>;
 
-    async fn publish(
+    async fn decide(
         &self,
         actor: Actor,
-        command: PublishRequirementsDocument,
-    ) -> Result<RequirementsPublished, ServiceError>;
+        command: DecideRequirementsDraft,
+    ) -> Result<RequirementsApprovalResult, ServiceError>;
+
+    async fn approvals(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+    ) -> Result<Vec<RequirementsApprovalView>, ServiceError>;
 
     async fn annotations(
         &self,
@@ -649,12 +815,20 @@ where
         RequirementsDocumentService::validate(self, actor, project_id).await
     }
 
-    async fn publish(
+    async fn decide(
         &self,
         actor: Actor,
-        command: PublishRequirementsDocument,
-    ) -> Result<RequirementsPublished, ServiceError> {
-        RequirementsDocumentService::publish(self, actor, command).await
+        command: DecideRequirementsDraft,
+    ) -> Result<RequirementsApprovalResult, ServiceError> {
+        RequirementsDocumentService::decide(self, actor, command).await
+    }
+
+    async fn approvals(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+    ) -> Result<Vec<RequirementsApprovalView>, ServiceError> {
+        RequirementsDocumentService::approvals(self, actor, project_id).await
     }
 
     async fn annotations(

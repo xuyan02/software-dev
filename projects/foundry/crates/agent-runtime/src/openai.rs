@@ -20,6 +20,10 @@ pub struct OpenAiCompatibleConfig {
     pub model: String,
     pub timeout: Duration,
     pub max_retries: u32,
+    /// Enable provider-native reasoning for DeepSeek-compatible endpoints.
+    pub thinking: bool,
+    /// DeepSeek reasoning effort: "low", "high" or "max".
+    pub reasoning_effort: Option<String>,
 }
 
 impl OpenAiCompatibleConfig {
@@ -34,6 +38,8 @@ impl OpenAiCompatibleConfig {
             model: model.into(),
             timeout: Duration::from_secs(120),
             max_retries: 2,
+            thinking: true,
+            reasoning_effort: Some("high".to_string()),
         }
     }
 }
@@ -56,7 +62,7 @@ impl OpenAiCompatibleModel {
 #[async_trait]
 impl ModelGateway for OpenAiCompatibleModel {
     async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
-        let body = request_body(&self.config.model, &request);
+        let body = request_body(&self.config, &request);
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -113,9 +119,9 @@ async fn sleep_backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(millis)).await;
 }
 
-fn request_body(model: &str, request: &ModelRequest) -> Value {
+fn request_body(config: &OpenAiCompatibleConfig, request: &ModelRequest) -> Value {
     let messages: Vec<Value> = request.messages.iter().map(message_json).collect();
-    let mut body = json!({ "model": model, "messages": messages });
+    let mut body = json!({ "model": config.model, "messages": messages });
     if !request.tools.is_empty() {
         body["tools"] = json!(request.tools.iter().map(tool_json).collect::<Vec<_>>());
     }
@@ -125,7 +131,29 @@ fn request_body(model: &str, request: &ModelRequest) -> Value {
     if let Some(max_tokens) = request.max_tokens {
         body["max_tokens"] = json!(max_tokens);
     }
+    if is_deepseek(&config.base_url, &config.model) {
+        body["thinking"] = json!({
+            "type": if config.thinking { "enabled" } else { "disabled" }
+        });
+        if config.thinking
+            && let Some(effort) = &config.reasoning_effort
+        {
+            body["reasoning_effort"] = json!(effort);
+        }
+    }
     body
+}
+
+fn is_deepseek(base_url: &str, model: &str) -> bool {
+    let base_url = base_url.to_ascii_lowercase();
+    if base_url.contains("deepseek") {
+        return true;
+    }
+    let model = model.to_ascii_lowercase();
+    model == "deepseek-chat"
+        || model == "deepseek-reasoner"
+        || model == "deepseek-flash"
+        || model.starts_with("deepseek-v")
 }
 
 fn message_json(message: &Message) -> Value {
@@ -134,6 +162,9 @@ fn message_json(message: &Message) -> Value {
         MessageRole::User => json!({ "role": "user", "content": message.content }),
         MessageRole::Assistant => {
             let mut value = json!({ "role": "assistant", "content": message.content });
+            if let Some(reasoning_content) = &message.reasoning_content {
+                value["reasoning_content"] = json!(reasoning_content);
+            }
             if !message.tool_calls.is_empty() {
                 let calls: Vec<Value> = message
                     .tool_calls
@@ -191,6 +222,8 @@ struct Choice {
 struct ChoiceMessage {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    reasoning_content: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ChatToolCall>,
 }
@@ -254,6 +287,7 @@ fn parse_response(text: &str) -> Result<ModelResponse, ModelError> {
     };
     Ok(ModelResponse {
         content: choice.message.content,
+        reasoning_content: choice.message.reasoning_content,
         tool_calls,
         usage: response
             .usage
@@ -332,6 +366,85 @@ mod tests {
         assert_eq!(body["model"], "test-model");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["tools"][0]["function"]["name"], "echo");
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[tokio::test]
+    async fn deepseek_requests_enable_thinking() {
+        let (base_url, captured) = mock_server(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "done" },
+                "finish_reason": "stop"
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "deepseek-chat",
+        ))
+        .unwrap();
+        model.complete(request()).await.unwrap();
+
+        let body = captured.lock().unwrap().first().cloned().unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["reasoning_effort"], "high");
+    }
+
+    #[tokio::test]
+    async fn parses_reasoning_content() {
+        let (base_url, _captured) = mock_server(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "done",
+                    "reasoning_content": "I should answer briefly."
+                },
+                "finish_reason": "stop"
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "deepseek-chat",
+        ))
+        .unwrap();
+        let response = model.complete(request()).await.unwrap();
+        assert_eq!(
+            response.reasoning_content.as_deref(),
+            Some("I should answer briefly.")
+        );
+    }
+
+    #[tokio::test]
+    async fn sends_prior_reasoning_content_back() {
+        let (base_url, captured) = mock_server(json!({
+            "choices": [{
+                "message": { "role": "assistant", "content": "done" },
+                "finish_reason": "stop"
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "deepseek-chat",
+        ))
+        .unwrap();
+        let mut request = request();
+        request.messages.push(Message::assistant_with_reasoning(
+            "working",
+            Vec::new(),
+            Some("I need to inspect it.".to_string()),
+        ));
+        model.complete(request).await.unwrap();
+
+        let body = captured.lock().unwrap().first().cloned().unwrap();
+        assert_eq!(
+            body["messages"][2]["reasoning_content"],
+            "I need to inspect it."
+        );
     }
 
     #[tokio::test]

@@ -14,11 +14,7 @@ const PROJECT_REVIEW: &str = include_str!("../definitions/project_review.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("project", "Project lifecycle", PROJECT),
-    (
-        "goal_clarification",
-        "Goal clarification",
-        GOAL_CLARIFICATION,
-    ),
+    ("goal_clarification", "项目文档撰写", GOAL_CLARIFICATION),
     (
         "requirements_discovery",
         "Requirements discovery",

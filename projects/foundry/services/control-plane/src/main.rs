@@ -19,11 +19,10 @@ use foundry_adapter_postgres::{
 };
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountService, AgentAdminUseCases, AuthService, IssueService,
-    ProjectBriefService, ProjectBriefUseCases, ProjectService, RequirementService,
-    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
-    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, WorkflowCatalog,
-    WorkflowService, WorkflowUseCases,
+    AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
+    IssueService, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases,
+    TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
+    WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::OperationName;
 use foundry_shared::{AgentLogFiles, Config};
@@ -63,8 +62,6 @@ async fn main() -> anyhow::Result<()> {
     ));
     reevaluate_transitions(store.as_ref(), task_dispatcher.as_ref()).await;
 
-    let requirements =
-        RequirementService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
     let projects = Arc::new(ProjectService::new(
@@ -85,6 +82,11 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+    ));
     let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
         Arc::new(RequirementsDocumentService::new(
             Arc::clone(&store),
@@ -92,12 +94,6 @@ async fn main() -> anyhow::Result<()> {
             Arc::clone(&store),
             Arc::clone(&events),
         ));
-    let project_brief: Arc<dyn ProjectBriefUseCases> = Arc::new(ProjectBriefService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&events),
-    ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -176,7 +172,6 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|| "qwen2.5-coder".to_string()),
     ));
     let state = AppState {
-        requirements: Arc::new(requirements),
         issues: Arc::new(issues),
         accounts,
         projects,
@@ -184,8 +179,8 @@ async fn main() -> anyhow::Result<()> {
         agents,
         agent_logs,
         workflows: workflows_admin,
+        anchor_docs,
         requirements_doc,
-        project_brief,
         task_links,
         auth,
         setup,
@@ -262,10 +257,7 @@ async fn reevaluate_transitions(store: &PostgresStore, dispatcher: &dyn TaskDisp
     };
     let mut checked = 0;
     for id in ids {
-        match dispatcher
-            .process(id, Some(TaskCommand::Reevaluate))
-            .await
-        {
+        match dispatcher.process(id, Some(TaskCommand::Reevaluate)).await {
             Ok(()) => checked += 1,
             Err(error) => {
                 tracing::warn!(task_id = %id, error = %error, "transition recheck failed");
@@ -298,18 +290,18 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
                     let command = TaskCommand::SendOperation {
                         actor_id: approved_by,
                         operation: OperationName::new(foundry_domain::ACCEPT_OPERATION),
-                        idempotency_key: format!("brief-approved:{task_id}"),
+                        idempotency_key: format!("project-layer-approved:{task_id}"),
                     };
                     if let Err(error) = dispatcher.process(task_id, Some(command)).await {
                         tracing::warn!(
                             %error,
                             task_id = %task_id,
-                            "approved brief task completion failed"
+                            "approved project layer task completion failed"
                         );
                     }
                 }
             }
-            Err(error) => tracing::warn!(%error, "approved brief scan failed"),
+            Err(error) => tracing::warn!(%error, "approved project layer scan failed"),
         }
         match store.approved_requirements_analyses().await {
             Ok(tasks) => {

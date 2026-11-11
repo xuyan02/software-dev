@@ -8,10 +8,10 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 | id | 标题 | 用途 | 状态 |
 |---|---|---|---|
-| `project` | Project lifecycle | 项目根 Task，串起从目标澄清到迭代的完整生命周期 | 已实现 |
-| `goal_clarification` | Goal clarification | 澄清项目目标并评审项目简报；`task.created` 的 action 创建统一澄清 Issue，Clarifier → 文风 Reviewer → 内容 Reviewer → 人类验收 | 已实现 |
+| `project` | Project lifecycle | 项目根 Task，串起从项目文档撰写到迭代的完整生命周期 | 已实现 |
+| `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
-| `requirements_analysis` | Requirements analysis | 结构化需求文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
+| `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
 | `architecture_design` | Architecture design | 架构设计与评审 | 已实现 |
 | `roadmap` | Roadmap | 制定路线图 | 已实现 |
 | `iteration` | Iteration | 规划、实现、评审和验收一个迭代 | 已实现 |
@@ -47,16 +47,17 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 根 Task 不会自动重试失败；它以 `failed` 完成后停在固定版本，等待人工处理。
 
-## Goal clarification
+## 项目文档撰写
 
 | Stage | active roles | operation |
 |---|---|---|
-| `work` | `clarifier` | `started`；`completed` 写 `completed = true` → `style_review` |
-| `style_review` | `style_reviewer` | `approved` 写 `decision = 'approved'` → `content_review`；`rejected` 写 `decision = 'rejected'` → `work` |
-| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`rejected` 写 `decision = 'rejected'` → `work` |
-| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
+| `clarification` | `clarifier` | `started`；`completed` 写 `completed = true` → `writing` |
+| `writing` | `writer` | `started`；`completed` 写 `completed = true` → `style_review` |
+| `style_review` | `style_reviewer` | `approved` 写 `decision = 'approved'` → `content_review`；`rejected` 写 `decision = 'rejected'` → `writing` |
+| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`rejected` 写 `decision = 'rejected'` → `writing` |
+| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `writing` |
 
-`clarifier`、`style_reviewer` 和 `content_reviewer` 都是 agent 角色。Clarifier 维护项目简报并提交；两个 Reviewer 不修改简报，用 `project_brief_annotate` 把意见挂到简报字段或对象上；Clarifier 在下一轮用 `project_brief_annotations_list` 读取并逐条处理，修改后用 `project_brief_resolve_annotation` 标记解决。Reviewer 打回时任务回到 `work`。人类批准简报后，control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`，不会跳过评审。
+`clarifier`、`writer`、`style_reviewer` 和 `content_reviewer` 都是 agent 角色。Clarifier 只负责在澄清 Issue 中提问，不写文档；Writer 读取澄清记录和项目信息，用 `document` 工具维护项目文档；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"` 阅读，用 `action = "annotate"` 写锚点标注；Reviewer 打回时任务回到 `writing`。人类批准当前草案后，control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`，不会跳过评审。
 
 ## Iteration
 
@@ -90,7 +91,7 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `work` | 第一位角色（`discoverer` / `planner` / `reviewer`） | `started`；`completed` 写 `completed = true` → `awaiting_acceptance` |
 | `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
 
-`requirements_analysis` 的 `analyst` 是 agent 角色，由 Requirements Analyst 模板承接；人类发布需求文档后，平台发送保留操作 `accept` 直接完成任务。它的完整链路是：
+`requirements_analysis` 的 `analyst` 是 agent 角色，由 Requirements Analyst 模板承接；需求文档使用 `kind = requirements` 的锚点文档，人类批准当前草案后，平台发送保留操作 `accept` 直接完成任务。它的完整链路是：
 
 ```text
 work (analyst)
@@ -101,7 +102,7 @@ work (analyst)
   → ended (result = approved)
 ```
 
-每个 review stage 的 `rejected` 回到 `work`；Reviewer 用 `requirements_annotate` 写字段级意见，Analyst 读取并解决后再提交。`human_review` 也支持打回，打回原因作为文档注释保存。
+每个 review stage 的 `rejected` 回到 `work`；Reviewer 用 `document` 工具 `action = "annotate"` 写锚点标注，Analyst 读取并解决后再提交。`human_review` 也支持打回，打回原因作为文档标注保存。
 
 `architecture_design` 多一个评审环节：
 

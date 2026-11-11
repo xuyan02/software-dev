@@ -48,17 +48,16 @@ pub fn apply(
         TaskEvent::Operation { operation, .. } if operation.as_str() == START_OPERATION => {
             // Platform-level start: no workflow operation, no role check. The
             // API restricts this operation to administrators.
-            let mut ctx =
-                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
             ctx.set_state(TaskState::InProgress)?;
             return Ok(ctx.into_mutation());
         }
         TaskEvent::Operation { operation, .. } if operation.as_str() == ACCEPT_OPERATION => {
-            // Platform-level acceptance: the project brief approval is the
-            // human acceptance, so close the linked clarification task with
-            // result `approved` without requiring a task-actor binding.
-            let mut ctx =
-                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            // Platform-level acceptance: requirements document project-layer
+            // approval is the human acceptance, so close the linked
+            // clarification task with result `approved` without requiring a
+            // task-actor binding.
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
             ctx.complete_task(Some(TaskResult::new("approved")))?;
             return Ok(ctx.into_mutation());
         }
@@ -66,8 +65,7 @@ pub fn apply(
             // Platform-level rejection from a human review: return to the
             // workflow's initial stage (the drafting stage). Annotations carry
             // the concrete revision feedback.
-            let mut ctx =
-                WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
             let initial = workflow
                 .body()
                 .and_then(|body| body.initial_stage.clone())

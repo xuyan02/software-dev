@@ -31,6 +31,10 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Provider-native reasoning. DeepSeek requires prior assistant reasoning
+    /// to be sent back on every turn when tools are used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -40,6 +44,7 @@ impl Message {
             content: content.into(),
             tool_call_id: None,
             tool_calls: Vec::new(),
+            reasoning_content: None,
         }
     }
 
@@ -49,6 +54,7 @@ impl Message {
             content: content.into(),
             tool_call_id: None,
             tool_calls: Vec::new(),
+            reasoning_content: None,
         }
     }
 
@@ -58,6 +64,21 @@ impl Message {
             content: content.into(),
             tool_call_id: None,
             tool_calls,
+            reasoning_content: None,
+        }
+    }
+
+    pub fn assistant_with_reasoning(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+        reasoning_content: Option<String>,
+    ) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            tool_call_id: None,
+            tool_calls,
+            reasoning_content,
         }
     }
 
@@ -67,6 +88,7 @@ impl Message {
             content: content.into(),
             tool_call_id: Some(tool_call_id.into()),
             tool_calls: Vec::new(),
+            reasoning_content: None,
         }
     }
 }
@@ -151,6 +173,8 @@ pub struct ModelRequest {
 pub struct ModelResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default)]
@@ -167,6 +191,7 @@ impl ModelResponse {
     pub fn final_answer(content: impl Into<String>) -> Self {
         Self {
             content: Some(content.into()),
+            reasoning_content: None,
             tool_calls: Vec::new(),
             usage: Usage::default(),
             stop_reason: ModelStopReason::Stop,
@@ -184,10 +209,16 @@ impl ModelResponse {
     pub fn tool_calls(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             content: None,
+            reasoning_content: None,
             tool_calls,
             usage: Usage::default(),
             stop_reason: ModelStopReason::ToolCalls,
         }
+    }
+
+    pub fn with_reasoning(mut self, reasoning_content: impl Into<String>) -> Self {
+        self.reasoning_content = Some(reasoning_content.into());
+        self
     }
 
     pub fn with_usage(mut self, usage: Usage) -> Self {
