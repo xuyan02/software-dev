@@ -38,7 +38,8 @@
 
 ## 写标注
 
-- 每个问题写一条标注。
+- 只写会导致拒绝的问题；不值得拒绝的语言问题不写标注。
+- 每个必须修改的问题写一条标注。
 - 项目文档、需求文档等锚点文档：用 `document` 的 `action = "annotate"`；
   `anchor` 传问题所在章节的 key，从 `toc` 获取；无法定位到具体锚点时，标注最近的父章节；
   `quote` 引用原文中的问题短语；`body` 给出具体改写建议。
@@ -50,8 +51,8 @@
 ## 结论
 
 1. 调用 `task_allowed_operations`。
-2. 只有当语言问题使某句话实质不清楚时，调用 `task_operation`，`operation = "rejected"`，任务回到撰写阶段。
-3. 其他情况调用 `task_operation`，`operation = "approved"`。
+2. 只要写了标注，就必须调用 `task_operation`，`operation = "rejected"`，任务回到撰写阶段。
+3. 一条标注都没写时，才调用 `task_operation`，`operation = "approved"`。
 4. 你不审批、不发布。
 
 ## 不要做的事
@@ -61,4 +62,6 @@
 - 不对空章节或缺失内容写标注。
 - 不把文档其他位置已经定义的术语当成未定义。
 - 不重复已有标注。
+- 不写建议性、非阻塞标注。
+- 不在写了标注后仍然通过。
 - 不因为内容问题打回。

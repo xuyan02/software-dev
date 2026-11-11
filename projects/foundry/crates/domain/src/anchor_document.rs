@@ -73,8 +73,6 @@ pub enum ContentSchema {
 pub struct ChapterSchema {
     pub key: String,
     pub title: String,
-    #[serde(default)]
-    pub title_template: Option<String>,
     pub occurrence: Occurrence,
     pub content: ContentSchema,
     #[serde(default)]
@@ -100,6 +98,7 @@ impl ChapterSchema {
         self
     }
 
+    #[allow(dead_code)]
     fn min(mut self, value: usize) -> Self {
         self.min = value;
         self
@@ -108,11 +107,6 @@ impl ChapterSchema {
     #[allow(dead_code)]
     fn max(mut self, value: usize) -> Self {
         self.max = Some(value);
-        self
-    }
-
-    fn title_template(mut self, value: &str) -> Self {
-        self.title_template = Some(value.to_string());
         self
     }
 
@@ -354,11 +348,17 @@ pub enum AnchorOp {
         #[serde(default)]
         text: String,
         #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
         after: Option<String>,
     },
     UpdateText {
         anchor: String,
         text: String,
+    },
+    UpdateTitle {
+        anchor: String,
+        title: String,
     },
     Delete {
         anchor: String,
@@ -537,6 +537,57 @@ impl AnchorNode {
             }
         }
     }
+
+    /// Markdown with invisible anchor markers used by the web console to
+    /// attach annotations to the content they belong to. The plain Markdown
+    /// API used by agents never includes these markers.
+    fn render_markdown_with_anchors(&self, depth: usize, out: &mut String) {
+        match self.kind {
+            AnchorKind::Document => {
+                for child in &self.children {
+                    child.render_markdown_with_anchors(1, out);
+                }
+            }
+            AnchorKind::Item => {
+                render_anchor_marker(&self.key, out);
+                out.push(' ');
+                out.push_str(&self.text);
+                out.push('\n');
+            }
+            AnchorKind::Chapter => {
+                render_anchor_marker(&self.key, out);
+                out.push('\n');
+                let level = depth.min(6);
+                out.push_str(&"#".repeat(level));
+                out.push(' ');
+                out.push_str(&self.title);
+                out.push_str("\n\n");
+                if !self.text.trim().is_empty() {
+                    out.push_str(self.text.trim());
+                    out.push_str("\n\n");
+                }
+                for item in &self.items {
+                    out.push_str("- ");
+                    render_anchor_marker(&item.key, out);
+                    out.push(' ');
+                    out.push_str(item.text.trim());
+                    out.push('\n');
+                }
+                if !self.items.is_empty() {
+                    out.push('\n');
+                }
+                for child in &self.children {
+                    child.render_markdown_with_anchors(depth + 1, out);
+                }
+            }
+        }
+    }
+}
+
+fn render_anchor_marker(key: &str, out: &mut String) {
+    out.push_str("<!--anchor:");
+    out.push_str(key);
+    out.push_str("-->");
 }
 
 fn preview(text: &str) -> String {
@@ -621,6 +672,15 @@ impl DocumentSnapshot {
         let node = self.find(key)?;
         let mut out = String::new();
         node.render_markdown(1, &mut out);
+        Some(out.trim_end().to_string())
+    }
+
+    /// Markdown with anchor markers for the web console. Callers that only
+    /// need content must use [`Self::markdown`] instead.
+    pub fn markdown_with_anchors(&self, key: &str) -> Option<String> {
+        let node = self.find(key)?;
+        let mut out = String::new();
+        node.render_markdown_with_anchors(1, &mut out);
         Some(out.trim_end().to_string())
     }
 
@@ -722,6 +782,7 @@ fn apply_op(
             parent,
             occurrence_key,
             text,
+            title,
             after,
         } => {
             let parent_key = resolve_key(root, parent)
@@ -741,6 +802,7 @@ fn apply_op(
                 &parent_key,
                 occurrence_key.as_deref(),
                 text,
+                title.as_deref(),
                 after_key.as_deref(),
             )
         }
@@ -755,6 +817,29 @@ fn apply_op(
                 return Err(invalid("the document root has no text"));
             }
             node.text = text.clone();
+            Ok(None)
+        }
+        AnchorOp::UpdateTitle { anchor, title } => {
+            let anchor_key = resolve_key(root, anchor)
+                .map(str::to_string)
+                .ok_or_else(|| invalid(format!("unknown anchor {anchor}")))?;
+            let node = root
+                .find_mut(&anchor_key)
+                .ok_or_else(|| invalid(format!("unknown anchor {anchor}")))?;
+            if node.kind != AnchorKind::Chapter {
+                return Err(invalid("only multiple chapter titles can be changed"));
+            }
+            let chapter = schema
+                .chapter(&node.schema_key)
+                .ok_or_else(|| invalid(format!("unknown schema {}", node.schema_key)))?;
+            if chapter.occurrence != Occurrence::Multiple {
+                return Err(invalid("only multiple chapter titles can be changed"));
+            }
+            let title = title.trim();
+            if title.is_empty() {
+                return Err(invalid("title cannot be empty"));
+            }
+            node.title = title.to_string();
             Ok(None)
         }
         AnchorOp::Delete { anchor, cascade } => {
@@ -863,6 +948,7 @@ fn add_anchor(
     parent_key: &str,
     occurrence_key: Option<&str>,
     text: &str,
+    title: Option<&str>,
     after: Option<&str>,
 ) -> Result<Option<String>, AnchorOpError> {
     let parent = root
@@ -923,7 +1009,7 @@ fn add_anchor(
         .first()
         .ok_or_else(|| invalid(format!("parent {parent_key} has no child schema")))?;
 
-    let (occurrence_key, key, path) = match child_schema.occurrence {
+    let (occurrence_key, key, path, node_title) = match child_schema.occurrence {
         Occurrence::Single => {
             if parent
                 .children
@@ -941,9 +1027,13 @@ fn add_anchor(
             } else {
                 format!("{}.{}", parent.path, schema_key)
             };
-            (occurrence_key, key, path)
+            (occurrence_key, key, path, child_schema.title.clone())
         }
         Occurrence::Multiple => {
+            let title = title
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .ok_or_else(|| invalid(format!("chapter {schema_key} requires a title")))?;
             let occurrence_key = occurrence_key
                 .map(str::to_string)
                 .unwrap_or_else(|| Uuid::now_v7().to_string());
@@ -956,7 +1046,7 @@ fn add_anchor(
             if parent.children.iter().any(|child| child.key == key) {
                 return Err(invalid(format!("duplicate anchor key {key}")));
             }
-            (occurrence_key, key, path)
+            (occurrence_key, key, path, title.to_string())
         }
     };
 
@@ -966,7 +1056,7 @@ fn add_anchor(
         path: path.clone(),
         schema_key: child_schema.key.clone(),
         kind: AnchorKind::Chapter,
-        title: child_schema.title.clone(),
+        title: node_title,
         occurrence_key,
         content_kind: match child_schema.content {
             ContentSchema::Text => ContentKind::Text,
@@ -993,45 +1083,30 @@ fn insertion_index(list: &[AnchorNode], after: Option<&str>) -> Result<usize, An
 }
 
 fn retitle(node: &mut AnchorNode, schema: &DocumentSchema) {
-    retitle_node(node, schema, 1);
+    retitle_node(node, schema);
 }
 
-fn retitle_node(node: &mut AnchorNode, schema: &DocumentSchema, index: usize) {
+fn retitle_node(node: &mut AnchorNode, schema: &DocumentSchema) {
     match node.kind {
         AnchorKind::Document => {
             node.title = schema.root.title.clone();
         }
         AnchorKind::Chapter => {
-            if let Some(chapter) = schema.chapter(&node.schema_key) {
-                node.title = if chapter.occurrence == Occurrence::Multiple {
-                    title_for(chapter, index)
-                } else {
-                    chapter.title.clone()
-                };
+            if let Some(chapter) = schema.chapter(&node.schema_key)
+                && chapter.occurrence == Occurrence::Single
+            {
+                node.title = chapter.title.clone();
             }
         }
         AnchorKind::Item => {
             node.title.clear();
         }
     }
-    let mut counts: HashMap<String, usize> = HashMap::new();
     for child in &mut node.children {
-        let count = counts.entry(child.schema_key.clone()).or_insert(0);
-        *count += 1;
-        let count = *count;
-        retitle_node(child, schema, count);
+        retitle_node(child, schema);
     }
     for item in &mut node.items {
-        retitle_node(item, schema, 1);
-    }
-}
-
-fn title_for(schema: &ChapterSchema, index: usize) -> String {
-    match &schema.title_template {
-        Some(template) => template
-            .replace("{title}", &schema.title)
-            .replace("{index}", &index.to_string()),
-        None => format!("{} {}", schema.title, index),
+        retitle_node(item, schema);
     }
 }
 
@@ -1318,7 +1393,6 @@ pub fn project_document_schema() -> DocumentSchema {
         ChapterSchema {
             key: key.to_string(),
             title: title.to_string(),
-            title_template: None,
             occurrence,
             content,
             children: Vec::new(),
@@ -1385,72 +1459,11 @@ pub fn project_document_schema() -> DocumentSchema {
                 required_list("problems", "问题", "problem", 1),
             ]),
             required_list("goals", "目标", "goal", 1),
-            text("non_goals", "非目标").children(vec![
-                chapter(
-                    "non_goal",
-                    "非目标",
-                    Occurrence::Multiple,
-                    ContentSchema::Text,
-                )
-                .required(true)
-                .min(1)
-                .text_required(true)
-                .title_template("{title} {index}")
-                .children(vec![
-                    text("non_goal_reason", "原因")
-                        .required(true)
-                        .text_required(true),
-                    text("reconsider_when", "重新考虑的条件"),
-                    list("non_goal_goal_refs", "对应目标", "non_goal_goal_ref"),
-                    list("non_goal_problem_refs", "对应问题", "non_goal_problem_ref"),
-                ]),
-            ]),
-            text("constraints", "约束").children(vec![
-                chapter(
-                    "constraint",
-                    "约束",
-                    Occurrence::Multiple,
-                    ContentSchema::Text,
-                )
-                .text_required(true)
-                .title_template("{title} {index}")
-                .children(vec![
-                    text("category", "类别").required(true).text_required(true),
-                    text("source", "来源").required(true).text_required(true),
-                    text("judgement", "判断标准")
-                        .required(true)
-                        .text_required(true),
-                    text("constraint_reason", "理由"),
-                ]),
-            ]),
-            text("risks", "风险").children(vec![
-                chapter("risk", "风险", Occurrence::Multiple, ContentSchema::Text)
-                    .text_required(true)
-                    .title_template("{title} {index}")
-                    .children(vec![
-                        text("probability", "概率")
-                            .required(true)
-                            .text_required(true),
-                        text("risk_impact", "影响")
-                            .required(true)
-                            .text_required(true),
-                        text("mitigation", "缓解措施")
-                            .required(true)
-                            .text_required(true),
-                        text("owner", "负责人").required(true).text_required(true),
-                    ]),
-            ]),
-            text("glossary", "术语表").children(vec![
-                chapter("term", "术语", Occurrence::Multiple, ContentSchema::Text)
-                    .text_required(true)
-                    .title_template("{title} {index}")
-                    .children(vec![
-                        text("definition", "定义")
-                            .required(true)
-                            .text_required(true),
-                        list("aliases", "别名", "alias"),
-                    ]),
-            ]),
+            list("non_goals", "非目标", "non_goal"),
+            list("phasing_plan", "分期计划", "phase"),
+            list("constraints", "约束", "constraint"),
+            list("risks", "风险", "risk"),
+            list("glossary", "术语表", "term"),
         ]),
     }
 }
@@ -1468,7 +1481,6 @@ pub fn requirements_document_schema() -> DocumentSchema {
         ChapterSchema {
             key: key.to_string(),
             title: title.to_string(),
-            title_template: None,
             occurrence,
             content,
             children: Vec::new(),
@@ -1485,26 +1497,17 @@ pub fn requirements_document_schema() -> DocumentSchema {
 
     fn multiple(key: &str, title: &str) -> ChapterSchema {
         chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
-            .title_template("{title} {index}")
     }
 
     let user = multiple("user", "用户").text_required(true);
 
     let story = multiple("story", "故事").text_required(true);
 
+    let ui_image = multiple("ui_image", "图片").text_required(true);
+
     let function = multiple("function", "功能")
         .text_required(true)
-        .children(vec![
-            text("function_description", "功能描述")
-                .required(true)
-                .text_required(true),
-            text("interaction_design", "交互设计")
-                .required(true)
-                .text_required(true),
-            text("ui_design", "UI设计")
-                .required(true)
-                .text_required(true),
-        ]);
+        .children(vec![ui_image]);
 
     let function_set = multiple("function_set", "功能集")
         .text_required(true)
@@ -1542,6 +1545,28 @@ mod tests {
         occurrence_key: Option<&str>,
         text: &str,
     ) -> DocumentSnapshot {
+        add_with_title(snapshot, schema, parent, occurrence_key, text, None)
+    }
+
+    fn add_titled(
+        snapshot: &DocumentSnapshot,
+        schema: &DocumentSchema,
+        parent: &str,
+        occurrence_key: Option<&str>,
+        text: &str,
+        title: &str,
+    ) -> DocumentSnapshot {
+        add_with_title(snapshot, schema, parent, occurrence_key, text, Some(title))
+    }
+
+    fn add_with_title(
+        snapshot: &DocumentSnapshot,
+        schema: &DocumentSchema,
+        parent: &str,
+        occurrence_key: Option<&str>,
+        text: &str,
+        title: Option<&str>,
+    ) -> DocumentSnapshot {
         let (next, _) = snapshot
             .apply(
                 schema,
@@ -1549,6 +1574,7 @@ mod tests {
                     parent: parent.to_string(),
                     occurrence_key: occurrence_key.map(str::to_string),
                     text: text.to_string(),
+                    title: title.map(str::to_string),
                     after: None,
                 },
             )
@@ -1605,12 +1631,6 @@ mod tests {
             "员工可自助查询报销进度",
         );
         snapshot = add(&snapshot, schema, "non_goals", Some("n1"), "不做移动端应用");
-        snapshot = update(
-            &snapshot,
-            schema,
-            "non_goals/non_goal/n1.non_goal_reason",
-            "首期只覆盖桌面端",
-        );
         snapshot
     }
 
@@ -1622,6 +1642,19 @@ mod tests {
     }
 
     #[test]
+    fn project_schema_has_a_phasing_plan_list() {
+        let schema = project_document_schema();
+        let phasing = schema
+            .root
+            .children
+            .iter()
+            .find(|child| child.key == "phasing_plan")
+            .expect("phasing plan chapter");
+        assert_eq!(phasing.title, "分期计划");
+        assert!(matches!(phasing.content, ContentSchema::List { .. }));
+    }
+
+    #[test]
     fn requirements_schema_is_valid() {
         let schema = requirements_document_schema();
         let validation = schema.validate();
@@ -1629,6 +1662,194 @@ mod tests {
         let snapshot = DocumentSnapshot::empty(&schema);
         assert!(snapshot.find_path("users").is_some());
         assert!(snapshot.find_path("subsystems").is_some());
+    }
+
+    #[test]
+    fn user_title_is_the_added_title() {
+        let schema = requirements_document_schema();
+        let mut snapshot = DocumentSnapshot::empty(&schema);
+        let text = "姓名：陈铭\n年龄：34 岁\n基本状况：城市白领\n爱好：徒步\n职业：产品经理\n典型场景：在通勤路上规划周末采购\n诉求：快速找到符合预算的商品\n主次：主要";
+        snapshot = add_titled(&snapshot, &schema, "users", Some("u1"), text, "陈铭");
+        let markdown = snapshot.markdown(&snapshot.root.key).unwrap();
+        assert!(markdown.contains("## 陈铭"));
+        assert!(!markdown.contains("用户 1"));
+        assert!(markdown.contains("姓名：陈铭"));
+        assert!(markdown.contains("年龄：34 岁"));
+    }
+
+    #[test]
+    fn add_requires_a_title_for_multiple_chapters() {
+        let schema = requirements_document_schema();
+        let snapshot = DocumentSnapshot::empty(&schema);
+        let error = snapshot
+            .apply(
+                &schema,
+                &AnchorOp::Add {
+                    parent: "users".to_string(),
+                    occurrence_key: Some("u1".to_string()),
+                    text: "姓名：陈铭".to_string(),
+                    title: None,
+                    after: None,
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("requires a title"));
+    }
+
+    #[test]
+    fn update_title_changes_only_multiple_chapters() {
+        let schema = requirements_document_schema();
+        let mut snapshot = DocumentSnapshot::empty(&schema);
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "users",
+            Some("u1"),
+            "姓名：陈铭\n年龄：34 岁",
+            "陈铭",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            "users/user/u1",
+            "姓名：李明\n年龄：34 岁",
+        );
+        assert_eq!(snapshot.find_path("users/user/u1").unwrap().title, "陈铭");
+        let (snapshot, _) = snapshot
+            .apply(
+                &schema,
+                &AnchorOp::UpdateTitle {
+                    anchor: "users/user/u1".to_string(),
+                    title: "李明".to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(snapshot.find_path("users/user/u1").unwrap().title, "李明");
+        assert!(
+            snapshot
+                .markdown(&snapshot.root.key)
+                .unwrap()
+                .contains("## 李明")
+        );
+        let error = snapshot
+            .apply(
+                &schema,
+                &AnchorOp::UpdateTitle {
+                    anchor: "users".to_string(),
+                    title: "所有人".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("only multiple"));
+        let error = snapshot
+            .apply(
+                &schema,
+                &AnchorOp::UpdateTitle {
+                    anchor: "users/user/u1".to_string(),
+                    title: "  ".to_string(),
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn requirements_user_is_a_single_text_item() {
+        let schema = requirements_document_schema();
+        let users = schema
+            .root
+            .children
+            .iter()
+            .find(|child| child.key == "users")
+            .expect("users chapter");
+        let user = users
+            .children
+            .iter()
+            .find(|child| child.key == "user")
+            .expect("user item");
+        assert!(user.children.is_empty());
+        assert!(user.text_required);
+        assert_eq!(user.occurrence, Occurrence::Multiple);
+        assert_eq!(user.content, ContentSchema::Text);
+    }
+
+    #[test]
+    fn requirements_sections_keep_fields_in_item_text() {
+        let schema = requirements_document_schema();
+        fn keys(chapter: &ChapterSchema) -> Vec<&str> {
+            chapter
+                .children
+                .iter()
+                .map(|child| child.key.as_str())
+                .collect()
+        }
+        let subsystem = schema
+            .root
+            .children
+            .iter()
+            .find(|child| child.key == "subsystems")
+            .and_then(|subsystems| subsystems.children.iter().find(|c| c.key == "subsystem"))
+            .expect("subsystem item");
+        assert_eq!(keys(subsystem), ["function_set"]);
+        assert!(subsystem.text_required);
+
+        let function_set = subsystem
+            .children
+            .iter()
+            .find(|child| child.key == "function_set")
+            .expect("function set item");
+        assert_eq!(keys(function_set), ["stories", "functions"]);
+        assert!(function_set.text_required);
+
+        let story = function_set
+            .children
+            .iter()
+            .find(|child| child.key == "stories")
+            .and_then(|stories| stories.children.iter().find(|child| child.key == "story"))
+            .expect("story item");
+        assert!(story.children.is_empty());
+        assert!(story.text_required);
+
+        let function = function_set
+            .children
+            .iter()
+            .find(|child| child.key == "functions")
+            .and_then(|functions| {
+                functions
+                    .children
+                    .iter()
+                    .find(|child| child.key == "function")
+            })
+            .expect("function item");
+        assert_eq!(keys(function), ["ui_image"]);
+        assert!(function.text_required);
+
+        let image = function
+            .children
+            .iter()
+            .find(|child| child.key == "ui_image")
+            .expect("ui image item");
+        assert!(image.children.is_empty());
+        assert!(image.text_required);
+    }
+
+    #[test]
+    fn subsystem_title_is_the_added_title() {
+        let schema = requirements_document_schema();
+        let mut snapshot = DocumentSnapshot::empty(&schema);
+        let text = "软件名称：订单系统移动端\n软件形态：移动应用\n覆盖用户：买家\n闭环目标：买家查看订单状态\n与其他子系统的关系：无\n边界：不含下单和支付";
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "subsystems",
+            Some("orders"),
+            text,
+            "订单系统移动端",
+        );
+        let markdown = snapshot.markdown(&snapshot.root.key).unwrap();
+        assert!(markdown.contains("## 订单系统移动端"));
+        assert!(markdown.contains("软件形态：移动应用"));
+        assert!(markdown.contains("边界：不含下单和支付"));
     }
 
     #[test]
@@ -1660,6 +1881,7 @@ mod tests {
                     parent: "background.problems".to_string(),
                     occurrence_key: Some("p1".to_string()),
                     text: "员工无法查询报销进度".to_string(),
+                    title: None,
                     after: None,
                 },
             )
@@ -1673,6 +1895,7 @@ mod tests {
                     parent: "positioning.what_is_not".to_string(),
                     occurrence_key: Some("e1".to_string()),
                     text: "财务总账系统".to_string(),
+                    title: None,
                     after: None,
                 },
             )
@@ -1686,6 +1909,7 @@ mod tests {
                     parent: "document".to_string(),
                     occurrence_key: None,
                     text: "ambiguous".to_string(),
+                    title: None,
                     after: None,
                 },
             )
@@ -1726,6 +1950,33 @@ mod tests {
     }
 
     #[test]
+    fn flat_list_items_render_as_bullets_not_titles() {
+        let schema = project_document_schema();
+        let snapshot = sample(&schema);
+        let markdown = snapshot.markdown(&snapshot.root.key).unwrap();
+        assert!(markdown.contains("- 不做移动端应用"));
+        assert!(!markdown.contains("非目标 1"));
+    }
+
+    #[test]
+    fn markdown_with_anchors_marks_chapters_and_items() {
+        let schema = project_document_schema();
+        let snapshot = sample(&schema);
+        let markdown = snapshot
+            .markdown_with_anchors(&snapshot.root.key)
+            .expect("anchored markdown");
+        assert!(markdown.contains("<!--anchor:"));
+        assert!(markdown.contains("-->\n# 定位"));
+        assert!(markdown.contains("- <!--anchor:"));
+        assert!(
+            !snapshot
+                .markdown(&snapshot.root.key)
+                .unwrap()
+                .contains("<!--anchor:")
+        );
+    }
+
+    #[test]
     fn update_changes_hashes_but_keeps_keys() {
         let schema = project_document_schema();
         let snapshot = sample(&schema);
@@ -1757,6 +2008,7 @@ mod tests {
                     parent: "positioning.what_is_not/e1".to_string(),
                     occurrence_key: Some("e2".to_string()),
                     text: "another".to_string(),
+                    title: None,
                     after: None,
                 },
             )
@@ -1793,13 +2045,29 @@ mod tests {
 
     #[test]
     fn delete_requires_cascade_for_chapters_with_children() {
-        let schema = project_document_schema();
-        let snapshot = sample(&schema);
+        let schema = requirements_document_schema();
+        let snapshot = DocumentSnapshot::empty(&schema);
+        let snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "subsystems",
+            Some("s1"),
+            "软件名称：订单系统\n软件形态：移动应用",
+            "订单系统",
+        );
+        let snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "subsystems/subsystem/s1",
+            Some("f1"),
+            "名称：订单功能集",
+            "订单功能集",
+        );
         let error = snapshot
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "non_goals/non_goal/n1".to_string(),
+                    anchor: "subsystems/subsystem/s1/function_set/f1".to_string(),
                     cascade: false,
                 },
             )
@@ -1809,12 +2077,15 @@ mod tests {
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "non_goals/non_goal/n1".to_string(),
+                    anchor: "subsystems/subsystem/s1/function_set/f1".to_string(),
                     cascade: true,
                 },
             )
             .unwrap();
-        assert!(next.find_path("non_goals/non_goal/n1").is_none());
+        assert!(
+            next.find_path("subsystems/subsystem/s1/function_set/f1")
+                .is_none()
+        );
     }
 
     #[test]

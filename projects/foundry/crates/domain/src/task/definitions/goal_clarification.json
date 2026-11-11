@@ -41,6 +41,9 @@
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
       },
+      "created": [
+        {"document_review_link": {"kind": "project", "action": "release"}}
+      ],
       "operations": [
         {
           "name": "started",
@@ -111,16 +114,19 @@
         }
       ],
       "transitions": [
-        {"on": "decision == 'approved'", "to": "awaiting_acceptance"},
+        {"on": "decision == 'approved'", "to": "human_review"},
         {"on": "decision == 'rejected'", "to": "writing"}
       ]
     },
     {
-      "name": "awaiting_acceptance",
+      "name": "human_review",
       "active_roles": ["acceptor"],
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
+      "created": [
+        {"document_review_link": {"kind": "project", "action": "bind"}}
+      ],
       "operations": [
         {
           "name": "approved",
@@ -140,7 +146,8 @@
       "transitions": [
         {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
         {"on": "decision == 'rejected'", "to": "writing"}
-      ]
+      ],
+      "reject_to": "writing"
     }
   ]
 }

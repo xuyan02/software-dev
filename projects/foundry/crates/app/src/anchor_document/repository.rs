@@ -117,6 +117,15 @@ pub enum AnchorApprovalOutcome {
     Invalid(Validation),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentReviewLink {
+    pub project_id: Uuid,
+    pub kind: String,
+    pub draft_revision: u64,
+    pub task_id: Uuid,
+    pub bound_at: OffsetDateTime,
+}
+
 #[allow(clippy::too_many_arguments)]
 #[async_trait]
 pub trait AnchorDocumentRepository: Send + Sync {
@@ -172,6 +181,28 @@ pub trait AnchorDocumentRepository: Send + Sync {
         comment: &str,
         now: OffsetDateTime,
     ) -> Result<AnchorApprovalOutcome, RepoError>;
+
+    async fn bind_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<DocumentReviewLink, RepoError>;
+
+    async fn release_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<(), RepoError>;
+
+    async fn active_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+    ) -> Result<Option<DocumentReviewLink>, RepoError>;
 
     async fn approvals(
         &self,

@@ -1,9 +1,10 @@
 use super::definition::{DefinitionWorkflow, WorkflowBody, builtin_workflows, validate};
 use crate::task::script::VariableValue;
 use crate::{
-    ACCEPT_OPERATION, ChildState, DependencyState, DomainEventKind, OperationName, RoleKey,
-    START_OPERATION, StageKey, TaskActorDAO, TaskAggregate, TaskDAO, TaskError, TaskEvent,
-    TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext, WorkflowId, apply,
+    ACCEPT_OPERATION, ChildState, DependencyState, DocumentReviewLinkAction, DomainEventKind,
+    OperationName, REJECT_OPERATION, RoleKey, START_OPERATION, StageKey, TaskActorDAO,
+    TaskAggregate, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskResult, TaskState,
+    TaskWorkflow, WorkflowContext, WorkflowId, apply,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -146,6 +147,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         vec![
             "architecture_design",
             "goal_clarification",
+            "interaction_design",
             "iteration",
             "project",
             "project_review",
@@ -153,6 +155,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "requirements_analysis",
             "requirements_discovery",
             "roadmap",
+            "ui_design",
         ]
     );
 
@@ -287,7 +290,7 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
     );
 
     state = aggregate_of(operation(&workflow, state, "approved", content_reviewer));
-    assert_eq!(state.task.stage.as_deref(), Some("awaiting_acceptance"));
+    assert_eq!(state.task.stage.as_deref(), Some("human_review"));
     assert!(
         state
             .actors
@@ -404,7 +407,7 @@ fn acceptance_rejection_returns_to_the_writer() {
     let leaf = task(
         "goal_clarification",
         TaskState::InProgress,
-        Some("awaiting_acceptance"),
+        Some("human_review"),
     );
     let task_id = leaf.id;
     let writer = Uuid::now_v7();
@@ -434,6 +437,70 @@ fn acceptance_rejection_returns_to_the_writer() {
             .iter()
             .any(|a| a.account_id == acceptor && a.active)
     );
+}
+
+#[test]
+fn platform_rejection_uses_the_stage_reject_target() {
+    let workflow = builtin("goal_clarification");
+    let leaf = task(
+        "goal_clarification",
+        TaskState::InProgress,
+        Some("human_review"),
+    );
+    let task_id = leaf.id;
+    let writer = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![actor(task_id, "writer", writer, false)],
+        vec![],
+        vec![],
+    );
+
+    let rejected = operation(&workflow, state, REJECT_OPERATION, Uuid::now_v7());
+    assert_eq!(rejected.task.stage.as_deref(), Some("writing"));
+    assert!(
+        rejected
+            .actors
+            .iter()
+            .any(|actor| actor.account_id == writer && actor.active)
+    );
+}
+
+#[test]
+fn human_review_binds_and_writing_releases_the_document_link() {
+    let workflow = builtin("goal_clarification");
+    let leaf = task(
+        "goal_clarification",
+        TaskState::InProgress,
+        Some("content_review"),
+    );
+    let task_id = leaf.id;
+    let reviewer = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![actor(task_id, "content_reviewer", reviewer, true)],
+        vec![],
+        vec![],
+    );
+
+    let approved = operation(&workflow, state, "approved", reviewer);
+    assert_eq!(approved.task.stage.as_deref(), Some("human_review"));
+    assert!(
+        approved.review_links.iter().any(|link| {
+            link.kind == "project" && link.action == DocumentReviewLinkAction::Bind
+        })
+    );
+
+    let rejected = operation(
+        &workflow,
+        aggregate_of(approved),
+        REJECT_OPERATION,
+        Uuid::now_v7(),
+    );
+    assert_eq!(rejected.task.stage.as_deref(), Some("writing"));
+    assert!(rejected.review_links.iter().any(|link| {
+        link.kind == "project" && link.action == DocumentReviewLinkAction::Release
+    }));
 }
 
 #[test]
@@ -476,7 +543,7 @@ fn parent_cannot_complete_above_an_active_child() {
     let leaf = task(
         "goal_clarification",
         TaskState::InProgress,
-        Some("awaiting_acceptance"),
+        Some("human_review"),
     );
     let task_id = leaf.id;
     let acceptor = Uuid::now_v7();
@@ -636,7 +703,7 @@ fn architecture_review_flow_round_trips_through_review() {
 
     state = aggregate_of(operation(&workflow, state, "completed", architect));
     state = aggregate_of(operation(&workflow, state, "review_approved", reviewer));
-    assert_eq!(state.task.stage.as_deref(), Some("awaiting_acceptance"));
+    assert_eq!(state.task.stage.as_deref(), Some("human_review"));
 
     let approved = operation(&workflow, state, "approved", acceptor);
     assert_eq!(approved.task.state, TaskState::Completed);
@@ -776,7 +843,9 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
 
     let steps = [
         ("goal_clarification", "requirements_analysis"),
-        ("requirements_analysis", "architecture"),
+        ("requirements_analysis", "interaction_design"),
+        ("interaction_design", "ui_design"),
+        ("ui_design", "architecture"),
         ("architecture_design", "roadmap"),
         ("roadmap", "iteration"),
     ];

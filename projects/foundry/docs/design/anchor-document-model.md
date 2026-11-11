@@ -23,8 +23,7 @@ DocumentSchema
 
 ChapterSchema
 ├── key                 全局唯一结构键
-├── title               固定标题
-├── title_template      多项章节的标题模板，如 "{title} {index}"
+├── title               单次章节的固定标题；多项章节实例标题由 add/update_title 指定
 ├── occurrence          single | multiple
 ├── content             text | list
 ├── item                仅 content = list，列表项模板
@@ -41,7 +40,7 @@ ChapterSchema
 - `text`：章节自身是一段 Markdown 文本。
 - `list`：章节自身是有序列表，列表项是文本锚点。
 - 列表项不能有子章节；需要结构化字段的条目应建模为 `multiple` 章节。
-- 标题由描述文件/API 决定，不属于正文内容，不参与哈希。
+- 单次章节标题由描述文件决定；多项章节实例的标题由 `add` 的 `title` 或 `update_title` 指定，不从正文推导。标题不属于正文内容，不参与哈希。
 - 创建草案时，系统按描述文件预生成所有“单次”章节及其单次子章节；`multiple` 章节实例和列表项不预生成，按需新增。
 - 一个 `multiple` 章节必须是父节点的唯一子章节；否则 schema 校验失败。因此多项章节通常挂在一个单次容器章节下，例如 `goals` 容器下的 `goal`、`background.problems` 容器下的 `problem`。
 
@@ -54,7 +53,7 @@ ChapterSchema
 | 背景.现状 | 单次文本章节 |
 | 背景.问题 | 多项章节，每个问题一个实例 |
 | 问题的影响对象、频率、代价、证据 | 问题实例的子章节或列表 |
-| 目标、非目标、约束、风险、术语表 | 多项章节 |
+| 目标、非目标、分期计划、约束、风险、术语表 | 多项章节 |
 | 别名、证据、引用列表 | 列表章节 |
 
 ## 3. 锚点
@@ -123,8 +122,9 @@ id = "sha256:" + hex(sha256(UTF-8 JSON))
 ## 5. 操作
 
 ```text
-add          在父锚点下新增章节或列表项
+add          在父锚点下新增章节或列表项；新增多项章节时传 title
 update_text  修改锚点文本
+update_title 修改多项章节的标题
 delete       删除多项章节实例或列表项；有子项时要求 cascade
 move         在同一父锚点内排序
 ```
@@ -136,7 +136,8 @@ move         在同一父锚点内排序
 - 文档根不能删除、不能移动、不能改文本。单次章节不能删除，但可以 update_text；多项章节实例和列表项可以删除、移动。
 - 列表项不能作为父锚点。
 - 单次章节重复新增会失败。
-- 多项章节可以按出现键新增多个实例。
+- 多项章节可以按出现键新增多个实例；新增时必须传非空 `title`，标题不从正文推导。
+- 只有多项章节可以 `update_title`；单次章节和分组章节的标题由 schema 固定。
 - 删除有多项子项的章节实例必须显式 `cascade=true`。
 
 ## 6. 存储
@@ -196,6 +197,22 @@ GET  /api/v1/projects/{project}/documents/{kind}/versions/{version}
       "parent": "k:<background.problems 的 key>",
       "occurrence_key": "p1",
       "text": "员工无法查询报销进度，平均催问两次"
+    }
+  ]
+}
+```
+
+- 列表项不需要 `title`；新增多项章节时必须带 `title`，例如 `{"type":"add","parent":"k:...","occurrence_key":"u1","title":"张先生","text":"..."}`。
+- `update_title` 示例：
+
+```json
+{
+  "operations": [
+    {
+      "op_id": "uuid",
+      "type": "update_title",
+      "anchor": "k:<u1 的 key>",
+      "title": "张先生（买家）"
     }
   ]
 }

@@ -1232,7 +1232,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        9
+        11
     );
 
     let created = body_json(
@@ -1990,7 +1990,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 9);
+    assert_eq!(platform.len(), 11);
     assert!(
         platform
             .iter()
@@ -2158,7 +2158,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 10);
+    assert_eq!(own.as_array().unwrap().len(), 12);
 }
 
 #[tokio::test]
@@ -3046,53 +3046,54 @@ async fn requirements_anchor_document_round_trips_over_http() {
                         "type": "add",
                         "parent": "users",
                         "occurrence_key": "persona-customer",
-                        "text": "张先生：需要随时查看订单状态"
+                        "text": "姓名：张先生\n年龄：35 岁\n爱好：钓鱼\n职业：买家\n诉求：随时知道订单什么时候到达\n主次：主要",
+                        "title": "张先生"
                     },
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
                         "parent": "subsystems",
                         "occurrence_key": "orders",
-                        "text": "订单子系统"
+                        "text": "软件名称：订单系统移动端\n软件形态：移动应用\n覆盖用户：买家\n闭环目标：买家查看订单状态\n与其他子系统的关系：无\n边界：不含下单和支付",
+                        "title": "订单系统移动端"
                     },
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
                         "parent": "subsystems/subsystem/orders",
                         "occurrence_key": "core",
-                        "text": "订单核心功能集"
+                        "text": "名称：订单核心功能集\n满足的用户需求：买家需要查看订单状态\n覆盖用户：买家\n协作关系：查询功能围绕同一订单\n闭环位置：支撑买家查看订单状态\n分界：不含下单和支付",
+                        "title": "订单核心功能集"
                     },
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
                         "parent": "subsystems/subsystem/orders/function_set/core.stories",
                         "occurrence_key": "track-order",
-                        "text": "作为张先生，我希望查看订单状态，以便知道商品什么时候到达"
+                        "text": "名称：查看订单状态\n前置条件：张先生已下单\n发生频率：高\n故事描述：张先生打开订单查询，查看订单状态时间线并确认预计到达时间。",
+                        "title": "查看订单状态"
                     },
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
                         "parent": "subsystems/subsystem/orders/function_set/core.functions",
                         "occurrence_key": "track-order",
-                        "text": "订单查询"
+                        "text": "名称：订单查询\n功能描述：查询订单当前状态\n系统变化：订单状态从已下单变为已查询\n前置条件：订单存在\n反馈：返回订单状态和预计到达时间\n交互设计：输入订单号后展示状态时间线",
+                        "title": "订单查询"
                     },
                     {
                         "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.function_description",
-                        "text": "按订单号查询当前状态和物流信息"
+                        "type": "add",
+                        "parent": "subsystems/subsystem/orders/function_set/core.functions/function/track-order",
+                        "occurrence_key": "screenshot",
+                        "text": "名称：订单详情页\n链接：https://example.com/order.png",
+                        "title": "订单详情页"
                     },
                     {
                         "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.interaction_design",
-                        "text": "输入订单号后展示状态时间线"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order.ui_design",
-                        "text": "订单详情页顶部展示状态时间线"
+                        "type": "update_title",
+                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order",
+                        "title": "查询订单状态"
                     }
                 ]
             }),
@@ -3111,6 +3112,9 @@ async fn requirements_anchor_document_round_trips_over_http() {
     assert!(toc.contains("## 目录"));
     assert!(toc.contains("- 用户"));
     assert!(toc.contains("- 故事"));
+    assert!(toc.contains("查看订单状态"));
+    assert!(toc.contains("查询订单状态"));
+    assert!(!toc.contains("订单查询"));
     assert!(toc.contains("k:"));
 
     let content = body_json(
@@ -3128,6 +3132,9 @@ async fn requirements_anchor_document_round_trips_over_http() {
     let markdown = content["markdown"].as_str().unwrap();
     assert!(markdown.contains("# 用户"));
     assert!(markdown.contains("张先生"));
+    assert!(markdown.contains("软件名称：订单系统移动端"));
+    assert!(markdown.contains("交互设计：输入订单号后展示状态时间线"));
+    assert!(markdown.contains("链接：https://example.com/order.png"));
 
     let validation = body_json(
         &harness.router,
@@ -3140,7 +3147,11 @@ async fn requirements_anchor_document_round_trips_over_http() {
         ),
     )
     .await;
-    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        validation["errors"].as_array().unwrap().len(),
+        0,
+        "{validation}"
+    );
 
     let approved = body_json(
         &harness.router,
@@ -3366,12 +3377,6 @@ async fn anchor_document_round_trips_over_http() {
                 "parent": "non_goals",
                 "occurrence_key": "n1",
                 "text": "不做移动端应用"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "non_goals/non_goal/n1.non_goal_reason",
-                "text": "首期只覆盖桌面端"
             }
         ]
     });
@@ -3508,12 +3513,6 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
                 "parent": "non_goals",
                 "occurrence_key": "n1",
                 "text": "不做移动端应用"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "non_goals/non_goal/n1.non_goal_reason",
-                "text": "首期只覆盖桌面端"
             }
         ]
     });

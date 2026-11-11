@@ -123,14 +123,14 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 2. Clarifier 在澄清 Issue 中与创建者对话，只负责提问；澄清完毕后发送总结评论并调用
    `task_operation(operation = "completed")` 进入项目文档撰写；
 3. Writer 读取澄清 Issue、项目信息和确认过的结论，用 `document` 工具维护项目文档
-   （定位、背景、目标、非目标、约束、风险、术语表），再用 `validate` 校验；
+   （定位、背景、目标、非目标、分期计划、约束、风险、术语表），再用 `validate` 校验；
    写完后调用 `task_operation(operation = "completed")` 进入文风审查；
 4. 项目文档依次经过 **Project Layer Style Reviewer** 和 **Project Layer Content Reviewer**
    （都是 Agent）；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"`
    阅读，用 `action = "annotate"` 写锚点标注，打回时任务回到 `writing`；
 5. Writer 读取文档标注，逐条处理后修改草稿，再次发送 `completed`；
 6. 两位 Reviewer 通过后，人类在 `/projects/{id}/documents/project` 批准当前草案。
-   **批准即发布不可变版本**；control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作
+   **批准即发布不可变版本**；control-plane 只在任务处于 `human_review` 时发送保留操作
    `accept`。第一个批准版本就是项目基线。
 
 ### 需求分析
@@ -138,11 +138,11 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 项目文档通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
 
 1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
-2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（用户 / 功能 / 操作 / 故事 / 交互规格 / 交互流 / 界面 / 图片）；
+2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"update_title"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（用户 / 子系统 / 功能集 / 故事 / 功能；功能描述和交互设计在功能正文中，UI 设计是功能下的图片列表）；
    人类和 Reviewer 可以在需求文档页写锚点标注，Analyst 用 `action = "annotations_list"` 读取，用 `action = "resolve_annotation"` 在修改后标记解决；
 3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用标注写具体意见，打回时任务回到 `work`，Analyst 读取标注修改后重新提交；
 4. 人类在 `/projects/{id}/documents/requirements` 做最终 review：**批准当前草案**会生成新的不可变版本，或填写打回原因退回 Analyst。项目文档和需求文档分别审批，每个草案 revision 都需要审批；
-5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `architecture`。
+5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `interaction_design`；交互设计和 UI 设计分别完成并批准后进入 `architecture`。
 
 ### 通过 API 验收
 
@@ -262,7 +262,7 @@ export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
 
 ## 工作流定义升级
 
-流程定义随迁移 `0007` 引入。启动顺序是：运行迁移 → 播种 9 个平台 v1 → 检查所有 Task 的 pinned 版本 → 校验 `tasks_workflow_version_fk` → 回填 `projects.root_task_id`。
+流程定义随迁移 `0007` 引入。启动顺序是：运行迁移 → 播种 11 个平台 v1 → 检查所有 Task 的 pinned 版本 → 校验 `tasks_workflow_version_fk` → 回填 `projects.root_task_id`。
 
 启动引导的硬性检查：
 
@@ -276,7 +276,7 @@ export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
 1. 备份数据库。
 2. 同时部署控制面二进制和 `web/workflow-editor/dist`；只更新其中一个会让编辑器 503 或与 API 不匹配。
 3. 启动并检查日志：除缺少唯一根 Task 的警告外，不应出现播种、版本固定或外键相关错误；出现时按下面的故障处理。
-4. 打开 `/workflows` 确认 9 个平台流程存在且可进入编辑器。
+4. 打开 `/workflows` 确认 11 个平台流程存在且可进入编辑器。
 
 故障处理：
 

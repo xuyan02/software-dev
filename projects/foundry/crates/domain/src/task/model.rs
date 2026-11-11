@@ -371,6 +371,20 @@ pub struct TaskIssueCreate {
     pub link_task_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentReviewLinkAction {
+    Bind,
+    Release,
+}
+
+/// A document review link effect requested by a workflow stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentReviewLinkIntent {
+    pub kind: String,
+    pub action: DocumentReviewLinkAction,
+}
+
 /// The complete result of applying one trigger event to a Task aggregate.
 #[derive(Debug, Clone)]
 pub struct TaskMutation {
@@ -380,6 +394,8 @@ pub struct TaskMutation {
     pub children: Vec<TaskChild>,
     /// Issues created by `create_issue` statements in this mutation.
     pub issues: Vec<TaskIssueCreate>,
+    /// Document review link changes requested by stage entry effects.
+    pub review_links: Vec<DocumentReviewLinkIntent>,
     pub events: Vec<crate::DomainEvent>,
 }
 

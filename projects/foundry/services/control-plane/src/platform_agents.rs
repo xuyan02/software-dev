@@ -85,13 +85,15 @@ const BRIEF_STYLE_REVIEWER_ROLE: &str = "goal_clarification:style_reviewer";
 
 const BRIEF_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的项目文档文风审查智能体。
 
-你的职责是审查项目文档的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。"#;
+你的职责是审查项目文档的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
+只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
 
 const BRIEF_CONTENT_REVIEWER_ROLE: &str = "goal_clarification:content_reviewer";
 
 const BRIEF_CONTENT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的项目文档内容审查智能体。
 
-你的职责是审查项目文档的内容是否完整、一致、可度量和可执行，不审查语言和表达。你不修改文档，也不审批或发布。"#;
+你的职责是审查项目文档的内容和格式是否符合《项目文档写作说明书》，是否完整、一致、可度量和可执行；列表章节出现额外字段或信息写多了也要打回。你不审查语言和表达，不修改文档，也不审批或发布。
+只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
 
 const BRIEF_REVIEWER_TOOLS: &[&str] = &[
     "document",
@@ -113,8 +115,9 @@ const REQUIREMENTS_ANALYST_PROMPT: &str = r#"你是 Foundry 的需求分析智�
 2. 用 document action="content" kind="requirements" 读取需求文档；用 action="toc" 查看目录和锚点。
 3. 用 document action="annotations_list" kind="requirements" 读取已有评审批注。
 4. 用 document action="draft_open" kind="requirements" 打开草稿；没有草稿时用 action="draft_create"；保留返回的 revision。
-5. 按《需求文档写作说明书》的 8 节写需求文档：用户、功能、操作、故事、交互规格、交互流、界面、图片。
-   单次章节用 action="update_text"；列表项用 action="add"；调整用 action="move" 或 action="delete"。
+5. 先按《需求分析技能》完成用户、诉求、故事、功能、功能集和子系统的分析，再按《需求文档写作说明书》把结果写入需求文档。
+   本阶段只写需求分析内容；交互设计和 UI 设计由后续任务完成，不要在本阶段填写。
+   单次章节用 action="update_text"；添加多项项用 action="add" 并传 title（用户用姓名，子系统用软件名称，其余用名称）；调整用 action="move" 或 action="delete"；改多项标题用 action="update_title"。
 6. 每次操作带 kind="requirements"、expected_revision 和锚点；使用上一步返回的 revision。
    按锚点增量修改，不要重写整篇文档。只写项目文档、Issue 和已有需求文档中能确认的事实；不编造。
 7. 每批修改后用 action="validate" 校验，修复所有 error。
@@ -141,12 +144,15 @@ const REQUIREMENTS_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求文档评�
 1. 用 document action="content" kind="project" 读取项目文档的定位、背景、目标、非目标、约束和风险。
 2. 用 document action="content" kind="requirements" 读取需求文档；用 action="toc" 获取章节锚点；
    用 action="annotations_list" 读取已有标注。
-3. 按《需求文档写作说明书》检查：用户、功能、操作、故事、交互规格、交互流、界面、图片是否完整、一致、
-   可测试；是否与项目文档冲突。
-4. 每个问题用 document action="annotate" kind="requirements" 写锚点标注：
-   anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议。不重复已有标注。
-5. 有阻塞问题时调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-   通过时调用 task_operation，operation="approved"。"#;
+3. 按《需求文档审查技能》和《需求文档写作说明书》做逻辑推演和检查：用户、子系统、功能集、故事、功能和
+   功能描述是否完整、一致、可测试；是否存在矛盾、断链、闭环缺口或不合理成本；是否与项目文档冲突。
+   本阶段不审查交互设计和 UI 设计。
+4. 只写必须修改的问题；不值得拒绝的问题不写标注；每条标注必须写清通过条件。
+   已解决或不影响结论的问题不重复报；不写个人偏好、等价写法或可选润色类标注。
+5. 每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点标注：
+   anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议和通过条件。不重复已有标注。
+6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
+   一条标注都没写时，才调用 task_operation，operation="approved"。"#;
 
 const FEASIBILITY_REVIEWER_ROLE: &str = "requirements_analysis:feasibility_reviewer";
 
@@ -156,21 +162,24 @@ const FEASIBILITY_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求可行性�
 1. 用 document action="content" kind="project" 读取约束和风险。
 2. 用 document action="content" kind="requirements" 读取需求文档；用 action="toc" 获取章节锚点；
    用 action="annotations_list" 读取已有标注。
-3. 按《需求文档写作说明书》检查技术可行性、依赖、成本、风险和范围：
+3. 按《需求可行性审查技能》《需求文档审查技能》和《需求文档写作说明书》检查技术可行性、依赖、成本、风险和范围：
    - 每个功能和操作是否能在已声明约束下实现；
    - 外部依赖和未知项是否已识别；
    - 范围是否过大或互相矛盾；
    - 项目文档中的风险和缓解措施是否具体。
-4. 每个问题用 document action="annotate" kind="requirements" 写锚点标注：
-   anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议。不重复已有标注。
-5. 有阻塞问题时调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-   通过时调用 task_operation，operation="approved"。"#;
+4. 只写必须修改的问题；不值得拒绝的问题不写标注；每条标注必须写清通过条件。
+   已解决或不影响交付的问题不重复报；不写优化建议、替代方案或可分期范围类标注；人类决策项写明决策人，不反复拒绝。
+5. 每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点标注：
+   anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议和通过条件。不重复已有标注。
+6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
+   一条标注都没写时，才调用 task_operation，operation="approved"。"#;
 
 const STYLE_REVIEWER_ROLE: &str = "requirements_analysis:style_reviewer";
 
 const STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求文档文风审查智能体。
 
-你的职责是审查需求文档的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。"#;
+你的职责是审查需求文档的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
+只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
 
 const REVIEWER_TOOLS: &[&str] = &[
     "document",
@@ -181,6 +190,65 @@ const REVIEWER_TOOLS: &[&str] = &[
     "task_allowed_operations",
     "task_operation",
 ];
+
+const DESIGNER_TOOLS: &[&str] = ANALYST_TOOLS;
+
+const INTERACTION_DESIGNER_ROLE: &str = "interaction_design:designer";
+
+const INTERACTION_DESIGNER_PROMPT: &str = r#"你是 Foundry 的交互设计智能体。
+你不修改需求分析内容，只为每个功能补全交互设计。
+
+1. 按《交互设计技能》读取项目文档、需求文档、批注和故事。
+2. 打开或创建需求文档草稿，保留返回的 revision。
+3. 在每个功能正文中补全一行 `交互设计：`，写页面结构、控件、用户操作、反馈与状态、文案、无障碍。
+4. 不写业务规则、系统结果、视觉样式，不把细粒度交互拆成多个字段或标题。
+5. 每批修改后 validate，修复所有 error；处理批注后标记 resolve。
+6. 缺关键决定时用 issue_comment 提问并结束本轮，否则调用 task_operation completed。"#;
+
+const INTERACTION_STYLE_REVIEWER_ROLE: &str = "interaction_design:style_reviewer";
+
+const INTERACTION_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的交互设计文风审查智能体。
+只审查交互设计的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
+只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
+
+const INTERACTION_REVIEWER_ROLE: &str = "interaction_design:interaction_reviewer";
+
+const INTERACTION_REVIEWER_PROMPT: &str = r#"你是 Foundry 的交互设计评审智能体。
+你不修改文档，按《交互设计审查技能》检查每个功能的交互设计是否完整、可用、与功能、故事和反馈一致。
+
+只写必须修改的问题；不值得拒绝的不写标注；每条标注写清通过条件；已解决的问题不重复报。
+每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点批注。
+只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
+一条标注都没写时，才调用 task_operation，operation="approved"。"#;
+
+const UI_DESIGNER_ROLE: &str = "ui_design:designer";
+
+const UI_DESIGNER_PROMPT: &str = r#"你是 Foundry 的 UI 设计智能体。
+你不修改需求分析和交互设计内容，只为每个功能补全 UI 设计。
+
+1. 按《UI 设计技能》读取需求文档、交互设计和批注。
+2. 打开或创建需求文档草稿，保留返回的 revision。
+3. 在功能下添加图片列表；add 时传图片名称作为 title，每项正文按 `名称：`、`链接：` 两行写。
+4. 图片顺序必须与交互设计描述的顺序一致；只放静态图片，不支持动画。
+5. 不写视觉规范文字、页面结构、控件行为、业务规则或技术实现。
+6. 每批修改后 validate，修复所有 error；处理批注后标记 resolve。
+7. 缺关键决定时用 issue_comment 提问并结束本轮，否则调用 task_operation completed。"#;
+
+const UI_STYLE_REVIEWER_ROLE: &str = "ui_design:style_reviewer";
+
+const UI_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的 UI 设计文风审查智能体。
+只审查图片名称和引用是否清楚，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
+只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
+
+const UI_REVIEWER_ROLE: &str = "ui_design:ui_reviewer";
+
+const UI_REVIEWER_PROMPT: &str = r#"你是 Foundry 的 UI 设计评审智能体。
+你不修改文档，按《UI 设计审查技能》检查每个功能的 UI 设计图片列表是否完整、顺序正确、与交互设计一致。
+
+只写必须修改的问题；不值得拒绝的不写标注；每条标注写清通过条件；已解决的问题不重复报。
+每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点批注。
+只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
+一条标注都没写时，才调用 task_operation，operation="approved"。"#;
 
 const TEMPLATES: &[PlatformTemplate] = &[
     PlatformTemplate {
@@ -234,7 +302,11 @@ const TEMPLATES: &[PlatformTemplate] = &[
         description: "Builds the requirements document from the project layer",
         system_prompt: REQUIREMENTS_ANALYST_PROMPT,
         tools: ANALYST_TOOLS,
-        skills: &["document", "requirements-document-writing-guide"],
+        skills: &[
+            "document",
+            "requirements-analysis",
+            "requirements-document-writing-guide",
+        ],
     },
     PlatformTemplate {
         id: "requirements-reviewer",
@@ -243,7 +315,11 @@ const TEMPLATES: &[PlatformTemplate] = &[
         description: "Reviews completeness, consistency and testability",
         system_prompt: REQUIREMENTS_REVIEWER_PROMPT,
         tools: REVIEWER_TOOLS,
-        skills: &["document", "requirements-document-writing-guide"],
+        skills: &[
+            "document",
+            "requirements-document-review",
+            "requirements-document-writing-guide",
+        ],
     },
     PlatformTemplate {
         id: "feasibility-reviewer",
@@ -252,7 +328,12 @@ const TEMPLATES: &[PlatformTemplate] = &[
         description: "Reviews technical feasibility, dependencies, cost and risk",
         system_prompt: FEASIBILITY_REVIEWER_PROMPT,
         tools: REVIEWER_TOOLS,
-        skills: &["document", "requirements-document-writing-guide"],
+        skills: &[
+            "document",
+            "requirements-document-review",
+            "requirements-feasibility-review",
+            "requirements-document-writing-guide",
+        ],
     },
     PlatformTemplate {
         id: "style-reviewer",
@@ -265,6 +346,84 @@ const TEMPLATES: &[PlatformTemplate] = &[
             "document",
             "requirements-document-writing-guide",
             "style-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "interaction-designer",
+        name: "Interaction Designer",
+        role: INTERACTION_DESIGNER_ROLE,
+        description: "Designs pages, controls and user operations for each function",
+        system_prompt: INTERACTION_DESIGNER_PROMPT,
+        tools: DESIGNER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "interaction-design",
+        ],
+    },
+    PlatformTemplate {
+        id: "interaction-style-reviewer",
+        name: "Interaction Style Reviewer",
+        role: INTERACTION_STYLE_REVIEWER_ROLE,
+        description: "Language-only review of interaction design",
+        system_prompt: INTERACTION_STYLE_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "style-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "interaction-reviewer",
+        name: "Interaction Reviewer",
+        role: INTERACTION_REVIEWER_ROLE,
+        description: "Reviews interaction completeness, usability and consistency",
+        system_prompt: INTERACTION_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "interaction-design-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "ui-designer",
+        name: "UI Designer",
+        role: UI_DESIGNER_ROLE,
+        description: "Adds ordered image lists for each function's UI",
+        system_prompt: UI_DESIGNER_PROMPT,
+        tools: DESIGNER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "ui-design",
+        ],
+    },
+    PlatformTemplate {
+        id: "ui-style-reviewer",
+        name: "UI Style Reviewer",
+        role: UI_STYLE_REVIEWER_ROLE,
+        description: "Language-only review of UI image references",
+        system_prompt: UI_STYLE_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "style-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "ui-reviewer",
+        name: "UI Reviewer",
+        role: UI_REVIEWER_ROLE,
+        description: "Reviews UI image coverage, order and consistency",
+        system_prompt: UI_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &[
+            "document",
+            "requirements-document-writing-guide",
+            "ui-design-review",
         ],
     },
 ];
@@ -511,6 +670,76 @@ mod tests {
                 .contains(&"requirements-document-writing-guide")
         );
         assert!(reviewer.skills.contains(&"style-review"));
+    }
+
+    #[test]
+    fn requirements_analyst_loads_the_analysis_skill() {
+        let analyst = template("requirements-analyst").expect("requirements analyst template");
+        assert!(analyst.skills.contains(&"requirements-analysis"));
+        assert!(
+            analyst
+                .skills
+                .contains(&"requirements-document-writing-guide")
+        );
+    }
+
+    #[test]
+    fn requirements_reviewers_load_the_review_skill() {
+        for id in ["requirements-reviewer", "feasibility-reviewer"] {
+            let reviewer = template(id).expect("requirements reviewer template");
+            assert!(
+                reviewer.skills.contains(&"requirements-document-review"),
+                "{id} should load the review skill"
+            );
+        }
+        let style = template("style-reviewer").expect("style reviewer template");
+        assert!(!style.skills.contains(&"requirements-document-review"));
+    }
+
+    #[test]
+    fn feasibility_reviewer_loads_the_feasibility_skill() {
+        let reviewer = template("feasibility-reviewer").expect("feasibility reviewer template");
+        assert!(reviewer.skills.contains(&"requirements-feasibility-review"));
+        let requirements_reviewer =
+            template("requirements-reviewer").expect("requirements reviewer template");
+        assert!(
+            !requirements_reviewer
+                .skills
+                .contains(&"requirements-feasibility-review")
+        );
+    }
+
+    #[test]
+    fn design_templates_load_their_skills() {
+        for (id, role, skill) in [
+            (
+                "interaction-designer",
+                "interaction_design:designer",
+                "interaction-design",
+            ),
+            (
+                "interaction-style-reviewer",
+                "interaction_design:style_reviewer",
+                "style-review",
+            ),
+            (
+                "interaction-reviewer",
+                "interaction_design:interaction_reviewer",
+                "interaction-design-review",
+            ),
+            ("ui-designer", "ui_design:designer", "ui-design"),
+            (
+                "ui-style-reviewer",
+                "ui_design:style_reviewer",
+                "style-review",
+            ),
+            ("ui-reviewer", "ui_design:ui_reviewer", "ui-design-review"),
+        ] {
+            let template = template(id).expect("design template");
+            assert_eq!(template.role, role);
+            assert!(template.tools.contains(&"document"));
+            assert!(template.skills.contains(&skill));
+        }
     }
 
     #[test]

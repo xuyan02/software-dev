@@ -68,6 +68,10 @@ pub fn router(state: AppState) -> Router {
             get(routes::anchor_document_page),
         )
         .route(
+            "/projects/{id}/documents/{kind}/refresh",
+            get(routes::anchor_document_refresh),
+        )
+        .route(
             "/projects/{id}/documents/{kind}/approve",
             post(routes::approve_anchor_document_form),
         )

@@ -189,6 +189,15 @@ pub fn validate(body: &WorkflowBody, is_known: &dyn Fn(&str) -> bool) -> Validat
 
     for (index, stage) in body.stages.iter().enumerate() {
         let stage_path = format!("stages[{index}]");
+        if let Some(target) = &stage.reject_to
+            && !known_stage_names.contains(target.as_str())
+        {
+            validation.error(
+                format!("{stage_path}.reject_to"),
+                "unknown_reject_stage",
+                format!("reject_to {target:?} is not a declared stage"),
+            );
+        }
         let scripts = validate_stage(
             stage,
             &stage_path,
@@ -387,6 +396,18 @@ fn validate_stage(
                     &format!("{child_path}.title"),
                     &mut validation.errors,
                 );
+            }
+            CreatedEffect::DocumentReviewLink(link) => {
+                if !matches!(link.kind.as_str(), "project" | "requirements") {
+                    validation.error(
+                        format!("{effect_path}.document_review_link.kind"),
+                        "unknown_document_kind",
+                        format!(
+                            "document_review_link kind {:?} must be project or requirements",
+                            link.kind
+                        ),
+                    );
+                }
             }
         }
     }

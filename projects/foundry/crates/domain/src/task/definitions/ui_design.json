@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "ui_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["designer"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "requirements", "action": "release"}}
+      ],
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start UI design.",
+          "roles": ["designer"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Submit for review",
+          "description": "Submit the UI design for review.",
+          "roles": ["designer"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "style_review"}
+      ]
+    },
+    {
+      "name": "style_review",
+      "active_roles": ["style_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The image references are clear; move to UI review.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The image references are unclear; return to the designer.",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "ui_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "ui_review",
+      "active_roles": ["ui_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "The UI design is complete; move to human review.",
+          "roles": ["ui_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The UI design needs revision; return to the designer.",
+          "roles": ["ui_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "requirements", "action": "bind"}}
+      ],
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve and publish",
+          "description": "The human accepts the UI design.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "The human rejects the UI design; return to the designer.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ],
+      "reject_to": "work"
+    }
+  ]
+}

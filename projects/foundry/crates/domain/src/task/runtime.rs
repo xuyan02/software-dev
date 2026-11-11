@@ -40,6 +40,7 @@ pub fn apply(
             dependencies,
             children: Vec::new(),
             issues: Vec::new(),
+            review_links: Vec::new(),
             events: Vec::new(),
         });
     }
@@ -65,12 +66,18 @@ pub fn apply(
             // Platform-level rejection from a human review: return to the
             // workflow's initial stage (the drafting stage). Annotations carry
             // the concrete revision feedback.
-            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
-            let initial = workflow
+            let target = workflow
                 .body()
-                .and_then(|body| body.initial_stage.clone())
+                .and_then(|body| {
+                    body.stages
+                        .iter()
+                        .find(|stage| Some(stage.name.as_str()) == task.stage.as_deref())
+                        .and_then(|stage| stage.reject_to.clone())
+                        .or_else(|| body.initial_stage.clone())
+                })
                 .unwrap_or_else(|| "work".to_string());
-            ctx.enter_stage(&initial)?;
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.enter_stage(&target)?;
             return Ok(ctx.into_mutation());
         }
         TaskEvent::Operation {

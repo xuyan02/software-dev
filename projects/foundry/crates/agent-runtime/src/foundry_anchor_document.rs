@@ -70,6 +70,7 @@ impl Tool for DocumentTool {
                             "content",
                             "add",
                             "update_text",
+                            "update_title",
                             "delete",
                             "move",
                             "validate",
@@ -87,6 +88,7 @@ impl Tool for DocumentTool {
                     "parent": { "type": "string" },
                     "occurrence_key": { "type": "string" },
                     "text": { "type": "string" },
+                    "title": { "type": "string", "description": "Title for a multiple chapter. Required when action is add; used by update_title. Titles are not derived from text." },
                     "after": { "type": "string" },
                     "cascade": { "type": "boolean", "default": false },
                     "include_resolved": { "type": "boolean", "default": false },
@@ -147,6 +149,7 @@ impl Tool for DocumentTool {
                     "parent": required_string(&arguments, "parent")?,
                     "occurrence_key": optional_string(&arguments, "occurrence_key"),
                     "text": optional_string(&arguments, "text").unwrap_or_default(),
+                    "title": optional_string(&arguments, "title"),
                     "after": optional_string(&arguments, "after"),
                 });
                 self.apply(&kind, expected_revision, op).await
@@ -158,6 +161,16 @@ impl Tool for DocumentTool {
                     "type": "update_text",
                     "anchor": required_string(&arguments, "anchor")?,
                     "text": required_string(&arguments, "text")?,
+                });
+                self.apply(&kind, expected_revision, op).await
+            }
+            "update_title" => {
+                let expected_revision = required_u64(&arguments, "expected_revision")?;
+                let op = json!({
+                    "op_id": Uuid::now_v7().to_string(),
+                    "type": "update_title",
+                    "anchor": required_string(&arguments, "anchor")?,
+                    "title": required_string(&arguments, "title")?,
                 });
                 self.apply(&kind, expected_revision, op).await
             }

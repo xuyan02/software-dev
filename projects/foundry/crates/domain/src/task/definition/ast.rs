@@ -1,4 +1,4 @@
-use crate::{RoleSpec, TaskState};
+use crate::{DocumentReviewLinkAction, RoleSpec, TaskState};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -54,6 +54,10 @@ pub struct WorkflowStage {
     pub created: Vec<CreatedEffect>,
     #[serde(default)]
     pub transitions: Vec<TransitionSpec>,
+    /// Stage to enter when a platform-level human rejection is sent from this
+    /// stage. Falls back to the workflow's initial stage when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reject_to: Option<String>,
 }
 
 impl WorkflowStage {
@@ -157,6 +161,14 @@ impl EventKind {
 pub enum CreatedEffect {
     SetState(TaskState),
     CreateChild(CreateChild),
+    DocumentReviewLink(DocumentReviewLinkEffect),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentReviewLinkEffect {
+    pub kind: String,
+    pub action: DocumentReviewLinkAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

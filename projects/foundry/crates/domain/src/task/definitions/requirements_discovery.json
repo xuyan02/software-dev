@@ -29,11 +29,11 @@
         }
       ],
       "transitions": [
-        {"on": "completed", "to": "awaiting_acceptance"}
+        {"on": "completed", "to": "human_review"}
       ]
     },
     {
-      "name": "awaiting_acceptance",
+      "name": "human_review",
       "active_roles": ["acceptor"],
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}

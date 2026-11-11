@@ -182,6 +182,7 @@ async fn document_tool(
                 parent: required(args.parent, "parent")?,
                 occurrence_key: args.occurrence_key,
                 text: args.text.unwrap_or_default(),
+                title: args.title,
                 after: args.after,
             };
             apply_document_op(services, caller, kind, expected_revision, op).await
@@ -192,6 +193,15 @@ async fn document_tool(
             let op = AnchorOp::UpdateText {
                 anchor: required(args.anchor, "anchor")?,
                 text: required(args.text, "text")?,
+            };
+            apply_document_op(services, caller, kind, expected_revision, op).await
+        }
+        "update_title" => {
+            require_contribute(caller)?;
+            let expected_revision = required_revision(&args)?;
+            let op = AnchorOp::UpdateTitle {
+                anchor: required(args.anchor, "anchor")?,
+                title: required(args.title, "title")?,
             };
             apply_document_op(services, caller, kind, expected_revision, op).await
         }
@@ -725,6 +735,7 @@ fn tool_definitions() -> Value {
                             "content",
                             "add",
                             "update_text",
+                            "update_title",
                             "delete",
                             "move",
                             "validate",
@@ -742,6 +753,7 @@ fn tool_definitions() -> Value {
                     "parent": { "type": "string" },
                     "occurrence_key": { "type": "string" },
                     "text": { "type": "string" },
+                    "title": { "type": "string", "description": "Title for a multiple chapter. Required when action is add; used by update_title. Titles are not derived from text." },
                     "after": { "type": "string" },
                     "cascade": { "type": "boolean", "default": false },
                     "include_resolved": { "type": "boolean", "default": false },
@@ -771,6 +783,8 @@ struct DocumentArgs {
     occurrence_key: Option<String>,
     #[serde(default)]
     text: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
     #[serde(default)]
     after: Option<String>,
     #[serde(default)]

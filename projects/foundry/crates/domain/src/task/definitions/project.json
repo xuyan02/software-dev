@@ -41,6 +41,44 @@
         }
       ],
       "transitions": [
+        {"on": "outcome == 'approved'", "to": "interaction_design"},
+        {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "interaction_design",
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "created": [
+        {"create_child": {"workflow": "interaction_design", "title": "Design interactions"}}
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'interaction_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'approved'", "to": "ui_design"},
+        {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "ui_design",
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "created": [
+        {"create_child": {"workflow": "ui_design", "title": "Design UI"}}
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'ui_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
         {"on": "outcome == 'approved'", "to": "architecture"},
         {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
       ]

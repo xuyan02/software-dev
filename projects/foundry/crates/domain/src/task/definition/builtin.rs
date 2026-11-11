@@ -6,6 +6,8 @@ const PROJECT: &str = include_str!("../definitions/project.json");
 const GOAL_CLARIFICATION: &str = include_str!("../definitions/goal_clarification.json");
 const REQUIREMENTS_DISCOVERY: &str = include_str!("../definitions/requirements_discovery.json");
 const REQUIREMENTS_ANALYSIS: &str = include_str!("../definitions/requirements_analysis.json");
+const INTERACTION_DESIGN: &str = include_str!("../definitions/interaction_design.json");
+const UI_DESIGN: &str = include_str!("../definitions/ui_design.json");
 const ARCHITECTURE_DESIGN: &str = include_str!("../definitions/architecture_design.json");
 const ROADMAP: &str = include_str!("../definitions/roadmap.json");
 const ITERATION: &str = include_str!("../definitions/iteration.json");
@@ -25,6 +27,12 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Requirements analysis",
         REQUIREMENTS_ANALYSIS,
     ),
+    (
+        "interaction_design",
+        "Interaction design",
+        INTERACTION_DESIGN,
+    ),
+    ("ui_design", "UI design", UI_DESIGN),
     (
         "architecture_design",
         "Architecture design",

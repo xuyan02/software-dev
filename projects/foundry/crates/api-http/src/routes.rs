@@ -1023,6 +1023,49 @@ pub async fn anchor_document_page(
     }
 }
 
+pub async fn anchor_document_refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, kind)): Path<(Uuid, String)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(_project) = session_project(&session, id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let view = match state
+        .anchor_docs
+        .get(
+            session.account.actor(),
+            id,
+            &kind,
+            &AnchorRef::Key("document".to_string()),
+        )
+        .await
+    {
+        Ok(view) => view,
+        Err(error) => return auth::web_error(error),
+    };
+    let annotations = match state
+        .anchor_docs
+        .annotations(session.account.actor(), id, &kind, true)
+        .await
+    {
+        Ok(annotations) => annotations,
+        Err(error) => return auth::web_error(error),
+    };
+    let signature = foundry_web::anchor_document_signature(
+        view.current_version,
+        view.latest_version,
+        view.draft_revision,
+        view.draft_version,
+        &annotations,
+    );
+    Json(json!({ "signature": signature })).into_response()
+}
+
 async fn render_anchor_document(
     state: &AppState,
     session: &WebAccountSession,
@@ -1041,7 +1084,7 @@ async fn render_anchor_document(
         .await?;
     let content = state
         .anchor_docs
-        .content(
+        .content_with_anchors(
             session.account.actor(),
             project.id,
             kind,
@@ -1052,6 +1095,34 @@ async fn render_anchor_document(
         .anchor_docs
         .annotations(session.account.actor(), project.id, kind, true)
         .await?;
+    let review_link = state
+        .anchor_docs
+        .review_link(session.account.actor(), project.id, kind)
+        .await?;
+    let viewer = if session.account.is_admin()
+        || project
+            .role_of(session.account.id)
+            .is_some_and(|role| role >= ProjectRole::Maintainer)
+    {
+        TaskViewer::manager(session.account.id)
+    } else {
+        TaskViewer::member(session.account.id)
+    };
+    let mut review_task = match &review_link {
+        Some(link) => state.tasks.get(project.id, link.task_id, viewer).await.ok(),
+        None => None,
+    };
+    if review_task.is_none() {
+        review_task = active_human_review_task(state, project.id, kind)
+            .await
+            .ok()
+            .flatten();
+    }
+    let review_task_id = review_link
+        .as_ref()
+        .map(|link| link.task_id.to_string())
+        .or_else(|| review_task.as_ref().map(|task| task.id.to_string()));
+    let review_task_stage = review_task.as_ref().and_then(|task| task.stage.clone());
     let approvals = state
         .anchor_docs
         .approvals(session.account.actor(), project.id, kind)
@@ -1076,6 +1147,9 @@ async fn render_anchor_document(
             draft_revision: view.draft_revision,
             draft_version: view.draft_version,
             root_id: &content.anchor_id,
+            root_key: &content.key,
+            review_task_id: review_task_id.as_deref(),
+            review_task_stage: review_task_stage.as_deref(),
             markdown: &content.markdown,
             annotations: &annotations,
             approvals: &approvals,
@@ -1106,6 +1180,16 @@ pub async fn approve_anchor_document_form(
     if !can_approve_requirements(&session, &project) {
         return auth::web_forbidden("只有项目 Maintainer/Owner 可以批准文档。");
     }
+    let review_task = match form.task_id {
+        Some(task_id) => match human_review_task_by_id(&state, id, &kind, task_id).await {
+            Ok(Some(task)) => Some(task),
+            Ok(None) => {
+                return (StatusCode::CONFLICT, "关联任务不在人类审批阶段").into_response();
+            }
+            Err(error) => return auth::web_error(error),
+        },
+        None => None,
+    };
     match state
         .anchor_docs
         .decide(
@@ -1120,7 +1204,32 @@ pub async fn approve_anchor_document_form(
         )
         .await
     {
-        Ok(_) => Redirect::to(&format!("/projects/{id}/documents/{kind}")).into_response(),
+        Ok(_) => {
+            if let Some(task) = review_task {
+                match state
+                    .tasks
+                    .send_operation(
+                        id,
+                        task.id,
+                        session.account.id,
+                        OperationName::new(foundry_domain::ACCEPT_OPERATION),
+                        format!("anchor-document-approved:{}", task.id),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        release_review_link(&state, session.account.actor(), id, &kind, task.id)
+                            .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        %error,
+                        task_id = %task.id,
+                        "could not accept the linked review task"
+                    ),
+                }
+            }
+            Redirect::to(&format!("/projects/{id}/documents/{kind}")).into_response()
+        }
         Err(error) => match render_anchor_document(
             &state,
             &session,
@@ -1157,9 +1266,32 @@ pub async fn reject_anchor_document_form(
         return auth::web_forbidden("只有项目 Maintainer/Owner 可以打回文档。");
     }
     let reason = form.reason.trim();
-    if reason.is_empty() {
-        return (StatusCode::UNPROCESSABLE_ENTITY, "打回原因不能为空").into_response();
-    }
+    let comment = if reason.is_empty() {
+        None
+    } else {
+        Some(reason.to_string())
+    };
+    let review_task = match form.task_id {
+        Some(task_id) => match human_review_task_by_id(&state, id, &kind, task_id).await {
+            Ok(Some(task)) => Some(task),
+            Ok(None) => {
+                return (StatusCode::CONFLICT, "关联任务不在人类审批阶段").into_response();
+            }
+            Err(error) => return auth::web_error(error),
+        },
+        None => match active_anchor_document_task(&state, id, &kind).await {
+            Ok(task) => task,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    project_id = %id,
+                    kind = %kind,
+                    "anchor document rejection task lookup failed"
+                );
+                None
+            }
+        },
+    };
     match state
         .anchor_docs
         .decide(
@@ -1169,12 +1301,43 @@ pub async fn reject_anchor_document_form(
                 kind: kind.clone(),
                 expected_revision: form.revision,
                 decision: ApprovalDecision::Rejected,
-                comment: Some(reason.to_string()),
+                comment,
             },
         )
         .await
     {
-        Ok(_) => Redirect::to(&format!("/projects/{id}/documents/{kind}")).into_response(),
+        Ok(_) => {
+            if let Some(task) = review_task {
+                match state
+                    .tasks
+                    .send_operation(
+                        id,
+                        task.id,
+                        session.account.id,
+                        OperationName::new(foundry_domain::REJECT_OPERATION),
+                        format!("anchor-document-rejected:{}", task.id),
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        release_review_link(&state, session.account.actor(), id, &kind, task.id)
+                            .await;
+                    }
+                    Err(error) => tracing::warn!(
+                        %error,
+                        task_id = %task.id,
+                        "anchor document rejection could not move the task"
+                    ),
+                }
+            } else {
+                tracing::warn!(
+                    project_id = %id,
+                    kind = %kind,
+                    "anchor document rejected without an active task"
+                );
+            }
+            Redirect::to(&format!("/projects/{id}/documents/{kind}")).into_response()
+        }
         Err(error) => match render_anchor_document(
             &state,
             &session,
@@ -1565,6 +1728,97 @@ async fn human_review_requirements_task(
                 && task.state == TaskState::InProgress
                 && task.stage.as_deref() == Some("human_review")
         }))
+}
+
+fn document_review_workflows(kind: &str) -> Option<&'static [&'static str]> {
+    match kind {
+        "project" => Some(&["goal_clarification"]),
+        "requirements" => Some(&["requirements_analysis", "interaction_design", "ui_design"]),
+        _ => None,
+    }
+}
+
+async fn active_anchor_document_task(
+    state: &AppState,
+    project_id: Uuid,
+    kind: &str,
+) -> Result<Option<Task>, ServiceError> {
+    let Some(workflows) = document_review_workflows(kind) else {
+        return Ok(None);
+    };
+    Ok(state
+        .tasks
+        .list(project_id, TaskFilter::default(), TaskViewer::system())
+        .await?
+        .into_iter()
+        .find(|task| {
+            workflows.contains(&task.workflow.as_str()) && task.state == TaskState::InProgress
+        }))
+}
+
+async fn human_review_task_by_id(
+    state: &AppState,
+    project_id: Uuid,
+    kind: &str,
+    task_id: Uuid,
+) -> Result<Option<Task>, ServiceError> {
+    let Some(workflows) = document_review_workflows(kind) else {
+        return Ok(None);
+    };
+    let task = state
+        .tasks
+        .get(project_id, task_id, TaskViewer::system())
+        .await?;
+    if workflows.contains(&task.workflow.as_str())
+        && task.state == TaskState::InProgress
+        && task.stage.as_deref() == Some("human_review")
+    {
+        Ok(Some(task))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn active_human_review_task(
+    state: &AppState,
+    project_id: Uuid,
+    kind: &str,
+) -> Result<Option<Task>, ServiceError> {
+    let Some(workflows) = document_review_workflows(kind) else {
+        return Ok(None);
+    };
+    Ok(state
+        .tasks
+        .list(project_id, TaskFilter::default(), TaskViewer::system())
+        .await?
+        .into_iter()
+        .find(|task| {
+            workflows.contains(&task.workflow.as_str())
+                && task.state == TaskState::InProgress
+                && task.stage.as_deref() == Some("human_review")
+        }))
+}
+
+async fn release_review_link(
+    state: &AppState,
+    actor: foundry_domain::Actor,
+    project_id: Uuid,
+    kind: &str,
+    task_id: Uuid,
+) {
+    if let Err(error) = state
+        .anchor_docs
+        .release_review_link(actor, project_id, kind, task_id)
+        .await
+    {
+        tracing::warn!(
+            %error,
+            project_id = %project_id,
+            kind = %kind,
+            task_id = %task_id,
+            "could not release document review link"
+        );
+    }
 }
 
 pub async fn reject_requirements_form(
@@ -2437,6 +2691,14 @@ pub async fn get_task(
     ))
 }
 
+fn review_document_kind(workflow: &str) -> Option<&'static str> {
+    match workflow {
+        "goal_clarification" => Some("project"),
+        "requirements_analysis" | "interaction_design" | "ui_design" => Some("requirements"),
+        _ => None,
+    }
+}
+
 pub async fn send_task_operation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2457,6 +2719,33 @@ pub async fn send_task_operation(
         ));
     }
     let session = auth::api_session(&state, &headers).await?;
+    if body.operation == "approved" {
+        let task = state
+            .tasks
+            .get(session.project.id, id, task_viewer(&session))
+            .await?;
+        if let Some(kind) = review_document_kind(task.workflow.as_str()) {
+            let open_annotations = state
+                .anchor_docs
+                .annotations(session.account.actor(), session.project.id, kind, false)
+                .await?
+                .into_iter()
+                .filter(|annotation| {
+                    matches!(
+                        annotation.status,
+                        foundry_domain::AnchorAnnotationStatus::Open
+                    )
+                })
+                .count();
+            if open_annotations > 0 {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "open_annotations",
+                    "cannot approve while open annotations remain; reject the task and wait for the author to resolve them",
+                ));
+            }
+        }
+    }
     state
         .tasks
         .send_operation(

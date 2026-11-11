@@ -303,7 +303,7 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             }
             Err(error) => tracing::warn!(%error, "approved project layer scan failed"),
         }
-        match store.approved_requirements_analyses().await {
+        match store.approved_requirement_document_tasks().await {
             Ok(tasks) => {
                 for (task_id, _project_id, published_by) in tasks {
                     let command = TaskCommand::SendOperation {
@@ -321,6 +321,16 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
                 }
             }
             Err(error) => tracing::warn!(%error, "published requirements scan failed"),
+        }
+        match store.bind_human_review_document_links().await {
+            Ok(0) => {}
+            Ok(count) => tracing::debug!(count, "bound document review links"),
+            Err(error) => tracing::warn!(%error, "document review link bind scan failed"),
+        }
+        match store.release_stale_document_review_links().await {
+            Ok(0) => {}
+            Ok(count) => tracing::debug!(count, "released stale document review links"),
+            Err(error) => tracing::warn!(%error, "document review link release scan failed"),
         }
     }
 }

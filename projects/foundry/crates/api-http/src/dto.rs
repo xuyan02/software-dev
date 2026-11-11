@@ -9,6 +9,7 @@ use foundry_domain::{
     TaskDispatchState, TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Authentication
@@ -945,13 +946,18 @@ pub struct ApproveDocumentForm {
     pub revision: u64,
     #[serde(default)]
     pub comment: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct RejectDocumentForm {
     #[serde(default)]
     pub revision: u64,
+    #[serde(default)]
     pub reason: String,
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]

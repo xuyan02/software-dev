@@ -62,7 +62,7 @@
 |---|---|
 | Opportunity | 组合层的机会候选：市场、客户、技术、合规或内部改进。 |
 | Portfolio | 项目组合：预算、容量、依赖、风险和优先级。 |
-| Project document（项目文档） | 项目级承诺：定位、背景、目标、非目标、约束、风险和术语表。 |
+| Project document（项目文档） | 项目级承诺：定位、背景、目标、非目标、分期计划、约束、风险和术语表。 |
 | GlossaryTerm | 项目文档中的术语表条目：术语、定义和别名。 |
 | KnowledgeItem | 知识条目：约定、术语、模式、FAQ、runbook、摘要。 |
 | Authority（知识） | 知识权威性：canonical / reference / draft / deprecated / stale。 |

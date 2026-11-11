@@ -56,12 +56,12 @@
         }
       ],
       "transitions": [
-        {"on": "decision == 'approved'", "to": "awaiting_acceptance"},
+        {"on": "decision == 'approved'", "to": "human_review"},
         {"on": "decision == 'rejected'", "to": "work"}
       ]
     },
     {
-      "name": "awaiting_acceptance",
+      "name": "human_review",
       "active_roles": ["acceptor"],
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}

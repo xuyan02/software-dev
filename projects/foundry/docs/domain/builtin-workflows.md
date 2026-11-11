@@ -1,6 +1,6 @@
 # 内置流程
 
-当前实现 9 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
+当前实现 11 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
 
 RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计划项，落地时必须按“新增流程”更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和本文档。
 
@@ -12,6 +12,8 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
+| `interaction_design` | Interaction design | 为每个功能补全交互设计；Designer → Style/Interaction Reviewer → 人类评审 | 已实现 |
+| `ui_design` | UI design | 为每个功能补全 UI 图片列表；Designer → Style/UI Reviewer → 人类评审 | 已实现 |
 | `architecture_design` | Architecture design | 架构设计与评审 | 已实现 |
 | `roadmap` | Roadmap | 制定路线图 | 已实现 |
 | `iteration` | Iteration | 规划、实现、评审和验收一个迭代 | 已实现 |
@@ -38,7 +40,9 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | Stage | 创建的子流程 | 子 Task 完成后的转移 |
 |---|---|---|
 | `goal` | `goal_clarification` | `approved` → `requirements_analysis`；失败结果 → 完成任务，`result = 'failed'` |
-| `requirements_analysis` | `requirements_analysis` | `approved` → `architecture`；失败结果 → 完成任务，`result = 'failed'` |
+| `requirements_analysis` | `requirements_analysis` | `approved` → `interaction_design`；失败结果 → 完成任务，`result = 'failed'` |
+| `interaction_design` | `interaction_design` | `approved` → `ui_design`；失败结果 → 完成任务，`result = 'failed'` |
+| `ui_design` | `ui_design` | `approved` → `architecture`；失败结果 → 完成任务，`result = 'failed'` |
 | `architecture` | `architecture_design` | `approved` → `roadmap`；失败结果 → 完成任务，`result = 'failed'` |
 | `roadmap` | `roadmap` | `approved` → `iteration`；失败结果 → 完成任务，`result = 'failed'` |
 | `iteration` | `iteration` | `approved` → 完成任务，`result = 'approved'`；失败结果 → 完成任务，`result = 'failed'`；其他结果 → 自转移并创建下一个迭代 |
@@ -54,10 +58,10 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `clarification` | `clarifier` | `started`；`completed` 写 `completed = true` → `writing` |
 | `writing` | `writer` | `started`；`completed` 写 `completed = true` → `style_review` |
 | `style_review` | `style_reviewer` | `approved` 写 `decision = 'approved'` → `content_review`；`rejected` 写 `decision = 'rejected'` → `writing` |
-| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`rejected` 写 `decision = 'rejected'` → `writing` |
-| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `writing` |
+| `content_review` | `content_reviewer` | `approved` 写 `decision = 'approved'` → `human_review`；`rejected` 写 `decision = 'rejected'` → `writing` |
+| `human_review` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `writing` |
 
-`clarifier`、`writer`、`style_reviewer` 和 `content_reviewer` 都是 agent 角色。Clarifier 只负责在澄清 Issue 中提问，不写文档；Writer 读取澄清记录和项目信息，用 `document` 工具维护项目文档；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"` 阅读，用 `action = "annotate"` 写锚点标注；Reviewer 打回时任务回到 `writing`。人类批准当前草案后，control-plane 只在任务处于 `awaiting_acceptance` 时发送保留操作 `accept`，不会跳过评审。
+`clarifier`、`writer`、`style_reviewer` 和 `content_reviewer` 都是 agent 角色。Clarifier 只负责在澄清 Issue 中提问，不写文档；Writer 读取澄清记录和项目信息，用 `document` 工具维护项目文档；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"` 阅读，用 `action = "annotate"` 写锚点标注；Reviewer 打回时任务回到 `writing`。人类批准当前草案后，control-plane 只在任务处于 `human_review` 时发送保留操作 `accept`，不会跳过评审。
 
 ## Iteration
 
@@ -88,8 +92,8 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 | Stage | active roles | operation |
 |---|---|---|
-| `work` | 第一位角色（`discoverer` / `planner` / `reviewer`） | `started`；`completed` 写 `completed = true` → `awaiting_acceptance` |
-| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
+| `work` | 第一位角色（`discoverer` / `planner` / `reviewer`） | `started`；`completed` 写 `completed = true` → `human_review` |
+| `human_review` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
 
 `requirements_analysis` 的 `analyst` 是 agent 角色，由 Requirements Analyst 模板承接；需求文档使用 `kind = requirements` 的锚点文档，人类批准当前草案后，平台发送保留操作 `accept` 直接完成任务。它的完整链路是：
 
@@ -104,13 +108,46 @@ work (analyst)
 
 每个 review stage 的 `rejected` 回到 `work`；Reviewer 用 `document` 工具 `action = "annotate"` 写锚点标注，Analyst 读取并解决后再提交。`human_review` 也支持打回，打回原因作为文档标注保存。
 
+## 交互设计和 UI 设计
+
+`interaction_design` 和 `ui_design` 使用与需求分析相同的评审结构，但只修改需求文档中各自的内容：
+
+```text
+work (designer)
+  → style_review (style_reviewer agent)
+  → interaction_review / ui_review (reviewer agent)
+  → human_review (acceptor human)
+  → ended (result = approved)
+```
+
+- `interaction_design` 为每个功能正文补全 `交互设计：` 行：页面结构、控件、用户操作、反馈与状态、文案、无障碍；不写业务规则、系统结果和视觉样式。
+- `ui_design` 为每个功能补全图片列表：按交互设计顺序排列；目前不支持动画，每项写 `名称：` 和 `链接：`。
+- 两个流程各自有 Designer、Style Reviewer、Reviewer 和人类验收；review 打回回到 `work`，人类打回也回到 `work`。
+- 项目主流程在需求分析批准后依次创建这两个子 Task，全部批准后才进入 `architecture`。
+
+## 文档审阅关联
+
+进入人类审批阶段时，任务通过 `document_review_link` created effect 关联当前文档草稿：
+
+```json
+"created": [
+  {"document_review_link": {"kind": "project", "action": "bind"}}
+]
+```
+
+- `kind` 是 `project` 或 `requirements`。
+- `bind` 写入 `anchor_document_review_links`，同一文档同时最多一个未释放关联。
+- 进入 `writing` / `work` 时用 `action = "release"` 释放关联；任务完成或异常退出时由 control-plane 扫描兜底释放。
+- 文档页根据未释放关联和任务当前阶段决定是否显示“批准 / 拒绝”按钮；按钮携带 `task_id`，提交时同时做文档决策、任务操作和释放关联。
+- control-plane 仍会扫描 `human_review` 任务并补绑、清理残留关联，作为 effect 失败或旧数据的兜底。
+
 `architecture_design` 多一个评审环节：
 
 | Stage | active roles | operation |
 |---|---|---|
 | `work` | `architect` | `started`；`completed` 写 `completed = true` → `review` |
-| `review` | `reviewer` | `review_approved` 写 `decision = 'approved'` → `awaiting_acceptance`；`review_rejected` 写 `decision = 'rejected'` → `work` |
-| `awaiting_acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
+| `review` | `reviewer` | `review_approved` 写 `decision = 'approved'` → `human_review`；`review_rejected` 写 `decision = 'rejected'` → `work` |
+| `human_review` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
 
 所有角色的 `kind` 都是 `any`，人类和 Agent 都可以绑定。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
 

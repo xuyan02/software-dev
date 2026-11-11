@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use foundry_app::{
     AnchorApplyOutcome, AnchorApprovalOutcome, AnchorDocumentApprovalDAO, AnchorDocumentDAO,
     AnchorDocumentDraftDAO, AnchorDocumentRepository, AnchorDocumentVersionDAO,
-    AnchorDocumentVersionRow, RepoError,
+    AnchorDocumentVersionRow, DocumentReviewLink, RepoError,
 };
 use foundry_domain::{
     AnchorAnnotation, AnchorAnnotationStatus, AnchorOperation, ApprovalDecision, DocumentSchema,
@@ -766,6 +766,100 @@ impl AnchorDocumentRepository for PostgresStore {
         .await
         .map_err(backend)?;
         row.map(version_from_row).transpose()
+    }
+
+    async fn bind_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<DocumentReviewLink, RepoError> {
+        let revision: Option<i64> = sqlx::query_scalar(
+            "select d.revision from anchor_document_drafts d \
+             join anchor_documents doc on doc.id = d.document_id \
+             where doc.project_id = $1 and doc.kind = $2",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        let Some(revision) = revision else {
+            return Err(RepoError::NotFound);
+        };
+        let row: (Uuid, String, i64, Uuid, OffsetDateTime) = sqlx::query_as(
+            "insert into anchor_document_review_links \
+             (id, project_id, kind, draft_revision, task_id, bound_at) \
+             values ($1, $2, $3, $4, $5, $6) \
+             on conflict (project_id, kind) where released_at is null \
+             do update set task_id = excluded.task_id, \
+                           draft_revision = excluded.draft_revision, \
+                           bound_at = excluded.bound_at, \
+                           released_at = null \
+             returning project_id, kind, draft_revision, task_id, bound_at",
+        )
+        .bind(Uuid::now_v7())
+        .bind(project_id)
+        .bind(kind)
+        .bind(revision)
+        .bind(task_id)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(DocumentReviewLink {
+            project_id: row.0,
+            kind: row.1,
+            draft_revision: row.2 as u64,
+            task_id: row.3,
+            bound_at: row.4,
+        })
+    }
+
+    async fn release_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<(), RepoError> {
+        sqlx::query(
+            "update anchor_document_review_links set released_at = $4 \
+             where project_id = $1 and kind = $2 and task_id = $3 and released_at is null",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .bind(task_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn active_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+    ) -> Result<Option<DocumentReviewLink>, RepoError> {
+        let row: Option<(Uuid, String, i64, Uuid, OffsetDateTime)> = sqlx::query_as(
+            "select project_id, kind, draft_revision, task_id, bound_at \
+             from anchor_document_review_links \
+             where project_id = $1 and kind = $2 and released_at is null",
+        )
+        .bind(project_id)
+        .bind(kind)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(row.map(|row| DocumentReviewLink {
+            project_id: row.0,
+            kind: row.1,
+            draft_revision: row.2 as u64,
+            task_id: row.3,
+            bound_at: row.4,
+        }))
     }
 
     async fn annotations(

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use foundry_app::{
     AnchorApplyOutcome, AnchorApprovalOutcome, AnchorDocumentApprovalDAO, AnchorDocumentDAO,
     AnchorDocumentDraftDAO, AnchorDocumentRepository, AnchorDocumentVersionDAO,
-    AnchorDocumentVersionRow, RepoError,
+    AnchorDocumentVersionRow, DocumentReviewLink, RepoError,
 };
 use foundry_domain::{
     AnchorAnnotation, AnchorAnnotationStatus, AnchorOperation, ApprovalDecision, DocumentSchema,
@@ -23,6 +23,7 @@ pub(crate) struct MemoryAnchorDocuments {
     versions: HashMap<(Uuid, String, u32), AnchorDocumentVersionDAO>,
     approvals: Vec<AnchorDocumentApprovalDAO>,
     annotations: Vec<AnchorAnnotation>,
+    review_links: Vec<DocumentReviewLink>,
     applied_ops: HashSet<(Uuid, String, Uuid)>,
 }
 
@@ -35,6 +36,8 @@ impl MemoryAnchorDocuments {
             .retain(|approval| approval.project_id != project_id);
         self.annotations
             .retain(|annotation| annotation.project_id != project_id);
+        self.review_links
+            .retain(|link| link.project_id != project_id);
         self.applied_ops.retain(|(id, _, _)| *id != project_id);
     }
 }
@@ -428,6 +431,64 @@ impl AnchorDocumentRepository for InMemoryStore {
             })
             .max_by_key(|((_, _, version), _)| *version)
             .map(|(_, version)| version.clone()))
+    }
+
+    async fn bind_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<DocumentReviewLink, RepoError> {
+        let mut docs = self.anchor_documents.write().expect("lock poisoned");
+        let revision = docs
+            .drafts
+            .get(&(project_id, kind.to_string()))
+            .map(|draft| draft.revision)
+            .ok_or(RepoError::NotFound)?;
+        docs.review_links
+            .retain(|link| !(link.project_id == project_id && link.kind == kind));
+        let link = DocumentReviewLink {
+            project_id,
+            kind: kind.to_string(),
+            draft_revision: revision,
+            task_id,
+            bound_at: now,
+        };
+        docs.review_links.push(link.clone());
+        Ok(link)
+    }
+
+    async fn release_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+        _now: OffsetDateTime,
+    ) -> Result<(), RepoError> {
+        self.anchor_documents
+            .write()
+            .expect("lock poisoned")
+            .review_links
+            .retain(|link| {
+                !(link.project_id == project_id && link.kind == kind && link.task_id == task_id)
+            });
+        Ok(())
+    }
+
+    async fn active_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+    ) -> Result<Option<DocumentReviewLink>, RepoError> {
+        Ok(self
+            .anchor_documents
+            .read()
+            .expect("lock poisoned")
+            .review_links
+            .iter()
+            .find(|link| link.project_id == project_id && link.kind == kind)
+            .cloned())
     }
 
     async fn annotations(

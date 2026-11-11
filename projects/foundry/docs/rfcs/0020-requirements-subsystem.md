@@ -5,7 +5,7 @@
 - 关联：[ADR 0004 Issue 是问题空间，Requirement 是承诺空间](../adr/0004-issue-vs-requirement.md)、[RFC 0008 软件生命周期模型](0008-software-lifecycle-model.md)、[RFC 0009 产物血缘、基线与变更管理](0009-artifact-lineage-baselines-and-change.md)、[RFC 0010 辅助系统注册与产物契约](0010-auxiliary-systems-and-evidence.md)、[RFC 0011 需求管理与需求分析](0011-requirements-management.md)、[RFC 0012 架构与设计管理](0012-architecture-and-design-management.md)
 - 取代：本 RFC 取代 RFC 0011 中以 Requirement 聚合为中心的需求管理模型、“需求文档为自由文本”的假设，以及 RFC 0017 中独立的 ProjectBrief 聚合。
 
-> 2026-11-11 修订：项目层不再并入需求文档。项目文档（定位、背景、目标、非目标、约束、风险、术语表）与需求文档（用户、功能、操作、故事、交互规格、交互流、界面、图片）是两个独立聚合，各自有草案、版本和审批。本文下面描述“合并为一份文档”的章节保留为设计历史；实现与 API 以 `docs/api/README.md`、`docs/design/project-document-writing-guide.md` 和迁移 `0034`、`0035` 为准。
+> 2026-11-11 修订：项目层不再并入需求文档。项目文档（定位、背景、目标、非目标、分期计划、约束、风险、术语表）与需求文档（当前结构以《需求文档写作说明书》为准）是两个独立聚合，各自有草案、版本和审批。本文下面描述“合并为一份文档”的章节保留为设计历史；实现与 API 以 `docs/api/README.md`、`docs/design/project-document-writing-guide.md` 和迁移 `0034`、`0035` 为准。
 
 ## 实现状态（2026-11-11）
 
@@ -16,7 +16,7 @@
 - 存储：Postgres（迁移 `0010_requirements_documents.sql`、`0029_requirements_approvals.sql`、`0034_project_documents.sql`、`0035_remove_requirements_project_layer.sql`）和内存适配器；版本不可变、草案 revision、操作日志、审批记录、幂等、冲突。
 - 审批：每个草案 revision 必须审批；批准和发布在同一事务中完成，拒绝只记录审批记录。项目文档先审批，需求文档再审批。
 - HTTP API：GET 文档/草案/版本/审批历史，POST 操作/校验/审批（`If-Match` 传递 revision）。
-- MCP 工具：项目文档使用通用 `document` 工具，通过 `action` 选择 `toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`（`kind = project`）；需求文档 `get_requirements_document`、`get_requirements_draft`、`apply_requirements_operations`、`validate_requirements_document`、`decide_requirements_draft`、`list_requirements_approvals`。
+- MCP 工具：项目文档使用通用 `document` 工具，通过 `action` 选择 `toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`update_title`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`（`kind = project`）；需求文档 `get_requirements_document`、`get_requirements_draft`、`apply_requirements_operations`、`validate_requirements_document`、`decide_requirements_draft`、`list_requirements_approvals`。
 - Web：项目文档页和需求文档页分别渲染，支持批准、打回和审批历史。
 - 测试：领域单元测试、HTTP 端到端测试、Postgres 集成测试（无 `TEST_DATABASE_URL` 时跳过）。
 

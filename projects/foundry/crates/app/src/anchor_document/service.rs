@@ -11,8 +11,8 @@ use uuid::Uuid;
 
 use crate::{
     AccountRepository, AnchorApplyOutcome, AnchorApprovalOutcome, AnchorDocumentApprovalDAO,
-    AnchorDocumentDraftDAO, AnchorDocumentRepository, AnchorDocumentVersionRow, ProjectRepository,
-    RepoError, ServiceError,
+    AnchorDocumentDraftDAO, AnchorDocumentRepository, AnchorDocumentVersionRow, DocumentReviewLink,
+    ProjectRepository, RepoError, ServiceError,
 };
 
 pub fn schema_for(kind: &str) -> Option<DocumentSchema> {
@@ -332,6 +332,31 @@ where
         kind: &str,
         anchor: &AnchorRef,
     ) -> Result<AnchorContentView, ServiceError> {
+        self.content_inner(actor, project_id, kind, anchor, false)
+            .await
+    }
+
+    /// Content for the web console: same Markdown, plus invisible anchor
+    /// markers so annotations can be rendered under the content they target.
+    pub async fn content_with_anchors(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &str,
+        anchor: &AnchorRef,
+    ) -> Result<AnchorContentView, ServiceError> {
+        self.content_inner(actor, project_id, kind, anchor, true)
+            .await
+    }
+
+    async fn content_inner(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &str,
+        anchor: &AnchorRef,
+        with_anchors: bool,
+    ) -> Result<AnchorContentView, ServiceError> {
         let schema = self.schema(kind)?;
         let account = self.require_account(&actor).await?;
         self.project_role(&account, project_id, ProjectRole::Viewer)
@@ -339,7 +364,12 @@ where
         let snapshot = self.snapshot(project_id, kind, &schema).await?;
         let node = resolve(&snapshot, anchor)
             .ok_or_else(|| ServiceError::not_found_named("anchor", anchor_name(anchor)))?;
-        let markdown = snapshot.markdown(&node.key).unwrap_or_default();
+        let markdown = if with_anchors {
+            snapshot.markdown_with_anchors(&node.key)
+        } else {
+            snapshot.markdown(&node.key)
+        }
+        .unwrap_or_default();
         Ok(AnchorContentView {
             anchor_id: node.id.clone(),
             key: node.key.clone(),
@@ -511,11 +541,7 @@ where
                 }
             }
             ApprovalDecision::Rejected => {
-                let Some(comment) = comment else {
-                    return Err(ServiceError::Validation(
-                        "rejection requires a comment".to_string(),
-                    ));
-                };
+                let comment = comment.unwrap_or_default();
                 match self
                     .repository
                     .reject(
@@ -564,6 +590,51 @@ where
                 }
             }
         }
+    }
+
+    pub async fn review_link(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &str,
+    ) -> Result<Option<DocumentReviewLink>, ServiceError> {
+        let account = self.require_account(&actor).await?;
+        self.project_role(&account, project_id, ProjectRole::Viewer)
+            .await?;
+        self.repository
+            .active_review_link(project_id, kind)
+            .await
+            .map_err(anchor_repo_error)
+    }
+
+    /// System-level bind used by the control plane when a task enters human
+    /// review. No human actor is involved.
+    pub async fn bind_review_link(
+        &self,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+    ) -> Result<DocumentReviewLink, ServiceError> {
+        self.repository
+            .bind_review_link(project_id, kind, task_id, OffsetDateTime::now_utc())
+            .await
+            .map_err(anchor_repo_error)
+    }
+
+    pub async fn release_review_link(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &str,
+        task_id: Uuid,
+    ) -> Result<(), ServiceError> {
+        let account = self.require_account(&actor).await?;
+        self.project_role(&account, project_id, ProjectRole::Member)
+            .await?;
+        self.repository
+            .release_review_link(project_id, kind, task_id, OffsetDateTime::now_utc())
+            .await
+            .map_err(anchor_repo_error)
     }
 
     pub async fn annotations(
@@ -738,13 +809,14 @@ where
         kind: &str,
         schema: &DocumentSchema,
     ) -> Result<DocumentSnapshot, ServiceError> {
-        if let Some(draft) = self.repository.draft(project_id, kind).await? {
-            return Ok(draft.snapshot);
-        }
-        if let Some(version) = self.repository.latest_version(project_id, kind).await? {
-            return Ok(version.snapshot);
-        }
-        Ok(DocumentSnapshot::empty(schema))
+        let snapshot = if let Some(draft) = self.repository.draft(project_id, kind).await? {
+            draft.snapshot
+        } else if let Some(version) = self.repository.latest_version(project_id, kind).await? {
+            version.snapshot
+        } else {
+            DocumentSnapshot::empty(schema)
+        };
+        Ok(snapshot)
     }
 
     async fn require_account(&self, actor: &Actor) -> Result<Account, ServiceError> {
@@ -835,6 +907,15 @@ pub trait AnchorDocumentUseCases: Send + Sync {
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<AnchorContentView, ServiceError>> + Send + 'a>,
     >;
+    fn content_with_anchors<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+        anchor: &'a AnchorRef,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AnchorContentView, ServiceError>> + Send + 'a>,
+    >;
     fn apply<'a>(
         &'a self,
         actor: Actor,
@@ -861,6 +942,33 @@ pub trait AnchorDocumentUseCases: Send + Sync {
                 + 'a,
         >,
     >;
+    fn review_link<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<DocumentReviewLink>, ServiceError>>
+                + Send
+                + 'a,
+        >,
+    >;
+    fn bind_review_link<'a>(
+        &'a self,
+        project_id: Uuid,
+        kind: &'a str,
+        task_id: Uuid,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<DocumentReviewLink, ServiceError>> + Send + 'a>,
+    >;
+    fn release_review_link<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+        task_id: Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ServiceError>> + Send + 'a>>;
     fn annotations<'a>(
         &'a self,
         actor: Actor,
@@ -983,6 +1091,20 @@ where
         ))
     }
 
+    fn content_with_anchors<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+        anchor: &'a AnchorRef,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AnchorContentView, ServiceError>> + Send + 'a>,
+    > {
+        Box::pin(AnchorDocumentService::content_with_anchors(
+            self, actor, project_id, kind, anchor,
+        ))
+    }
+
     fn apply<'a>(
         &'a self,
         actor: Actor,
@@ -1018,6 +1140,49 @@ where
         >,
     > {
         Box::pin(AnchorDocumentService::decide(self, actor, command))
+    }
+
+    fn review_link<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<DocumentReviewLink>, ServiceError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(AnchorDocumentService::review_link(
+            self, actor, project_id, kind,
+        ))
+    }
+
+    fn bind_review_link<'a>(
+        &'a self,
+        project_id: Uuid,
+        kind: &'a str,
+        task_id: Uuid,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<DocumentReviewLink, ServiceError>> + Send + 'a>,
+    > {
+        Box::pin(AnchorDocumentService::bind_review_link(
+            self, project_id, kind, task_id,
+        ))
+    }
+
+    fn release_review_link<'a>(
+        &'a self,
+        actor: Actor,
+        project_id: Uuid,
+        kind: &'a str,
+        task_id: Uuid,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ServiceError>> + Send + 'a>>
+    {
+        Box::pin(AnchorDocumentService::release_review_link(
+            self, actor, project_id, kind, task_id,
+        ))
     }
 
     fn annotations<'a>(

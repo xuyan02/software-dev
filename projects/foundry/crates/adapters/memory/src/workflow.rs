@@ -655,17 +655,17 @@ mod tests {
         let (store, alice, _) = store().await;
         let candidates = store.root_candidates(alice).await.unwrap();
         let ids: Vec<&str> = candidates.iter().map(|option| option.id.as_str()).collect();
-        assert_eq!(ids.len(), 10, "nine platform workflows plus alice_flow");
+        assert_eq!(ids.len(), 12, "eleven platform workflows plus alice_flow");
         assert!(ids.contains(&"alice_flow"));
         assert!(!ids.contains(&"bob_flow"));
         assert!(!ids.contains(&"alice_draft"));
         assert!(
-            candidates[..9]
+            candidates[..11]
                 .iter()
                 .all(|option| option.owner == WorkflowOwner::Platform)
         );
         assert_eq!(
-            candidates[9].owner,
+            candidates[11].owner,
             WorkflowOwner::Account {
                 account_id: alice,
                 display_name: String::new(),

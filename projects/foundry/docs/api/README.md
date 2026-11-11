@@ -413,9 +413,9 @@ GET  /api/v1/projects/{project}/documents/{kind}/versions/{version}
 
 旧的 `/api/v1/projects/{project}/project-document` 接口已移除；控制台的 `/projects/{id}/project-document` 会重定向到 `/projects/{id}/documents/project`。
 
-`anchor` 省略时返回根锚点。`GET /documents/{kind}` 返回 `text/markdown`：标题、元数据和 Markdown 目录；目录中每个条目带稳定位置键（`k:...`）。`content` 返回该锚点子树的 Markdown。单次章节由系统按描述文件预生成，`add` 只用于新增多项章节实例和列表项；已有锚点使用 `update_text`、`delete`、`move`，其中 `parent`/`anchor` 使用目录中的 `key`。单次章节是结构骨架，不能删除；`delete` 只用于多项章节实例和列表项。一个多项章节必须是父节点的唯一子章节。`add` 的子类型由父锚点推断。操作使用 `If-Match: "<revision>"`。标注绑定锚点键和写入时的内容哈希；内容变化后状态为 `stale`，锚点消失后为 `orphaned`。
+`anchor` 省略时返回根锚点。`GET /documents/{kind}` 返回 `text/markdown`：标题、元数据和 Markdown 目录；目录中每个条目带稳定位置键（`k:...`）。`content` 返回该锚点子树的 Markdown。单次章节由系统按描述文件预生成，`add` 只用于新增多项章节实例和列表项；新增多项章节时必须传 `title`，标题不从正文推导。已有锚点使用 `update_text`、`update_title`、`delete`、`move`，其中 `parent`/`anchor` 使用目录中的 `key`。`update_title` 只能修改多项章节的标题，单次章节和分组章节的标题固定。单次章节是结构骨架，不能删除；`delete` 只用于多项章节实例和列表项。一个多项章节必须是父节点的唯一子章节。`add` 的子类型由父锚点推断。操作使用 `If-Match: "<revision>"`。标注绑定锚点键和写入时的内容哈希；内容变化后状态为 `stale`，锚点消失后为 `orphaned`。
 
-MCP 工具：`document`。通过 `action` 选择操作：`toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`。
+MCP 工具：`document`。通过 `action` 选择操作：`toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`update_title`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`。
 
 Agent 工具：`document`，使用与 MCP 完全相同的 `action` 和参数。
 
@@ -425,7 +425,7 @@ Agent 工具：`document`，使用与 MCP 完全相同的 `action` 和参数。
 
 ## 需求文档
 
-每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：用户、功能、操作、故事、交互规格、交互流、界面、图片。项目层内容属于项目文档，不在这里重复。
+每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：用户、子系统、功能集、故事、功能；功能描述和交互设计是功能正文中的 `字段：值` 行，UI 设计是功能下的图片列表。项目层内容属于项目文档，不在这里重复。
 
 需求文档使用与项目文档完全相同的锚点文档接口：
 
@@ -441,17 +441,24 @@ GET  /api/v1/projects/{project}/documents/requirements/versions
 GET  /api/v1/projects/{project}/documents/requirements/versions/{version}
 ```
 
-草案操作、审批、标注和版本规则与项目文档相同。示例：向「用户」章节添加一个列表项：
+草案操作、审批、标注和版本规则与项目文档相同。示例：向「用户」章节添加一个用户项，再修改其标题：
 
 ```json
 {
   "operations": [
     {
-      "op_id": "uuid",
+      "op_id": "uuid-1",
       "type": "add",
       "parent": "users",
       "occurrence_key": "persona-1",
-      "text": "张先生：需要随时查看订单状态"
+      "title": "张先生",
+      "text": "姓名：张先生\n年龄：35 岁\n职业：买家\n诉求：随时查看订单状态\n主次：主要"
+    },
+    {
+      "op_id": "uuid-2",
+      "type": "update_title",
+      "anchor": "users/user/persona-1",
+      "title": "张先生（买家）"
     }
   ]
 }

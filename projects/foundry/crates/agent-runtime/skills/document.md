@@ -5,11 +5,13 @@ Use the single `document` tool for all document work. Select the operation with 
 - `toc`: read metadata and the Markdown table of contents.
 - `draft_open` / `draft_create`: open or create the shared draft.
 - `content`: read Markdown content.
-- `add` / `update_text` / `delete` / `move`: edit the draft.
+- `add` / `update_text` / `update_title` / `delete` / `move`: edit the draft.
 - `validate`: check the draft before submitting.
 - `annotations_list` / `annotate` / `resolve_annotation`: read and write annotations.
 - `approvals` / `versions`: inspect approval and version history.
 - `decide`: approve or reject a draft revision. Only humans may use this action.
 
 Single chapters are pre-created. Fill them with `update_text`. Use `add` only for multiple
-chapter instances and list items. Single chapters cannot be deleted.
+chapter instances and list items. When adding a multiple chapter, pass its `title`; titles
+are never derived from the body. Use `update_title` to change an existing multiple chapter
+title. Single chapter and grouping titles are fixed. Single chapters cannot be deleted.

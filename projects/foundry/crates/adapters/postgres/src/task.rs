@@ -8,10 +8,10 @@ use foundry_app::{
     TaskDispatcher, TaskFilter, TaskListRow, TaskRepository, WorkflowCatalog,
 };
 use foundry_domain::{
-    AccountKind, Actor, ChildState, DependencyState, DomainEvent, DomainEventKind, Issue,
-    IssueKind, IssueSource, IssueSourceKind, TaskActorDAO, TaskAggregate, TaskCommentDAO, TaskDAO,
-    TaskError, TaskEvent, TaskIssueCreate, TaskLink, TaskLinkKind, TaskLinkRelation, TaskMutation,
-    TaskOperation, TaskResult, TaskState, WorkflowId,
+    AccountKind, Actor, ChildState, DependencyState, DocumentReviewLinkAction, DomainEvent,
+    DomainEventKind, Issue, IssueKind, IssueSource, IssueSourceKind, TaskActorDAO, TaskAggregate,
+    TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskIssueCreate, TaskLink, TaskLinkKind,
+    TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState, WorkflowId,
 };
 use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
@@ -811,6 +811,46 @@ async fn persist_mutation(
     .execute(&mut **tx)
     .await
     .map_err(map_write_error)?;
+
+    for link in &mutation.review_links {
+        match link.action {
+            DocumentReviewLinkAction::Bind => {
+                sqlx::query(
+                    "insert into anchor_document_review_links \
+                     (id, project_id, kind, draft_revision, task_id, bound_at) \
+                     select gen_random_uuid(), $1, $2, d.revision, $3, $4 \
+                     from anchor_documents doc \
+                     join anchor_document_drafts d on d.document_id = doc.id \
+                     where doc.project_id = $1 and doc.kind = $2 \
+                     on conflict (project_id, kind) where released_at is null \
+                     do update set task_id = excluded.task_id, \
+                                   draft_revision = excluded.draft_revision, \
+                                   bound_at = excluded.bound_at, \
+                                   released_at = null",
+                )
+                .bind(mutation.task.project_id)
+                .bind(&link.kind)
+                .bind(mutation.task.id)
+                .bind(mutation.task.updated_at)
+                .execute(&mut **tx)
+                .await
+                .map_err(map_write_error)?;
+            }
+            DocumentReviewLinkAction::Release => {
+                sqlx::query(
+                    "update anchor_document_review_links set released_at = $4 \
+                     where project_id = $1 and kind = $2 and task_id = $3 and released_at is null",
+                )
+                .bind(mutation.task.project_id)
+                .bind(&link.kind)
+                .bind(mutation.task.id)
+                .bind(mutation.task.updated_at)
+                .execute(&mut **tx)
+                .await
+                .map_err(map_write_error)?;
+            }
+        }
+    }
 
     for actor in &mutation.actors {
         sqlx::query(
