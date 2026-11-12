@@ -1,8 +1,8 @@
 # 内置流程
 
-当前实现 11 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
+当前实现 14 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
 
-RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计划项，落地时必须按“新增流程”更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和本文档。
+RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响应和项目退役；下表后半部分是尚未实现的计划项，落地时必须按“新增流程”更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和本文档。
 
 内置流程由平台随应用发布：启动时如果代码中的内置定义与数据库 v1 不一致，会以代码定义更新 v1。用户发布的流程版本仍然不可变；旧 Task 固定原版本继续运行。
 
@@ -15,14 +15,14 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `interaction_design` | Interaction design | 维护需求文档的交互设计子系统树；Designer → Style/Interaction Reviewer → 人类评审 | 已实现 |
 | `ui_design` | UI design | 维护需求文档的 UI设计子系统树；Designer → Style/UI Reviewer → 人类评审 | 已实现 |
 | `architecture_design` | Architecture design | 架构锚点文档；Architect → Reviewer → 人类评审 | 已实现 |
+| `detailed_design` | Detailed design | 详细设计锚点文档；Designer → Reviewer → 人类评审 | 已实现 |
+| `test_planning` | Test planning | 测试计划锚点文档；Test Planner → Reviewer → 人类评审 | 已实现 |
+| `test_execution` | Test execution | 测试报告锚点文档；Executor → Reviewer → 人类评审 | 已实现 |
 | `roadmap` | Roadmap | 制定路线图 | 已实现 |
-| `iteration` | Iteration | 规划、实现、评审和验收一个迭代 | 已实现 |
+| `iteration` | Iteration | 规划、实现、评审和验收一个迭代；开发证据写入开发记录 | 已实现 |
 | `release` | Release | 候选、验证、批准、部署和观察 | 已实现 |
 | `project_review` | Project review | 项目复盘 | 已实现 |
 | `requirements_baseline` | Requirements baseline | 固定一批已批准需求并生成基线 | 计划 |
-| `detailed_design` | Detailed design | 模块、接口、数据、错误、任务分解 | 计划 |
-| `test_planning` | Test planning | 测试策略、用例、holdout、环境 | 计划 |
-| `test_execution` | Test execution | 运行、覆盖率、缺陷、证据 | 计划 |
 | `change_request` | Change request | 影响分析、验证计划、批准、关闭 | 计划 |
 | `incident_response` | Incident response | 分级、止损、修复、复盘 | 计划 |
 | `project_retirement` | Project retirement | 依赖、数据、迁移、归档 | 计划 |
@@ -43,9 +43,11 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `requirements_analysis` | `requirements_analysis` | `approved` → `interaction_design`；失败结果 → 完成任务，`result = 'failed'` |
 | `interaction_design` | `interaction_design` | `approved` → `ui_design`；失败结果 → 完成任务，`result = 'failed'` |
 | `ui_design` | `ui_design` | `approved` → `architecture`；失败结果 → 完成任务，`result = 'failed'` |
-| `architecture` | `architecture_design` | `approved` → `roadmap`；失败结果 → 完成任务，`result = 'failed'` |
-| `roadmap` | `roadmap` | `approved` → `iteration`；失败结果 → 完成任务，`result = 'failed'` |
-| `iteration` | `iteration` | `approved` → 完成任务，`result = 'approved'`；失败结果 → 完成任务，`result = 'failed'`；其他结果 → 自转移并创建下一个迭代 |
+| `architecture` | `architecture_design` | `approved` → `detailed_design`；失败结果 → 完成任务，`result = 'failed'` |
+| `detailed_design` | `detailed_design` | `approved` → `test_planning`；失败结果 → 完成任务，`result = 'failed'` |
+| `test_planning` | `test_planning` | `approved` → `iteration`；失败结果 → 完成任务，`result = 'failed'` |
+| `iteration` | `iteration` | `approved` → `test_execution`；失败结果 → 完成任务，`result = 'failed'`；其他结果 → 自转移并创建下一个迭代 |
+| `test_execution` | `test_execution` | `approved` → 完成任务，`result = 'approved'`；失败结果 → 完成任务，`result = 'failed'` |
 
 失败结果指 `failed`、`infeasible` 或 `obsolete`。`iteration` 的自转移会重新执行 `created`，标题为 `Iteration {count_children('iteration') + 1}`，所以编号按已创建的子 Task 递增。
 
@@ -67,12 +69,25 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 
 | Stage | active roles | operation |
 |---|---|---|
-| `planning` | `planner` | `started`；`plan_ready` 写 `completed = true` → `implementation` |
 | `implementation` | `implementer` | `started`；`implementation_complete` 写 `completed = true` → `review` |
 | `review` | `reviewer` | `review_approved` 写 `decision = 'approved'` → `acceptance`；`changes_requested` 写 `decision = 'changes_requested'` → `implementation` |
 | `acceptance` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `implementation` |
 
-每个 stage 的 `started` 没有 action，也不触发 transition；它只用于把 `pending` 推进到 `in_progress`。`completed` 和 `decision` 是 stage 变量，进入 stage 时重置。`reviewer` 的 `min_actors` 为 0，评审可以留空。
+`acceptor` 是 `any`（人类可以承担），`implementer` 和 `reviewer` 是 `agent`。每个 stage 的 `started` 没有 action，也不触发 transition；它只用于把 `pending` 推进到 `in_progress`。`completed` 和 `decision` 是 stage 变量，进入 stage 时重置。`acceptance` 进入时绑定 `kind = development` 的文档审阅关联，`implementation` 进入时释放它。
+
+开发阶段的代码在项目工作区中由 Implementer 编写。Implementer 运行构建和测试，把变更集、代码引用、命令结果和证据写入开发记录；Development Reviewer 独立检查工作区 diff 并重跑构建/测试；人类在验收阶段批准当前开发记录。control-plane 发现开发记录已批准且任务处于 `acceptance` 时发送保留操作 `accept`，完成任务。
+
+## 详细设计、测试计划与测试执行
+
+`detailed_design`、`test_planning`、`test_execution` 使用与 `architecture_design` 相同的 `work → review → human_review` 结构：
+
+| 流程 | work 角色 | review 角色 | 文档 kind |
+|---|---|---|---|
+| `detailed_design` | `designer`（agent） | `reviewer`（agent） | `design` |
+| `test_planning` | `test_planner`（agent） | `reviewer`（agent） | `test_plan` |
+| `test_execution` | `executor`（agent） | `reviewer`（agent） | `test_report` |
+
+设计、测试计划、测试报告和开发记录都使用锚点文档；进入 `human_review`（开发记录为 `acceptance`）时绑定文档审阅关联，回到 `work`（开发记录为 `implementation`）时释放。人类批准当前草案后，control-plane 发送保留操作 `accept` 完成任务。
 
 ## Release
 
@@ -135,7 +150,7 @@ work (designer)
 ]
 ```
 
-- `kind` 是 `project`、`requirements` 或 `architecture`。
+- `kind` 是 `project`、`requirements`、`architecture`、`design`、`development`、`test_plan` 或 `test_report`。
 - `bind` 写入 `anchor_document_review_links`，同一文档同时最多一个未释放关联。
 - 进入 `writing` / `work` 时用 `action = "release"` 释放关联；任务完成或异常退出时由 control-plane 扫描兜底释放。
 - 文档页根据未释放关联和任务当前阶段决定是否显示“批准 / 拒绝”按钮；按钮携带 `task_id`，提交时同时做文档决策、任务操作和释放关联。

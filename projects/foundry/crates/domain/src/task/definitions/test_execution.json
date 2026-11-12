@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "executor", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["executor"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "test_report", "action": "release"}}
+      ],
+      "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'task_request', title = 'Test execution: {task.title}', description = 'Discuss the test environment, CI runs and evidence for this report.', relation = 'related')"
+        }
+      ],
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start executing the test plan.",
+          "roles": ["executor"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete tests",
+          "description": "Test evidence is recorded; submit the report for review.",
+          "roles": ["executor"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "review"}
+      ]
+    },
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "Approve review",
+          "description": "Approve the test report and send it to acceptance.",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "review_rejected",
+          "display_name": "Request changes",
+          "description": "Reject the test report and return to execution.",
+          "roles": ["reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "test_report", "action": "bind"}}
+      ],
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the test report and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the test report and return to execution.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ],
+      "reject_to": "work"
+    }
+  ]
+}

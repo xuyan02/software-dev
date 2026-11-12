@@ -29,6 +29,7 @@ pub mod tool;
 pub mod tools;
 pub mod trajectory;
 pub mod worker;
+pub mod workspace;
 
 pub use budget::*;
 pub use context::*;
@@ -53,3 +54,4 @@ pub use tool::*;
 pub use tools::*;
 pub use trajectory::*;
 pub use worker::*;
+pub use workspace::*;

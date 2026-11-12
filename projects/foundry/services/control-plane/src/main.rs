@@ -350,13 +350,45 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             }
             Err(error) => tracing::warn!(%error, "published architecture scan failed"),
         }
+        for (kind, workflows, stage) in [
+            ("design", &["detailed_design"][..], "human_review"),
+            ("development", &["iteration"][..], "acceptance"),
+            ("test_plan", &["test_planning"][..], "human_review"),
+            ("test_report", &["test_execution"][..], "human_review"),
+        ] {
+            match store.approved_document_tasks(kind, workflows, stage).await {
+                Ok(tasks) => {
+                    for (task_id, _project_id, approved_by, revision) in tasks {
+                        let command = TaskCommand::SendOperation {
+                            actor_id: approved_by,
+                            operation: OperationName::new(format!(
+                                "{stage}:{}",
+                                foundry_domain::ACCEPT_OPERATION
+                            )),
+                            idempotency_key: format!(
+                                "anchor-document-approved:{task_id}:{revision}"
+                            ),
+                        };
+                        if let Err(error) = dispatcher.process(task_id, Some(command)).await {
+                            tracing::warn!(
+                                %error,
+                                task_id = %task_id,
+                                kind,
+                                "approved document task completion failed"
+                            );
+                        }
+                    }
+                }
+                Err(error) => tracing::warn!(%error, kind, "approved document scan failed"),
+            }
+        }
         match store.rejected_document_tasks().await {
             Ok(tasks) => {
-                for (task_id, _project_id, rejected_by, revision) in tasks {
+                for (task_id, _project_id, rejected_by, revision, stage) in tasks {
                     let command = TaskCommand::SendOperation {
                         actor_id: rejected_by,
                         operation: OperationName::new(format!(
-                            "human_review:{}",
+                            "{stage}:{}",
                             foundry_domain::REJECT_OPERATION
                         )),
                         idempotency_key: format!("anchor-document-rejected:{task_id}:{revision}"),

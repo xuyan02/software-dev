@@ -1232,7 +1232,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        11
+        14
     );
 
     let created = body_json(
@@ -2015,7 +2015,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 11);
+    assert_eq!(platform.len(), 14);
     assert!(
         platform
             .iter()
@@ -2090,7 +2090,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     assert_eq!(created["draft"]["revision"], 1);
     assert_eq!(
         created["draft"]["body"]["stages"].as_array().unwrap().len(),
-        4
+        3
     );
 
     // Another account cannot see it at all.
@@ -2183,7 +2183,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 12);
+    assert_eq!(own.as_array().unwrap().len(), 15);
 }
 
 #[tokio::test]
@@ -3511,6 +3511,99 @@ async fn interaction_and_ui_design_round_trip_over_http() {
     assert!(toc.contains("订单系统移动端"));
     assert!(toc.contains("订单列表"));
     assert!(toc.contains("UI设计"));
+}
+
+#[tokio::test]
+async fn design_development_and_test_documents_round_trip_over_http() {
+    let harness = harness().await;
+    let project = harness.project_id.as_str();
+
+    for (kind, operations) in [
+        (
+            "design",
+            json!([
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "overview", "text": "订单系统按服务拆分。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "subsystems", "occurrence_key": "orders", "title": "订单系统移动端", "text": ""},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.design_constraints", "text": "移动端，复用现有认证。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "subsystems/subsystem/orders.modules", "occurrence_key": "order-service", "title": "订单服务", "text": ""},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.responsibility", "text": "维护订单状态。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.interface", "text": "OrderApi：create/cancel/status。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.data", "text": "订单服务拥有订单状态。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.errors", "text": "版本冲突返回 409。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "tasks", "occurrence_key": "impl-order", "title": "实现订单服务", "text": ""},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.module_ref", "text": "订单服务"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.deliverable", "text": "订单 API 和迁移"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.acceptance", "text": "创建、取消和查询状态通过测试计划用例。"}
+            ]),
+        ),
+        (
+            "test_plan",
+            json!([
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "strategy", "text": "单元测试覆盖状态机，集成测试覆盖 API。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "scope", "text": "订单创建、取消和状态查询。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "environments", "text": "CI 环境，Postgres 16。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "cases", "occurrence_key": "track-order", "title": "查看订单状态", "text": "验证订单状态查询。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "cases/test_case/track-order.requirement", "text": "查看订单状态"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "cases/test_case/track-order.expected", "text": "返回当前状态和预计到达时间。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "cases/test_case/track-order.steps", "occurrence_key": "step-1", "text": "以买家身份查询已下单的订单。"}
+            ]),
+        ),
+        (
+            "test_report",
+            json!([
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "overview", "text": "commit abc123，CI 运行 42。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "conclusion", "text": "全部用例通过。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "runs", "occurrence_key": "run-1", "title": "abc123", "text": "CI 运行 42。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.commit", "text": "repo=orders branch=main commit=abc123"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.environment", "text": "CI / Postgres 16"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.summary", "text": "1 passed, 0 failed"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "runs/test_run/run-1.case_results", "occurrence_key": "track-order", "text": "查看订单状态：通过，日志 run-42#track-order"}
+            ]),
+        ),
+        (
+            "development",
+            json!([
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations", "occurrence_key": "iter-1", "title": "迭代 1", "text": "实现订单服务。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.implementation_notes", "text": "新增订单 API 和状态机。"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations/iteration/iter-1.change_sets", "occurrence_key": "pr-1", "title": "PR #1", "text": "订单服务实现。"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.code_ref", "text": "repo=orders branch=feat/orders base=abc head=def pr=https://example.com/pr/1"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.build", "text": "cargo build / cargo clippy：通过，CI run 41"},
+                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.tests", "text": "cargo test：通过，CI run 42"},
+                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations/iteration/iter-1.change_sets/change_set/pr-1.requirements", "occurrence_key": "track-order", "text": "查看订单状态"}
+            ]),
+        ),
+    ] {
+        let base = format!("/api/v1/projects/{project}/documents/{kind}");
+        let saved = body_json(
+            &harness.router,
+            workflow_request(
+                "POST",
+                &format!("{base}/draft/operations"),
+                &harness.admin_token,
+                Some("1"),
+                json!({ "operations": operations }),
+            ),
+        )
+        .await;
+        assert_eq!(saved["revision"], 2, "{kind}");
+
+        let validation = body_json(
+            &harness.router,
+            json_request(
+                "POST",
+                &format!("{base}/draft/validate"),
+                Some(&harness.admin_token),
+                None,
+                json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(
+            validation["errors"].as_array().unwrap().len(),
+            0,
+            "{kind}: {validation}"
+        );
+    }
 }
 
 #[tokio::test]

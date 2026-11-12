@@ -20,6 +20,10 @@ pub fn schema_for(kind: &str) -> Option<DocumentSchema> {
         "project" => Some(foundry_domain::project_document_schema()),
         "requirements" => Some(foundry_domain::requirements_document_schema()),
         "architecture" => Some(foundry_domain::architecture_document_schema()),
+        "design" => Some(foundry_domain::design_document_schema()),
+        "development" => Some(foundry_domain::development_document_schema()),
+        "test_plan" => Some(foundry_domain::test_plan_document_schema()),
+        "test_report" => Some(foundry_domain::test_report_document_schema()),
         _ => None,
     }
 }

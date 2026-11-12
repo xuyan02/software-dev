@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "test_planner", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["test_planner"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "test_plan", "action": "release"}}
+      ],
+      "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'task_request', title = 'Test plan: {task.title}', description = 'Discuss test scope, environments, cases and evidence requirements for this plan.', relation = 'related')"
+        }
+      ],
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start the test plan.",
+          "roles": ["test_planner"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete test plan",
+          "description": "The test plan is ready; submit it for review.",
+          "roles": ["test_planner"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "review"}
+      ]
+    },
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "Approve review",
+          "description": "Approve the test plan and send it to acceptance.",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "review_rejected",
+          "display_name": "Request changes",
+          "description": "Reject the test plan and return to the planner.",
+          "roles": ["reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "test_plan", "action": "bind"}}
+      ],
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the test plan and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the test plan and return to the planner.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ],
+      "reject_to": "work"
+    }
+  ]
+}

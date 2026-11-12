@@ -393,7 +393,7 @@ curl -s http://127.0.0.1:8080/mcp \
 
 ## 文档（锚点模型）
 
-通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前注册了 `project`、`requirements` 和 `architecture` 三种类型。
+通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前注册了 `project`、`requirements`、`architecture`、`design`、`development`、`test_plan` 和 `test_report` 七种类型。
 
 ```text
 GET  /api/v1/projects/{project}/documents/{kind}?anchor={key|id}
@@ -485,6 +485,28 @@ GET  /api/v1/projects/{project}/documents/architecture/versions/{version}
 ```
 
 草案操作、审批、标注和版本规则与项目文档相同。MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "architecture"`。
+
+## 详细设计、开发记录与测试文档
+
+以下文档与项目文档使用完全相同的锚点文档接口，只是 `kind` 不同：
+
+| kind | 内容 | 流程 |
+|---|---|---|
+| `design` | 详细设计：子系统 → 模块，职责、接口、数据、错误处理、测试要点和任务分解 | `detailed_design` |
+| `development` | 开发记录：迭代 → 变更集，代码引用、构建/测试证据、关联需求和评审发现 | `iteration` |
+| `test_plan` | 测试计划：策略、范围、环境、测试用例和质量门禁 | `test_planning` |
+| `test_report` | 测试报告：按 commit/环境记录运行结果、覆盖率、失败和门禁结论 | `test_execution` |
+
+例如：
+
+```text
+GET  /api/v1/projects/{project}/documents/design
+GET  /api/v1/projects/{project}/documents/development
+POST /api/v1/projects/{project}/documents/test_plan/draft/operations
+GET  /api/v1/projects/{project}/documents/test_report/content
+```
+
+MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
 
 ## Task
 

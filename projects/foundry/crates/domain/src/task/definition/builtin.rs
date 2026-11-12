@@ -9,6 +9,9 @@ const REQUIREMENTS_ANALYSIS: &str = include_str!("../definitions/requirements_an
 const INTERACTION_DESIGN: &str = include_str!("../definitions/interaction_design.json");
 const UI_DESIGN: &str = include_str!("../definitions/ui_design.json");
 const ARCHITECTURE_DESIGN: &str = include_str!("../definitions/architecture_design.json");
+const DETAILED_DESIGN: &str = include_str!("../definitions/detailed_design.json");
+const TEST_PLANNING: &str = include_str!("../definitions/test_planning.json");
+const TEST_EXECUTION: &str = include_str!("../definitions/test_execution.json");
 const ROADMAP: &str = include_str!("../definitions/roadmap.json");
 const ITERATION: &str = include_str!("../definitions/iteration.json");
 const RELEASE: &str = include_str!("../definitions/release.json");
@@ -38,6 +41,9 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Architecture design",
         ARCHITECTURE_DESIGN,
     ),
+    ("detailed_design", "Detailed design", DETAILED_DESIGN),
+    ("test_planning", "Test planning", TEST_PLANNING),
+    ("test_execution", "Test execution", TEST_EXECUTION),
     ("roadmap", "Roadmap", ROADMAP),
     ("iteration", "Iteration", ITERATION),
     ("release", "Release", RELEASE),

@@ -25,6 +25,9 @@ pub struct PauseRequest {
 pub struct ToolContext {
     pub agent_id: String,
     pub task_id: String,
+    /// The project that owns the task. Workspace tools need it to select the
+    /// project workspace.
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

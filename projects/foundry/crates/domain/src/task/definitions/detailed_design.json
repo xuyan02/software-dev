@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+  ],
+  "initial_stage": "work",
+  "stages": [
+    {
+      "name": "work",
+      "active_roles": ["designer"],
+      "vars": {
+        "completed": {"type": "bool", "display_name": "Completed"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "design", "action": "release"}}
+      ],
+      "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'task_request', title = 'Detailed design: {task.title}', description = 'Discuss module boundaries, interfaces, data and implementation constraints for this design.', relation = 'related')"
+        }
+      ],
+      "operations": [
+        {
+          "name": "started",
+          "display_name": "Start",
+          "description": "Claim and start the detailed design.",
+          "roles": ["designer"],
+          "action": ""
+        },
+        {
+          "name": "completed",
+          "display_name": "Complete design",
+          "description": "The detailed design is ready; submit it for review.",
+          "roles": ["designer"],
+          "action": "completed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "completed", "to": "review"}
+      ]
+    },
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "Approve review",
+          "description": "Approve the design and send it to acceptance.",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "review_rejected",
+          "display_name": "Request changes",
+          "description": "Reject the design and return to the designer.",
+          "roles": ["reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "created": [
+        {"document_review_link": {"kind": "design", "action": "bind"}}
+      ],
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "Approve",
+          "description": "Accept the detailed design and complete the task.",
+          "roles": ["acceptor"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "Reject",
+          "description": "Reject the detailed design and return to the designer.",
+          "roles": ["acceptor"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "work"}
+      ],
+      "reject_to": "work"
+    }
+  ]
+}

@@ -146,6 +146,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         ids,
         vec![
             "architecture_design",
+            "detailed_design",
             "goal_clarification",
             "interaction_design",
             "iteration",
@@ -155,6 +156,8 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "requirements_analysis",
             "requirements_discovery",
             "roadmap",
+            "test_execution",
+            "test_planning",
             "ui_design",
         ]
     );
@@ -745,14 +748,12 @@ fn iteration_flow_handles_changes_and_rejection() {
     let workflow = builtin("iteration");
     let leaf = task("iteration", TaskState::Pending, None);
     let task_id = leaf.id;
-    let planner = Uuid::now_v7();
     let implementer = Uuid::now_v7();
     let reviewer = Uuid::now_v7();
     let acceptor = Uuid::now_v7();
     let mut state = aggregate(
         leaf,
         vec![
-            actor(task_id, "planner", planner, false),
             actor(task_id, "implementer", implementer, false),
             actor(task_id, "reviewer", reviewer, false),
             actor(task_id, "acceptor", acceptor, false),
@@ -762,9 +763,7 @@ fn iteration_flow_handles_changes_and_rejection() {
     );
 
     state = aggregate_of(apply(&workflow, state, TaskEvent::Created, now()).unwrap());
-    state = aggregate_of(operation(&workflow, state, "started", planner));
-    state = aggregate_of(operation(&workflow, state, "plan_ready", planner));
-    assert_eq!(state.task.stage.as_deref(), Some("implementation"));
+    state = aggregate_of(operation(&workflow, state, "started", implementer));
     assert!(
         state
             .actors
@@ -772,7 +771,6 @@ fn iteration_flow_handles_changes_and_rejection() {
             .any(|a| a.account_id == implementer && a.active)
     );
 
-    state = aggregate_of(operation(&workflow, state, "started", implementer));
     state = aggregate_of(operation(
         &workflow,
         state,
@@ -876,8 +874,9 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
         ("requirements_analysis", "interaction_design"),
         ("interaction_design", "ui_design"),
         ("ui_design", "architecture"),
-        ("architecture_design", "roadmap"),
-        ("roadmap", "iteration"),
+        ("architecture_design", "detailed_design"),
+        ("detailed_design", "test_planning"),
+        ("test_planning", "iteration"),
     ];
     for (child_workflow, expected_stage) in steps {
         let child_id = state.children.last().unwrap().task_id;
@@ -902,7 +901,24 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
     state = absorb(updated, mutation);
 
     let last_iteration = state.children.last().unwrap().task_id;
-    let (_, mutation) = child_changed(&workflow, state, last_iteration, "iteration", "approved");
+    let (updated, mutation) =
+        child_changed(&workflow, state, last_iteration, "iteration", "approved");
+    assert_eq!(mutation.task.stage.as_deref(), Some("test_execution"));
+    assert_eq!(mutation.children.len(), 1);
+    assert_eq!(
+        mutation.children[0].task.workflow.as_str(),
+        "test_execution"
+    );
+    state = absorb(updated, mutation);
+
+    let test_execution = state.children.last().unwrap().task_id;
+    let (_, mutation) = child_changed(
+        &workflow,
+        state,
+        test_execution,
+        "test_execution",
+        "approved",
+    );
     assert_eq!(mutation.task.state, TaskState::Completed);
     assert_eq!(mutation.task.result.as_deref(), Some("approved"));
 }

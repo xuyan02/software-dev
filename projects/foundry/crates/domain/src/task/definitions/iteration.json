@@ -1,45 +1,27 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "planner", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "implementer", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "reviewer", "kind": "any", "min_actors": 0, "max_actors": null},
+    {"name": "implementer", "kind": "agent", "min_actors": 1, "max_actors": null},
+    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
     {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
   ],
-  "initial_stage": "planning",
+  "initial_stage": "implementation",
   "stages": [
-    {
-      "name": "planning",
-      "active_roles": ["planner"],
-      "vars": {
-        "completed": {"type": "bool", "display_name": "Completed"}
-      },
-      "operations": [
-        {
-          "name": "started",
-          "display_name": "Start",
-          "description": "Claim and start planning the iteration.",
-          "roles": ["planner"],
-          "action": ""
-        },
-        {
-          "name": "plan_ready",
-          "display_name": "Plan ready",
-          "description": "The iteration plan is ready; start implementation.",
-          "roles": ["planner"],
-          "action": "completed = true"
-        }
-      ],
-      "transitions": [
-        {"on": "completed", "to": "implementation"}
-      ]
-    },
     {
       "name": "implementation",
       "active_roles": ["implementer"],
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
       },
+      "created": [
+        {"document_review_link": {"kind": "development", "action": "release"}}
+      ],
+      "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'task_request', title = 'Implementation: {task.title}', description = 'Discuss the implementation scope, PR/CI links and evidence for this iteration.', relation = 'related')"
+        }
+      ],
       "operations": [
         {
           "name": "started",
@@ -93,6 +75,9 @@
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
+      "created": [
+        {"document_review_link": {"kind": "development", "action": "bind"}}
+      ],
       "operations": [
         {
           "name": "approved",
@@ -112,7 +97,8 @@
       "transitions": [
         {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
         {"on": "decision == 'rejected'", "to": "implementation"}
-      ]
+      ],
+      "reject_to": "implementation"
     }
   ]
 }

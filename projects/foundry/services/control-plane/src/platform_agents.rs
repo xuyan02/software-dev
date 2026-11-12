@@ -262,6 +262,115 @@ const ARCHITECTURE_REVIEWER_TOOLS: &[&str] = &[
     "task_operation",
 ];
 
+const DETAILED_DESIGNER_ROLE: &str = "detailed_design:designer";
+
+const DETAILED_DESIGNER_PROMPT: &str = r#"你是 Foundry 的详细设计智能体。
+
+你的职责是把需求、交互设计和架构设计展开为模块级详细设计。你不修改需求或架构，不审批或发布。"#;
+
+const DESIGN_REVIEWER_ROLE: &str = "detailed_design:reviewer";
+
+const DESIGN_REVIEWER_PROMPT: &str = r#"你是 Foundry 的详细设计评审智能体。
+
+你的职责是审查详细设计是否完整、可实现、可测试，并与需求、架构和项目约束一致。你不修改文档，也不审批或发布。"#;
+
+const IMPLEMENTER_ROLE: &str = "iteration:implementer";
+
+const IMPLEMENTER_PROMPT: &str = r#"你是 Foundry 的实现智能体。
+
+你的职责是根据详细设计在项目工作区中实现代码，运行构建和测试，并把变更集、命令结果和证据记录到开发记录。你不修改需求、设计或架构，不审批或发布。"#;
+
+const IMPLEMENTER_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_links_list",
+    "issue_get",
+    "issue_comment",
+    "task_get",
+    "task_add_link",
+    "task_remove_link",
+    "task_allowed_operations",
+    "task_operation",
+    "workspace_list",
+    "workspace_read",
+    "workspace_write",
+    "workspace_run",
+    "workspace_diff",
+];
+
+const DEVELOPMENT_REVIEWER_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_get",
+    "task_links_list",
+    "issue_get",
+    "task_allowed_operations",
+    "task_operation",
+    "workspace_list",
+    "workspace_read",
+    "workspace_run",
+    "workspace_diff",
+];
+
+const DEVELOPMENT_REVIEWER_ROLE: &str = "iteration:reviewer";
+
+const DEVELOPMENT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的开发评审智能体。
+
+你的职责是审查项目工作区中的变更、构建和测试证据，并核对开发记录是否真实、完整、可复核，是否与需求、架构和详细设计一致。你不修改代码或文档，也不审批或发布。"#;
+
+const TEST_PLANNER_ROLE: &str = "test_planning:test_planner";
+
+const TEST_PLANNER_PROMPT: &str = r#"你是 Foundry 的测试计划智能体。
+
+你的职责是根据需求、架构和详细设计撰写测试计划。你不修改需求或设计，不审批或发布。"#;
+
+const TEST_PLAN_REVIEWER_ROLE: &str = "test_planning:reviewer";
+
+const TEST_PLAN_REVIEWER_PROMPT: &str = r#"你是 Foundry 的测试计划评审智能体。
+
+你的职责是审查测试计划是否覆盖需求、设计和质量属性，是否可执行、可观察、可复现。你不修改文档，也不审批或发布。"#;
+
+const TEST_EXECUTOR_ROLE: &str = "test_execution:executor";
+
+const TEST_EXECUTOR_PROMPT: &str = r#"你是 Foundry 的测试执行智能体。
+
+你的职责是根据测试计划和开发记录，在项目工作区中运行测试并记录真实结果与证据。你不修改代码、需求或设计，不审批或发布。"#;
+
+const TEST_EXECUTOR_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_links_list",
+    "issue_get",
+    "issue_comment",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "workspace_list",
+    "workspace_read",
+    "workspace_run",
+    "workspace_diff",
+];
+
+const TEST_REPORT_REVIEWER_ROLE: &str = "test_execution:reviewer";
+
+const TEST_REPORT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的测试报告评审智能体。
+
+你的职责是核对项目工作区中的测试证据和测试报告，确认结果真实、完整、可复核，足以支撑质量门禁结论。你不修改代码或文档，也不审批或发布。"#;
+
+const TEST_REPORT_REVIEWER_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_get",
+    "task_links_list",
+    "issue_get",
+    "task_allowed_operations",
+    "task_operation",
+    "workspace_list",
+    "workspace_read",
+    "workspace_run",
+    "workspace_diff",
+];
+
 const TEMPLATES: &[PlatformTemplate] = &[
     PlatformTemplate {
         id: "clarifier",
@@ -345,6 +454,82 @@ const TEMPLATES: &[PlatformTemplate] = &[
             "architecture-document-writing-guide",
             "architecture-review",
         ],
+    },
+    PlatformTemplate {
+        id: "detailed-designer",
+        name: "Detailed Designer",
+        role: DETAILED_DESIGNER_ROLE,
+        description: "Writes module-level detailed design from requirements and architecture",
+        system_prompt: DETAILED_DESIGNER_PROMPT,
+        tools: ANALYST_TOOLS,
+        skills: &[
+            "document",
+            "design-document-writing-guide",
+            "detailed-design",
+        ],
+    },
+    PlatformTemplate {
+        id: "design-reviewer",
+        name: "Design Reviewer",
+        role: DESIGN_REVIEWER_ROLE,
+        description: "Reviews detailed design completeness, consistency and testability",
+        system_prompt: DESIGN_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &["document", "design-document-writing-guide", "design-review"],
+    },
+    PlatformTemplate {
+        id: "implementer",
+        name: "Implementer",
+        role: IMPLEMENTER_ROLE,
+        description: "Implements code in the project workspace and records change evidence",
+        system_prompt: IMPLEMENTER_PROMPT,
+        tools: IMPLEMENTER_TOOLS,
+        skills: &["document", "development-record"],
+    },
+    PlatformTemplate {
+        id: "development-reviewer",
+        name: "Development Reviewer",
+        role: DEVELOPMENT_REVIEWER_ROLE,
+        description: "Reviews the workspace diff, build and test results independently",
+        system_prompt: DEVELOPMENT_REVIEWER_PROMPT,
+        tools: DEVELOPMENT_REVIEWER_TOOLS,
+        skills: &["document", "development-review"],
+    },
+    PlatformTemplate {
+        id: "test-planner",
+        name: "Test Planner",
+        role: TEST_PLANNER_ROLE,
+        description: "Writes the test plan from requirements, architecture and design",
+        system_prompt: TEST_PLANNER_PROMPT,
+        tools: ANALYST_TOOLS,
+        skills: &["document", "test-plan-writing-guide", "test-planning"],
+    },
+    PlatformTemplate {
+        id: "test-plan-reviewer",
+        name: "Test Plan Reviewer",
+        role: TEST_PLAN_REVIEWER_ROLE,
+        description: "Reviews test plan coverage, executability and evidence requirements",
+        system_prompt: TEST_PLAN_REVIEWER_PROMPT,
+        tools: REVIEWER_TOOLS,
+        skills: &["document", "test-plan-writing-guide", "test-plan-review"],
+    },
+    PlatformTemplate {
+        id: "test-executor",
+        name: "Test Executor",
+        role: TEST_EXECUTOR_ROLE,
+        description: "Runs tests in the project workspace and records real results",
+        system_prompt: TEST_EXECUTOR_PROMPT,
+        tools: TEST_EXECUTOR_TOOLS,
+        skills: &["document", "test-plan-writing-guide", "test-execution"],
+    },
+    PlatformTemplate {
+        id: "test-report-reviewer",
+        name: "Test Report Reviewer",
+        role: TEST_REPORT_REVIEWER_ROLE,
+        description: "Reviews test evidence and report for coverage and gate conclusions",
+        system_prompt: TEST_REPORT_REVIEWER_PROMPT,
+        tools: TEST_REPORT_REVIEWER_TOOLS,
+        skills: &["document", "test-plan-writing-guide", "test-report-review"],
     },
     PlatformTemplate {
         id: "requirements-reviewer",
@@ -848,5 +1033,59 @@ mod tests {
         );
         assert!(reviewer.skills.contains(&"architecture-review"));
         assert!(!reviewer.skills.contains(&"architecture-design"));
+    }
+
+    #[test]
+    fn design_development_and_test_templates_load_their_skills() {
+        for (id, role, skill) in [
+            (
+                "detailed-designer",
+                "detailed_design:designer",
+                "detailed-design",
+            ),
+            (
+                "design-reviewer",
+                "detailed_design:reviewer",
+                "design-review",
+            ),
+            ("implementer", "iteration:implementer", "development-record"),
+            (
+                "development-reviewer",
+                "iteration:reviewer",
+                "development-review",
+            ),
+            (
+                "test-planner",
+                "test_planning:test_planner",
+                "test-planning",
+            ),
+            (
+                "test-plan-reviewer",
+                "test_planning:reviewer",
+                "test-plan-review",
+            ),
+            ("test-executor", "test_execution:executor", "test-execution"),
+            (
+                "test-report-reviewer",
+                "test_execution:reviewer",
+                "test-report-review",
+            ),
+        ] {
+            let template = template(id).expect("design/development/test template");
+            assert_eq!(template.role, role);
+            assert!(template.tools.contains(&"document"));
+            assert!(template.skills.contains(&"document"));
+            assert!(template.skills.contains(&skill));
+        }
+
+        let implementer = template("implementer").expect("implementer template");
+        assert!(implementer.tools.contains(&"workspace_write"));
+        assert!(implementer.tools.contains(&"workspace_run"));
+        let reviewer = template("development-reviewer").expect("development reviewer");
+        assert!(reviewer.tools.contains(&"workspace_diff"));
+        assert!(!reviewer.tools.contains(&"workspace_write"));
+        let executor = template("test-executor").expect("test executor");
+        assert!(executor.tools.contains(&"workspace_run"));
+        assert!(!executor.tools.contains(&"workspace_write"));
     }
 }

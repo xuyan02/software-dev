@@ -36,6 +36,10 @@ impl PostgresStore {
              select gen_random_uuid(), t.project_id, \
                     case when t.workflow = 'goal_clarification' then 'project' \
                          when t.workflow = 'architecture_design' then 'architecture' \
+                         when t.workflow = 'detailed_design' then 'design' \
+                         when t.workflow = 'iteration' then 'development' \
+                         when t.workflow = 'test_planning' then 'test_plan' \
+                         when t.workflow = 'test_execution' then 'test_report' \
                          else 'requirements' end, \
                     d.revision, t.id, now() \
              from tasks t \
@@ -43,11 +47,15 @@ impl PostgresStore {
                on doc.project_id = t.project_id \
               and doc.kind = case when t.workflow = 'goal_clarification' then 'project' \
                                  when t.workflow = 'architecture_design' then 'architecture' \
+                                 when t.workflow = 'detailed_design' then 'design' \
+                                 when t.workflow = 'iteration' then 'development' \
+                                 when t.workflow = 'test_planning' then 'test_plan' \
+                                 when t.workflow = 'test_execution' then 'test_report' \
                                  else 'requirements' end \
              join anchor_document_drafts d on d.document_id = doc.id \
-             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design') \
+             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design', 'detailed_design', 'iteration', 'test_planning', 'test_execution') \
                and t.state = 'in_progress' \
-               and t.stage = 'human_review' \
+               and (t.stage = 'human_review' or (t.workflow = 'iteration' and t.stage = 'acceptance')) \
              on conflict (project_id, kind) where released_at is null \
              do update set task_id = excluded.task_id, \
                            draft_revision = excluded.draft_revision, \
@@ -71,7 +79,7 @@ impl PostgresStore {
                    select 1 from tasks t \
                    where t.id = l.task_id \
                      and t.state = 'in_progress' \
-                     and t.stage = 'human_review' \
+                     and (t.stage = 'human_review' or (t.workflow = 'iteration' and t.stage = 'acceptance')) \
                )",
         )
         .execute(&self.pool)
@@ -122,21 +130,58 @@ impl PostgresStore {
         .map_err(backend)
     }
 
+    /// Document-review tasks for a set of workflows whose document has an
+    /// approved revision newer than the task's last update.
+    pub async fn approved_document_tasks(
+        &self,
+        kind: &str,
+        workflows: &[&str],
+        stage: &str,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
+        let workflows: Vec<String> = workflows
+            .iter()
+            .map(|workflow| workflow.to_string())
+            .collect();
+        sqlx::query_as(
+            "select t.id, t.project_id, a.actor_id, a.revision \
+             from tasks t \
+             join anchor_document_approvals a \
+               on a.project_id = t.project_id and a.kind = $1 \
+             where t.workflow = any($2) \
+               and t.state = 'in_progress' \
+               and t.stage = $3 \
+               and a.decision = 'approved' \
+               and a.created_at > t.updated_at",
+        )
+        .bind(kind)
+        .bind(workflows)
+        .bind(stage)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)
+    }
+
     /// Human-review tasks whose document revision was rejected. If the web
     /// request recorded the rejection but failed to send the task operation,
     /// the control plane retries it here.
-    pub async fn rejected_document_tasks(&self) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
+    pub async fn rejected_document_tasks(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, i64, String)>, RepoError> {
         sqlx::query_as(
-            "select t.id, t.project_id, a.actor_id, a.revision \
+            "select t.id, t.project_id, a.actor_id, a.revision, t.stage \
              from tasks t \
              join anchor_document_approvals a \
                on a.project_id = t.project_id \
               and a.kind = case when t.workflow = 'goal_clarification' then 'project' \
                                  when t.workflow = 'architecture_design' then 'architecture' \
+                                 when t.workflow = 'detailed_design' then 'design' \
+                                 when t.workflow = 'iteration' then 'development' \
+                                 when t.workflow = 'test_planning' then 'test_plan' \
+                                 when t.workflow = 'test_execution' then 'test_report' \
                                  else 'requirements' end \
-             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design') \
+             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design', 'detailed_design', 'iteration', 'test_planning', 'test_execution') \
                and t.state = 'in_progress' \
-               and t.stage = 'human_review' \
+               and (t.stage = 'human_review' or (t.workflow = 'iteration' and t.stage = 'acceptance')) \
                and a.decision = 'rejected' \
                and a.created_at > t.updated_at",
         )

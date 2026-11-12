@@ -188,6 +188,7 @@ mod tests {
                 &ToolContext {
                     agent_id: "a".to_string(),
                     task_id: "t".to_string(),
+                    project_id: None,
                 },
             )
             .await
@@ -211,6 +212,7 @@ mod tests {
                 &ToolContext {
                     agent_id: "a".to_string(),
                     task_id: "t".to_string(),
+                    project_id: None,
                 },
             )
             .await

@@ -113,6 +113,10 @@ Bug 有额外字段（环境、影响版本、复现步骤、预期、实际）�
 
 早期以 Requirement 工作项聚合为中心的实现已删除。完整结构见 [RFC 0020](../rfcs/0020-requirements-subsystem.md)。
 
+## 详细设计、开发记录与测试文档
+
+详细设计（`kind = design`）按子系统 → 模块展开职责、接口、数据、错误处理、依赖、配置、测试要点和任务分解。开发记录（`kind = development`）按迭代记录 ChangeSet、代码引用、构建/测试证据、关联需求和评审发现；代码在项目工作区中由 Implementer 编写，Foundry 记录 commit、diff 和证据。测试计划（`kind = test_plan`）记录策略、范围、环境、测试用例和质量门禁；测试报告（`kind = test_report`）按 commit/环境记录运行结果、覆盖率、失败和质量门禁结论。四类文档都使用锚点文档机制，分别由 `detailed_design`、`iteration`、`test_planning` 和 `test_execution` 流程维护，人类批准后发布。
+
 ## 文档
 
 - 需求、设计文档、ADR 以 Markdown + YAML front matter 存放在项目 Git 仓库。

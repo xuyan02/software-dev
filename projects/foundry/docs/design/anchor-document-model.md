@@ -11,7 +11,7 @@
 - 每个锚点有稳定定位键 `key` 和内容哈希 `id`；
 - 版本、草案、目录、标注、审批围绕同一棵锚点树实现。
 
-当前实现覆盖项目文档（`kind = project`）、需求文档（`kind = requirements`）和架构设计（`kind = architecture`）；其他文档类型通过增加描述文件和少量钩子接入。描述文件是服务端内部定义，不通过 API 暴露。
+当前实现覆盖项目文档（`kind = project`）、需求文档（`kind = requirements`）、架构设计（`kind = architecture`）、详细设计（`kind = design`）、开发记录（`kind = development`）、测试计划（`kind = test_plan`）和测试报告（`kind = test_report`）；其他文档类型通过增加描述文件和少量钩子接入。描述文件是服务端内部定义，不通过 API 暴露。
 
 ## 2. 描述文件
 

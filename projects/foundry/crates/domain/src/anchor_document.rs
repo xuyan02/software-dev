@@ -1718,6 +1718,314 @@ pub fn architecture_document_schema() -> DocumentSchema {
     }
 }
 
+/// Detailed design: how each subsystem and module is built, including
+/// interfaces, data ownership, error handling and implementation tasks.
+pub fn design_document_schema() -> DocumentSchema {
+    fn chapter(
+        key: &str,
+        title: &str,
+        occurrence: Occurrence,
+        content: ContentSchema,
+    ) -> ChapterSchema {
+        ChapterSchema {
+            key: key.to_string(),
+            title: title.to_string(),
+            occurrence,
+            content,
+            children: Vec::new(),
+            required: false,
+            min: 0,
+            max: None,
+            text_required: false,
+        }
+    }
+
+    fn text(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Single, ContentSchema::Text)
+    }
+
+    fn multiple(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
+    }
+
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+    }
+
+    let module = multiple("module", "模块").children(vec![
+        text("responsibility", "职责").text_required(true),
+        text("interface", "接口").text_required(true),
+        text("data", "数据").text_required(true),
+        text("errors", "错误处理").text_required(true),
+        list("dependencies", "依赖", "dependency"),
+        text("configuration", "配置"),
+        text("constraints", "实现约束"),
+        list("test_points", "测试要点", "test_point"),
+    ]);
+
+    let subsystem = multiple("subsystem", "子系统").children(vec![
+        text("design_constraints", "设计约束"),
+        text("modules", "模块").children(vec![module]),
+    ]);
+
+    let task = multiple("task", "任务").children(vec![
+        text("module_ref", "关联模块").text_required(true),
+        text("deliverable", "交付物").text_required(true),
+        text("task_dependencies", "依赖"),
+        text("acceptance", "验收条件").text_required(true),
+    ]);
+
+    DocumentSchema {
+        kind: "design".to_string(),
+        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        root: text("document", "详细设计").children(vec![
+            text("overview", "设计概览")
+                .required(true)
+                .text_required(true),
+            text("subsystems", "子系统")
+                .required(true)
+                .children(vec![subsystem]),
+            text("tasks", "任务分解").children(vec![task]),
+            text("quality_gates", "质量门禁"),
+        ]),
+    }
+}
+
+/// Development record: the evidence trail for each iteration. Code lives in
+/// Git; this document stores change-set references, build/test evidence and
+/// review findings.
+pub fn development_document_schema() -> DocumentSchema {
+    fn chapter(
+        key: &str,
+        title: &str,
+        occurrence: Occurrence,
+        content: ContentSchema,
+    ) -> ChapterSchema {
+        ChapterSchema {
+            key: key.to_string(),
+            title: title.to_string(),
+            occurrence,
+            content,
+            children: Vec::new(),
+            required: false,
+            min: 0,
+            max: None,
+            text_required: false,
+        }
+    }
+
+    fn text(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Single, ContentSchema::Text)
+    }
+
+    fn multiple(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
+    }
+
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+    }
+
+    let change_set = multiple("change_set", "变更集")
+        .text_required(true)
+        .children(vec![
+            text("code_ref", "代码引用").text_required(true),
+            text("build", "构建与静态检查").text_required(true),
+            text("tests", "测试证据").text_required(true),
+            list("requirements", "关联需求", "requirement_ref"),
+            list("findings", "评审发现", "finding"),
+            text("status", "状态"),
+        ]);
+
+    let iteration = multiple("iteration", "迭代")
+        .text_required(true)
+        .children(vec![
+            text("implementation_notes", "实现说明"),
+            text("change_sets", "变更集").children(vec![change_set]),
+            list("risks", "风险与遗留", "risk"),
+        ]);
+
+    DocumentSchema {
+        kind: "development".to_string(),
+        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        root: text("document", "开发记录").children(vec![
+            text("overview", "开发概览"),
+            text("iterations", "迭代").children(vec![iteration]),
+            text("quality_gates", "质量门禁"),
+        ]),
+    }
+}
+
+/// Test plan: strategy, scope, environments and test cases tied to
+/// requirements, architecture and detailed design.
+pub fn test_plan_document_schema() -> DocumentSchema {
+    fn chapter(
+        key: &str,
+        title: &str,
+        occurrence: Occurrence,
+        content: ContentSchema,
+    ) -> ChapterSchema {
+        ChapterSchema {
+            key: key.to_string(),
+            title: title.to_string(),
+            occurrence,
+            content,
+            children: Vec::new(),
+            required: false,
+            min: 0,
+            max: None,
+            text_required: false,
+        }
+    }
+
+    fn text(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Single, ContentSchema::Text)
+    }
+
+    fn multiple(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
+    }
+
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+    }
+
+    let test_case = multiple("test_case", "测试用例")
+        .text_required(true)
+        .children(vec![
+            text("requirement", "关联需求").text_required(true),
+            text("preconditions", "前置条件"),
+            list("steps", "步骤", "step"),
+            text("expected", "预期结果").text_required(true),
+            text("test_type", "类型"),
+            text("evidence", "证据要求"),
+        ]);
+
+    DocumentSchema {
+        kind: "test_plan".to_string(),
+        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        root: text("document", "测试计划").children(vec![
+            text("strategy", "测试策略")
+                .required(true)
+                .text_required(true),
+            text("scope", "测试范围").required(true).text_required(true),
+            text("environments", "测试环境").text_required(true),
+            text("cases", "测试用例")
+                .required(true)
+                .children(vec![test_case]),
+            text("quality_gates", "质量门禁"),
+            list("risks", "风险与豁免", "risk"),
+        ]),
+    }
+}
+
+/// Test report: one entry per test run, bound to commit and environment, with
+/// case results, coverage and failures.
+pub fn test_report_document_schema() -> DocumentSchema {
+    fn chapter(
+        key: &str,
+        title: &str,
+        occurrence: Occurrence,
+        content: ContentSchema,
+    ) -> ChapterSchema {
+        ChapterSchema {
+            key: key.to_string(),
+            title: title.to_string(),
+            occurrence,
+            content,
+            children: Vec::new(),
+            required: false,
+            min: 0,
+            max: None,
+            text_required: false,
+        }
+    }
+
+    fn text(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Single, ContentSchema::Text)
+    }
+
+    fn multiple(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
+    }
+
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+    }
+
+    let run = multiple("test_run", "测试运行")
+        .text_required(true)
+        .children(vec![
+            text("commit", "提交").text_required(true),
+            text("environment", "环境").text_required(true),
+            text("summary", "结果汇总").text_required(true),
+            list("case_results", "用例结果", "case_result"),
+            text("coverage", "覆盖率"),
+            list("failures", "失败与缺陷", "failure"),
+        ]);
+
+    DocumentSchema {
+        kind: "test_report".to_string(),
+        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        root: text("document", "测试报告").children(vec![
+            text("overview", "执行概览")
+                .required(true)
+                .text_required(true),
+            text("runs", "测试运行").required(true).children(vec![run]),
+            text("quality_gates", "质量门禁"),
+            text("conclusion", "结论").text_required(true),
+        ]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2023,6 +2331,35 @@ mod tests {
 
         let validation = snapshot.validate(&schema);
         assert!(validation.is_valid(), "{:?}", validation.errors);
+    }
+
+    #[test]
+    fn design_test_and_development_schemas_are_valid() {
+        for (schema, paths) in [
+            (
+                design_document_schema(),
+                vec!["overview", "subsystems", "tasks", "quality_gates"],
+            ),
+            (
+                development_document_schema(),
+                vec!["overview", "iterations", "quality_gates"],
+            ),
+            (
+                test_plan_document_schema(),
+                vec!["strategy", "scope", "environments", "cases"],
+            ),
+            (
+                test_report_document_schema(),
+                vec!["overview", "runs", "conclusion"],
+            ),
+        ] {
+            let validation = schema.validate();
+            assert!(validation.is_valid(), "{:?}", validation.errors);
+            let snapshot = DocumentSnapshot::empty(&schema);
+            for path in paths {
+                assert!(snapshot.find_path(path).is_some(), "{path}");
+            }
+        }
     }
 
     #[test]

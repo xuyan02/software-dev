@@ -12,11 +12,12 @@ use foundry_agent_runtime::{
     AgentsListTool, Budget, DocumentTool, EchoTool, FoundryClient, FoundryRequirementsApplyTool,
     FoundryRequirementsDraftTool, FoundryRequirementsGetTool, FoundryRequirementsValidateTool,
     InMemoryTrajectory, IssueCommentTool, IssueGetTool, LocalSandbox, OpenAiCompatibleConfig,
-    OpenAiCompatibleModel, ProjectGetTool, RequirementsAnnotateTool,
+    OpenAiCompatibleModel, ProjectGetTool, ProjectWorkspace, RequirementsAnnotateTool,
     RequirementsAnnotationsListTool, RequirementsResolveAnnotationTool, RunOutcome,
     TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskCommentTool, TaskGetTool,
     TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool, TaskStartTool,
-    TasksListTool, TasksReadyListTool, ToolRegistry, compose_system_prompt,
+    TasksListTool, TasksReadyListTool, ToolRegistry, WorkspaceDiffTool, WorkspaceListTool,
+    WorkspaceReadTool, WorkspaceRunTool, WorkspaceWriteTool, compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
 use serde_json::json;
@@ -35,12 +36,20 @@ struct Config {
 
 impl Config {
     fn from_env() -> anyhow::Result<Self> {
+        let sandbox_root = std::env::var("FOUNDRY_SANDBOX_ROOT").unwrap_or_else(|_| {
+            foundry_shared::default_config_path()
+                .and_then(|path| {
+                    path.parent()
+                        .map(|dir| dir.join("workspaces").display().to_string())
+                })
+                .unwrap_or_else(|| "workspaces".to_string())
+        });
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             foundry_url: required("FOUNDRY_URL")?,
             foundry_token: required("FOUNDRY_TOKEN")?,
             agent_id: required("FOUNDRY_AGENT_ID")?.parse()?,
-            sandbox_root: std::env::var("FOUNDRY_SANDBOX_ROOT").ok(),
+            sandbox_root: Some(sandbox_root),
         })
     }
 }
@@ -332,7 +341,8 @@ async fn execute_task(
         task_id.clone(),
         system_prompt,
         "Inspect the task and decide what to do.",
-    );
+    )
+    .with_project_id(task.project_id.to_string());
     request.context.push(
         "current_task",
         task_id.clone(),
@@ -449,6 +459,34 @@ fn build_tools(
         && let Some(root) = sandbox_root
     {
         tools.register(Arc::new(LocalSandbox::new(root)?));
+    }
+    if let Some(root) = sandbox_root
+        && [
+            "workspace_list",
+            "workspace_read",
+            "workspace_write",
+            "workspace_run",
+            "workspace_diff",
+        ]
+        .iter()
+        .any(|name| wants(name))
+    {
+        let workspace = Arc::new(ProjectWorkspace::new(root)?);
+        if wants("workspace_list") {
+            tools.register(Arc::new(WorkspaceListTool::new(Arc::clone(&workspace))));
+        }
+        if wants("workspace_read") {
+            tools.register(Arc::new(WorkspaceReadTool::new(Arc::clone(&workspace))));
+        }
+        if wants("workspace_write") {
+            tools.register(Arc::new(WorkspaceWriteTool::new(Arc::clone(&workspace))));
+        }
+        if wants("workspace_run") {
+            tools.register(Arc::new(WorkspaceRunTool::new(Arc::clone(&workspace))));
+        }
+        if wants("workspace_diff") {
+            tools.register(Arc::new(WorkspaceDiffTool::new(workspace)));
+        }
     }
     if wants("agents_list") {
         tools.register(Arc::new(AgentsListTool::new(Arc::clone(client))));

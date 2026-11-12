@@ -152,7 +152,37 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 2. Architect 读取项目文档、需求文档和当前架构设计，用 `document`，`kind = "architecture"` 维护架构锚点文档（架构概览 / 系统上下文 / 组件 / 接口与契约 / 数据与存储 / 部署与运行 / 质量属性 / 关键决策 / 技术债 / 风险）；
 3. Architect 提交后进入 Architecture review（`architecture_design:reviewer`）；Reviewer 用锚点标注写具体意见，打回时任务回到 `work`；
 4. 人类在 `/projects/{id}/documents/architecture` 做最终 review：**批准当前草案**生成新的不可变版本，或填写打回原因退回 Architect；
-5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `roadmap`。
+5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `detailed_design`。
+
+### 详细设计流程
+
+项目进入 `detailed_design` 后创建 `detailed_design` 子 Task：
+
+1. PM 按 `detailed_design:designer` 分配或创建 **Detailed Designer**；
+2. Designer 读取项目文档、需求文档和架构设计，用 `document`，`kind = "design"` 维护详细设计（设计概览 / 子系统 / 模块 / 任务分解 / 质量门禁）；
+3. 提交后进入 Design review（`detailed_design:reviewer`）；Reviewer 用锚点标注写意见，打回时回到 `work`；
+4. 人类在 `/projects/{id}/documents/design` 批准当前草案，control-plane 发送 `accept`，项目进入 `test_planning`。
+
+### 测试计划流程
+
+1. PM 按 `test_planning:test_planner` 分配或创建 **Test Planner**；
+2. Test Planner 读取需求、架构和详细设计，用 `document`，`kind = "test_plan"` 写测试策略、范围、环境、测试用例和质量门禁；
+3. 提交后进入 Test Plan review（`test_planning:reviewer`），打回回到 `work`；
+4. 人类在 `/projects/{id}/documents/test_plan` 批准，项目进入 `iteration`。
+
+### 开发与测试执行
+
+1. 项目进入 `iteration`；Implementer 在项目工作区中实现代码，运行构建和测试，并把迭代、变更集、代码引用、命令结果和证据写入 `kind = "development"` 的开发记录；
+2. Development Reviewer 独立审查开发记录；人类在 `acceptance` 阶段批准当前开发记录，iteration 完成任务；
+3. iteration 批准后项目进入 `test_execution`；Test Executor 根据测试计划和开发记录，用 `kind = "test_report"` 记录 commit、环境、用例结果、覆盖率、失败和质量门禁结论；
+4. Test Report Reviewer 审查证据；人类批准测试报告后，control-plane 发送 `accept`，项目以 `result = approved` 完成。
+
+### 项目工作区
+
+- 每个项目的工作区是 `$FOUNDRY_SANDBOX_ROOT/<project_id>`；未设置时默认 `~/.foundry/workspaces/<project_id>`。
+- 工作区为空时，Implementer 可以用 `workspace_run` 执行 `git init` 从零开始；已有代码库由管理员提前放到该目录。
+- Implementer 使用 `workspace_list` / `workspace_read` / `workspace_write` / `workspace_run` / `workspace_diff` 编辑代码、运行构建和测试；Reviewer 和 Test Executor 只读和运行测试。
+- 工作区是本地开发目录，不是安全边界；生产部署应把它放进容器或 VM。
 
 ### 通过 API 验收
 

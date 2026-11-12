@@ -28,6 +28,7 @@ pub enum StopReason {
 pub struct AgentRunRequest {
     pub agent_id: String,
     pub task_id: String,
+    pub project_id: Option<String>,
     pub system_prompt: String,
     pub user_message: String,
     pub context: ContextBundle,
@@ -44,11 +45,17 @@ impl AgentRunRequest {
         Self {
             agent_id: agent_id.into(),
             task_id: task_id.into(),
+            project_id: None,
             system_prompt: system_prompt.into(),
             user_message: user_message.into(),
             context: ContextBundle::default(),
             cancellation: None,
         }
+    }
+
+    pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
+        self.project_id = Some(project_id.into());
+        self
     }
 }
 
@@ -84,6 +91,8 @@ pub struct AgentCheckpoint {
     pub remaining_calls: Vec<ToolCall>,
     pub agent_id: String,
     pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub elapsed_ms: u64,
     pub pause: PauseRequest,
 }
@@ -95,6 +104,7 @@ struct RuntimeState {
     tool_calls: u32,
     agent_id: String,
     task_id: String,
+    project_id: Option<String>,
     started: Instant,
     prior_elapsed_ms: u64,
     /// A tool asked for human input, but the model still owns the turn. The
@@ -160,6 +170,7 @@ impl AgentRuntime {
         let AgentRunRequest {
             agent_id,
             task_id,
+            project_id,
             system_prompt,
             user_message,
             context,
@@ -180,6 +191,7 @@ impl AgentRuntime {
             tool_calls: 0,
             agent_id,
             task_id,
+            project_id,
             started: Instant::now(),
             prior_elapsed_ms: 0,
             pause: None,
@@ -210,6 +222,7 @@ impl AgentRuntime {
             remaining_calls,
             agent_id,
             task_id,
+            project_id,
             elapsed_ms,
             ..
         } = checkpoint;
@@ -224,6 +237,7 @@ impl AgentRuntime {
             tool_calls,
             agent_id,
             task_id,
+            project_id,
             started: Instant::now(),
             prior_elapsed_ms: elapsed_ms,
             pause: None,
@@ -320,6 +334,7 @@ impl AgentRuntime {
                         remaining_calls: Vec::new(),
                         agent_id: state.agent_id,
                         task_id: state.task_id,
+                        project_id: state.project_id,
                         elapsed_ms: elapsed,
                         pause: pause.clone(),
                     };
@@ -371,6 +386,7 @@ impl AgentRuntime {
                     &ToolContext {
                         agent_id: state.agent_id.clone(),
                         task_id: state.task_id.clone(),
+                        project_id: state.project_id.clone(),
                     },
                 )
                 .await;

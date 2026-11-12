@@ -20,12 +20,16 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 - Issue 聚合（问题空间）：反馈、缺陷、问题、想法、任务请求、事故；评论、处置、状态机、乐观并发、历史。
 - **账户与登录会话**：人类账户、智能体账户、全局 Admin/Member 角色、Argon2 密码哈希、可撤销会话、Web Cookie 与 REST/MCP Bearer Token。
 - **项目与隔离**：项目成员及 Viewer / Member / Maintainer / Owner 角色；Issue、项目文档和需求文档全部按项目隔离，跨项目读取返回 404。
-- 人类控制台：登录、侧边导航、**工作台**、议题收件箱、**任务**、**项目文档**、**需求文档**、**架构设计**、项目切换、项目成员管理、账户管理（Admin）、**智能体管理（Admin）**。
+- 人类控制台：登录、侧边导航、**工作台**、议题收件箱、**任务**、**项目文档**、**需求文档**、**架构设计**、**详细设计**、**开发记录**、**测试计划**、**测试报告**、项目切换、项目成员管理、账户管理（Admin）、**智能体管理（Admin）**。
 - **智能体管理**：每个智能体一个常驻 `foundry-agentd` 进程；控制平面 supervisor 负责启动/停止/重启、心跳和进程状态；PM Agent 作为调度者把 Ready 任务纳入派发：按 role 分配 Agent，没有合适的就从平台模板创建，然后调用 `task_start` 把任务置为 `in_progress`；用户不配置智能体。
 - **通用锚点文档引擎**：描述文件定义章节树；文档、章节和列表项都是锚点，每个锚点有稳定键和 SHA-256 内容 ID；共享草案、不可变版本、操作日志、审批、按项标注和乐观并发。
 - 项目文档（承诺空间）：使用 `kind = project` 的锚点文档，包含定位（是什么、不是什么）、背景（现状、问题）、目标、非目标、分期计划、约束、风险和术语表。
 - 需求文档：每个项目一份锚点需求文档，包含领域模型、用户肖像、故事、子系统（含功能集和功能）、交互设计、UI设计；交互设计按子系统 → 功能集 → 功能组织并包含信息架构和页面清单，UI 设计按子系统 → 页面组织并包含设计稿图片；与项目文档分开审批和发布。
 - 架构设计：每个项目一份 `kind = architecture` 的锚点文档，包含架构概览、系统上下文、组件、接口与契约、数据与存储、部署与运行、质量属性、关键决策、技术债和风险；与项目文档和需求文档分别审批。
+- 详细设计：每个项目一份 `kind = design` 的锚点文档，按子系统 → 模块展开职责、接口、数据、错误处理、依赖、配置、测试要点和任务分解；Designer → Reviewer → 人类审批。
+- 开发记录：每个项目一份 `kind = development` 的锚点文档，按迭代记录 ChangeSet、代码引用、构建/测试证据、关联需求和评审发现；Implementer 在项目工作区中实现代码并运行构建/测试，Foundry 记录 commit、diff 和证据。
+- 项目工作区：每个项目一个本地工作区（`$FOUNDRY_SANDBOX_ROOT/<project_id>`，默认 `~/.foundry/workspaces/<project_id>`）；Implementer 用 `workspace_list/read/write/run/diff` 改代码、跑构建和测试；Reviewer/Test Executor 只读和运行测试。
+- 测试计划与测试报告：`kind = test_plan` 记录策略、范围、环境和用例；`kind = test_report` 按 commit/环境记录运行结果、覆盖率、失败和质量门禁结论。
 - Task / DesignDoc / ADR / Contract / Decision / Link 的领域模型与状态机。缺陷不再单独建模，它是 `IssueKind::Bug`。
 - 用例层与端口：`AccountRepository`、`SessionRepository`、`ProjectRepository`、`IssueRepository`、`EventSink`、`PolicyEngine`。
 - 内存适配器（测试用）与 **Postgres 适配器**（运行时不失数据、乐观并发、事件持久化）。

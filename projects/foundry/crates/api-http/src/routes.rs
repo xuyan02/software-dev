@@ -1764,7 +1764,19 @@ fn document_review_workflows(kind: &str) -> Option<&'static [&'static str]> {
         "project" => Some(&["goal_clarification"]),
         "requirements" => Some(&["requirements_analysis", "interaction_design", "ui_design"]),
         "architecture" => Some(&["architecture_design"]),
+        "design" => Some(&["detailed_design"]),
+        "development" => Some(&["iteration"]),
+        "test_plan" => Some(&["test_planning"]),
+        "test_report" => Some(&["test_execution"]),
         _ => None,
+    }
+}
+
+fn document_review_stage(kind: &str) -> &'static str {
+    if kind == "development" {
+        "acceptance"
+    } else {
+        "human_review"
     }
 }
 
@@ -1776,13 +1788,16 @@ async fn active_anchor_document_task(
     let Some(workflows) = document_review_workflows(kind) else {
         return Ok(None);
     };
+    let stage = document_review_stage(kind);
     Ok(state
         .tasks
         .list(project_id, TaskFilter::default(), TaskViewer::system())
         .await?
         .into_iter()
         .find(|task| {
-            workflows.contains(&task.workflow.as_str()) && task.state == TaskState::InProgress
+            workflows.contains(&task.workflow.as_str())
+                && task.state == TaskState::InProgress
+                && task.stage.as_deref() == Some(stage)
         }))
 }
 
@@ -1795,13 +1810,14 @@ async fn human_review_task_by_id(
     let Some(workflows) = document_review_workflows(kind) else {
         return Ok(None);
     };
+    let stage = document_review_stage(kind);
     let task = state
         .tasks
         .get(project_id, task_id, TaskViewer::system())
         .await?;
     if workflows.contains(&task.workflow.as_str())
         && task.state == TaskState::InProgress
-        && task.stage.as_deref() == Some("human_review")
+        && task.stage.as_deref() == Some(stage)
     {
         Ok(Some(task))
     } else {
@@ -1817,6 +1833,7 @@ async fn active_human_review_task(
     let Some(workflows) = document_review_workflows(kind) else {
         return Ok(None);
     };
+    let stage = document_review_stage(kind);
     Ok(state
         .tasks
         .list(project_id, TaskFilter::default(), TaskViewer::system())
@@ -1825,7 +1842,7 @@ async fn active_human_review_task(
         .find(|task| {
             workflows.contains(&task.workflow.as_str())
                 && task.state == TaskState::InProgress
-                && task.stage.as_deref() == Some("human_review")
+                && task.stage.as_deref() == Some(stage)
         }))
 }
 
@@ -2730,6 +2747,10 @@ fn review_document_kind(workflow: &str) -> Option<&'static str> {
         "goal_clarification" => Some("project"),
         "requirements_analysis" | "interaction_design" | "ui_design" => Some("requirements"),
         "architecture_design" => Some("architecture"),
+        "detailed_design" => Some("design"),
+        "iteration" => Some("development"),
+        "test_planning" => Some("test_plan"),
+        "test_execution" => Some("test_report"),
         _ => None,
     }
 }

@@ -45,6 +45,46 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/architecture-review.md"),
     },
     Skill {
+        id: "design-document-writing-guide",
+        prompt: include_str!("../skills/design-document-writing-guide.md"),
+    },
+    Skill {
+        id: "detailed-design",
+        prompt: include_str!("../skills/detailed-design.md"),
+    },
+    Skill {
+        id: "design-review",
+        prompt: include_str!("../skills/design-review.md"),
+    },
+    Skill {
+        id: "development-record",
+        prompt: include_str!("../skills/development-record.md"),
+    },
+    Skill {
+        id: "development-review",
+        prompt: include_str!("../skills/development-review.md"),
+    },
+    Skill {
+        id: "test-plan-writing-guide",
+        prompt: include_str!("../skills/test-plan-writing-guide.md"),
+    },
+    Skill {
+        id: "test-planning",
+        prompt: include_str!("../skills/test-planning.md"),
+    },
+    Skill {
+        id: "test-plan-review",
+        prompt: include_str!("../skills/test-plan-review.md"),
+    },
+    Skill {
+        id: "test-execution",
+        prompt: include_str!("../skills/test-execution.md"),
+    },
+    Skill {
+        id: "test-report-review",
+        prompt: include_str!("../skills/test-report-review.md"),
+    },
+    Skill {
         id: "interaction-design",
         prompt: include_str!("../skills/interaction-design.md"),
     },
@@ -225,6 +265,26 @@ mod tests {
             ("architecture-document-writing-guide", "架构设计说明书"),
             ("architecture-design", "架构设计技能"),
             ("architecture-review", "架构设计审查技能"),
+        ] {
+            let prompt = compose_system_prompt("base", &[id.to_string()]).unwrap();
+            assert!(prompt.contains(&format!("### {id}")));
+            assert!(prompt.contains(title));
+        }
+    }
+
+    #[test]
+    fn appends_design_development_and_test_skills() {
+        for (id, title) in [
+            ("design-document-writing-guide", "详细设计说明书"),
+            ("detailed-design", "详细设计技能"),
+            ("design-review", "详细设计审查技能"),
+            ("development-record", "开发记录技能"),
+            ("development-review", "开发记录审查技能"),
+            ("test-plan-writing-guide", "测试计划说明书"),
+            ("test-planning", "测试计划技能"),
+            ("test-plan-review", "测试计划审查技能"),
+            ("test-execution", "测试执行技能"),
+            ("test-report-review", "测试报告审查技能"),
         ] {
             let prompt = compose_system_prompt("base", &[id.to_string()]).unwrap();
             assert!(prompt.contains(&format!("### {id}")));

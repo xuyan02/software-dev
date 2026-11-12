@@ -98,22 +98,41 @@
         }
       ],
       "transitions": [
-        {"on": "outcome == 'approved'", "to": "roadmap"},
+        {"on": "outcome == 'approved'", "to": "detailed_design"},
         {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
       ]
     },
     {
-      "name": "roadmap",
+      "name": "detailed_design",
       "vars": {
         "outcome": {"type": "string", "display_name": "Outcome"}
       },
       "created": [
-        {"create_child": {"workflow": "roadmap", "title": "Build the roadmap"}}
+        {"create_child": {"workflow": "detailed_design", "title": "Write the detailed design"}}
       ],
       "events": [
         {
           "event": "child.state_changed",
-          "action": "if event.child.workflow == 'roadmap' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+          "action": "if event.child.workflow == 'detailed_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'approved'", "to": "test_planning"},
+        {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "test_planning",
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "created": [
+        {"create_child": {"workflow": "test_planning", "title": "Write the test plan"}}
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'test_planning' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
         }
       ],
       "transitions": [
@@ -137,9 +156,28 @@
         }
       ],
       "transitions": [
-        {"on": "outcome == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "outcome == 'approved'", "to": "test_execution"},
         {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"},
         {"on": "next", "to": "iteration"}
+      ]
+    },
+    {
+      "name": "test_execution",
+      "vars": {
+        "outcome": {"type": "string", "display_name": "Outcome"}
+      },
+      "created": [
+        {"create_child": {"workflow": "test_execution", "title": "Execute tests and record evidence"}}
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'test_execution' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "outcome == 'failed'", "action": "result = 'failed'", "to": "ended"}
       ]
     }
   ]
