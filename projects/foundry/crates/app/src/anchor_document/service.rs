@@ -19,6 +19,7 @@ pub fn schema_for(kind: &str) -> Option<DocumentSchema> {
     match kind {
         "project" => Some(foundry_domain::project_document_schema()),
         "requirements" => Some(foundry_domain::requirements_document_schema()),
+        "architecture" => Some(foundry_domain::architecture_document_schema()),
         _ => None,
     }
 }

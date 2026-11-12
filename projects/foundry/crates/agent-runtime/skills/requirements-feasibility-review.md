@@ -327,8 +327,8 @@
 11. 对每条拟标注项写通过条件；写不出通过条件的不写标注。
 12. 标注项如果只能由人类或外部决定，写明决策项和决策人，交给人工评审，不重复拒绝。
 13. 用锚点写批注。
-14. 只要写了标注，就调用 `task_allowed_operations`，再调用 `task_operation`，`operation = "rejected"`。
-15. 一条标注都没写时，才调用 `task_operation`，`operation = "approved"`。
+14. 只要写了标注，就调用 `task_allowed_operations`，再调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `rejected` 操作名。
+15. 一条标注都没写时，才调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `approved` 操作名。
 16. 不修改文档，不审批，不发布。
 
 ## 审查质量门槛

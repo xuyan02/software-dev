@@ -1,8 +1,8 @@
 //! Full task tools for agents.
 //!
-//! Agents discover and operate the task pool through these tools. Project is
-//! optional: execution agents default to the project of their run; the PM
-//! dispatcher passes the project explicitly.
+//! Agents discover and operate the task pool through these tools. A task
+//! belongs to exactly one project; task endpoints resolve that project from the
+//! task id, so the tools never take a project id.
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -162,9 +162,8 @@ impl Tool for TaskStartTool {
                     .to_string(),
             input_schema: json!({
                 "type": "object",
-                "required": ["project_id", "task_id"],
+                "required": ["task_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" }
                 }
             }),
@@ -176,10 +175,9 @@ impl Tool for TaskStartTool {
         arguments: Value,
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
-        let project_id = parse_string(&arguments, "project_id")?;
         let task_id = parse_uuid(&arguments, "task_id")?;
         self.client
-            .start_task(&project_id, task_id)
+            .start_task(task_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         Ok(ToolOutput::success(format!("task {task_id} started")))
@@ -201,13 +199,10 @@ impl Tool for TasksListTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "tasks_list".to_string(),
-            description:
-                "List tasks, optionally filtered. Pass project_id when acting across projects."
-                    .to_string(),
+            description: "List tasks in the current project, optionally filtered.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "state": { "type": "string" },
                     "stage": { "type": "string" },
                     "dispatch_state": { "type": "string" },
@@ -224,7 +219,6 @@ impl Tool for TasksListTool {
         arguments: Value,
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
-        let project = optional_string(&arguments, "project_id");
         let mut pairs = Vec::new();
         for key in ["state", "stage", "dispatch_state", "role", "text"] {
             if let Some(value) = optional_string(&arguments, key) {
@@ -236,7 +230,7 @@ impl Tool for TasksListTool {
         }
         let tasks = self
             .client
-            .list_tasks(project.as_deref(), &pairs.join("&"))
+            .list_tasks(None, &pairs.join("&"))
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(tasks)
@@ -264,7 +258,6 @@ impl Tool for TaskGetTool {
                 "type": "object",
                 "required": ["task_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" }
                 }
             }),
@@ -277,10 +270,9 @@ impl Tool for TaskGetTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
-        let project = optional_string(&arguments, "project_id");
         let task = self
             .client
-            .get_task(project.as_deref(), task_id)
+            .get_task(task_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(task)
@@ -307,7 +299,6 @@ impl Tool for TaskAllowedOperationsTool {
                 "type": "object",
                 "required": ["task_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" }
                 }
             }),
@@ -320,10 +311,9 @@ impl Tool for TaskAllowedOperationsTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
-        let project = optional_string(&arguments, "project_id");
         let operations = self
             .client
-            .task_allowed_operations(project.as_deref(), task_id)
+            .task_allowed_operations(task_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(operations)
@@ -345,15 +335,13 @@ impl Tool for TaskOperationTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "task_operation".to_string(),
-            description: "Send a task operation such as started, completed or approved."
-                .to_string(),
+            description: "Send a stage-qualified task operation such as clarification:completed or content_review:approved.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "required": ["task_id", "operation"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" },
-                    "operation": { "type": "string" },
+                    "operation": { "type": "string", "description": "Use the name returned by task_allowed_operations; it is already stage-qualified." },
                     "idempotency_key": { "type": "string" }
                 }
             }),
@@ -367,12 +355,16 @@ impl Tool for TaskOperationTool {
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
         let operation = parse_string(&arguments, "operation")?;
-        let project = optional_string(&arguments, "project_id");
+        if !operation.contains(':') {
+            return Err(ToolError::InvalidArguments(
+                "operation must use the stage:operation form".to_string(),
+            ));
+        }
         let key = optional_string(&arguments, "idempotency_key")
             .unwrap_or_else(|| Uuid::now_v7().to_string());
         let result = self
             .client
-            .send_task_operation(project.as_deref(), task_id, &operation, &key)
+            .send_task_operation(task_id, &operation, &key)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(result)
@@ -399,7 +391,6 @@ impl Tool for TaskCommentTool {
                 "type": "object",
                 "required": ["task_id", "body"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" },
                     "body": { "type": "string" }
                 }
@@ -414,10 +405,9 @@ impl Tool for TaskCommentTool {
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
         let body = parse_string(&arguments, "body")?;
-        let project = optional_string(&arguments, "project_id");
         let task = self
             .client
-            .comment_task(project.as_deref(), task_id, &body)
+            .comment_task(task_id, &body)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(task)
@@ -444,7 +434,6 @@ impl Tool for TaskHistoryTool {
                 "type": "object",
                 "required": ["task_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" }
                 }
             }),
@@ -457,10 +446,9 @@ impl Tool for TaskHistoryTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
-        let project = optional_string(&arguments, "project_id");
         let history = self
             .client
-            .task_history(project.as_deref(), task_id)
+            .task_history(task_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(history)
@@ -487,7 +475,6 @@ impl Tool for TaskAddLinkTool {
                 "type": "object",
                 "required": ["task_id", "kind", "title", "relation"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" },
                     "kind": { "type": "string" },
                     "target_id": { "type": "string", "format": "uuid" },
@@ -506,15 +493,13 @@ impl Tool for TaskAddLinkTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
-        let project = optional_string(&arguments, "project_id");
         let mut body = arguments.clone();
         if let Some(object) = body.as_object_mut() {
-            object.remove("project_id");
             object.remove("task_id");
         }
         let link = self
             .client
-            .add_task_link(project.as_deref(), task_id, body)
+            .add_task_link(task_id, body)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(link)
@@ -541,7 +526,6 @@ impl Tool for TaskRemoveLinkTool {
                 "type": "object",
                 "required": ["task_id", "link_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" },
                     "link_id": { "type": "string", "format": "uuid" }
                 }
@@ -556,10 +540,9 @@ impl Tool for TaskRemoveLinkTool {
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
         let link_id = parse_uuid(&arguments, "link_id")?;
-        let project = optional_string(&arguments, "project_id");
         let result = self
             .client
-            .remove_task_link(project.as_deref(), task_id, link_id)
+            .remove_task_link(task_id, link_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         Ok(ToolOutput::success(

@@ -1741,7 +1741,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "started", "idempotency_key": "early" }),
+            json!({ "operation": "clarification:started", "idempotency_key": "early" }),
         ),
     )
     .await;
@@ -1820,16 +1820,41 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         .iter()
         .map(|operation| operation["name"].as_str().unwrap())
         .collect();
-    assert_eq!(allowed_names, vec!["started", "completed"]);
+    assert_eq!(
+        allowed_names,
+        vec!["clarification:started", "clarification:completed"]
+    );
+
+    let task_detail = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{child_id}"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let detail_names: Vec<&str> = task_detail["allowed_operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|operation| operation["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        detail_names,
+        vec!["clarification:started", "clarification:completed"]
+    );
 
     for (index, operation) in [
-        "started",
-        "completed",
-        "started",
-        "completed",
-        "approved",
-        "approved",
-        "approved",
+        "clarification:started",
+        "clarification:completed",
+        "writing:started",
+        "writing:completed",
+        "style_review:approved",
+        "content_review:approved",
+        "human_review:approved",
     ]
     .iter()
     .enumerate()
@@ -1856,7 +1881,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "approved", "idempotency_key": format!("{child_id}:6:approved") }),
+            json!({ "operation": "human_review:approved", "idempotency_key": format!("{child_id}:6:human_review:approved") }),
         ),
     )
     .await;
@@ -3044,10 +3069,26 @@ async fn requirements_anchor_document_round_trips_over_http() {
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
+                        "parent": "domain_models",
+                        "occurrence_key": "order",
+                        "text": "实体：订单\n关键属性：订单号、状态、预计到达时间\n关系：订单属于用户",
+                        "title": "订单"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
                         "parent": "users",
                         "occurrence_key": "persona-customer",
                         "text": "姓名：张先生\n年龄：35 岁\n爱好：钓鱼\n职业：买家\n诉求：随时知道订单什么时候到达\n主次：主要",
                         "title": "张先生"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "stories",
+                        "occurrence_key": "track-order",
+                        "text": "名称：查看订单状态\n前置条件：张先生已下单\n发生频率：高\n故事描述：张先生打开订单查询，查看订单状态时间线并确认预计到达时间。",
+                        "title": "查看订单状态"
                     },
                     {
                         "op_id": Uuid::now_v7(),
@@ -3068,32 +3109,16 @@ async fn requirements_anchor_document_round_trips_over_http() {
                     {
                         "op_id": Uuid::now_v7(),
                         "type": "add",
-                        "parent": "subsystems/subsystem/orders/function_set/core.stories",
+                        "parent": "subsystems/subsystem/orders/function_set/core",
                         "occurrence_key": "track-order",
-                        "text": "名称：查看订单状态\n前置条件：张先生已下单\n发生频率：高\n故事描述：张先生打开订单查询，查看订单状态时间线并确认预计到达时间。",
-                        "title": "查看订单状态"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "subsystems/subsystem/orders/function_set/core.functions",
-                        "occurrence_key": "track-order",
-                        "text": "名称：订单查询\n功能描述：查询订单当前状态\n系统变化：订单状态从已下单变为已查询\n前置条件：订单存在\n反馈：返回订单状态和预计到达时间\n交互设计：输入订单号后展示状态时间线",
+                        "text": "名称：订单查询\n系统变化：订单状态从已下单变为已查询\n前置条件：订单存在\n反馈：返回订单状态和预计到达时间",
                         "title": "订单查询"
                     },
                     {
                         "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "subsystems/subsystem/orders/function_set/core.functions/function/track-order",
-                        "occurrence_key": "screenshot",
-                        "text": "名称：订单详情页\n链接：https://example.com/order.png",
-                        "title": "订单详情页"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_title",
-                        "anchor": "subsystems/subsystem/orders/function_set/core.functions/function/track-order",
-                        "title": "查询订单状态"
+                        "type": "update_text",
+                        "anchor": "subsystems/subsystem/orders/function_set/core/function/track-order.function_description",
+                        "text": "按订单号查询当前状态和物流信息"
                     }
                 ]
             }),
@@ -3110,11 +3135,11 @@ async fn requirements_anchor_document_round_trips_over_http() {
     .await;
     assert!(toc.contains("# 需求文档"));
     assert!(toc.contains("## 目录"));
-    assert!(toc.contains("- 用户"));
+    assert!(toc.contains("- 领域模型"));
+    assert!(toc.contains("- 用户肖像"));
     assert!(toc.contains("- 故事"));
     assert!(toc.contains("查看订单状态"));
-    assert!(toc.contains("查询订单状态"));
-    assert!(!toc.contains("订单查询"));
+    assert!(toc.contains("订单查询"));
     assert!(toc.contains("k:"));
 
     let content = body_json(
@@ -3130,11 +3155,11 @@ async fn requirements_anchor_document_round_trips_over_http() {
     .await;
     assert_eq!(content["format"], "md");
     let markdown = content["markdown"].as_str().unwrap();
-    assert!(markdown.contains("# 用户"));
+    assert!(markdown.contains("# 领域模型"));
+    assert!(markdown.contains("# 用户肖像"));
     assert!(markdown.contains("张先生"));
+    assert!(markdown.contains("# 故事"));
     assert!(markdown.contains("软件名称：订单系统移动端"));
-    assert!(markdown.contains("交互设计：输入订单号后展示状态时间线"));
-    assert!(markdown.contains("链接：https://example.com/order.png"));
 
     let validation = body_json(
         &harness.router,
@@ -3186,6 +3211,306 @@ async fn requirements_anchor_document_round_trips_over_http() {
     )
     .await;
     assert_eq!(versions[0]["version"], 1);
+}
+
+#[tokio::test]
+async fn architecture_anchor_document_round_trips_over_http() {
+    let harness = harness().await;
+    let base = format!(
+        "/api/v1/projects/{}/documents/architecture",
+        harness.project_id
+    );
+
+    let saved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            json!({
+                "operations": [
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "overview",
+                        "text": "订单系统采用订单服务与查询服务分离的结构。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "context",
+                        "text": "买家通过移动端访问系统；系统依赖支付平台。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "components",
+                        "occurrence_key": "orders",
+                        "title": "订单服务"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "components/component/orders.responsibility",
+                        "text": "维护订单状态机和订单写入。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "components/component/orders.interfaces",
+                        "occurrence_key": "order-api",
+                        "text": "名称：订单接口\n提供方：订单服务\n消费方：移动端\n版本：v1"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "contracts",
+                        "occurrence_key": "order-contract",
+                        "text": "名称：订单契约\n提供方：订单服务\n消费方：查询服务\n兼容性：向后兼容"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "data_storage",
+                        "text": "订单服务拥有订单数据；查询服务只读副本。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": "deployment",
+                        "text": "两个服务独立部署，使用健康检查和结构化日志。"
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(saved["revision"], 2);
+
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("# 架构设计"));
+    assert!(toc.contains("订单服务"));
+    assert!(toc.contains("k:"));
+
+    let content = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("{base}/content"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    let markdown = content["markdown"].as_str().unwrap();
+    assert!(markdown.contains("# 架构概览"));
+    assert!(markdown.contains("订单系统采用订单服务与查询服务分离的结构。"));
+    assert!(markdown.contains("维护订单状态机和订单写入。"));
+    assert!(markdown.contains("名称：订单契约"));
+
+    let validation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft/validate"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        validation["errors"].as_array().unwrap().len(),
+        0,
+        "{validation}"
+    );
+
+    let approved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/approvals"),
+            &harness.admin_token,
+            Some("2"),
+            json!({ "decision": "approved", "comment": "架构基线" }),
+        ),
+    )
+    .await;
+    assert_eq!(approved["version"], 1);
+}
+
+#[tokio::test]
+async fn interaction_and_ui_design_round_trip_over_http() {
+    let harness = harness().await;
+    let base = format!(
+        "/api/v1/projects/{}/documents/requirements",
+        harness.project_id
+    );
+    let interaction = "interaction_design.interaction_subsystems";
+    let subsystem = "interaction_design.interaction_subsystems/interaction_subsystem/orders";
+    let function_set = "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query";
+    let function = "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query.interaction_functions/interaction_function/track-order";
+    let ui_subsystem = "ui_design.ui_subsystems/ui_subsystem/orders";
+    let ui_page = "ui_design.ui_subsystems/ui_subsystem/orders.ui_pages/ui_page/order-list";
+
+    let saved = body_json(
+        &harness.router,
+        workflow_request(
+            "POST",
+            &format!("{base}/draft/operations"),
+            &harness.admin_token,
+            Some("1"),
+            json!({
+                "operations": [
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": interaction,
+                        "occurrence_key": "orders",
+                        "title": "订单系统移动端",
+                        "text": "交互概述：使用底部导航。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{subsystem}.information_architecture"),
+                        "text": "底部导航分首页、订单、我的三个区域。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{subsystem}.interaction_pages"),
+                        "occurrence_key": "order-list",
+                        "text": "页面：订单列表\n区域：订单\n入口：首页\n主要跳转：订单详情\n支撑功能：订单查询"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{subsystem}.interaction_function_sets"),
+                        "occurrence_key": "query",
+                        "title": "订单查询功能集",
+                        "text": "共享页面：订单列表、订单详情\n共同状态：加载中、空列表"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{function_set}.interaction_functions"),
+                        "occurrence_key": "track-order",
+                        "title": "查看订单状态",
+                        "text": "发起方：用户\n触发：点击订单卡片\n入口：订单列表\n观察点：订单详情页显示状态"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{function}.page_structure"),
+                        "text": "订单列表 → 订单详情。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{function}.operations"),
+                        "occurrence_key": "open-detail",
+                        "text": "操作：点击订单卡片\n控件：列表项\n结果：进入订单详情"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{function}.interaction_feedback"),
+                        "text": "加载中显示骨架屏；失败显示重试提示。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{function}.interaction_copy"),
+                        "text": "重试"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{function}.interaction_accessibility"),
+                        "text": "列表项支持键盘和读屏。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": "ui_design.ui_subsystems",
+                        "occurrence_key": "orders",
+                        "title": "订单系统移动端",
+                        "text": ""
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{ui_subsystem}.ui_pages"),
+                        "occurrence_key": "order-list",
+                        "title": "订单列表",
+                        "text": ""
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{ui_page}.ui_layout"),
+                        "text": "顶部标题栏，下方订单列表。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "update_text",
+                        "anchor": format!("{ui_page}.information_hierarchy"),
+                        "text": "状态和预计到达时间优先展示。"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{ui_page}.related_functions"),
+                        "occurrence_key": "track-order",
+                        "text": "查看订单状态"
+                    },
+                    {
+                        "op_id": Uuid::now_v7(),
+                        "type": "add",
+                        "parent": format!("{ui_page}.designs"),
+                        "occurrence_key": "default",
+                        "text": "状态：默认\n图片：![订单列表-默认](/api/v1/projects/p/assets/a)\n说明：列表项展示订单摘要"
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(saved["revision"], 2);
+
+    let validation = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("{base}/draft/validate"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        validation["errors"].as_array().unwrap().len(),
+        0,
+        "{validation}"
+    );
+
+    let toc = body_text(
+        &harness.router,
+        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
+    )
+    .await;
+    assert!(toc.contains("交互设计"));
+    assert!(toc.contains("订单系统移动端"));
+    assert!(toc.contains("订单列表"));
+    assert!(toc.contains("UI设计"));
 }
 
 #[tokio::test]

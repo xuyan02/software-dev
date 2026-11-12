@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -258,8 +259,27 @@ where
                 return;
             }
         };
-        if let Err(error) = tokio::io::copy(&mut reader, &mut file).await {
-            tracing::warn!(path = %path.display(), error = %error, "agent log capture failed");
+        // Write every chunk and flush it immediately. The log viewer reads the
+        // file from disk, so buffering here would delay live logs.
+        let mut buffer = vec![0u8; 8192];
+        loop {
+            match reader.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(read) => {
+                    if let Err(error) = file.write_all(&buffer[..read]).await {
+                        tracing::warn!(path = %path.display(), error = %error, "agent log capture failed");
+                        break;
+                    }
+                    if let Err(error) = file.flush().await {
+                        tracing::warn!(path = %path.display(), error = %error, "agent log flush failed");
+                        break;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), error = %error, "agent log capture failed");
+                    break;
+                }
+            }
         }
     });
 }

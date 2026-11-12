@@ -33,6 +33,18 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/requirements-feasibility-review.md"),
     },
     Skill {
+        id: "architecture-document-writing-guide",
+        prompt: include_str!("../skills/architecture-document-writing-guide.md"),
+    },
+    Skill {
+        id: "architecture-design",
+        prompt: include_str!("../skills/architecture-design.md"),
+    },
+    Skill {
+        id: "architecture-review",
+        prompt: include_str!("../skills/architecture-review.md"),
+    },
+    Skill {
         id: "interaction-design",
         prompt: include_str!("../skills/interaction-design.md"),
     },
@@ -205,6 +217,19 @@ mod tests {
         let prompt = compose_system_prompt("base", &["project-clarification".to_string()]).unwrap();
         assert!(prompt.contains("### project-clarification"));
         assert!(prompt.contains("项目澄清技能"));
+    }
+
+    #[test]
+    fn appends_architecture_skills() {
+        for (id, title) in [
+            ("architecture-document-writing-guide", "架构设计说明书"),
+            ("architecture-design", "架构设计技能"),
+            ("architecture-review", "架构设计审查技能"),
+        ] {
+            let prompt = compose_system_prompt("base", &[id.to_string()]).unwrap();
+            assert!(prompt.contains(&format!("### {id}")));
+            assert!(prompt.contains(title));
+        }
     }
 
     #[test]

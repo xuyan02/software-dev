@@ -121,10 +121,10 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 1. PM 在任务开始时按 `goal_clarification:clarifier` 和 `goal_clarification:writer`
    分配或创建 **Clarifier** 和 **Project Document Writer**；
 2. Clarifier 在澄清 Issue 中与创建者对话，只负责提问；澄清完毕后发送总结评论并调用
-   `task_operation(operation = "completed")` 进入项目文档撰写；
+   `task_operation(operation = "clarification:completed")` 进入项目文档撰写；
 3. Writer 读取澄清 Issue、项目信息和确认过的结论，用 `document` 工具维护项目文档
    （定位、背景、目标、非目标、分期计划、约束、风险、术语表），再用 `validate` 校验；
-   写完后调用 `task_operation(operation = "completed")` 进入文风审查；
+   写完后调用 `task_operation(operation = "writing:completed")` 进入文风审查；
 4. 项目文档依次经过 **Project Layer Style Reviewer** 和 **Project Layer Content Reviewer**
    （都是 Agent）；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"`
    阅读，用 `action = "annotate"` 写锚点标注，打回时任务回到 `writing`；
@@ -138,11 +138,21 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 项目文档通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
 
 1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
-2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"update_title"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（用户 / 子系统 / 功能集 / 故事 / 功能；功能描述和交互设计在功能正文中，UI 设计是功能下的图片列表）；
+2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"update_title"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（领域模型 / 用户肖像 / 故事 / 子系统 / 功能集 / 功能；交互设计和 UI 设计是后续阶段维护的子系统树，交互设计按子系统 → 功能集 → 功能组织并包含信息架构和页面清单，UI 设计按子系统 → 页面组织并包含设计稿图片）；
    人类和 Reviewer 可以在需求文档页写锚点标注，Analyst 用 `action = "annotations_list"` 读取，用 `action = "resolve_annotation"` 在修改后标记解决；
 3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用标注写具体意见，打回时任务回到 `work`，Analyst 读取标注修改后重新提交；
 4. 人类在 `/projects/{id}/documents/requirements` 做最终 review：**批准当前草案**会生成新的不可变版本，或填写打回原因退回 Analyst。项目文档和需求文档分别审批，每个草案 revision 都需要审批；
 5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `interaction_design`；交互设计和 UI 设计分别完成并批准后进入 `architecture`。
+
+### 架构设计流程
+
+项目进入 `architecture` 后创建 `architecture_design` 子 Task：
+
+1. PM 按 `architecture_design:architect` 分配或创建 **Architect**；
+2. Architect 读取项目文档、需求文档和当前架构设计，用 `document`，`kind = "architecture"` 维护架构锚点文档（架构概览 / 系统上下文 / 组件 / 接口与契约 / 数据与存储 / 部署与运行 / 质量属性 / 关键决策 / 技术债 / 风险）；
+3. Architect 提交后进入 Architecture review（`architecture_design:reviewer`）；Reviewer 用锚点标注写具体意见，打回时任务回到 `work`；
+4. 人类在 `/projects/{id}/documents/architecture` 做最终 review：**批准当前草案**生成新的不可变版本，或填写打回原因退回 Architect；
+5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `roadmap`。
 
 ### 通过 API 验收
 

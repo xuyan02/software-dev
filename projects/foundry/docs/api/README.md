@@ -393,7 +393,7 @@ curl -s http://127.0.0.1:8080/mcp \
 
 ## 文档（锚点模型）
 
-通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前只注册了 `project` 类型。
+通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前注册了 `project`、`requirements` 和 `architecture` 三种类型。
 
 ```text
 GET  /api/v1/projects/{project}/documents/{kind}?anchor={key|id}
@@ -425,7 +425,7 @@ Agent 工具：`document`，使用与 MCP 完全相同的 `action` 和参数。
 
 ## 需求文档
 
-每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：用户、子系统、功能集、故事、功能；功能描述和交互设计是功能正文中的 `字段：值` 行，UI 设计是功能下的图片列表。项目层内容属于项目文档，不在这里重复。
+每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：领域模型、用户肖像、故事、子系统（含功能集和功能）、交互设计、UI设计。交互设计按子系统 → 功能集 → 功能组织，并在子系统层包含信息架构和页面清单；UI 设计按子系统 → 页面组织，页面包含布局、组件、状态和设计稿图片。项目层内容属于项目文档，不在这里重复。
 
 需求文档使用与项目文档完全相同的锚点文档接口：
 
@@ -465,6 +465,32 @@ GET  /api/v1/projects/{project}/documents/requirements/versions/{version}
 ```
 
 MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "requirements"`。
+
+## 架构设计
+
+每个项目一份架构设计，使用 `kind = "architecture"` 的锚点文档。章节按架构设计说明书分为：架构概览、系统上下文、组件、接口与契约、数据与存储、部署与运行、质量属性、关键决策、技术债、风险；组件包含职责、接口、依赖和数据。
+
+架构设计使用与项目文档完全相同的锚点文档接口：
+
+```text
+GET  /api/v1/projects/{project}/documents/architecture
+GET  /api/v1/projects/{project}/documents/architecture/content
+GET  /api/v1/projects/{project}/documents/architecture/draft
+POST /api/v1/projects/{project}/documents/architecture/draft/operations
+POST /api/v1/projects/{project}/documents/architecture/draft/validate
+POST /api/v1/projects/{project}/documents/architecture/draft/approvals
+GET  /api/v1/projects/{project}/documents/architecture/draft/approvals
+GET  /api/v1/projects/{project}/documents/architecture/versions
+GET  /api/v1/projects/{project}/documents/architecture/versions/{version}
+```
+
+草案操作、审批、标注和版本规则与项目文档相同。MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "architecture"`。
+
+## Task
+
+Task 属于唯一项目，不能跨项目。`/api/v1/tasks/{id}` 及其操作、评论、历史和链接接口只按 `task_id` 解析所属项目，并校验当前账户对该项目可见；这些接口不使用 `X-Foundry-Project`。
+
+任务操作使用 `stage:operation` 形式，例如 `human_review:approved`、`writing:completed`。引擎解析阶段名并校验它是否等于任务当前阶段；阶段不一致的操作会被丢弃。`allowed-operations` 返回的已经是带阶段前缀的操作名。
 
 ## Task 链接
 

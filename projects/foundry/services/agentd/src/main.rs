@@ -263,7 +263,7 @@ async fn run_dispatcher_watcher(
 /// active actors. The agent should not have to discover its own context with
 /// an extra tool call before deciding what to do.
 async fn task_context(client: &FoundryClient, task_id: Uuid, account_id: Uuid) -> Option<String> {
-    let task = match client.get_task(None, task_id).await {
+    let task = match client.get_task(task_id).await {
         Ok(task) => task,
         Err(error) => {
             tracing::warn!(task_id = %task_id, error = %error, "cannot load task context");

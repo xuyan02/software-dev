@@ -47,14 +47,14 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "The image references are clear; move to UI review.",
+          "description": "The UI design language is clear; move to UI review.",
           "roles": ["style_reviewer"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "The image references are unclear; return to the designer.",
+          "description": "The UI design language is unclear; return to the designer.",
           "roles": ["style_reviewer"],
           "action": "decision = 'rejected'"
         }

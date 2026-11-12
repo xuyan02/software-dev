@@ -8,9 +8,11 @@ use crate::{PostgresStore, backend};
 impl PostgresStore {
     /// Goal-clarification tasks whose project document has an approved revision
     /// and the task has not been completed yet.
-    pub async fn approved_goal_clarifications(&self) -> Result<Vec<(Uuid, Uuid, Uuid)>, RepoError> {
+    pub async fn approved_goal_clarifications(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
         sqlx::query_as(
-            "select t.id, t.project_id, a.actor_id \
+            "select t.id, t.project_id, a.actor_id, a.revision \
              from tasks t \
              join anchor_document_approvals a \
                on a.project_id = t.project_id and a.kind = 'project' \
@@ -32,14 +34,18 @@ impl PostgresStore {
             "insert into anchor_document_review_links \
              (id, project_id, kind, draft_revision, task_id, bound_at) \
              select gen_random_uuid(), t.project_id, \
-                    case when t.workflow = 'goal_clarification' then 'project' else 'requirements' end, \
+                    case when t.workflow = 'goal_clarification' then 'project' \
+                         when t.workflow = 'architecture_design' then 'architecture' \
+                         else 'requirements' end, \
                     d.revision, t.id, now() \
              from tasks t \
              join anchor_documents doc \
                on doc.project_id = t.project_id \
-              and doc.kind = case when t.workflow = 'goal_clarification' then 'project' else 'requirements' end \
+              and doc.kind = case when t.workflow = 'goal_clarification' then 'project' \
+                                 when t.workflow = 'architecture_design' then 'architecture' \
+                                 else 'requirements' end \
              join anchor_document_drafts d on d.document_id = doc.id \
-             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design') \
+             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design') \
                and t.state = 'in_progress' \
                and t.stage = 'human_review' \
              on conflict (project_id, kind) where released_at is null \
@@ -78,9 +84,9 @@ impl PostgresStore {
     /// approved revision newer than the task's last update.
     pub async fn approved_requirement_document_tasks(
         &self,
-    ) -> Result<Vec<(Uuid, Uuid, Uuid)>, RepoError> {
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
         sqlx::query_as(
-            "select t.id, t.project_id, a.actor_id \
+            "select t.id, t.project_id, a.actor_id, a.revision \
              from tasks t \
              join anchor_document_approvals a \
                on a.project_id = t.project_id and a.kind = 'requirements' \
@@ -88,6 +94,50 @@ impl PostgresStore {
                and t.state = 'in_progress' \
                and t.stage = 'human_review' \
                and a.decision = 'approved' \
+               and a.created_at > t.updated_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)
+    }
+
+    /// Architecture-design tasks whose architecture anchor document has an
+    /// approved revision newer than the task's last update.
+    pub async fn approved_architecture_design_tasks(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
+        sqlx::query_as(
+            "select t.id, t.project_id, a.actor_id, a.revision \
+             from tasks t \
+             join anchor_document_approvals a \
+               on a.project_id = t.project_id and a.kind = 'architecture' \
+             where t.workflow = 'architecture_design' \
+               and t.state = 'in_progress' \
+               and t.stage = 'human_review' \
+               and a.decision = 'approved' \
+               and a.created_at > t.updated_at",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)
+    }
+
+    /// Human-review tasks whose document revision was rejected. If the web
+    /// request recorded the rejection but failed to send the task operation,
+    /// the control plane retries it here.
+    pub async fn rejected_document_tasks(&self) -> Result<Vec<(Uuid, Uuid, Uuid, i64)>, RepoError> {
+        sqlx::query_as(
+            "select t.id, t.project_id, a.actor_id, a.revision \
+             from tasks t \
+             join anchor_document_approvals a \
+               on a.project_id = t.project_id \
+              and a.kind = case when t.workflow = 'goal_clarification' then 'project' \
+                                 when t.workflow = 'architecture_design' then 'architecture' \
+                                 else 'requirements' end \
+             where t.workflow in ('goal_clarification', 'requirements_analysis', 'interaction_design', 'ui_design', 'architecture_design') \
+               and t.state = 'in_progress' \
+               and t.stage = 'human_review' \
+               and a.decision = 'rejected' \
                and a.created_at > t.updated_at",
         )
         .fetch_all(&self.pool)

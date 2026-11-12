@@ -398,12 +398,15 @@ fn validate_stage(
                 );
             }
             CreatedEffect::DocumentReviewLink(link) => {
-                if !matches!(link.kind.as_str(), "project" | "requirements") {
+                if !matches!(
+                    link.kind.as_str(),
+                    "project" | "requirements" | "architecture"
+                ) {
                     validation.error(
                         format!("{effect_path}.document_review_link.kind"),
                         "unknown_document_kind",
                         format!(
-                            "document_review_link kind {:?} must be project or requirements",
+                            "document_review_link kind {:?} must be project, requirements or architecture",
                             link.kind
                         ),
                     );

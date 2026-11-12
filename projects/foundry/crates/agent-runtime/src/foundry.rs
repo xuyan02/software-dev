@@ -301,20 +301,12 @@ impl FoundryClient {
     }
 
     pub async fn list_task_links(&self, task_id: Uuid) -> Result<Value, FoundryError> {
-        self.list_task_links_scoped(None, task_id).await
-    }
-
-    pub async fn list_task_links_scoped(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-    ) -> Result<Value, FoundryError> {
         self.get_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/links",
                 self.base_url.trim_end_matches('/')
             ),
-            project,
+            None,
         )
         .await
     }
@@ -410,7 +402,7 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn start_task(&self, project_id: &str, task_id: Uuid) -> Result<Value, FoundryError> {
+    pub async fn start_task(&self, task_id: Uuid) -> Result<Value, FoundryError> {
         self.post_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/start",
@@ -418,7 +410,7 @@ impl FoundryClient {
             ),
             serde_json::json!({}),
             None,
-            Some(project_id),
+            None,
         )
         .await
     }
@@ -436,39 +428,30 @@ impl FoundryClient {
         self.get_scoped(&url, project).await
     }
 
-    pub async fn get_task(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-    ) -> Result<Value, FoundryError> {
+    pub async fn get_task(&self, task_id: Uuid) -> Result<Value, FoundryError> {
         self.get_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}",
                 self.base_url.trim_end_matches('/')
             ),
-            project,
+            None,
         )
         .await
     }
 
-    pub async fn task_allowed_operations(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-    ) -> Result<Value, FoundryError> {
+    pub async fn task_allowed_operations(&self, task_id: Uuid) -> Result<Value, FoundryError> {
         self.get_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/allowed-operations",
                 self.base_url.trim_end_matches('/')
             ),
-            project,
+            None,
         )
         .await
     }
 
     pub async fn send_task_operation(
         &self,
-        project: Option<&str>,
         task_id: Uuid,
         operation: &str,
         idempotency_key: &str,
@@ -483,17 +466,12 @@ impl FoundryClient {
                 "idempotency_key": idempotency_key,
             }),
             None,
-            project,
+            None,
         )
         .await
     }
 
-    pub async fn comment_task(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-        body: &str,
-    ) -> Result<Value, FoundryError> {
+    pub async fn comment_task(&self, task_id: Uuid, body: &str) -> Result<Value, FoundryError> {
         self.post_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/comments",
@@ -501,32 +479,23 @@ impl FoundryClient {
             ),
             serde_json::json!({ "body": body }),
             None,
-            project,
+            None,
         )
         .await
     }
 
-    pub async fn task_history(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-    ) -> Result<Value, FoundryError> {
+    pub async fn task_history(&self, task_id: Uuid) -> Result<Value, FoundryError> {
         self.get_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/history",
                 self.base_url.trim_end_matches('/')
             ),
-            project,
+            None,
         )
         .await
     }
 
-    pub async fn add_task_link(
-        &self,
-        project: Option<&str>,
-        task_id: Uuid,
-        body: Value,
-    ) -> Result<Value, FoundryError> {
+    pub async fn add_task_link(&self, task_id: Uuid, body: Value) -> Result<Value, FoundryError> {
         self.post_scoped(
             &format!(
                 "{}/api/v1/tasks/{task_id}/links",
@@ -534,14 +503,13 @@ impl FoundryClient {
             ),
             body,
             None,
-            project,
+            None,
         )
         .await
     }
 
     pub async fn remove_task_link(
         &self,
-        project: Option<&str>,
         task_id: Uuid,
         link_id: Uuid,
     ) -> Result<Value, FoundryError> {
@@ -550,7 +518,7 @@ impl FoundryClient {
                 "{}/api/v1/tasks/{task_id}/links/{link_id}",
                 self.base_url.trim_end_matches('/')
             ),
-            project,
+            None,
         )
         .await
     }

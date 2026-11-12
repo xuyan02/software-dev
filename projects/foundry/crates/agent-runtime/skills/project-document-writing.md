@@ -66,7 +66,7 @@
 ## 提交
 
 1. 调用 `task_allowed_operations`，确认当前任务允许 `completed`。
-2. 调用 `task_operation`，`operation = "completed"`，把项目文档提交给文风审查。
+2. 调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的操作名，把项目文档提交给文风审查。
 
 ## 被审查打回后：按标注修改
 

@@ -68,7 +68,7 @@ cargo run -p foundry-agent-runtime --bin foundry-agent -- clarify \
 - Agent 用 `issue_get` 读取讨论，用 `issue_comment` 提问。
 - 提问后 Agent 结束自己的本轮，Run 正常完成；人类回复后 control-plane 依据 Issue 评论触发新的 Run，新 Run 重新读取 Issue 继续。
 - 人在 Issue 下回复；CLI 把回复作为评论发到 Issue，并恢复 Run。
-- Agent 创建服务端草稿，按部分调用 `project_brief_draft_apply` 编辑，然后用 `project_brief_draft_submit` 提交；提交后必须调用 `task_operation completed`。
+- Agent 创建服务端草稿，用 `document` 的 `draft_create` / `add` / `update_text` 编辑，然后用 `task_operation` 提交；操作名使用 `task_allowed_operations` 返回的 `stage:operation` 形式，例如 `writing:completed`。
 - Agent 不能批准；提交后 CLI 询问人类是否批准。
 
 ## 已实现
@@ -84,8 +84,7 @@ cargo run -p foundry-agent-runtime --bin foundry-agent -- clarify \
 ### Phase 1：真实世界
 
 - `OpenAiCompatibleModel`：OpenAI / DeepSeek / Ollama / vLLM，重试、超时、工具调用、usage。
-- `FoundryClient` 和统一的 `document` 工具（`kind = "project"` / `"requirements"`）。
-- `project_brief_get` / `project_brief_versions_list` / `project_brief_version_get` / `project_brief_drafts_list` / `project_brief_draft_create` / `project_brief_draft_get` / `project_brief_draft_apply` / `project_brief_draft_submit` 工具。
+- `FoundryClient` 和统一的 `document` 工具（`kind = "project"` / `"requirements"` / `"architecture"`）。项目文档、需求文档和架构设计都通过这个工具访问，不再有独立的 `project_brief_*` 工具。
 - `McpClient`：initialize、tools/list、tools/call，stdio transport、JSON-RPC、错误处理。
 - 轨迹使用内存 sink；管理型 Agent 不再持久化 `agent_runs` / `agent_steps`。
 - `Pricing` / `Usage::cost_usd` / `RunResult.cost_usd`。

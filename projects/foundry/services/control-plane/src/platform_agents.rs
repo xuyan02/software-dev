@@ -31,7 +31,7 @@ On every wake:
         and call agent_create_for_role with task_id, role = task_role and template_id.
       - Call task_assign_agent with task_id, role = task_role and the chosen
         agent_definition_id.
-   b. After every agent role is assigned, call task_start with task_id and project_id.
+   b. After every agent role is assigned, call task_start with task_id.
 4. When every Ready task is started, stop. Do not call tools again.
 
 Do not comment on issues, draft project documents, or do the task yourself.
@@ -115,15 +115,15 @@ const REQUIREMENTS_ANALYST_PROMPT: &str = r#"你是 Foundry 的需求分析智�
 2. 用 document action="content" kind="requirements" 读取需求文档；用 action="toc" 查看目录和锚点。
 3. 用 document action="annotations_list" kind="requirements" 读取已有评审批注。
 4. 用 document action="draft_open" kind="requirements" 打开草稿；没有草稿时用 action="draft_create"；保留返回的 revision。
-5. 先按《需求分析技能》完成用户、诉求、故事、功能、功能集和子系统的分析，再按《需求文档写作说明书》把结果写入需求文档。
+5. 先按《需求分析技能》完成领域模型、用户肖像、故事、功能、功能集和子系统的分析，再按《需求文档写作说明书》把结果写入需求文档。
    本阶段只写需求分析内容；交互设计和 UI 设计由后续任务完成，不要在本阶段填写。
-   单次章节用 action="update_text"；添加多项项用 action="add" 并传 title（用户用姓名，子系统用软件名称，其余用名称）；调整用 action="move" 或 action="delete"；改多项标题用 action="update_title"。
+   单次章节用 action="update_text"；添加多项项用 action="add" 并传 title（领域模型用模型名称，用户肖像用姓名，子系统用软件名称，其余用名称）；调整用 action="move" 或 action="delete"；改多项标题用 action="update_title"。
 6. 每次操作带 kind="requirements"、expected_revision 和锚点；使用上一步返回的 revision。
    按锚点增量修改，不要重写整篇文档。只写项目文档、Issue 和已有需求文档中能确认的事实；不编造。
 7. 每批修改后用 action="validate" 校验，修复所有 error。
 8. 对已处理的评审批注用 action="resolve_annotation" 标记。
 9. 如果缺少关键决定，用 issue_comment 提问；本轮结束，等待人类回复。
-10. 写完后调用 task_allowed_operations，再调用 task_operation，operation="completed"，提交需求审查。"#;
+10. 写完后调用 task_allowed_operations，再调用 task_operation，operation 使用 task_allowed_operations 返回的操作名，提交需求审查。"#;
 
 const ANALYST_TOOLS: &[&str] = &[
     "document",
@@ -144,15 +144,15 @@ const REQUIREMENTS_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求文档评�
 1. 用 document action="content" kind="project" 读取项目文档的定位、背景、目标、非目标、约束和风险。
 2. 用 document action="content" kind="requirements" 读取需求文档；用 action="toc" 获取章节锚点；
    用 action="annotations_list" 读取已有标注。
-3. 按《需求文档审查技能》和《需求文档写作说明书》做逻辑推演和检查：用户、子系统、功能集、故事、功能和
+3. 按《需求文档审查技能》和《需求文档写作说明书》做逻辑推演和检查：领域模型、用户肖像、故事、子系统、功能集、功能和
    功能描述是否完整、一致、可测试；是否存在矛盾、断链、闭环缺口或不合理成本；是否与项目文档冲突。
    本阶段不审查交互设计和 UI 设计。
 4. 只写必须修改的问题；不值得拒绝的问题不写标注；每条标注必须写清通过条件。
    已解决或不影响结论的问题不重复报；不写个人偏好、等价写法或可选润色类标注。
 5. 每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点标注：
    anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议和通过条件。不重复已有标注。
-6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-   一条标注都没写时，才调用 task_operation，operation="approved"。"#;
+6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation 使用 task_allowed_operations 返回的 rejected 操作名；
+   一条标注都没写时，才调用 task_operation，operation 使用 task_allowed_operations 返回的 approved 操作名。"#;
 
 const FEASIBILITY_REVIEWER_ROLE: &str = "requirements_analysis:feasibility_reviewer";
 
@@ -171,8 +171,8 @@ const FEASIBILITY_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求可行性�
    已解决或不影响交付的问题不重复报；不写优化建议、替代方案或可分期范围类标注；人类决策项写明决策人，不反复拒绝。
 5. 每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点标注：
    anchor 用 toc 的章节 key，quote 引用原文，body 给出具体修改建议和通过条件。不重复已有标注。
-6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-   一条标注都没写时，才调用 task_operation，operation="approved"。"#;
+6. 只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation 使用 task_allowed_operations 返回的 rejected 操作名；
+   一条标注都没写时，才调用 task_operation，operation 使用 task_allowed_operations 返回的 approved 操作名。"#;
 
 const STYLE_REVIEWER_ROLE: &str = "requirements_analysis:style_reviewer";
 
@@ -196,59 +196,71 @@ const DESIGNER_TOOLS: &[&str] = ANALYST_TOOLS;
 const INTERACTION_DESIGNER_ROLE: &str = "interaction_design:designer";
 
 const INTERACTION_DESIGNER_PROMPT: &str = r#"你是 Foundry 的交互设计智能体。
-你不修改需求分析内容，只为每个功能补全交互设计。
 
-1. 按《交互设计技能》读取项目文档、需求文档、批注和故事。
-2. 打开或创建需求文档草稿，保留返回的 revision。
-3. 在每个功能正文中补全一行 `交互设计：`，写页面结构、控件、用户操作、反馈与状态、文案、无障碍。
-4. 不写业务规则、系统结果、视觉样式，不把细粒度交互拆成多个字段或标题。
-5. 每批修改后 validate，修复所有 error；处理批注后标记 resolve。
-6. 缺关键决定时用 issue_comment 提问并结束本轮，否则调用 task_operation completed。"#;
+你的职责是为需求文档撰写交互设计子系统树。你不修改需求分析内容和 UI 设计，不审批或发布。"#;
 
 const INTERACTION_STYLE_REVIEWER_ROLE: &str = "interaction_design:style_reviewer";
 
 const INTERACTION_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的交互设计文风审查智能体。
-只审查交互设计的语言和表达，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
-只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
+
+你的职责是审查交互设计的语言和表达是否清楚。你不判断内容完整性、正确性或可行性，不修改文档，也不审批或发布。"#;
 
 const INTERACTION_REVIEWER_ROLE: &str = "interaction_design:interaction_reviewer";
 
 const INTERACTION_REVIEWER_PROMPT: &str = r#"你是 Foundry 的交互设计评审智能体。
-你不修改文档，按《交互设计审查技能》检查每个功能的交互设计是否完整、可用、与功能、故事和反馈一致。
 
-只写必须修改的问题；不值得拒绝的不写标注；每条标注写清通过条件；已解决的问题不重复报。
-每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点批注。
-只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-一条标注都没写时，才调用 task_operation，operation="approved"。"#;
+你的职责是审查交互设计是否完整、可用，并与功能、故事和反馈一致。你不修改文档，也不审批或发布。"#;
 
 const UI_DESIGNER_ROLE: &str = "ui_design:designer";
 
 const UI_DESIGNER_PROMPT: &str = r#"你是 Foundry 的 UI 设计智能体。
-你不修改需求分析和交互设计内容，只为每个功能补全 UI 设计。
 
-1. 按《UI 设计技能》读取需求文档、交互设计和批注。
-2. 打开或创建需求文档草稿，保留返回的 revision。
-3. 在功能下添加图片列表；add 时传图片名称作为 title，每项正文按 `名称：`、`链接：` 两行写。
-4. 图片顺序必须与交互设计描述的顺序一致；只放静态图片，不支持动画。
-5. 不写视觉规范文字、页面结构、控件行为、业务规则或技术实现。
-6. 每批修改后 validate，修复所有 error；处理批注后标记 resolve。
-7. 缺关键决定时用 issue_comment 提问并结束本轮，否则调用 task_operation completed。"#;
+你的职责是为需求文档撰写 UI 设计子系统树。你不修改需求分析和交互设计，不审批或发布。"#;
 
 const UI_STYLE_REVIEWER_ROLE: &str = "ui_design:style_reviewer";
 
 const UI_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的 UI 设计文风审查智能体。
-只审查图片名称和引用是否清楚，不判断内容完整性、正确性或可行性。你不修改文档，也不审批或发布。
-只写必须修改的问题；只要写了标注，就必须 rejected；没有写任何标注才 approved。"#;
+
+你的职责是审查 UI 设计的语言和表达是否清楚。你不判断内容完整性、正确性或可行性，不修改文档，也不审批或发布。"#;
 
 const UI_REVIEWER_ROLE: &str = "ui_design:ui_reviewer";
 
 const UI_REVIEWER_PROMPT: &str = r#"你是 Foundry 的 UI 设计评审智能体。
-你不修改文档，按《UI 设计审查技能》检查每个功能的 UI 设计图片列表是否完整、顺序正确、与交互设计一致。
 
-只写必须修改的问题；不值得拒绝的不写标注；每条标注写清通过条件；已解决的问题不重复报。
-每个必须修改的问题用 document action="annotate" kind="requirements" 写锚点批注。
-只要写了标注，就必须调用 task_allowed_operations，再调用 task_operation，operation="rejected"；
-一条标注都没写时，才调用 task_operation，operation="approved"。"#;
+你的职责是审查 UI 设计是否完整、清晰，并与交互设计一致。你不修改文档，也不审批或发布。"#;
+
+const ARCHITECT_ROLE: &str = "architecture_design:architect";
+
+const ARCHITECT_PROMPT: &str = r#"你是 Foundry 的架构设计智能体。
+
+你的职责是根据项目文档和需求文档撰写架构设计。你不修改需求文档，不审批或发布。"#;
+
+const ARCHITECT_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_links_list",
+    "issue_get",
+    "issue_comment",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+];
+
+const ARCHITECTURE_REVIEWER_ROLE: &str = "architecture_design:reviewer";
+
+const ARCHITECTURE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的架构设计评审智能体。
+
+你的职责是审查架构设计是否完整、一致、可实现，并能支撑需求。你不修改文档，也不审批或发布。"#;
+
+const ARCHITECTURE_REVIEWER_TOOLS: &[&str] = &[
+    "document",
+    "project_get",
+    "task_get",
+    "task_links_list",
+    "issue_get",
+    "task_allowed_operations",
+    "task_operation",
+];
 
 const TEMPLATES: &[PlatformTemplate] = &[
     PlatformTemplate {
@@ -309,6 +321,32 @@ const TEMPLATES: &[PlatformTemplate] = &[
         ],
     },
     PlatformTemplate {
+        id: "architect",
+        name: "Architect",
+        role: ARCHITECT_ROLE,
+        description: "Writes the architecture design from project and requirements documents",
+        system_prompt: ARCHITECT_PROMPT,
+        tools: ARCHITECT_TOOLS,
+        skills: &[
+            "document",
+            "architecture-document-writing-guide",
+            "architecture-design",
+        ],
+    },
+    PlatformTemplate {
+        id: "architecture-reviewer",
+        name: "Architecture Reviewer",
+        role: ARCHITECTURE_REVIEWER_ROLE,
+        description: "Reviews architecture completeness, consistency and feasibility",
+        system_prompt: ARCHITECTURE_REVIEWER_PROMPT,
+        tools: ARCHITECTURE_REVIEWER_TOOLS,
+        skills: &[
+            "document",
+            "architecture-document-writing-guide",
+            "architecture-review",
+        ],
+    },
+    PlatformTemplate {
         id: "requirements-reviewer",
         name: "Requirements Reviewer",
         role: REQUIREMENTS_REVIEWER_ROLE,
@@ -352,7 +390,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         id: "interaction-designer",
         name: "Interaction Designer",
         role: INTERACTION_DESIGNER_ROLE,
-        description: "Designs pages, controls and user operations for each function",
+        description: "Writes the top-level interaction design section of the requirements document",
         system_prompt: INTERACTION_DESIGNER_PROMPT,
         tools: DESIGNER_TOOLS,
         skills: &[
@@ -391,7 +429,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         id: "ui-designer",
         name: "UI Designer",
         role: UI_DESIGNER_ROLE,
-        description: "Adds ordered image lists for each function's UI",
+        description: "Writes the top-level UI design section of the requirements document",
         system_prompt: UI_DESIGNER_PROMPT,
         tools: DESIGNER_TOOLS,
         skills: &[
@@ -404,7 +442,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         id: "ui-style-reviewer",
         name: "UI Style Reviewer",
         role: UI_STYLE_REVIEWER_ROLE,
-        description: "Language-only review of UI image references",
+        description: "Language-only review of UI design",
         system_prompt: UI_STYLE_REVIEWER_PROMPT,
         tools: REVIEWER_TOOLS,
         skills: &[
@@ -417,7 +455,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         id: "ui-reviewer",
         name: "UI Reviewer",
         role: UI_REVIEWER_ROLE,
-        description: "Reviews UI image coverage, order and consistency",
+        description: "Reviews UI design completeness and consistency with interaction design",
         system_prompt: UI_REVIEWER_PROMPT,
         tools: REVIEWER_TOOLS,
         skills: &[
@@ -471,7 +509,6 @@ pub async fn ensure_platform_agent(
         system_prompt: DISPATCH_SYSTEM_PROMPT.to_string(),
         tools: vec![
             "tasks_ready_list".to_string(),
-            "tasks_list".to_string(),
             "task_get".to_string(),
             "task_allowed_operations".to_string(),
             "task_operation".to_string(),
@@ -520,7 +557,7 @@ pub async fn ensure_platform_agent(
         }
     }
 
-    reconcile_platform_agent_definitions(store.as_ref()).await;
+    reconcile_platform_agent_definitions(store.as_ref(), &supervisor).await;
 
     if !has_api_key {
         tracing::warn!(
@@ -534,8 +571,13 @@ pub async fn ensure_platform_agent(
 
 /// Keep agents created from platform templates in sync with the code-owned
 /// template. Agent definitions are otherwise frozen at creation time, so a
-/// prompt or tool-list fix would never reach an existing agent.
-async fn reconcile_platform_agent_definitions(store: &PostgresStore) {
+/// prompt or tool-list fix would never reach an existing agent. A running
+/// agentd loads its definition once at startup, so changed agents are
+/// restarted to pick up the new prompt, tools and skills.
+async fn reconcile_platform_agent_definitions(
+    store: &PostgresStore,
+    supervisor: &Arc<AgentSupervisor>,
+) {
     let definitions = match store.list_agent_definitions().await {
         Ok(definitions) => definitions,
         Err(error) => {
@@ -581,11 +623,22 @@ async fn reconcile_platform_agent_definitions(store: &PostgresStore) {
             enabled: definition.enabled,
         };
         match store.update_agent_definition(definition.id, &command).await {
-            Ok(()) => tracing::info!(
-                agent = %definition.name,
-                role = %definition.role,
-                "reconciled platform agent definition from template"
-            ),
+            Ok(()) => {
+                tracing::info!(
+                    agent = %definition.name,
+                    role = %definition.role,
+                    "reconciled platform agent definition from template"
+                );
+                if definition.enabled
+                    && let Err(error) = supervisor.restart(definition.id).await
+                {
+                    tracing::warn!(
+                        agent = %definition.name,
+                        error = %error,
+                        "cannot restart agent after definition reconciliation"
+                    );
+                }
+            }
             Err(error) => tracing::warn!(
                 agent = %definition.name,
                 error = %error,
@@ -771,5 +824,29 @@ mod tests {
         assert!(reviewer.skills.contains(&"document"));
         assert!(reviewer.skills.contains(&"project-document-writing-guide"));
         assert!(reviewer.skills.contains(&"project-document-content-review"));
+    }
+
+    #[test]
+    fn architecture_templates_load_their_skills() {
+        let architect = template("architect").expect("architect template");
+        assert_eq!(architect.role, ARCHITECT_ROLE);
+        assert!(architect.tools.contains(&"document"));
+        assert!(
+            architect
+                .skills
+                .contains(&"architecture-document-writing-guide")
+        );
+        assert!(architect.skills.contains(&"architecture-design"));
+
+        let reviewer = template("architecture-reviewer").expect("architecture reviewer template");
+        assert_eq!(reviewer.role, ARCHITECTURE_REVIEWER_ROLE);
+        assert!(reviewer.tools.contains(&"document"));
+        assert!(
+            reviewer
+                .skills
+                .contains(&"architecture-document-writing-guide")
+        );
+        assert!(reviewer.skills.contains(&"architecture-review"));
+        assert!(!reviewer.skills.contains(&"architecture-design"));
     }
 }

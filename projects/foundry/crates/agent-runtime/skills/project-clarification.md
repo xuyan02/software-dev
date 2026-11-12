@@ -120,8 +120,8 @@
    - 已确认的事实、范围、边界、约束和关键决定；
    - 仍需保留为未知或待验证的内容（如果有）；
    - 告知创建者：你将通知项目文档撰写智能体撰写项目文档，完成后会提交给创建者审批。
-2. 调用 `task_allowed_operations`，确认当前任务允许 `completed`。
-3. 调用 `task_operation`，operation 为 `completed`，提交澄清结果。
+2. 调用 `task_allowed_operations`，确认当前任务允许 `completed` 操作。
+3. 调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的操作名，提交澄清结果。
 
 ### 停止条件
 

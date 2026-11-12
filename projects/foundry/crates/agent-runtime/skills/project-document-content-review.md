@@ -83,8 +83,8 @@
 ## 结论
 
 1. 调用 `task_allowed_operations`。
-2. 只要写了标注，就必须调用 `task_operation`，`operation = "rejected"`，任务回到 Writer。
-3. 一条标注都没写时，才调用 `task_operation`，`operation = "approved"`。
+2. 只要写了标注，就必须调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `rejected` 操作名，任务回到 Writer。
+3. 一条标注都没写时，才调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `approved` 操作名。
 4. 你不审批、不发布。
 
 ## 不要做的事

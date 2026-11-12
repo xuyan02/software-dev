@@ -34,16 +34,29 @@ pub fn apply(
     // A trigger event that arrives after completion is a no-op. The command
     // path rejects direct commands on a completed task before reaching here.
     if task.state.is_terminal() {
-        return Ok(TaskMutation {
-            task,
-            actors,
-            dependencies,
-            children: Vec::new(),
-            issues: Vec::new(),
-            review_links: Vec::new(),
-            events: Vec::new(),
-        });
+        return Ok(unchanged(task, actors, dependencies));
     }
+
+    // Operations may carry the stage they were issued for as `stage:operation`.
+    // A task never accepts an operation for a different stage.
+    let event = match event {
+        TaskEvent::Operation {
+            operation,
+            actor_id,
+        } => {
+            let (stage, operation) = split_stage_operation(operation.as_str())?;
+            if let Some(stage) = stage
+                && task.stage.as_deref() != Some(stage)
+            {
+                return Ok(unchanged(task, actors, dependencies));
+            }
+            TaskEvent::Operation {
+                operation: OperationName::new(operation),
+                actor_id,
+            }
+        }
+        event => event,
+    };
 
     match &event {
         TaskEvent::Operation { operation, .. } if operation.as_str() == START_OPERATION => {
@@ -99,6 +112,34 @@ pub fn apply(
     let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
     workflow.on_event(&mut ctx, event)?;
     Ok(ctx.into_mutation())
+}
+
+fn unchanged(
+    task: TaskDAO,
+    actors: Vec<TaskActorDAO>,
+    dependencies: Vec<DependencyState>,
+) -> TaskMutation {
+    TaskMutation {
+        task,
+        actors,
+        dependencies,
+        children: Vec::new(),
+        issues: Vec::new(),
+        review_links: Vec::new(),
+        events: Vec::new(),
+    }
+}
+
+/// Split `stage:operation` into the stage and operation name. Operations
+/// without a stage keep working for platform commands such as `start`.
+fn split_stage_operation(operation: &str) -> Result<(Option<&str>, &str), TaskError> {
+    match operation.split_once(':') {
+        Some((stage, name)) if !stage.is_empty() && !name.is_empty() && !name.contains(':') => {
+            Ok((Some(stage), name))
+        }
+        Some(_) => Err(TaskError::InvalidOperation(operation.to_string())),
+        None => Ok((None, operation)),
+    }
 }
 
 fn authorize_operation(

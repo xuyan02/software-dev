@@ -12,9 +12,9 @@ RFC 0008 设计目标为 16 个流程；下表后半部分是尚未实现的计�
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
-| `interaction_design` | Interaction design | 为每个功能补全交互设计；Designer → Style/Interaction Reviewer → 人类评审 | 已实现 |
-| `ui_design` | UI design | 为每个功能补全 UI 图片列表；Designer → Style/UI Reviewer → 人类评审 | 已实现 |
-| `architecture_design` | Architecture design | 架构设计与评审 | 已实现 |
+| `interaction_design` | Interaction design | 维护需求文档的交互设计子系统树；Designer → Style/Interaction Reviewer → 人类评审 | 已实现 |
+| `ui_design` | UI design | 维护需求文档的 UI设计子系统树；Designer → Style/UI Reviewer → 人类评审 | 已实现 |
+| `architecture_design` | Architecture design | 架构锚点文档；Architect → Reviewer → 人类评审 | 已实现 |
 | `roadmap` | Roadmap | 制定路线图 | 已实现 |
 | `iteration` | Iteration | 规划、实现、评审和验收一个迭代 | 已实现 |
 | `release` | Release | 候选、验证、批准、部署和观察 | 已实现 |
@@ -120,8 +120,8 @@ work (designer)
   → ended (result = approved)
 ```
 
-- `interaction_design` 为每个功能正文补全 `交互设计：` 行：页面结构、控件、用户操作、反馈与状态、文案、无障碍；不写业务规则、系统结果和视觉样式。
-- `ui_design` 为每个功能补全图片列表：按交互设计顺序排列；目前不支持动画，每项写 `名称：` 和 `链接：`。
+- `interaction_design` 维护需求文档的「交互设计」子系统树：与需求子系统同构，按子系统 → 功能集 → 功能组织，并在子系统层增加信息架构和页面清单；不写视觉样式或技术实现。
+- `ui_design` 维护需求文档的「UI设计」子系统树：与交互设计使用同一套子系统和页面清单，每个页面写布局、信息层级、组件、状态和设计稿图片。
 - 两个流程各自有 Designer、Style Reviewer、Reviewer 和人类验收；review 打回回到 `work`，人类打回也回到 `work`。
 - 项目主流程在需求分析批准后依次创建这两个子 Task，全部批准后才进入 `architecture`。
 
@@ -135,13 +135,15 @@ work (designer)
 ]
 ```
 
-- `kind` 是 `project` 或 `requirements`。
+- `kind` 是 `project`、`requirements` 或 `architecture`。
 - `bind` 写入 `anchor_document_review_links`，同一文档同时最多一个未释放关联。
 - 进入 `writing` / `work` 时用 `action = "release"` 释放关联；任务完成或异常退出时由 control-plane 扫描兜底释放。
 - 文档页根据未释放关联和任务当前阶段决定是否显示“批准 / 拒绝”按钮；按钮携带 `task_id`，提交时同时做文档决策、任务操作和释放关联。
 - control-plane 仍会扫描 `human_review` 任务并补绑、清理残留关联，作为 effect 失败或旧数据的兜底。
 
-`architecture_design` 多一个评审环节：
+`architecture_design` 维护 `kind = "architecture"` 的锚点文档。Architect 读取项目文档和需求文档，加载 `architecture-document-writing-guide` 与 `architecture-design` 技能；Reviewer 加载 `architecture-document-writing-guide` 与 `architecture-review` 技能，用锚点标注写评审意见。人类在架构设计页批准草案后，control-plane 发送保留操作 `accept` 完成任务。
+
+流程多一个评审环节：
 
 | Stage | active roles | operation |
 |---|---|---|
@@ -149,7 +151,7 @@ work (designer)
 | `review` | `reviewer` | `review_approved` 写 `decision = 'approved'` → `human_review`；`review_rejected` 写 `decision = 'rejected'` → `work` |
 | `human_review` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
 
-所有角色的 `kind` 都是 `any`，人类和 Agent 都可以绑定。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
+`architect` 和 `reviewer` 的 `kind` 是 `agent`，`acceptor` 的 `kind` 是 `any`，人类和 Agent 都可以绑定。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
 
 ## 修改内置流程
 

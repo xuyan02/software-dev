@@ -62,6 +62,15 @@ impl TaskService {
         }
     }
 
+    /// Resolve the project that owns a task. Tasks never move between projects.
+    pub async fn project_of(&self, id: Uuid) -> Result<Uuid, ServiceError> {
+        self.repository
+            .get(id)
+            .await?
+            .map(|task| task.project_id)
+            .ok_or_else(|| ServiceError::not_found("task", id))
+    }
+
     pub async fn get(
         &self,
         project_id: Uuid,
@@ -314,7 +323,7 @@ impl TaskService {
                                 .any(|role| active_roles.contains(role.as_str()))
                         })
                         .map(|operation| AllowedOperation {
-                            name: OperationName::new(operation.name.clone()),
+                            name: OperationName::new(format!("{}:{}", stage.name, operation.name)),
                             display_name: operation.display_name.clone(),
                             description: operation.description.clone(),
                         })
@@ -455,6 +464,9 @@ impl From<RepoError> for TaskDispatchError {
 /// The Task operations exposed to the interface adapters.
 #[async_trait::async_trait]
 pub trait TaskUseCases: Send + Sync {
+    /// Resolve the project that owns a task; the task itself never moves.
+    async fn project_id(&self, id: Uuid) -> Result<Uuid, ServiceError>;
+
     async fn get(
         &self,
         project_id: Uuid,
@@ -507,6 +519,10 @@ pub trait TaskUseCases: Send + Sync {
 
 #[async_trait::async_trait]
 impl TaskUseCases for TaskService {
+    async fn project_id(&self, id: Uuid) -> Result<Uuid, ServiceError> {
+        self.project_of(id).await
+    }
+
     async fn get(
         &self,
         project_id: Uuid,

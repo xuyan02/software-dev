@@ -28,7 +28,6 @@ impl Tool for TaskLinksListTool {
                 "type": "object",
                 "required": ["task_id"],
                 "properties": {
-                    "project_id": { "type": "string", "format": "uuid" },
                     "task_id": { "type": "string", "format": "uuid" }
                 }
             }),
@@ -41,13 +40,9 @@ impl Tool for TaskLinksListTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
-        let project = arguments
-            .get("project_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
         let links = self
             .client
-            .list_task_links_scoped(project.as_deref(), task_id)
+            .list_task_links(task_id)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(links)

@@ -286,11 +286,14 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
         }
         match store.approved_goal_clarifications().await {
             Ok(tasks) => {
-                for (task_id, _project_id, approved_by) in tasks {
+                for (task_id, _project_id, approved_by, revision) in tasks {
                     let command = TaskCommand::SendOperation {
                         actor_id: approved_by,
-                        operation: OperationName::new(foundry_domain::ACCEPT_OPERATION),
-                        idempotency_key: format!("project-layer-approved:{task_id}"),
+                        operation: OperationName::new(format!(
+                            "human_review:{}",
+                            foundry_domain::ACCEPT_OPERATION
+                        )),
+                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
                     };
                     if let Err(error) = dispatcher.process(task_id, Some(command)).await {
                         tracing::warn!(
@@ -305,11 +308,14 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
         }
         match store.approved_requirement_document_tasks().await {
             Ok(tasks) => {
-                for (task_id, _project_id, published_by) in tasks {
+                for (task_id, _project_id, published_by, revision) in tasks {
                     let command = TaskCommand::SendOperation {
                         actor_id: published_by,
-                        operation: OperationName::new(foundry_domain::ACCEPT_OPERATION),
-                        idempotency_key: format!("requirements-published:{task_id}"),
+                        operation: OperationName::new(format!(
+                            "human_review:{}",
+                            foundry_domain::ACCEPT_OPERATION
+                        )),
+                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
                     };
                     if let Err(error) = dispatcher.process(task_id, Some(command)).await {
                         tracing::warn!(
@@ -321,6 +327,50 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
                 }
             }
             Err(error) => tracing::warn!(%error, "published requirements scan failed"),
+        }
+        match store.approved_architecture_design_tasks().await {
+            Ok(tasks) => {
+                for (task_id, _project_id, published_by, revision) in tasks {
+                    let command = TaskCommand::SendOperation {
+                        actor_id: published_by,
+                        operation: OperationName::new(format!(
+                            "human_review:{}",
+                            foundry_domain::ACCEPT_OPERATION
+                        )),
+                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
+                    };
+                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
+                        tracing::warn!(
+                            %error,
+                            task_id = %task_id,
+                            "published architecture task completion failed"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "published architecture scan failed"),
+        }
+        match store.rejected_document_tasks().await {
+            Ok(tasks) => {
+                for (task_id, _project_id, rejected_by, revision) in tasks {
+                    let command = TaskCommand::SendOperation {
+                        actor_id: rejected_by,
+                        operation: OperationName::new(format!(
+                            "human_review:{}",
+                            foundry_domain::REJECT_OPERATION
+                        )),
+                        idempotency_key: format!("anchor-document-rejected:{task_id}:{revision}"),
+                    };
+                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
+                        tracing::warn!(
+                            %error,
+                            task_id = %task_id,
+                            "document rejection task rollback failed"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "document rejection scan failed"),
         }
         match store.bind_human_review_document_links().await {
             Ok(0) => {}

@@ -616,12 +616,11 @@ pub async fn agent_logs_page(
         return auth::web_error(ServiceError::not_found("agent", id));
     };
     match state.agent_logs.tail(&id.to_string(), 256 * 1024) {
-        Ok(log) => Html(foundry_web::agent_logs_page(
+        Ok(log) => no_store(foundry_web::agent_logs_page(
             &session.context,
             &definition,
             &log,
-        ))
-        .into_response(),
+        )),
         Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
     }
 }
@@ -1212,8 +1211,12 @@ pub async fn approve_anchor_document_form(
                         id,
                         task.id,
                         session.account.id,
-                        OperationName::new(foundry_domain::ACCEPT_OPERATION),
-                        format!("anchor-document-approved:{}", task.id),
+                        OperationName::new(format!(
+                            "{}:{}",
+                            task.stage.as_deref().unwrap_or("human_review"),
+                            foundry_domain::ACCEPT_OPERATION
+                        )),
+                        format!("anchor-document-approved:{}:{}", task.id, form.revision),
                     )
                     .await
                 {
@@ -1314,8 +1317,12 @@ pub async fn reject_anchor_document_form(
                         id,
                         task.id,
                         session.account.id,
-                        OperationName::new(foundry_domain::REJECT_OPERATION),
-                        format!("anchor-document-rejected:{}", task.id),
+                        OperationName::new(format!(
+                            "{}:{}",
+                            task.stage.as_deref().unwrap_or("human_review"),
+                            foundry_domain::REJECT_OPERATION
+                        )),
+                        format!("anchor-document-rejected:{}:{}", task.id, form.revision),
                     )
                     .await
                 {
@@ -1707,6 +1714,28 @@ fn session_project(session: &WebAccountSession, id: Uuid) -> Option<Project> {
         .cloned()
 }
 
+/// Resolve a task's project from the task itself. Tasks never move between
+/// projects, so task endpoints do not take a project header.
+async fn task_api_session(
+    state: &AppState,
+    headers: &HeaderMap,
+    task_id: Uuid,
+) -> Result<ApiSession, ApiError> {
+    let account = auth::api_account(state, headers).await?;
+    let project_id = state.tasks.project_id(task_id).await?;
+    let projects = state.projects.list_visible(account.actor()).await?;
+    let project = projects
+        .into_iter()
+        .find(|project| project.id == project_id)
+        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_found", "task not found"))?;
+    let role = project.role_of(account.id);
+    Ok(ApiSession {
+        account,
+        project,
+        role,
+    })
+}
+
 fn can_approve_requirements(session: &WebAccountSession, project: &Project) -> bool {
     session.account.is_admin()
         || project
@@ -1734,6 +1763,7 @@ fn document_review_workflows(kind: &str) -> Option<&'static [&'static str]> {
     match kind {
         "project" => Some(&["goal_clarification"]),
         "requirements" => Some(&["requirements_analysis", "interaction_design", "ui_design"]),
+        "architecture" => Some(&["architecture_design"]),
         _ => None,
     }
 }
@@ -1866,8 +1896,12 @@ pub async fn reject_requirements_form(
                         id,
                         task.id,
                         session.account.id,
-                        OperationName::new(foundry_domain::REJECT_OPERATION),
-                        format!("requirements-rejected:{}", task.id),
+                        OperationName::new(format!(
+                            "{}:{}",
+                            task.stage.as_deref().unwrap_or("human_review"),
+                            foundry_domain::REJECT_OPERATION
+                        )),
+                        format!("anchor-document-rejected:{}:{}", task.id, form.revision),
                     )
                     .await;
             }
@@ -2682,7 +2716,7 @@ pub async fn get_task(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<foundry_domain::Task>, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     Ok(Json(
         state
             .tasks
@@ -2695,6 +2729,7 @@ fn review_document_kind(workflow: &str) -> Option<&'static str> {
     match workflow {
         "goal_clarification" => Some("project"),
         "requirements_analysis" | "interaction_design" | "ui_design" => Some("requirements"),
+        "architecture_design" => Some("architecture"),
         _ => None,
     }
 }
@@ -2705,12 +2740,17 @@ pub async fn send_task_operation(
     Path(id): Path<Uuid>,
     Json(body): Json<TaskOperationRequest>,
 ) -> Result<StatusCode, ApiError> {
+    let operation_name = body
+        .operation
+        .rsplit_once(':')
+        .map(|(_, name)| name)
+        .unwrap_or(body.operation.as_str());
     if [
         foundry_domain::START_OPERATION,
         foundry_domain::ACCEPT_OPERATION,
         foundry_domain::REJECT_OPERATION,
     ]
-    .contains(&body.operation.as_str())
+    .contains(&operation_name)
     {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -2718,8 +2758,15 @@ pub async fn send_task_operation(
             "use the dedicated task endpoint for this operation",
         ));
     }
-    let session = auth::api_session(&state, &headers).await?;
-    if body.operation == "approved" {
+    if !body.operation.contains(':') {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_operation",
+            "operation must use the stage:operation form",
+        ));
+    }
+    let session = task_api_session(&state, &headers, id).await?;
+    if operation_name == "approved" {
         let task = state
             .tasks
             .get(session.project.id, id, task_viewer(&session))
@@ -2764,7 +2811,7 @@ pub async fn start_task(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     if session.account.role != AccountRole::Admin {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
@@ -2824,7 +2871,7 @@ pub async fn task_allowed_operations(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<AllowedOperation>>, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     let task = state
         .tasks
         .get(session.project.id, id, task_viewer(&session))
@@ -2838,7 +2885,7 @@ pub async fn list_task_comments(
     Path(id): Path<Uuid>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Vec<foundry_domain::TaskComment>>, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     let (limit, offset) = query.page(50);
     Ok(Json(
         state
@@ -2854,7 +2901,7 @@ pub async fn add_task_comment(
     Path(id): Path<Uuid>,
     Json(body): Json<TaskCommentRequest>,
 ) -> Result<(StatusCode, Json<foundry_domain::Task>), ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     let viewer = task_viewer(&session);
     let task = state
         .tasks
@@ -2875,7 +2922,7 @@ pub async fn task_history(
     Path(id): Path<Uuid>,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Vec<foundry_domain::TaskOperation>>, ApiError> {
-    let session = auth::api_session(&state, &headers).await?;
+    let session = task_api_session(&state, &headers, id).await?;
     let (limit, offset) = query.page(50);
     Ok(Json(
         state

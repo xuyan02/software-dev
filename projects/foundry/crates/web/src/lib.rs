@@ -820,6 +820,7 @@ enum Section {
     Issues,
     ProjectDocument,
     Requirements,
+    Architecture,
     Tasks,
     Projects,
     Workflows,
@@ -909,6 +910,19 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         })
         .unwrap_or_default();
 
+    let architecture_nav = ctx
+        .current
+        .as_ref()
+        .map(|project| {
+            nav_item(
+                active,
+                Section::Architecture,
+                &format!("/projects/{}/documents/architecture", project.id),
+                "架构设计",
+            )
+        })
+        .unwrap_or_default();
+
     let nav = format!(
         r#"<a class="brand" href="/">Foundry</a>
 <p class="brand-sub">AI 原生软件工程控制平面</p>
@@ -925,6 +939,7 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
     <p class="nav-heading">承诺空间</p>
     {project_document_nav}
     {requirements_nav}
+    {architecture_nav}
   </div>
   <div class="nav-group">
     <p class="nav-heading">执行</p>
@@ -1873,12 +1888,14 @@ pub fn anchor_document_page(
     let label = match data.kind {
         "project" => "项目文档",
         "requirements" => "需求文档",
+        "architecture" => "架构设计",
         _ => "文档",
     };
-    let section = if data.kind == "requirements" {
-        Section::Requirements
-    } else {
-        Section::ProjectDocument
+    let section = match data.kind {
+        "project" => Section::ProjectDocument,
+        "requirements" => Section::Requirements,
+        "architecture" => Section::Architecture,
+        _ => Section::None,
     };
     let signature = anchor_document_signature(
         data.current_version,
@@ -3110,7 +3127,7 @@ pub fn project_page(
   <span>版本 {version}</span>
 </div>
 <h2>描述</h2><div class="card">{description}</div>
-<p><a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a></p>
+<p><a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a></p>
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>

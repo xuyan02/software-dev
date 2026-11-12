@@ -467,6 +467,36 @@ fn platform_rejection_uses_the_stage_reject_target() {
 }
 
 #[test]
+fn stage_qualified_operations_only_apply_to_that_stage() {
+    let workflow = builtin("goal_clarification");
+    let leaf = task(
+        "goal_clarification",
+        TaskState::InProgress,
+        Some("content_review"),
+    );
+    let task_id = leaf.id;
+    let reviewer = Uuid::now_v7();
+    let state = aggregate(
+        leaf,
+        vec![actor(task_id, "content_reviewer", reviewer, true)],
+        vec![],
+        vec![],
+    );
+
+    let approved = operation(&workflow, state, "content_review:approved", reviewer);
+    assert_eq!(approved.task.stage.as_deref(), Some("human_review"));
+
+    let stale = operation(
+        &workflow,
+        aggregate_of(approved),
+        "content_review:approved",
+        reviewer,
+    );
+    assert_eq!(stale.task.stage.as_deref(), Some("human_review"));
+    assert!(stale.events.is_empty());
+}
+
+#[test]
 fn human_review_binds_and_writing_releases_the_document_link() {
     let workflow = builtin("goal_clarification");
     let leaf = task(

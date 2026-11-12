@@ -15,6 +15,10 @@ use uuid::Uuid;
 use crate::{Validation, ValidationIssue};
 
 pub const ANCHOR_DOCUMENT_SCHEMA_VERSION: u32 = 1;
+
+/// The requirements document changed interaction and UI design from flat text
+/// chapters to subsystem trees, so it carries its own schema version.
+pub const REQUIREMENTS_DOCUMENT_SCHEMA_VERSION: u32 = 2;
 pub const MAX_ANCHOR_DOCUMENT_BYTES: usize = 2 * 1024 * 1024;
 
 fn hash_hex(bytes: &[u8]) -> String {
@@ -1469,8 +1473,10 @@ pub fn project_document_schema() -> DocumentSchema {
 }
 
 /// The requirements document uses the same anchor engine as the project
-/// document. Users live under 用户; each subsystem owns function sets, and
-/// each function set owns stories and functions.
+/// document. Domain models, user portraits and stories are top-level lists;
+/// each subsystem owns function sets, and each function owns a description.
+/// Interaction and UI design mirror the subsystem tree with their own
+/// interface-level chapters.
 pub fn requirements_document_schema() -> DocumentSchema {
     fn chapter(
         key: &str,
@@ -1499,37 +1505,215 @@ pub fn requirements_document_schema() -> DocumentSchema {
         chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
     }
 
-    let user = multiple("user", "用户").text_required(true);
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+    }
+
+    let domain_model = multiple("domain_model", "领域模型").text_required(true);
+
+    let user = multiple("user", "用户肖像").text_required(true);
 
     let story = multiple("story", "故事").text_required(true);
 
-    let ui_image = multiple("ui_image", "图片").text_required(true);
-
     let function = multiple("function", "功能")
         .text_required(true)
-        .children(vec![ui_image]);
+        .children(vec![
+            text("function_description", "功能描述")
+                .required(true)
+                .text_required(true),
+        ]);
 
     let function_set = multiple("function_set", "功能集")
         .text_required(true)
-        .children(vec![
-            text("stories", "故事").required(true).children(vec![story]),
-            text("functions", "功能")
-                .required(true)
-                .children(vec![function]),
-        ]);
+        .children(vec![function]);
 
     let subsystem = multiple("subsystem", "子系统")
         .text_required(true)
         .children(vec![function_set]);
 
+    let interaction_function = multiple("interaction_function", "功能")
+        .text_required(true)
+        .children(vec![
+            text("page_structure", "页面结构").text_required(true),
+            list("operations", "操作", "operation"),
+            text("interaction_feedback", "反馈与状态").text_required(true),
+            text("interaction_copy", "文案").text_required(true),
+            text("interaction_accessibility", "无障碍").text_required(true),
+        ]);
+
+    let interaction_function_set = multiple("interaction_function_set", "功能集")
+        .text_required(true)
+        .children(vec![
+            text("interaction_functions", "功能").children(vec![interaction_function]),
+        ]);
+
+    let interaction_subsystem = multiple("interaction_subsystem", "子系统").children(vec![
+        text("information_architecture", "信息架构").text_required(true),
+        list("interaction_pages", "页面清单", "page"),
+        text("interaction_function_sets", "功能集").children(vec![interaction_function_set]),
+    ]);
+
+    let interaction_conventions = text("interaction_conventions", "全局约定").children(vec![
+        text("interaction_feedback_conventions", "反馈与状态"),
+        text("interaction_error_conventions", "错误与恢复"),
+        text("interaction_copy_conventions", "文案"),
+        text("interaction_accessibility_conventions", "无障碍"),
+    ]);
+
+    let interaction_design = text("interaction_design", "交互设计").children(vec![
+        interaction_conventions,
+        text("interaction_subsystems", "子系统").children(vec![interaction_subsystem]),
+    ]);
+
+    let ui_component = multiple("ui_component", "组件").children(vec![
+        text("ui_component_purpose", "用途").text_required(true),
+        text("ui_component_anatomy", "结构").text_required(true),
+        text("ui_component_states", "状态").text_required(true),
+        text("ui_component_spec", "规格").text_required(true),
+    ]);
+
+    let ui_page = multiple("ui_page", "页面").children(vec![
+        list("related_functions", "关联功能", "function_ref"),
+        text("ui_layout", "布局").text_required(true),
+        text("information_hierarchy", "信息层级").text_required(true),
+        list("ui_components", "组件", "component_ref"),
+        list("ui_states", "状态", "state"),
+        list("designs", "设计稿", "design"),
+    ]);
+
+    let ui_subsystem = multiple("ui_subsystem", "子系统").children(vec![
+        text("visual_differences", "视觉差异"),
+        text("ui_component_specs", "组件规范").children(vec![ui_component]),
+        text("ui_pages", "页面").children(vec![ui_page]),
+    ]);
+
+    let ui_visual_spec = text("ui_visual_spec", "全局视觉规范").children(vec![
+        text("colors", "色彩"),
+        text("typography", "字体与排版"),
+        text("spacing", "间距与圆角"),
+        text("icons_images", "图标与图片"),
+        text("motion", "动效"),
+        text("layout_grid", "布局栅格与响应式"),
+    ]);
+
+    let ui_design = text("ui_design", "UI设计").children(vec![
+        ui_visual_spec,
+        text("ui_subsystems", "子系统").children(vec![ui_subsystem]),
+    ]);
+
     DocumentSchema {
         kind: "requirements".to_string(),
-        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        schema_version: REQUIREMENTS_DOCUMENT_SCHEMA_VERSION,
         root: text("document", "需求文档").children(vec![
-            text("users", "用户").required(true).children(vec![user]),
+            text("domain_models", "领域模型")
+                .required(true)
+                .children(vec![domain_model]),
+            text("users", "用户肖像")
+                .required(true)
+                .children(vec![user]),
+            text("stories", "故事").required(true).children(vec![story]),
             text("subsystems", "子系统")
                 .required(true)
                 .children(vec![subsystem]),
+            interaction_design,
+            ui_design,
+        ]),
+    }
+}
+
+/// The architecture document uses the same anchor engine. It captures the
+/// architecture baseline: context, components, contracts, data, runtime,
+/// quality attributes and decisions.
+pub fn architecture_document_schema() -> DocumentSchema {
+    fn chapter(
+        key: &str,
+        title: &str,
+        occurrence: Occurrence,
+        content: ContentSchema,
+    ) -> ChapterSchema {
+        ChapterSchema {
+            key: key.to_string(),
+            title: title.to_string(),
+            occurrence,
+            content,
+            children: Vec::new(),
+            required: false,
+            min: 0,
+            max: None,
+            text_required: false,
+        }
+    }
+
+    fn text(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Single, ContentSchema::Text)
+    }
+
+    fn multiple(key: &str, title: &str) -> ChapterSchema {
+        chapter(key, title, Occurrence::Multiple, ContentSchema::Text)
+    }
+
+    fn list(key: &str, title: &str, item_key: &str) -> ChapterSchema {
+        chapter(
+            key,
+            title,
+            Occurrence::Single,
+            ContentSchema::List {
+                item: ItemSchema {
+                    key: item_key.to_string(),
+                    text_required: true,
+                },
+                min: 0,
+                max: None,
+            },
+        )
+        .required(true)
+    }
+
+    let component = multiple("component", "组件").min(1).children(vec![
+        text("responsibility", "职责")
+            .required(true)
+            .text_required(true),
+        list("interfaces", "接口", "interface"),
+        list("dependencies", "依赖", "dependency"),
+        text("data", "数据"),
+    ]);
+
+    DocumentSchema {
+        kind: "architecture".to_string(),
+        schema_version: ANCHOR_DOCUMENT_SCHEMA_VERSION,
+        root: text("document", "架构设计").children(vec![
+            text("overview", "架构概览")
+                .required(true)
+                .text_required(true),
+            text("context", "系统上下文")
+                .required(true)
+                .text_required(true),
+            text("components", "组件")
+                .required(true)
+                .children(vec![component]),
+            list("contracts", "接口与契约", "contract"),
+            text("data_storage", "数据与存储")
+                .required(true)
+                .text_required(true),
+            text("deployment", "部署与运行")
+                .required(true)
+                .text_required(true),
+            list("quality_attributes", "质量属性", "quality_attribute"),
+            list("decisions", "关键决策", "decision"),
+            list("tech_debt", "技术债", "tech_debt_item"),
+            list("risks", "风险", "risk"),
         ]),
     }
 }
@@ -1660,8 +1844,199 @@ mod tests {
         let validation = schema.validate();
         assert!(validation.is_valid(), "{:?}", validation.errors);
         let snapshot = DocumentSnapshot::empty(&schema);
+        assert!(snapshot.find_path("domain_models").is_some());
         assert!(snapshot.find_path("users").is_some());
+        assert!(snapshot.find_path("stories").is_some());
         assert!(snapshot.find_path("subsystems").is_some());
+        assert!(snapshot.find_path("interaction_design").is_some());
+        assert!(
+            snapshot
+                .find_path("interaction_design.interaction_conventions")
+                .is_some()
+        );
+        assert!(
+            snapshot
+                .find_path("interaction_design.interaction_subsystems")
+                .is_some()
+        );
+        assert!(snapshot.find_path("ui_design").is_some());
+        assert!(snapshot.find_path("ui_design.ui_visual_spec").is_some());
+        assert!(snapshot.find_path("ui_design.ui_subsystems").is_some());
+    }
+
+    #[test]
+    fn interaction_and_ui_design_trees_validate() {
+        let schema = requirements_document_schema();
+        let empty = DocumentSnapshot::empty(&schema);
+
+        let interaction = "interaction_design.interaction_subsystems";
+        let mut snapshot = add_titled(
+            &empty,
+            &schema,
+            interaction,
+            Some("orders"),
+            "交互概述：订单系统移动端采用底部导航。",
+            "订单系统移动端",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            "interaction_design.interaction_subsystems/interaction_subsystem/orders.information_architecture",
+            "底部导航分首页、订单、我的三个区域。",
+        );
+        snapshot = add(
+            &snapshot,
+            &schema,
+            "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_pages",
+            Some("order-list"),
+            "页面：订单列表\n区域：订单\n入口：首页\n主要跳转：订单详情\n支撑功能：订单查询",
+        );
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets",
+            Some("query"),
+            "共享页面：订单列表、订单详情\n共同状态：加载中、空列表",
+            "订单查询功能集",
+        );
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query.interaction_functions",
+            Some("track-order"),
+            "发起方：用户\n触发：点击订单卡片\n入口：订单列表\n观察点：订单详情页显示状态",
+            "查看订单状态",
+        );
+        let function = "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query.interaction_functions/interaction_function/track-order";
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{function}.page_structure"),
+            "订单列表 → 订单详情。",
+        );
+        snapshot = add(
+            &snapshot,
+            &schema,
+            &format!("{function}.operations"),
+            Some("open-detail"),
+            "操作：点击订单卡片\n控件：列表项\n结果：进入订单详情",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{function}.interaction_feedback"),
+            "加载中显示骨架屏；失败显示重试提示。",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{function}.interaction_copy"),
+            "重试",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{function}.interaction_accessibility"),
+            "列表项支持键盘和读屏。",
+        );
+
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "ui_design.ui_subsystems",
+            Some("orders"),
+            "",
+            "订单系统移动端",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            "ui_design.ui_subsystems/ui_subsystem/orders.visual_differences",
+            "移动端使用底部导航。",
+        );
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "ui_design.ui_subsystems/ui_subsystem/orders.ui_component_specs",
+            Some("order-card"),
+            "",
+            "订单卡片",
+        );
+        let component = "ui_design.ui_subsystems/ui_subsystem/orders.ui_component_specs/ui_component/order-card";
+        for (key, text) in [
+            ("ui_component_purpose", "在列表中展示订单摘要。"),
+            ("ui_component_anatomy", "标题、状态、预计到达时间。"),
+            ("ui_component_states", "默认、加载中、错误。"),
+            ("ui_component_spec", "高度 72px，圆角 8px。"),
+        ] {
+            snapshot = update(&snapshot, &schema, &format!("{component}.{key}"), text);
+        }
+        snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "ui_design.ui_subsystems/ui_subsystem/orders.ui_pages",
+            Some("order-list"),
+            "",
+            "订单列表",
+        );
+        let page = "ui_design.ui_subsystems/ui_subsystem/orders.ui_pages/ui_page/order-list";
+        snapshot = add(
+            &snapshot,
+            &schema,
+            &format!("{page}.related_functions"),
+            Some("track-order"),
+            "查看订单状态",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{page}.ui_layout"),
+            "顶部标题栏，下方订单列表。",
+        );
+        snapshot = update(
+            &snapshot,
+            &schema,
+            &format!("{page}.information_hierarchy"),
+            "状态和预计到达时间优先展示。",
+        );
+        snapshot = add(
+            &snapshot,
+            &schema,
+            &format!("{page}.ui_components"),
+            Some("order-card"),
+            "订单卡片\n位置：列表项\n状态：默认、加载中、错误",
+        );
+        snapshot = add(
+            &snapshot,
+            &schema,
+            &format!("{page}.ui_states"),
+            Some("empty"),
+            "状态：空\n表现：显示暂无订单插画",
+        );
+        snapshot = add(
+            &snapshot,
+            &schema,
+            &format!("{page}.designs"),
+            Some("default"),
+            "状态：默认\n图片：![订单列表-默认](/api/v1/projects/p/assets/a)\n说明：列表项展示订单摘要",
+        );
+
+        let validation = snapshot.validate(&schema);
+        assert!(validation.is_valid(), "{:?}", validation.errors);
+    }
+
+    #[test]
+    fn architecture_schema_is_valid() {
+        let schema = architecture_document_schema();
+        let validation = schema.validate();
+        assert!(validation.is_valid(), "{:?}", validation.errors);
+        let snapshot = DocumentSnapshot::empty(&schema);
+        assert!(snapshot.find_path("overview").is_some());
+        assert!(snapshot.find_path("context").is_some());
+        assert!(snapshot.find_path("components").is_some());
+        assert!(snapshot.find_path("contracts").is_some());
+        assert!(snapshot.find_path("quality_attributes").is_some());
+        assert!(snapshot.find_path("decisions").is_some());
     }
 
     #[test]
@@ -1783,6 +2158,31 @@ mod tests {
                 .map(|child| child.key.as_str())
                 .collect()
         }
+        let domain_model = schema
+            .root
+            .children
+            .iter()
+            .find(|child| child.key == "domain_models")
+            .and_then(|models| {
+                models
+                    .children
+                    .iter()
+                    .find(|child| child.key == "domain_model")
+            })
+            .expect("domain model item");
+        assert!(domain_model.children.is_empty());
+        assert!(domain_model.text_required);
+
+        let story = schema
+            .root
+            .children
+            .iter()
+            .find(|child| child.key == "stories")
+            .and_then(|stories| stories.children.iter().find(|child| child.key == "story"))
+            .expect("story item");
+        assert!(story.children.is_empty());
+        assert!(story.text_required);
+
         let subsystem = schema
             .root
             .children
@@ -1798,39 +2198,24 @@ mod tests {
             .iter()
             .find(|child| child.key == "function_set")
             .expect("function set item");
-        assert_eq!(keys(function_set), ["stories", "functions"]);
+        assert_eq!(keys(function_set), ["function"]);
         assert!(function_set.text_required);
-
-        let story = function_set
-            .children
-            .iter()
-            .find(|child| child.key == "stories")
-            .and_then(|stories| stories.children.iter().find(|child| child.key == "story"))
-            .expect("story item");
-        assert!(story.children.is_empty());
-        assert!(story.text_required);
 
         let function = function_set
             .children
             .iter()
-            .find(|child| child.key == "functions")
-            .and_then(|functions| {
-                functions
-                    .children
-                    .iter()
-                    .find(|child| child.key == "function")
-            })
+            .find(|child| child.key == "function")
             .expect("function item");
-        assert_eq!(keys(function), ["ui_image"]);
+        assert_eq!(keys(function), ["function_description"]);
         assert!(function.text_required);
 
-        let image = function
+        let description = function
             .children
             .iter()
-            .find(|child| child.key == "ui_image")
-            .expect("ui image item");
-        assert!(image.children.is_empty());
-        assert!(image.text_required);
+            .find(|child| child.key == "function_description")
+            .expect("function description");
+        assert!(description.children.is_empty());
+        assert!(description.text_required);
     }
 
     #[test]
@@ -2063,11 +2448,19 @@ mod tests {
             "名称：订单功能集",
             "订单功能集",
         );
+        let snapshot = add_titled(
+            &snapshot,
+            &schema,
+            "subsystems/subsystem/s1/function_set/f1",
+            Some("fn1"),
+            "名称：订单查询",
+            "订单查询",
+        );
         let error = snapshot
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "subsystems/subsystem/s1/function_set/f1".to_string(),
+                    anchor: "subsystems/subsystem/s1/function_set/f1/function/fn1".to_string(),
                     cascade: false,
                 },
             )
@@ -2077,13 +2470,13 @@ mod tests {
             .apply(
                 &schema,
                 &AnchorOp::Delete {
-                    anchor: "subsystems/subsystem/s1/function_set/f1".to_string(),
+                    anchor: "subsystems/subsystem/s1/function_set/f1/function/fn1".to_string(),
                     cascade: true,
                 },
             )
             .unwrap();
         assert!(
-            next.find_path("subsystems/subsystem/s1/function_set/f1")
+            next.find_path("subsystems/subsystem/s1/function_set/f1/function/fn1")
                 .is_none()
         );
     }
