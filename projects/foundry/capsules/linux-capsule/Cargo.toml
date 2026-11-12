@@ -1,0 +1,39 @@
+[package]
+name = "linux-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Isolated Linux capsule with desktop and headless modes, backed by rootless Podman"
+license = "MIT OR Apache-2.0"
+
+# Standalone: this directory is its own workspace and is not a Foundry member.
+[workspace]
+
+[lib]
+name = "linux_capsule"
+path = "src/lib.rs"
+
+[[bin]]
+name = "linux-capsule-sidecar"
+path = "src/bin/sidecar.rs"
+
+[[bin]]
+name = "linuxcapsule"
+path = "src/bin/linuxcapsule.rs"
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive"] }
+png = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+x11rb = { version = "0.14", features = ["xtest"] }
+
+[profile.release]
+debug = false

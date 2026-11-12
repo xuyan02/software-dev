@@ -1,0 +1,23 @@
+ARG BASE_IMAGE=docker.io/library/debian:bookworm-slim
+FROM ${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG DEBIAN_MIRROR=deb.debian.org
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] || continue; \
+        sed -i -E "s#https?://(deb|security)\.debian\.org#http://${DEBIAN_MIRROR}#g" "$f"; \
+    done
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium \
+        ca-certificates \
+        fonts-dejavu-core \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY images/browser-capsule/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENV BROWSER_CAPSULE_VIEWPORT=1280x800
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,79 @@
+ARG BASE_IMAGE=docker.io/library/debian:bookworm-slim
+FROM ${BASE_IMAGE}
+ENV DEBIAN_FRONTEND=noninteractive
+
+ARG DEBIAN_MIRROR=deb.debian.org
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        [ -f "$f" ] || continue; \
+        sed -i -E "s#https?://(deb|security)\.debian\.org#http://${DEBIAN_MIRROR}#g" "$f"; \
+    done
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openjdk-17-jdk-headless \
+        unzip \
+        wget \
+        ca-certificates \
+        libpulse0 \
+        libx11-6 \
+        libxext6 \
+        libxcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxi6 \
+        libxtst6 \
+        libgl1 \
+        libglu1-mesa \
+        libnss3 \
+        libasound2 \
+        libdbus-1-3 \
+        libfontconfig1 \
+        libxrender1 \
+        libxrandr2 \
+        libxdamage1 \
+        libxfixes3 \
+        libxinerama1 \
+        libxkbcommon0 \
+        libxcb-shape0 \
+        libxcb-xfixes0 \
+        libxcb-shm0 \
+        libxcb-randr0 \
+        libxcb-render0 \
+        libxcb-render-util0 \
+        libxcb-xkb1 \
+        libxcb-icccm4 \
+        libxcb-image0 \
+        libxcb-keysyms1 \
+        libxcb-util1 \
+        libxcb-sync1 \
+        libxcb-glx0 \
+        libxcb-dri3-0 \
+        libxcb-present0 \
+        libxcb-xinerama0 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG ANDROID_CLI_TOOLS=16111833
+ARG ANDROID_API=34
+ARG ANDROID_IMAGE=system-images;android-34;google_apis;x86_64
+ENV ANDROID_SDK_ROOT=/opt/android/sdk \
+    ANDROID_HOME=/opt/android/sdk
+ENV PATH=${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${PATH}
+
+RUN mkdir -p /opt/android \
+    && wget -q "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CLI_TOOLS}_latest.zip" -O /tmp/cmdline.zip \
+    && unzip -q /tmp/cmdline.zip -d /opt/android \
+    && rm /tmp/cmdline.zip \
+    && yes | /opt/android/cmdline-tools/bin/sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null \
+    && /opt/android/cmdline-tools/bin/sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" \
+        "platform-tools" \
+        "emulator" \
+        "platforms;android-${ANDROID_API}" \
+        "${ANDROID_IMAGE}" \
+    && echo no | /opt/android/cmdline-tools/bin/avdmanager --sdk_root="${ANDROID_SDK_ROOT}" \
+        create avd -n capsule -k "${ANDROID_IMAGE}" -d pixel --force \
+    && printf 'hw.ramSize=2048\nhw.gpu.enabled=yes\nhw.gpu.mode=swiftshader_indirect\nhw.keyboard=yes\ndisk.dataPartition.size=4G\n' \
+        >> /root/.android/avd/capsule.avd/config.ini
+
+COPY images/android-capsule/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

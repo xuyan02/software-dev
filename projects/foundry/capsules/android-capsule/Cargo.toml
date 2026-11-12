@@ -1,0 +1,27 @@
+[package]
+name = "android-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Isolated Android capsule backed by rootless Podman, KVM and the Android emulator"
+license = "MIT OR Apache-2.0"
+
+# Standalone: this directory is its own workspace and is not a Foundry member.
+[workspace]
+
+[lib]
+name = "android_capsule"
+path = "src/lib.rs"
+
+[[bin]]
+name = "androidcapsule"
+path = "src/bin/androidcapsule.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+debug = false

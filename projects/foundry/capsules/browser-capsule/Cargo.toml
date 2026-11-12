@@ -1,0 +1,33 @@
+[package]
+name = "browser-capsule"
+version = "0.1.0"
+edition = "2021"
+description = "Isolated browser capsule backed by rootless Podman and Chromium CDP"
+license = "MIT OR Apache-2.0"
+
+# Standalone: this directory is its own workspace and is not a Foundry member.
+[workspace]
+
+[lib]
+name = "browser_capsule"
+path = "src/lib.rs"
+
+[[bin]]
+name = "browsercapsule"
+path = "src/bin/browsercapsule.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.23"
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.30"
+uuid = { version = "1", features = ["v4"] }
+
+[profile.release]
+debug = false
