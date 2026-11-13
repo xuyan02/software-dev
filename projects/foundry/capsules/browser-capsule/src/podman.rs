@@ -99,17 +99,6 @@ impl Podman {
         Ok(text)
     }
 
-    pub async fn ensure_network(&self, name: &str) -> Result<()> {
-        let exists = self
-            .output_allow_failure(&["network".into(), "exists".into(), name.into()])
-            .await?;
-        if !exists.status.success() {
-            self.output(&["network".into(), "create".into(), name.into()])
-                .await?;
-        }
-        Ok(())
-    }
-
     pub async fn ensure_image(&self, image: &str) -> Result<()> {
         let exists = self
             .output_allow_failure(&["image".into(), "exists".into(), image.into()])
@@ -120,20 +109,6 @@ impl Podman {
             )));
         }
         Ok(())
-    }
-
-    pub async fn network_gateway(&self, name: &str) -> Result<Option<String>> {
-        let output = self
-            .output_allow_failure(&["network".into(), "inspect".into(), name.into()])
-            .await?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-        let value: serde_json::Value = match serde_json::from_slice(&output.stdout) {
-            Ok(value) => value,
-            Err(_) => return Ok(None),
-        };
-        Ok(find_gateway(&value))
     }
 }
 
@@ -156,44 +131,9 @@ fn redact(args: &[String]) -> String {
     out.join(" ")
 }
 
-fn find_gateway(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::Object(map) => {
-            if let Some(serde_json::Value::String(gateway)) = map.get("gateway") {
-                if gateway.parse::<std::net::Ipv4Addr>().is_ok() {
-                    return Some(gateway.clone());
-                }
-            }
-            for value in map.values() {
-                if let Some(found) = find_gateway(value) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                if let Some(found) = find_gateway(value) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finds_gateway() {
-        let value = serde_json::json!([{
-            "subnets": [{ "subnet": "10.89.0.0/24", "gateway": "10.89.0.1" }]
-        }]);
-        assert_eq!(find_gateway(&value), Some("10.89.0.1".to_string()));
-    }
 
     #[test]
     fn redacts_env_values() {

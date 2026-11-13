@@ -214,6 +214,9 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("--device /dev/kvm"));
         assert!(joined.contains("--shm-size 2g"));
+        assert!(joined.contains("--memory 4096m"));
+        assert!(joined.contains("--cpus 2"));
+        assert!(joined.contains("--pids-limit 1024"));
         assert!(joined.contains("127.0.0.1:1234:5555"));
         assert!(joined.contains("--cap-drop ALL"));
         assert_eq!(args.last().unwrap(), DEFAULT_IMAGE);

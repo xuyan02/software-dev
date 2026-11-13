@@ -11,6 +11,7 @@ RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
         ca-certificates \
+        socat \
         fonts-dejavu-core \
         fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*

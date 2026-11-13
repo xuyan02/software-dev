@@ -184,8 +184,8 @@ async fn main() -> linux_capsule::Result<()> {
 | 镜像 | `localhost/linux-capsule:1` |
 | 网络 | `linux-capsule` |
 | Desktop 屏幕 | 1280×800×24 |
-| 资源 | 2 GB 内存 / 2 CPU / 512 pids |
 | 宿主挂载 | 无 |
+| 容器资源 | 2048 MB 内存 / 2 CPU / 512 pids |
 
 `desktop()` 默认启动 xterm；需要其他应用时在创建后用 `exec("DISPLAY=:99 app &")`。
 `headless()` 默认 `sleep infinity`；命令、文件和网络都通过 `exec` / `upload` / `download` 操作。
@@ -206,7 +206,7 @@ async fn main() -> linux_capsule::Result<()> {
 
 - `--cap-drop ALL`
 - `--security-opt no-new-privileges`
-- `--pids-limit` / `--memory` / `--cpus`
+- `--memory 2048m`、`--cpus 2`、`--pids-limit 512`
 - `/tmp`、`/run` 使用带大小限制的 tmpfs
 - 不挂载宿主 X11 socket、docker socket 或家目录
 - 容器的 writable layer 独立，`close()` 后删除
@@ -215,7 +215,7 @@ async fn main() -> linux_capsule::Result<()> {
 
 - 容器共享内核，不是绝对安全边界；不可信代码用 microVM/gVisor。
 - Ubuntu 22.04 自带 Podman 3.4，rootless 多容器 DNS/互访能力有限；要求容器间按名字互访时建议 Podman 4.x 或 Docker。
-- `--memory` / `--cpus` 需要 cgroup v2 + systemd delegation；cgroup v1 上可能失败。
+- 默认设置 2048 MB 内存、2 CPU、512 pids；rootless 下要求 systemd 已委派 cpu/memory/pids 控制器，否则容器启动会报 `cgroup controller ... is not available`。
 - Desktop sidecar 的键盘映射按 Xvfb 默认的 US 布局；文本输入只支持可打印 ASCII。
 - Headless 模式不启动 Xvfb，因此 `screenshot()` / `input()` 返回 `Error::NoDesktop`；`exec`、`upload/download` 仍然可用。
 - `desktop()` 默认启动 xterm；`headless()` 默认 `sleep infinity`。没有逐 capsule 的 `app`、镜像、网络、资源、端口、`setup`、`files` 配置。

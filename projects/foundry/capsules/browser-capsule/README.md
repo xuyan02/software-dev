@@ -25,7 +25,7 @@ capsules/browser-capsule/
   src/podman.rs                  # Podman CLI 后端
   src/bin/browsercapsule.rs      # demo 命令行
   images/browser-capsule/        # Chromium 镜像
-  install.sh                     # 宿主机安装、subuid、网络、镜像构建
+  install.sh                     # 宿主机安装、subuid、镜像构建
 ```
 
 ## 安装
@@ -41,9 +41,8 @@ cd projects/foundry/capsules/browser-capsule
 
 1. 安装 `podman`、`uidmap`、`slirp4netns`、`fuse-overlayfs`；
 2. 配置并验证 rootless `subuid/subgid`；
-3. 创建 Podman 网络 `browser-capsule`；
-4. 构建 `localhost/browser-capsule:1`（Debian + Chromium）；
-5. 启动临时容器，检查 CDP `/json/version`。
+3. 构建 `localhost/browser-capsule:1`（Debian + Chromium）；
+4. 启动临时容器，检查 CDP `/json/version`。
 
 常用选项：
 
@@ -139,13 +138,13 @@ BrowserCapsule **不提供** `exec`、`upload`、`download`：浏览器胶囊只
 | 项 | 固定值 |
 |---|---|
 | 镜像 | `localhost/browser-capsule:1` |
-| 网络 | `browser-capsule` |
+| 网络 | Podman 默认 rootless 网络（slirp4netns） |
 | Viewport | 1280×800 |
-| 资源 | 2 GB 内存 / 2 CPU / 512 pids |
-| CDP 端口 | 宿主 `127.0.0.1:<随机端口>` → 容器 `9222` |
+| CDP 端口 | 宿主 `127.0.0.1:<随机端口>` → 容器 `9223`（socat 转发到 Chromium 的 `127.0.0.1:9222`） |
 | 宿主挂载 | 无 |
+| 容器资源 | 2048 MB 内存 / 2 CPU / 512 pids |
 
-最小 API 不暴露镜像、网络、viewport、资源、启动参数等配置。
+最小 API 不暴露镜像、viewport、资源、启动参数等配置。
 
 ## 限制
 
@@ -154,6 +153,7 @@ BrowserCapsule **不提供** `exec`、`upload`、`download`：浏览器胶囊只
 - 截图只支持 PNG。
 - `navigate` 等待 `readyState == complete`；单页应用可能在之后继续异步渲染，需要调用方自行等待或用截图轮询。
 - 不提供 shell 和文件传输；这是浏览器胶囊的边界，不是遗漏。
+- 默认设置 2048 MB 内存、2 CPU、512 pids；rootless 下要求 systemd 已委派 cpu/memory/pids 控制器。
 - 容器共享宿主内核，不是绝对安全边界。
 
 ## 测试应用：打开百度并截图

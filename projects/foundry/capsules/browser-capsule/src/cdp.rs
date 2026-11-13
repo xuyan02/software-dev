@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 
+const NAVIGATE_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub struct Cdp {
     socket: Mutex<
         tokio_tungstenite::WebSocketStream<
@@ -29,11 +31,18 @@ impl Cdp {
     }
 
     pub async fn navigate(&self, url: &str) -> Result<()> {
-        let result = self.send("Page.navigate", json!({ "url": url })).await?;
-        if let Some(error) = result.get("errorText").and_then(Value::as_str) {
-            return Err(Error::Backend(format!("navigate {url}: {error}")));
+        let deadline = Instant::now() + NAVIGATE_TIMEOUT;
+        loop {
+            let result = self.send("Page.navigate", json!({ "url": url })).await?;
+            if let Some(error) = result.get("errorText").and_then(Value::as_str) {
+                if is_transient_navigation_error(error) && Instant::now() < deadline {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                return Err(Error::Backend(format!("navigate {url}: {error}")));
+            }
+            return self.wait_ready().await;
         }
-        self.wait_ready().await
     }
 
     async fn wait_ready(&self) -> Result<()> {
@@ -228,6 +237,17 @@ fn rewrite_ws_url(url: &str, port: u16) -> String {
     format!("ws://127.0.0.1:{port}/")
 }
 
+fn is_transient_navigation_error(error: &str) -> bool {
+    [
+        "ERR_NETWORK_CHANGED",
+        "ERR_INTERNET_DISCONNECTED",
+        "ERR_NAME_NOT_RESOLVED",
+        "ERR_TIMED_OUT",
+    ]
+    .iter()
+    .any(|candidate| error.contains(candidate))
+}
+
 fn button_name(button: u8) -> Option<(&'static str, u8)> {
     match button {
         1 => Some(("left", 1)),
@@ -287,6 +307,13 @@ mod tests {
         assert_eq!(key_def("ArrowLeft"), Some(("ArrowLeft", "ArrowLeft", 37)));
         assert_eq!(key_def("F12"), Some(("F12", "F12", 123)));
         assert_eq!(key_def("NotAKey"), None);
+    }
+
+    #[test]
+    fn recognizes_transient_navigation_errors() {
+        assert!(is_transient_navigation_error("net::ERR_NETWORK_CHANGED"));
+        assert!(is_transient_navigation_error("net::ERR_NAME_NOT_RESOLVED"));
+        assert!(!is_transient_navigation_error("net::ERR_ABORTED"));
     }
 
     #[test]

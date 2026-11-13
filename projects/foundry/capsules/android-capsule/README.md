@@ -125,10 +125,10 @@ async fn main() -> android_capsule::Result<()> {
 | Android API | 34 |
 | System image | `system-images;android-34;google_apis;x86_64` |
 | AVD | `pixel` |
-| 容器资源 | 4 GB 内存 / 2 CPU / 1024 pids |
 | Emulator 内存 | 2048 MB |
 | ADB 端口 | 宿主 `127.0.0.1:<随机端口>` → 容器 `5555` |
 | 网络 | Podman 默认 rootless 网络 |
+| 容器资源 | 4096 MB 内存 / 2 CPU / 1024 pids |
 
 最小 API 不暴露镜像、API、AVD、分辨率、资源等配置。
 
@@ -140,4 +140,5 @@ async fn main() -> android_capsule::Result<()> {
 - 首次启动和冷启动较慢，通常 1–3 分钟。
 - 不提供 shell、`exec`、上传/下载；唯一的文件入口是 `install_apk`。
 - ADB 没有鉴权，只绑定 `127.0.0.1` 的随机端口。
+- 默认设置 4096 MB 内存、2 CPU、1024 pids；rootless 下要求 systemd 已委派 cpu/memory/pids 控制器。
 - 容器共享宿主内核，不是绝对安全边界。

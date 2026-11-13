@@ -8,7 +8,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 IMAGE="${IMAGE:-localhost/browser-capsule:1}"
-NETWORK="${NETWORK:-browser-capsule}"
 REBUILD=0
 SKIP_PACKAGES=0
 SKIP_IMAGE=0
@@ -29,7 +28,6 @@ usage() {
 Usage: ./install.sh [options]
 
   --image NAME        Browser image tag (default: $IMAGE)
-  --network NAME      Podman network (default: $NETWORK)
   --rebuild           Rebuild the image even if it exists
   --skip-packages     Do not install Podman/uidmap
   --skip-image        Do not build the browser image
@@ -41,14 +39,12 @@ Environment:
   BASE_IMAGE=...      Debian base image; use a registry mirror if Docker Hub is unreachable
   DEBIAN_MIRROR=...   Debian apt mirror host (default: deb.debian.org)
   IMAGE=...           Output image tag (default: localhost/browser-capsule:1)
-  NETWORK=...         Podman network name (default: browser-capsule)
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --image) IMAGE="$2"; shift 2 ;;
-        --network) NETWORK="$2"; shift 2 ;;
         --rebuild) REBUILD=1; shift ;;
         --skip-packages) SKIP_PACKAGES=1; shift ;;
         --skip-image) SKIP_IMAGE=1; shift ;;
@@ -70,7 +66,6 @@ SUDO="sudo"
 echo "==> browser-capsule host setup"
 echo "    user:    $USER_NAME"
 echo "    image:   $IMAGE"
-echo "    network: $NETWORK"
 
 if ! command -v sudo >/dev/null 2>&1; then
     echo "sudo is required." >&2
@@ -173,13 +168,6 @@ fi
 echo "    $(podman --version)"
 echo "    rootless: true"
 
-if podman network exists "$NETWORK" >/dev/null 2>&1; then
-    echo "==> network $NETWORK already exists"
-else
-    echo "==> creating network $NETWORK"
-    podman network create "$NETWORK"
-fi
-
 if [[ "$SKIP_IMAGE" -eq 0 ]]; then
     if [[ "$REBUILD" -eq 1 ]] || ! podman image exists "$IMAGE" >/dev/null 2>&1; then
         echo "==> building $IMAGE"
@@ -221,13 +209,12 @@ PY
         NAME="browser-capsule-smoke-$$"
         echo "==> smoke test on 127.0.0.1:$PORT"
         CID="$(podman run -d --rm --name "$NAME" \
-            --network "$NETWORK" \
             --cap-drop ALL \
             --security-opt no-new-privileges \
             --shm-size 1g \
             --tmpfs /tmp:rw,size=256m \
             --tmpfs /run:rw,size=64m \
-            -p "127.0.0.1:${PORT}:9222" \
+            -p "127.0.0.1:${PORT}:9223" \
             "$IMAGE")"
         SMOKE_CONTAINERS+=("$CID")
         READY=0

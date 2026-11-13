@@ -86,23 +86,6 @@ impl Default for NetworkSpec {
 }
 
 #[derive(Debug, Clone)]
-struct Resources {
-    pub memory_mb: u64,
-    pub cpus: f64,
-    pub pids_limit: u64,
-}
-
-impl Default for Resources {
-    fn default() -> Self {
-        Self {
-            memory_mb: 2048,
-            cpus: 2.0,
-            pids_limit: 512,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
 struct PortSpec {
     /// Host port, bound on 127.0.0.1.
     pub host: u16,
@@ -150,7 +133,6 @@ struct LinuxCapsuleSpec {
     pub files: Vec<FileSpec>,
     pub screen: Screen,
     pub network: NetworkSpec,
-    pub resources: Resources,
     /// Additional 127.0.0.1 host ports published to the container.
     pub ports: Vec<PortSpec>,
     /// Optional shell script run inside the container before the app starts.
@@ -183,12 +165,6 @@ impl LinuxCapsuleSpec {
                 "network name must not be empty".into(),
             ));
         }
-        if self.resources.memory_mb == 0 || self.resources.cpus <= 0.0 {
-            return Err(Error::InvalidRequest("resources must be > 0".into()));
-        }
-        if self.resources.pids_limit == 0 {
-            return Err(Error::InvalidRequest("pids_limit must be > 0".into()));
-        }
         if self.startup_timeout.is_zero() {
             return Err(Error::InvalidRequest("startup_timeout must be > 0".into()));
         }
@@ -216,7 +192,6 @@ impl Default for LinuxCapsuleSpec {
             files: Vec::new(),
             screen: Screen::default(),
             network: NetworkSpec::default(),
-            resources: Resources::default(),
             ports: Vec::new(),
             setup: None,
             startup_timeout: Duration::from_secs(30),
@@ -551,11 +526,11 @@ fn build_create_args(
         "--security-opt".to_string(),
         "no-new-privileges".to_string(),
         "--pids-limit".to_string(),
-        spec.resources.pids_limit.to_string(),
+        "512".to_string(),
         "--memory".to_string(),
-        format!("{}m", spec.resources.memory_mb),
+        "2048m".to_string(),
         "--cpus".to_string(),
-        spec.resources.cpus.to_string(),
+        "2".to_string(),
         "--tmpfs".to_string(),
         "/tmp:rw,size=64m".to_string(),
         "--tmpfs".to_string(),
@@ -688,6 +663,9 @@ mod tests {
         assert!(joined.contains("LINUX_CAPSULE_MODE=desktop"));
         assert!(joined.contains("--cap-drop ALL"));
         assert!(joined.contains("--security-opt no-new-privileges"));
+        assert!(joined.contains("--pids-limit 512"));
+        assert!(joined.contains("--memory 2048m"));
+        assert!(joined.contains("--cpus 2"));
         assert!(joined.contains("127.0.0.1:1234:8099"));
         assert!(joined.contains("host.containers.internal:10.89.0.1"));
         assert!(joined.contains("LINUX_CAPSULE_TOKEN=token"));

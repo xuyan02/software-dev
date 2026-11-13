@@ -44,7 +44,7 @@
 - `screenshot()`（PNG）和 `input(Input)`，通过 CDP 控制 Chromium；
 - `close()`；
 - 不提供 shell 和文件传输；
-- 镜像、网络、viewport 和资源使用固定默认值。
+- 镜像、viewport 和资源使用固定默认值；网络使用 Podman 默认 rootless 网络。
 
 详见 [`browser-capsule/README.md`](browser-capsule/README.md)。
 

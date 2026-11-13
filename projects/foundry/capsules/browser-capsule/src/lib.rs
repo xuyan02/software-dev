@@ -13,7 +13,6 @@ mod podman;
 use std::time::{Duration, Instant};
 
 const DEFAULT_IMAGE: &str = "localhost/browser-capsule:1";
-const DEFAULT_NETWORK: &str = "browser-capsule";
 const VIEWPORT: &str = "1280x800";
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const PAGE_LOAD_TIMEOUT: Duration = Duration::from_secs(30);
@@ -59,14 +58,12 @@ impl BrowserCapsule {
     /// Start Chromium in a fresh container. It begins at `about:blank`.
     pub async fn create() -> Result<Self> {
         let podman = podman::Podman::discover()?;
-        podman.ensure_network(DEFAULT_NETWORK).await?;
         podman.ensure_image(DEFAULT_IMAGE).await?;
 
-        let gateway = podman.network_gateway(DEFAULT_NETWORK).await.ok().flatten();
         let id = uuid::Uuid::new_v4().simple().to_string();
         let name = format!("browser-capsule-{}", &id[..12]);
         let port = free_port()?;
-        let args = build_create_args(&name, port, gateway.as_deref());
+        let args = build_create_args(&name, port);
 
         podman.create(&args).await?;
         if let Err(error) = podman.start(&name).await {
@@ -146,15 +143,13 @@ impl Drop for BrowserCapsule {
     }
 }
 
-fn build_create_args(name: &str, host_port: u16, gateway: Option<&str>) -> Vec<String> {
-    let mut args = vec![
+fn build_create_args(name: &str, host_port: u16) -> Vec<String> {
+    vec![
         "create".to_string(),
         "--name".to_string(),
         name.to_string(),
         "--label".to_string(),
         "browser-capsule.managed=true".to_string(),
-        "--network".to_string(),
-        DEFAULT_NETWORK.to_string(),
         "--cap-drop".to_string(),
         "ALL".to_string(),
         "--security-opt".to_string(),
@@ -174,16 +169,9 @@ fn build_create_args(name: &str, host_port: u16, gateway: Option<&str>) -> Vec<S
         "-e".to_string(),
         format!("BROWSER_CAPSULE_VIEWPORT={VIEWPORT}"),
         "-p".to_string(),
-        format!("127.0.0.1:{host_port}:9222"),
-        "--add-host".to_string(),
-        format!(
-            "host.containers.internal:{}",
-            gateway.unwrap_or("host-gateway")
-        ),
+        format!("127.0.0.1:{host_port}:9223"),
         DEFAULT_IMAGE.to_string(),
-    ];
-    args.shrink_to_fit();
-    args
+    ]
 }
 
 fn free_port() -> Result<u16> {
@@ -223,13 +211,15 @@ mod tests {
 
     #[test]
     fn build_args_have_isolation_and_cdp_port() {
-        let args = build_create_args("browser-capsule-test", 1234, Some("10.89.0.1"));
+        let args = build_create_args("browser-capsule-test", 1234);
         let joined = args.join(" ");
         assert!(joined.contains("--cap-drop ALL"));
         assert!(joined.contains("--security-opt no-new-privileges"));
+        assert!(joined.contains("--pids-limit 512"));
+        assert!(joined.contains("--memory 2048m"));
+        assert!(joined.contains("--cpus 2"));
         assert!(joined.contains("--shm-size 1g"));
-        assert!(joined.contains("127.0.0.1:1234:9222"));
-        assert!(joined.contains("host.containers.internal:10.89.0.1"));
+        assert!(joined.contains("127.0.0.1:1234:9223"));
         assert_eq!(args.last().unwrap(), DEFAULT_IMAGE);
     }
 }
