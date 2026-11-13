@@ -1,0 +1,16 @@
+[package]
+name = "data-core"
+version = "0.1.0"
+edition = "2024"
+description = "A compact, arena-backed JSON-like data store"
+license = "MIT"
+rust-version = "1.93"
+
+# Standalone: this directory is its own workspace.
+[workspace]
+
+[dependencies]
+indexmap = "2"
+rustc-hash = "2"
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"

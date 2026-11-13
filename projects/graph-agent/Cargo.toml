@@ -1,0 +1,19 @@
+[package]
+name = "graph-agent"
+version = "0.1.0"
+edition = "2024"
+description = "A small, code-first graph runtime for deterministic node execution"
+license = "MIT"
+rust-version = "1.93"
+
+# Standalone: this directory is its own workspace and is not a Foundry member.
+[workspace]
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,14 @@
+[package]
+name = "template-core"
+version = "0.1.0"
+edition = "2024"
+description = "A small template renderer for data-core values"
+license = "MIT"
+rust-version = "1.93"
+
+# Standalone: this directory is its own workspace.
+[workspace]
+
+[dependencies]
+data-core = { path = "../data-core" }
+thiserror = "2"
