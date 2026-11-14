@@ -22,6 +22,7 @@ members = [
     "projects/foundry/services/worker",
     "projects/foundry/services/agentd",
     "projects/foundry/xtask",
+    "projects/design-space/crates/design-space",
     # new projects: insert member below this line
 ]
 
