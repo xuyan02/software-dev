@@ -38,6 +38,9 @@ pub struct Config {
     /// definitions are reconciled from these values at startup.
     pub openai_base_url: Option<String>,
     pub openai_model: Option<String>,
+    /// Base URL of the `ds-server` used to provision project design spaces.
+    /// Project creation fails when this is not configured.
+    pub design_space_url: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is
     /// missing.
@@ -67,6 +70,7 @@ struct ConfigFile {
     openai_api_key: Option<String>,
     openai_base_url: Option<String>,
     openai_model: Option<String>,
+    design_space_url: Option<String>,
     editor_dir: Option<String>,
 }
 
@@ -164,6 +168,9 @@ impl Config {
             openai_base_url: pick("OPENAI_BASE_URL", file.openai_base_url)
                 .filter(|value| !value.is_empty()),
             openai_model: pick("OPENAI_MODEL", file.openai_model).filter(|value| !value.is_empty()),
+            design_space_url: pick("DESIGN_SPACE_URL", file.design_space_url)
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty()),
             editor_dir: PathBuf::from(
                 pick("FOUNDRY_EDITOR_DIR", file.editor_dir)
                     .unwrap_or_else(|| "web/workflow-editor/dist".to_string()),

@@ -3,6 +3,7 @@ use super::interpreter::DefinitionWorkflow;
 use super::validate::validate;
 
 const PROJECT: &str = include_str!("../definitions/project.json");
+const EMPTY: &str = include_str!("../definitions/empty.json");
 const GOAL_CLARIFICATION: &str = include_str!("../definitions/goal_clarification.json");
 const REQUIREMENTS_DISCOVERY: &str = include_str!("../definitions/requirements_discovery.json");
 const REQUIREMENTS_ANALYSIS: &str = include_str!("../definitions/requirements_analysis.json");
@@ -18,6 +19,7 @@ const RELEASE: &str = include_str!("../definitions/release.json");
 const PROJECT_REVIEW: &str = include_str!("../definitions/project_review.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
+    ("empty", "Empty (no-op)", EMPTY),
     ("project", "Project lifecycle", PROJECT),
     ("goal_clarification", "项目文档撰写", GOAL_CLARIFICATION),
     (

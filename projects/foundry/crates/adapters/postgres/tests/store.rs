@@ -119,6 +119,7 @@ async fn aggregates_round_trip_with_optimistic_concurrency() {
     let project = Project::new(
         format!("Database project {}", suffix()),
         Some("persisted".to_string()),
+        "git@example.com:test/repo.git",
         alice.id,
     )
     .unwrap();
@@ -217,7 +218,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
 
     let owner = account("owner");
     AccountRepository::insert(&*store, &owner).await.unwrap();
-    let mut project = Project::new(format!("Tasks {}", suffix()), None, owner.id).unwrap();
+    let mut project = Project::new(format!("Tasks {}", suffix()), None, "git@example.com:test/repo.git", owner.id).unwrap();
     let mut root = TaskDAO::new(
         project.id,
         None,
@@ -580,7 +581,7 @@ async fn requirements_document_round_trips_idempotently_and_conflicts() {
     let alice = account("reqdoc");
     AccountRepository::insert(&store, &alice).await.unwrap();
     let project =
-        Project::new(format!("Requirements project {}", suffix()), None, alice.id).unwrap();
+        Project::new(format!("Requirements project {}", suffix()), None, "git@example.com:test/repo.git", alice.id).unwrap();
     ProjectRepository::insert(&store, &project).await.unwrap();
 
     let now = OffsetDateTime::now_utc();
@@ -732,7 +733,7 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
 
     let owner = account("delete-owner");
     AccountRepository::insert(&store, &owner).await.unwrap();
-    let mut project = Project::new(format!("Delete project {}", suffix()), None, owner.id).unwrap();
+    let mut project = Project::new(format!("Delete project {}", suffix()), None, "git@example.com:test/repo.git", owner.id).unwrap();
     let mut root = TaskDAO::new(
         project.id,
         None,
@@ -847,7 +848,7 @@ async fn anchor_document_round_trips_with_annotations() {
 
     let alice = account("anchordoc");
     AccountRepository::insert(&store, &alice).await.unwrap();
-    let project = Project::new(format!("Anchor document {}", suffix()), None, alice.id).unwrap();
+    let project = Project::new(format!("Anchor document {}", suffix()), None, "git@example.com:test/repo.git", alice.id).unwrap();
     ProjectRepository::insert(&store, &project).await.unwrap();
 
     let schema = foundry_domain::project_document_schema();

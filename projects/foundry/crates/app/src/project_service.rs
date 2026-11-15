@@ -3,7 +3,9 @@ use crate::commands::{
     SetProjectMemberRole, UpdateProject,
 };
 use crate::error::ServiceError;
-use crate::ports::{AccountRepository, EventSink, ProjectFilter, ProjectRepository};
+use crate::ports::{
+    AccountRepository, DesignSpaceProvisioner, EventSink, ProjectFilter, ProjectRepository,
+};
 use crate::task::TaskDispatcher;
 use crate::workflow::{WorkflowCatalog, WorkflowLookup};
 use foundry_domain::{
@@ -37,6 +39,7 @@ pub struct ProjectService<P, A, E> {
     events: Arc<E>,
     workflows: Arc<dyn WorkflowCatalog>,
     tasks: Arc<dyn TaskDispatcher>,
+    design_spaces: Arc<dyn DesignSpaceProvisioner>,
 }
 
 impl<P, A, E> ProjectService<P, A, E>
@@ -51,6 +54,7 @@ where
         events: Arc<E>,
         workflows: Arc<dyn WorkflowCatalog>,
         tasks: Arc<dyn TaskDispatcher>,
+        design_spaces: Arc<dyn DesignSpaceProvisioner>,
     ) -> Self {
         Self {
             projects,
@@ -58,6 +62,7 @@ where
             events,
             workflows,
             tasks,
+            design_spaces,
         }
     }
 
@@ -89,8 +94,31 @@ where
             }
         };
 
-        let mut project = Project::new(command.name, command.description, account.id)
-            .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        let git_repository = command.git_repository.trim();
+        if git_repository.is_empty() {
+            return Err(ServiceError::Validation(
+                "git_repository is required".to_string(),
+            ));
+        }
+        let design_space_url = self
+            .design_spaces
+            .create_design_space(command.name.trim(), git_repository)
+            .await
+            .map_err(ServiceError::Internal)?;
+        if design_space_url.trim().is_empty() {
+            return Err(ServiceError::Internal(
+                "design space provisioner returned an empty address".to_string(),
+            ));
+        }
+
+        let mut project = Project::new(
+            command.name,
+            command.description,
+            command.git_repository,
+            account.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        project.design_space_url = design_space_url;
         let now = time::OffsetDateTime::now_utc();
         let mut root = TaskDAO::new(
             project.id,

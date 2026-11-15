@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -9,7 +9,6 @@ use design_space::element::Element;
 use design_space::error::{Error, Result};
 use design_space::gc;
 use design_space::hash::{from_hex, is_zero, to_commit_hex, to_hex};
-use design_space::language;
 use design_space::node::Node;
 use design_space::pack::{self, Pack};
 use design_space::remote;
@@ -18,14 +17,14 @@ use design_space::space::{
     self, CommitOptions, collect_view, load_version, parse_commit_hex, resolve_version, view_root,
 };
 use design_space::store::Store;
-use design_space::types::{T_FILE, kind_of, language_of, type_name};
+use design_space::types::{T_CONCEPT, T_FILE, kind_of, language_of, type_name};
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser)]
 #[command(
     name = "ds",
     version,
-    about = "A git-like, versioned design space for code elements"
+    about = "A git-like, versioned design space for conceptual design elements"
 )]
 struct Cli {
     /// Suppress progress messages on stderr.
@@ -48,16 +47,6 @@ fn progress(level: u8, message: impl std::fmt::Display) {
 
 fn short_hex(text: &str) -> &str {
     &text[..text.len().min(12)]
-}
-
-fn source_label_human(label: &str) -> String {
-    if let Some(name) = label.strip_prefix("branch:") {
-        format!("Source branch {name}")
-    } else if let Some(commit) = label.strip_prefix("commit:") {
-        format!("Source commit {}", short_hex(commit))
-    } else {
-        format!("Source {label}")
-    }
 }
 
 /// Resolve the metadata directory of the design workspace.
@@ -136,18 +125,55 @@ fn workspace_candidate(root: &Path) -> Result<Option<PathBuf>> {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create a local design-space repository.
+    /// Clone an existing design space from its remote.
+    Clone {
+        /// Design-space URL, e.g. `ds://host/<project-id>`.
+        url: String,
+        /// Directory to create (default: the last path segment of the URL).
+        directory: Option<PathBuf>,
+        /// Code repository this design space describes. Defaults to the
+        /// source recorded by the design space server, when it has one.
+        #[arg(long)]
+        source: Option<String>,
+        /// Design branch to check out (default: remote main, master, or the
+        /// only branch).
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Create a new local design-space repository.
     Init {
         /// Code repository this design space describes. Immutable after init.
         #[arg(long)]
         source: String,
-        /// Optional remote design-space URL, stored as origin.
-        #[arg(long)]
-        remote: Option<String>,
     },
-    /// Scan the current source ref into the current design branch.
-    Scan {
-        /// Workspace root (default: nearest `.design` from the current directory).
+    /// Show or set the design-space remote.
+    Remote {
+        /// Workspace root (default: nearest `.ds` from the current directory).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[command(subcommand)]
+        command: RemoteCommand,
+    },
+    /// Create one conceptual element and advance the current branch.
+    Create {
+        /// Unique element name in this branch.
+        name: String,
+        /// Design text. Omit to create the element undesigned.
+        #[arg(long, conflicts_with = "design_file")]
+        design: Option<String>,
+        /// Read the design text from this file.
+        #[arg(long)]
+        design_file: Option<PathBuf>,
+        /// Optional source anchor path.
+        #[arg(long)]
+        path: Option<String>,
+        /// Source line range START-END (or one line); requires --path.
+        #[arg(long, requires = "path")]
+        lines: Option<String>,
+        /// Optional parent element name. Inferred from `::` names otherwise.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Workspace root (default: nearest `.ds` from the current directory).
         #[arg(long)]
         dir: Option<PathBuf>,
     },
@@ -267,18 +293,6 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Serve a design-space repository over HTTP or over SSH stdio.
-    Serve {
-        /// Server repository directory (created if missing).
-        #[arg(long)]
-        repo: PathBuf,
-        /// HTTP listen address, e.g. 127.0.0.1:7000.
-        #[arg(long)]
-        listen: Option<String>,
-        /// Speak the framed protocol on stdin/stdout (for sshd / ssh).
-        #[arg(long)]
-        stdio: bool,
-    },
     /// Push a design branch to origin.
     Push {
         /// Design branch to push; defaults to the current branch.
@@ -319,6 +333,16 @@ enum Command {
         #[arg(long)]
         dir: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Print the configured remote.
+    Show,
+    /// Set origin to this design-space URL.
+    Add { url: String },
+    /// Replace the configured origin URL.
+    SetUrl { url: String },
 }
 
 #[derive(Subcommand)]
@@ -374,8 +398,36 @@ fn main() -> Result<()> {
     VERBOSITY.store(verbosity, Ordering::Relaxed);
 
     match cli.command {
-        Command::Init { source, remote } => init(&source, remote.as_deref()),
-        Command::Scan { dir } => scan(&locate_workspace(dir)?),
+        Command::Clone {
+            url,
+            directory,
+            source,
+            branch,
+        } => clone_space(
+            &url,
+            directory.as_deref(),
+            source.as_deref(),
+            branch.as_deref(),
+        ),
+        Command::Init { source } => init(&source),
+        Command::Remote { dir, command } => remote_command(&locate_workspace(dir)?, command),
+        Command::Create {
+            name,
+            design,
+            design_file,
+            path,
+            lines,
+            parent,
+            dir,
+        } => create(
+            &locate_workspace(dir)?,
+            &name,
+            design,
+            design_file.as_deref(),
+            path.as_deref(),
+            lines.as_deref(),
+            parent.as_deref(),
+        ),
         Command::Branch { name, delete, dir } => {
             branch_command(&locate_workspace(dir)?, name.as_deref(), delete.as_deref())
         }
@@ -419,11 +471,6 @@ fn main() -> Result<()> {
         Command::Verify { pack } => verify(&pack),
         Command::Gc { dir } => gc_cmd(&locate_workspace(dir)?),
         Command::Repack { dir } => repack_cmd(&locate_workspace(dir)?),
-        Command::Serve {
-            repo,
-            listen,
-            stdio,
-        } => serve(&repo, listen.as_deref(), stdio),
         Command::Push { branch, dir } => push_cmd(&locate_workspace(dir)?, branch.as_deref()),
         Command::Fetch { branch, dir } => {
             fetch_cmd(&locate_workspace(dir)?, branch.as_deref(), false)
@@ -436,7 +483,126 @@ fn main() -> Result<()> {
     }
 }
 
-fn init(source: &str, remote: Option<&str>) -> Result<()> {
+fn clone_space(
+    url: &str,
+    directory: Option<&Path>,
+    source: Option<&str>,
+    branch: Option<&str>,
+) -> Result<()> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(Error::Config("design-space URL must not be empty".into()));
+    }
+    let mut transport = remote::open_transport(url)?;
+    let remote_info = transport.refs_info()?;
+    let branch = match branch {
+        Some(name) => {
+            branch::validate_name(name)?;
+            if !remote_info.refs.is_empty() && !remote_info.refs.contains_key(name) {
+                return Err(Error::Config(format!(
+                    "remote branch {name} does not exist in {url}"
+                )));
+            }
+            name.to_owned()
+        }
+        None => pick_clone_branch(url, &remote_info.refs)?,
+    };
+    let source = source
+        .map(str::trim)
+        .filter(|source| !source.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            remote_info
+                .source
+                .map(|source| source.trim().to_owned())
+                .filter(|source| !source.is_empty())
+        })
+        .ok_or_else(|| {
+            Error::Config(format!(
+                "design space {url} does not record its source repository; pass --source <git-url>"
+            ))
+        })?;
+    let dir = match directory {
+        Some(dir) => dir.to_path_buf(),
+        None => PathBuf::from(default_clone_directory(url)),
+    };
+    let existed = dir.exists();
+    if existed && fs::read_dir(&dir)?.next().is_some() {
+        return Err(Error::Config(format!(
+            "destination {} already exists and is not empty",
+            dir.display()
+        )));
+    }
+
+    println!("Cloning design space {url} into {}", dir.display());
+    fs::create_dir_all(&dir)?;
+    let original = std::env::current_dir()?;
+    let outcome = (|| -> Result<()> {
+        std::env::set_current_dir(&dir)?;
+        let setup = create_workspace(&source, Some(url))?;
+        println!("Source {} at branch {}", source, setup.default_branch);
+        let meta = locate_workspace(None)?;
+        if branch::current(&meta)? != branch {
+            checkout(&meta, &branch, true)?;
+        }
+        if remote_info.refs.is_empty() {
+            println!("Design space is empty; nothing to pull.");
+            return Ok(());
+        }
+        fetch_cmd(&meta, Some(&branch), true)
+    })();
+    std::env::set_current_dir(&original)?;
+    if outcome.is_err() && !existed {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    if outcome.is_ok() {
+        let workspace = fs::canonicalize(&dir)
+            .unwrap_or_else(|_| dir.clone())
+            .join(".ds");
+        println!("Design workspace: {}", workspace.display());
+    }
+    outcome
+}
+
+/// Pick the remote branch a fresh clone should check out.
+fn pick_clone_branch(url: &str, refs: &BTreeMap<String, String>) -> Result<String> {
+    for candidate in [branch::DEFAULT, "master"] {
+        if refs.contains_key(candidate) {
+            return Ok(candidate.to_owned());
+        }
+    }
+    match refs.len() {
+        0 => Ok(branch::DEFAULT.to_owned()),
+        1 => Ok(refs.keys().next().cloned().unwrap_or_default()),
+        _ => Err(Error::Config(format!(
+            "design space {url} has several branches ({}); pass --branch",
+            refs.keys().cloned().collect::<Vec<_>>().join(", ")
+        ))),
+    }
+}
+
+/// Derive a directory name from the last path segment of a URL.
+fn default_clone_directory(url: &str) -> String {
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let path = after_scheme
+        .split_once('/')
+        .map(|(_, path)| path)
+        .unwrap_or("");
+    let last = path.trim_end_matches('/').rsplit('/').next().unwrap_or("");
+    if last.is_empty() || last == "." || last == ".." {
+        "design-space".to_owned()
+    } else {
+        last.to_owned()
+    }
+}
+
+struct WorkspaceSetup {
+    default_branch: String,
+}
+
+/// Create a new local workspace in `./.ds`. Shared by `init` and `clone`;
+/// only `init` announces it as an initialization.
+fn create_workspace(source: &str, remote: Option<&str>) -> Result<WorkspaceSetup> {
     let base = Path::new(".ds");
     if base.join("config").exists() {
         return Err(Error::Config(".ds is already initialized".into()));
@@ -466,211 +632,299 @@ fn init(source: &str, remote: Option<&str>) -> Result<()> {
 
     let config = Config {
         source: SourceConfig {
-            url: source.to_owned(),
+            url: source.trim().to_owned(),
         },
         remote: remote.map(|url| RemoteConfig {
             name: "origin".to_owned(),
             url: url.to_owned(),
         }),
     };
-    let text = toml::to_string_pretty(&config).map_err(|error| Error::Config(error.to_string()))?;
-    fs::write(base.join("config"), text)?;
+    save_config(base, &config)?;
     // If the workspace root is itself a git worktree, keep the design state
     // out of `git status`. `.gitignore` here ignores every entry, itself too.
     fs::write(base.join(".gitignore"), "*\n")?;
+    Ok(WorkspaceSetup { default_branch })
+}
 
+fn init(source: &str) -> Result<()> {
+    let setup = create_workspace(source, None)?;
     println!(
         "Initialized ds workspace in {}",
         std::env::current_dir()?.join(".ds").display()
     );
-    println!("Source {source} at branch {default_branch}");
-    if let Some(url) = remote {
-        println!("Origin {url}");
+    println!(
+        "Source {} at branch {}",
+        source.trim(),
+        setup.default_branch
+    );
+    Ok(())
+}
+
+fn remote_command(dir: &Path, command: RemoteCommand) -> Result<()> {
+    let mut config = load_config(dir)?;
+    match command {
+        RemoteCommand::Show => match &config.remote {
+            Some(remote) => println!("{}", remote.url),
+            None => println!("No remote configured."),
+        },
+        RemoteCommand::Add { url } => {
+            let url = remote_url_arg(&url)?;
+            if config.remote.is_some() {
+                return Err(Error::Config(
+                    "remote origin already exists; use `ds remote set-url <url>`".into(),
+                ));
+            }
+            config.remote = Some(RemoteConfig {
+                name: "origin".to_owned(),
+                url: url.clone(),
+            });
+            save_config(dir, &config)?;
+            println!("Origin {url}");
+        }
+        RemoteCommand::SetUrl { url } => {
+            let url = remote_url_arg(&url)?;
+            if config.remote.is_none() {
+                return Err(Error::Config(
+                    "no remote configured; run `ds remote add <url>`".into(),
+                ));
+            }
+            config.remote = Some(RemoteConfig {
+                name: "origin".to_owned(),
+                url: url.clone(),
+            });
+            save_config(dir, &config)?;
+            println!("Origin {url}");
+        }
     }
     Ok(())
 }
 
-fn scan(dir: &Path) -> Result<()> {
+fn remote_url_arg(url: &str) -> Result<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(Error::Config("remote URL must not be empty".into()));
+    }
+    Ok(url.to_owned())
+}
+
+fn save_config(dir: &Path, config: &Config) -> Result<()> {
+    let text = toml::to_string_pretty(config).map_err(|error| Error::Config(error.to_string()))?;
+    fs::write(dir.join("config"), text)?;
+    Ok(())
+}
+
+fn create(
+    dir: &Path,
+    name: &str,
+    design: Option<String>,
+    design_file: Option<&Path>,
+    path: Option<&str>,
+    lines: Option<&str>,
+    parent: Option<&str>,
+) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::Config("element name must not be empty".into()));
+    }
+    let text = match (design, design_file) {
+        (Some(text), None) => Some(text),
+        (None, Some(path)) => Some(fs::read_to_string(path)?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("clap rejects both flags"),
+    };
+    let (start_line, end_line) = match lines {
+        Some(value) => parse_line_range(value)?,
+        None => (0, 0),
+    };
+
     let branch = branch::current(dir)?;
-
-    let config = load_config(dir)?;
-    let source = SourceRepo::open(dir, &config.source.url)?;
-    if !source.exists() {
-        return Err(Error::Config(
-            "source repository is missing; run `ds source fetch`".into(),
-        ));
-    }
-
-    let current = source.current()?;
-    let source_label = current.label();
-    let commit = source.resolve_current()?;
-    parse_commit_hex(&commit)?;
-    progress(1, format!("source {source_label} -> {commit}"));
-
     let store = Store::new(dir);
-    let base_version = space::read_ref_optional(dir, &branch)?;
-    let base_commit = match &base_version {
-        Some(version) => {
-            let node = load_version(&store, version)?;
-            Some(to_commit_hex(&node.source_commit))
-        }
-        None => None,
-    };
-    if let Some(base) = &base_commit {
-        progress(1, format!("base commit {base}"));
-        if base == &commit {
-            progress(1, "branch is already at this commit");
-            println!("On branch {branch}");
-            println!(
-                "{} at {}",
-                source_label_human(&source_label),
-                short_hex(&commit)
-            );
-            println!("Already up to date.");
-            return Ok(());
-        }
-        if !source.is_ancestor(base, &commit)? {
-            return Err(Error::Config(format!(
-                "scan only moves forward: {commit} is not a descendant of {base} on branch {branch}"
-            )));
-        }
+    let mut state = branch_state(&store, dir, &branch)?;
+    if state.elements.iter().any(|element| element.name == name) {
+        return Err(Error::Config(format!("element {name} already exists")));
     }
 
-    let new_blobs = source.list_blobs(&commit)?;
-    let mut unchanged = BTreeSet::new();
-    let mut changed = BTreeSet::new();
-    if let Some(base) = &base_commit {
-        let old_blobs = source.list_blobs(base)?;
-        let old: BTreeMap<&str, &str> = old_blobs
-            .iter()
-            .map(|entry| (entry.path.as_str(), entry.oid.as_str()))
-            .collect();
-        for entry in &new_blobs {
-            match old.get(entry.path.as_str()) {
-                Some(oid) if *oid == entry.oid.as_str() => {
-                    unchanged.insert(entry.path.clone());
-                }
-                _ => {
-                    changed.insert(entry.path.clone());
-                }
+    let mut element = Element {
+        name: name.to_owned(),
+        ty: T_CONCEPT,
+        path: path.unwrap_or_default().to_owned(),
+        commit: to_commit_hex(&state.source_commit),
+        start_byte: 0,
+        end_byte: 0,
+        start_line,
+        end_line,
+        own_text: String::new(),
+        parent: None,
+        children: Vec::new(),
+        design: text,
+        content_hash: None,
+    };
+
+    let parent_name = match parent {
+        Some(parent) => {
+            if !state.elements.iter().any(|element| element.name == parent) {
+                return Err(Error::NotFound(format!("parent element {parent}")));
             }
+            Some(parent.to_owned())
         }
-    } else {
-        changed.extend(new_blobs.iter().map(|entry| entry.path.clone()));
-    }
-    progress(
-        1,
-        format!(
-            "{} changed file(s), {} unchanged",
-            changed.len(),
-            unchanged.len()
-        ),
-    );
-
-    let (mut elements, failed) = match &base_version {
-        Some(base) => space::reuse_file_elements(&store, dir, base, &unchanged, &commit)?,
-        None => (Vec::new(), BTreeSet::new()),
+        None => infer_parent(name, &state.elements),
     };
-    for path in failed {
-        unchanged.remove(&path);
-        changed.insert(path);
-    }
-    let retained = elements.len();
-    let report = language::scan_commit_paths(&source, &commit, &changed, &mut |path, count| {
-        progress(2, format!("  {path}: {count} element(s)"));
-    })?;
-    let not_parsed_now = report.skipped_files();
-    let parsed = report.elements.len();
-    elements.extend(report.elements);
-    for entry in &new_blobs {
-        let content_hash = parse_commit_hex(&entry.oid)?;
-        elements.push(Element {
-            name: entry.path.clone(),
-            ty: T_FILE,
-            path: entry.path.clone(),
-            commit: commit.clone(),
-            start_byte: 0,
-            end_byte: 0,
-            start_line: 0,
-            end_line: 0,
-            own_text: String::new(),
-            parent: None,
-            children: Vec::new(),
-            design: None,
-            content_hash: Some(to_hex(&content_hash)),
-        });
-    }
-    elements.sort_by(|a, b| a.name.cmp(&b.name));
-    let parsed_paths: BTreeSet<&str> = elements
-        .iter()
-        .filter(|element| element.ty != T_FILE)
-        .map(|element| element.path.as_str())
-        .collect();
-    let unparsed = new_blobs
-        .iter()
-        .filter(|entry| !parsed_paths.contains(entry.path.as_str()))
-        .count();
-    progress(
-        1,
-        format!(
-            "parsed {parsed} element(s) from {} changed file(s); kept {retained} element(s) from {} unchanged file(s)",
-            report.extracted_files,
-            unchanged.len()
-        ),
-    );
-    if not_parsed_now > 0 {
-        progress(1, format!("{not_parsed_now} changed file(s) not parsed"));
-        for path in &report.unsupported {
-            progress(2, format!("  unparsed {path}: no language adapter"));
-        }
-        for path in &report.empty {
-            progress(2, format!("  unparsed {path}: no elements"));
-        }
-        for path in &report.skipped_blobs {
-            progress(2, format!("  unparsed {path}: not readable text"));
+    if let Some(parent_name) = &parent_name {
+        element.parent = Some(parent_name.clone());
+        if let Some(parent) = state
+            .elements
+            .iter_mut()
+            .find(|element| &element.name == parent_name)
+        {
+            parent.children.push(name.to_owned());
         }
     }
+    state.elements.push(element);
 
-    let mut reused = 0;
-    if let Some(base) = &base_version {
-        reused = space::reuse_designs(&store, base, &mut elements)?;
-        if reused > 0 {
-            progress(1, format!("reused {reused} design(s) from base"));
-        }
-    }
-
-    let scanned = elements.len();
     let result = space::commit(
         &store,
         dir,
-        &elements,
+        &state.elements,
         &CommitOptions {
-            message: format!("scan {}", &commit[..commit.len().min(12)]),
-            author: "ds".into(),
-            source_commit: parse_commit_hex(&commit)?,
-            pipeline: "tree-sitter/v1".into(),
+            message: format!("create {name}"),
+            author: "agent".into(),
+            source_commit: current_source_commit(dir, state.source_commit),
+            pipeline: AGENT_PIPELINE.into(),
             ref_name: branch.clone(),
         },
     )?;
-
-    println!("On branch {branch}");
-    println!(
-        "{} at {}",
-        source_label_human(&source_label),
-        short_hex(&commit)
-    );
-    println!(
-        "{} file(s) changed, {} unchanged, {unparsed} not parsed",
-        changed.len(),
-        unchanged.len()
-    );
-    println!("Scanned {scanned} element(s); {reused} design(s) reused",);
+    println!("Created {name} on branch {branch}");
+    if let Some(parent) = &parent_name {
+        println!("Parent {parent}");
+    }
     println!(
         "Created version {} ({} missing design(s))",
         short_hex(&to_hex(&result.version)),
         result.missing
     );
     Ok(())
+}
+
+const AGENT_PIPELINE: &str = "agent/v1";
+
+/// The source commit the agent is currently reading, when the source clone is
+/// available. Falls back to the branch's previous version.
+fn current_source_commit(dir: &Path, fallback: [u8; 32]) -> [u8; 32] {
+    let Ok(config) = load_config(dir) else {
+        return fallback;
+    };
+    let Ok(source) = SourceRepo::open(dir, &config.source.url) else {
+        return fallback;
+    };
+    let Ok(commit) = source.resolve_current() else {
+        return fallback;
+    };
+    parse_commit_hex(&commit).unwrap_or(fallback)
+}
+
+struct BranchState {
+    elements: Vec<Element>,
+    source_commit: [u8; 32],
+}
+
+/// Current elements with their parent/child links. Versions store hashes and
+/// spans, not links; a local tree cache normally has them. After a clone the
+/// cache is absent, so links are reconstructed from `::` names.
+fn branch_state(store: &Store, dir: &Path, branch_name: &str) -> Result<BranchState> {
+    let Some(version) = space::read_ref_optional(dir, branch_name)? else {
+        return Ok(BranchState {
+            elements: Vec::new(),
+            source_commit: [0u8; 32],
+        });
+    };
+    let version_node = load_version(store, &version)?;
+    let elements = match space::elements_at(store, dir, &version, true) {
+        Ok(elements) => elements,
+        Err(_) => {
+            let mut elements = space::elements_at(store, dir, &version, false)?;
+            link_names(&mut elements);
+            elements
+        }
+    };
+    Ok(BranchState {
+        elements,
+        source_commit: version_node.source_commit,
+    })
+}
+
+fn link_names(elements: &mut [Element]) {
+    let names: std::collections::BTreeSet<String> = elements
+        .iter()
+        .map(|element| element.name.clone())
+        .collect();
+    let mut parents: BTreeMap<String, Option<String>> = BTreeMap::new();
+    for element in elements.iter() {
+        let parts: Vec<&str> = element.name.split("::").collect();
+        let mut prefix = String::new();
+        let mut found = None;
+        for part in &parts[..parts.len().saturating_sub(1)] {
+            if !prefix.is_empty() {
+                prefix.push_str("::");
+            }
+            prefix.push_str(part);
+            if names.contains(&prefix) {
+                found = Some(prefix.clone());
+            }
+        }
+        parents.insert(element.name.clone(), found);
+    }
+    for element in elements.iter_mut() {
+        if element.parent.is_none() {
+            element.parent = parents.get(&element.name).cloned().flatten();
+        }
+        element.children.clear();
+    }
+    let links: Vec<(String, Option<String>)> = elements
+        .iter()
+        .map(|element| (element.name.clone(), element.parent.clone()))
+        .collect();
+    for (child, parent) in links {
+        if let Some(parent) = parent
+            && let Some(element) = elements.iter_mut().find(|element| element.name == parent)
+        {
+            element.children.push(child);
+        }
+    }
+}
+
+fn infer_parent(name: &str, elements: &[Element]) -> Option<String> {
+    let parts: Vec<&str> = name.split("::").collect();
+    let mut prefix = String::new();
+    let mut found = None;
+    for part in &parts[..parts.len().saturating_sub(1)] {
+        if !prefix.is_empty() {
+            prefix.push_str("::");
+        }
+        prefix.push_str(part);
+        if elements.iter().any(|element| element.name == prefix) {
+            found = Some(prefix.clone());
+        }
+    }
+    found
+}
+
+fn parse_line_range(value: &str) -> Result<(u32, u32)> {
+    let (start, end) = match value.split_once('-') {
+        Some((start, end)) => (start, end),
+        None => (value, value),
+    };
+    let start = start
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| Error::Config(format!("invalid line range {value}: {error}")))?;
+    let end = end
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| Error::Config(format!("invalid line range {value}: {error}")))?;
+    if start == 0 || end < start {
+        return Err(Error::Config(format!("invalid line range {value}")));
+    }
+    Ok((start, end))
 }
 
 fn load_config(dir: &Path) -> Result<Config> {
@@ -688,7 +942,11 @@ fn status(
 ) -> Result<()> {
     let branch = branch::current(dir)?;
     let store = Store::new(dir);
-    let version = space::resolve_version(&store, dir, None)?;
+    let Some(version) = space::read_ref_optional(dir, &branch)? else {
+        println!("On branch {branch}");
+        println!("No versions yet; run `ds create`.");
+        return Ok(());
+    };
     let elements = space::elements_at(&store, dir, &version, false)?;
     let total = elements.len();
     let mut matched = 0usize;
@@ -777,18 +1035,10 @@ fn describe(
     };
     let branch = branch::current(dir)?;
     let store = Store::new(dir);
-    let version = space::resolve_version(&store, dir, None)?;
-    let current = load_version(&store, &version)?;
-    let mut elements = match space::elements_at(&store, dir, &version, true) {
-        Ok(elements) => elements,
-        Err(error) => {
-            progress(
-                1,
-                format!("tree cache unavailable ({error}); re-parsing source..."),
-            );
-            elements_from_source(dir, &store, &version, &current)?
-        }
-    };
+    space::resolve_version(&store, dir, None)?;
+    let state = branch_state(&store, dir, &branch)?;
+    let source_commit = state.source_commit;
+    let mut elements = state.elements;
     let element = elements
         .iter_mut()
         .find(|element| element.name == name)
@@ -807,8 +1057,8 @@ fn describe(
         &CommitOptions {
             message: format!("describe {name}"),
             author: "ds".into(),
-            source_commit: current.source_commit,
-            pipeline: current.pipeline,
+            source_commit: current_source_commit(dir, source_commit),
+            pipeline: AGENT_PIPELINE.into(),
             ref_name: branch.clone(),
         },
     )?;
@@ -974,56 +1224,6 @@ fn source_command(dir: &Path, command: SourceCommand) -> Result<()> {
     }
 }
 
-/// Rebuild the element hierarchy by re-parsing the version's source commit.
-/// Used when the local tree cache is missing (for example after a fetch).
-fn elements_from_source(
-    dir: &Path,
-    store: &Store,
-    version: &design_space::hash::Hash,
-    node: &design_space::node::VersionNode,
-) -> Result<Vec<Element>> {
-    let config = load_config(dir)?;
-    let source = SourceRepo::open(dir, &config.source.url)?;
-    if !source.exists() {
-        return Err(Error::Config(
-            "tree cache is missing and the source repository is unavailable; run `ds scan`".into(),
-        ));
-    }
-    let commit_hex = to_commit_hex(&node.source_commit);
-    let report = language::scan_commit(&source, &commit_hex)?;
-    let mut elements = report.elements;
-    let blobs = source.list_blobs(&commit_hex)?;
-    for entry in &blobs {
-        let content_hash = parse_commit_hex(&entry.oid)?;
-        elements.push(Element {
-            name: entry.path.clone(),
-            ty: T_FILE,
-            path: entry.path.clone(),
-            commit: commit_hex.clone(),
-            start_byte: 0,
-            end_byte: 0,
-            start_line: 0,
-            end_line: 0,
-            own_text: String::new(),
-            parent: None,
-            children: Vec::new(),
-            design: None,
-            content_hash: Some(to_hex(&content_hash)),
-        });
-    }
-    let designs: BTreeMap<String, Option<String>> = space::elements_at(store, dir, version, false)?
-        .into_iter()
-        .map(|element| (element.name, element.design))
-        .collect();
-    for element in &mut elements {
-        if let Some(design) = designs.get(&element.name) {
-            element.design = design.clone();
-        }
-    }
-    elements.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(elements)
-}
-
 fn show(dir: &Path, name: &str, at: Option<&str>, source_only: bool) -> Result<()> {
     let store = Store::new(dir);
     let version = resolve_version(&store, dir, at)?;
@@ -1032,6 +1232,11 @@ fn show(dir: &Path, name: &str, at: Option<&str>, source_only: bool) -> Result<(
     if source_only {
         if object.ty == T_FILE {
             return print_whole_file(dir, &to_commit_hex(&object.commit), &object.path);
+        }
+        if object.path.is_empty() || (object.start_byte == 0 && object.end_byte == 0) {
+            return Err(Error::Config(format!(
+                "{name} has no source anchor; create it with --path and --lines"
+            )));
         }
         return print_source(
             dir,
@@ -1241,30 +1446,11 @@ fn repack_cmd(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn serve(repo: &Path, listen: Option<&str>, stdio: bool) -> Result<()> {
-    match (listen, stdio) {
-        (Some(_), true) => Err(Error::Config(
-            "use either --listen or --stdio, not both".into(),
-        )),
-        (None, false) => Err(Error::Config(
-            "pass --listen <addr> for HTTP or --stdio for SSH".into(),
-        )),
-        (Some(address), false) => {
-            progress(1, format!("serving {} on http {address}", repo.display()));
-            remote::serve_http(repo, address)
-        }
-        (None, true) => {
-            progress(1, format!("serving {} on stdio", repo.display()));
-            remote::serve_stdio(repo)
-        }
-    }
-}
-
 fn remote_url(dir: &Path) -> Result<String> {
     load_config(dir)?
         .remote
         .map(|remote| remote.url)
-        .ok_or_else(|| Error::Config("no remote configured; run `ds init --remote <url>`".into()))
+        .ok_or_else(|| Error::Config("no remote configured; run `ds remote add <url>`".into()))
 }
 
 fn remote_branch(dir: &Path, branch: Option<&str>) -> Result<String> {
@@ -1407,5 +1593,24 @@ fn node_name(node: &Node) -> &str {
     match node {
         Node::Object(object) => &object.name,
         _ => "",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_clone_directories_from_urls() {
+        assert_eq!(
+            default_clone_directory("ds://xuyan@localhost/ad86e6c58f818f9f"),
+            "ad86e6c58f818f9f"
+        );
+        assert_eq!(
+            default_clone_directory("http://host:7000/v1/projects/foo/"),
+            "foo"
+        );
+        assert_eq!(default_clone_directory("ssh://host/srv/ds/demo"), "demo");
+        assert_eq!(default_clone_directory("ds://host/"), "design-space");
     }
 }

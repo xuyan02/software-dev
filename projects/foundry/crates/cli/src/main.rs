@@ -56,6 +56,9 @@ enum Command {
         name: String,
         #[arg(long)]
         description: Option<String>,
+        /// Git repository the project works on.
+        #[arg(long)]
+        git_repository: String,
         /// Id of a published workflow to use for the root task.
         #[arg(long = "root-workflow", default_value = "project")]
         root_workflow: String,
@@ -260,12 +263,14 @@ async fn main() -> Result<()> {
         Command::CreateProject {
             name,
             description,
+            git_repository,
             root_workflow,
         } => {
             let auth = auth.require()?;
             let body = json!({
                 "name": name,
                 "description": description,
+                "git_repository": git_repository,
                 "root_workflow_id": root_workflow,
             });
             print_response(

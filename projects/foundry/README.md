@@ -126,6 +126,10 @@ openai_model = "deepseek-chat"
 | `OPENAI_API_KEY` | 无 | 平台智能体模型 key；也可写 `openai_api_key`。不落库 |
 | `OPENAI_BASE_URL` | 平台默认 `http://127.0.0.1:11434/v1` | 平台智能体模型 base URL；也可写 `openai_base_url` |
 | `OPENAI_MODEL` | 平台默认 `qwen2.5-coder` | 平台智能体模型名；也可写 `openai_model` |
+| `DESIGN_SPACE_URL` | 无 | 外部 `ds-server` 的 HTTP 地址；不配置时控制平面启动本地 `ds-server`；也可写 `design_space_url` |
+| `DESIGN_SPACE_ROOT` | `~/.foundry/design-spaces` | 本地 `ds-server` 的项目仓库目录 |
+| `DESIGN_SPACE_HOST` | `localhost` | 生成 `ds://` 地址用的主机名 |
+| `DESIGN_SPACE_USER` | `$USER` | 生成 `ds://` 地址用的 SSH 用户 |
 
 引导规则：
 

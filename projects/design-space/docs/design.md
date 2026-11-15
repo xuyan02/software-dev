@@ -3,31 +3,38 @@
 - 状态：实现中
 - 日期：2026-11-15
 - 工程：`projects/design-space`
-- 二进制：`ds`
+- 二进制：客户端 `ds`，服务端 `ds-server`
 
 ## 1. 目标
 
 把一个代码仓库的设计变成一套可版本化、可增量同步的内容寻址数据：
 
-- 代码由工具自己解析，智能体只负责写设计说明；
-- 每个语言元素是一个独立对象；
+- 设计空间里的“元素”是**概念对象**（能力、领域概念、组件职责、约束），不是语法节点；
+- 智能体阅读代码后，通过 `ds create` 显式创建元素并写设计；
+- 每个概念元素是一个独立对象；
 - 对象不可变，按内容 hash 寻址；
 - 版本像 git commit，指向一棵由索引节点组成的树；
 - 同一批对象可以按多种组织方式（namespace、file、package）浏览；
 - 上传下载按树差异走，和改动量成正比。
 
+> 2026-11-15 模型修正：删除 `scan` 和全部代码解析（tree-sitter 适配器）。
+> 概念对象无法从 AST 推导，必须由智能体阅读代码后创建。源码只作为只读输入
+> 和可选锚点。
+
 ## 2. 边界
 
 工具负责：
 
-- 拉取源码、解析、抽取元素；
+- 拉取源码、提供只读源码访问；
+- 校验并存储智能体创建的概念元素、设计、关系；
 - 计算 hash；
 - 存储节点、打包；
 - 版本、ref、同步。
 
 工具不负责：
 
-- 生成设计文本（智能体负责）；
+- 解析代码、抽取语言元素；
+- 生成设计文本和概念划分（智能体负责）；
 - 执行仓库代码；
 - 语义类型推导（只做语法解析）。
 
@@ -281,7 +288,7 @@ object_hash          = H(OBJ1 payload)
     source/         # 唯一的 bare 克隆；只有 refs/remotes/origin，没有 refs/heads
     source-head     # 当前源码 ref：branch <name> 或 commit <sha>
     branches/<name>  # 尚未产生版本的分支标记（空文件）
-    cache/trees/<version>.json  # 元素父子关系，供增量 scan 跳过未变文件
+    cache/trees/<version>.json  # 元素父子关系（本地缓存）
     cache/names/<version>.idx
     tmp/
 ```
@@ -289,10 +296,10 @@ object_hash          = H(OBJ1 payload)
 源码仓库生命周期：
 
 1. `ds init`：`git clone --bare` 到 `.ds/source`，把 clone 出来的 `refs/heads/*` 复制成 `refs/remotes/origin/*` 后全部删除；默认分支记到 `.ds/source-head`；
-2. `ds source fetch`：显式更新 `refs/remotes/origin/*` 和 tags；`scan` 永远不 fetch；fetch 后再次清掉任何 `refs/heads`；
+2. `ds source fetch`：显式更新 `refs/remotes/origin/*` 和 tags；fetch 后再次清掉任何 `refs/heads`；
 3. `ds source checkout <ref>`：只写 `source-head`（远端分支记 `branch <name>`，tag/commit 解析成 `commit <sha>`），不创建 work tree，也不创建本地分支；
-4. `scan`：没有 ref 参数，只扫描当前 `source-head`；解析只用 `refs/remotes/origin/*`、`refs/tags/*` 和 commit SHA；
-5. `git ls-tree -r -z` 列出 blob，`git cat-file blob` 读取原始字节。
+4. `create` / `describe` 记录当前 `source-head` 指向的 commit，作为版本和元素锚点的来源；
+5. 智能体通过 `git cat-file blob` 读取原始字节；工具本身不解析代码。
 
 源码仓库不保留本地分支：`origin/<name>`、`refs/remotes/origin/<name>` 和 `<name>` 都表示同一个远端分支。
 
@@ -342,50 +349,45 @@ loose 存在 → 直接读
 ## 10. 写入流程
 
 ```text
-scan     拉源码、解析、复用设计、算 hash，写 OBJ/DES/IDX，建虚拟根和 VER，推进当前分支 ref
+create   智能体给出概念元素（名称/设计/锚点/父节点），算 hash，写 OBJ/DES/IDX，建虚拟根和 VER，推进 ref
 describe 基于当前版本重建元素，写入设计，生成新的 OBJ/祖先 OBJ/IDX/VER，推进 ref
 ```
 
-没有暂存区，也没有单独的 commit 命令：**scan 和 describe 本身就是一次版本提交**。
+没有暂存区，也没有单独的 commit 命令：**create 和 describe 本身就是一次版本提交**。
 
-- scan 产生的版本允许元素没有设计，`design_hash = 0`；`missing` 就是不在这里的数量；
+- create 允许元素没有设计，`design_hash = 0`；`missing` 就是没有设计的数量；
 - 版本 parent 是当前分支 ref 指向的版本；ref 原子更新；
 - 没变的 OBJ/DES 复用原节点，只有变化的元素、受影响的祖先、视图 IDX、虚拟根和 VER 是新的；
+- 版本记录当前 `source-head` 的 commit；元素可选记录同一条 commit + path/lines 作为证据；
 - `status`、`show`、`list`、`log` 都直接读当前版本。
+
+> 旧的 `scan`、增量文件 diff、tree-sitter 解析、按 input_hash 自动复用设计均已删除。
 
 ### 10.1 本地分支
 
 - 本地分支 = `refs/heads/<name>`；尚未产生版本的分支有一个 `branches/<name>` 标记文件；
 - `HEAD` 记录当前分支，默认 `main`；
-- `scan` 只写入当前分支；切分支用 `ds checkout <name>`，新分支用 `ds checkout -b <name>`；
+- `create` / `describe` 只写入当前分支；切分支用 `ds checkout <name>`，新分支用 `ds checkout -b <name>`；
 - `checkout <name>` 切换当前分支；`checkout -b <name>` 创建并切换；
 - `branch` 列出所有本地分支及其版本；`branch <name>` 创建但不切换；`branch -d <name>` 删除非当前分支；
 - 每个分支独立复用自己基点版本的设计；不同分支互不影响；
 - `show` / `list` / `log` 的 `--at` 缺省为当前分支。
 
-### 10.2 只能向前扫描
+### 10.2 版本与源码 commit
 
-- `scan` 没有 ref 参数：只扫描 `.ds/source-head` 当前的源码 ref；切换分支/commit 用 `ds source checkout`；
-- 扫描得到的 commit 记录在版本根节点 `VER1.source_commit`；每个 OBJ 也记录自己的 commit，供 `show --source` 用；
-- 基点 commit 取当前分支版本根节点的 `source_commit`；
-- 新 commit 必须等于基点，或是基点的后代（`git merge-base --is-ancestor`）；否则 `scan` 拒绝：
-  `scan only moves forward: <new> is not a descendant of <base> on branch <name>`；
-- 空分支没有基点，可以扫描任意 commit；
-- 目标 commit 等于基点时，`scan` 不产生新版本，直接输出 `branch=`、`commit=`、`status=up-to-date`；
-- 不允许回退到旧 commit，也不允许切到与基点无祖先关系的其他分支历史。
+- 每次 `create` / `describe` 都读取当前 `.ds/source-head` 指向的 commit，写入版本根节点 `VER1.source_commit`；
+- 元素可以记录同一条 commit + `path` + 行范围作为源码锚点，供 `show --source` 和证据展示；
+- 版本不要求源码 commit 前进，也不再有“只能向前扫描”的限制；设计空间是作者产出的模型，不是源码的自动投影；
+- 源码 ref 的切换仍然显式：`ds source checkout <branch|tag|commit>`。
 
-### 10.3 增量扫描
+### 10.3 元素创建
 
-- 用 git blob oid 对比基点和目标 commit 的文件列表：path 相同且 oid 相同即未变；
-- 未变文件不读 blob、不解析 tree-sitter：
-  - 从基点版本复用 OBJ 的 `content_hash`、span、类型；
-  - 从 `.ds/cache/trees/<version>.json` 恢复 parent/children 和顺序；
-  - design 由 `reuse_designs` 按 `input_hash` 拷回；子元素设计变了，父元素的 input 会在提交时重新算出；
-- 变了的文件走完整解析；删除的文件不进入新版本；
-- tree cache 是本地缓存：丢失（例如版本由远端 fetch 而来）时未变文件回退为重新解析，结果不变，只是变慢；
-- 输出 `changed_files=` / `unchanged_files=` 表示实际解析和复用的文件数。
-
-每次 `scan` 都会产生一个新版本；`describe` 也会产生一个新版本。设计编辑通过重建受影响的祖先 OBJ 来保持 `input_hash` 正确。
+- `ds create <name>` 创建一个概念元素；名称在同一分支内唯一；
+- 可选 `--design` / `--design-file`；缺省时不写设计，计入 `missing`；
+- 可选 `--path` / `--lines`：只作为证据锚点，不参与 identity；
+- 可选 `--parent`；未指定时，在已存在元素中寻找最长的 `::` 名称前缀作为父节点；
+- 父/子链接写入本地 tree cache；版本本身只保存对象、视图和 hash；缺失 cache 时按 `::` 名称重建；
+- 删除的旧解析流程不再存在，也不再有文件级增量 diff。
 
 ## 11. 上传（push）
 
@@ -473,29 +475,42 @@ diff(V_have.root, V_want.root)（V_want 不在本地时按全量）
 HTTP（`Authorization: Bearer $DS_TOKEN`，服务端和客户端都从环境变量读 token）：
 
 ```text
-GET  /v1/refs                    → { refs: { name: version } }
-POST /v1/fetch  { want, have }   → 原始 pack
-POST /v1/packs  原始 pack         → { checksum }
-POST /v1/push   { ref, old, new } → 200 ok / 409 conflict / 422 missing
+POST /v1/projects            { name } → { name, slug, design_space }
+GET  /v1/projects
+GET  /v1/projects/{slug}
+```
+
+每个项目的同步端点：
+
+```text
+GET  /v1/projects/{slug}/v1/refs                    → { refs: { name: version } }
+POST /v1/projects/{slug}/v1/fetch  { want, have }   → 原始 pack
+POST /v1/projects/{slug}/v1/packs  原始 pack         → { checksum }
+POST /v1/projects/{slug}/v1/push   { ref, old, new } → 200 ok / 409 conflict / 422 missing
 ```
 
 SSH：
 
 ```text
-ds serve --stdio --repo <dir>    # 由 sshd / ssh 启动
-ssh://[user@]host[:port]/abs/path
+ds-server stdio --root <root> --project <id>   # 由 sshd / ssh 启动
+ssh://[user@]host[:port]/<id>
+ds://[user@]host[:port]/<id>   # 等价，推荐
 ```
 
-客户端用系统 `ssh` 启动 `ds serve --stdio --repo <path>`，在同一 stdin/stdout 上跑同样的 4 种消息（1 refs、2 fetch、3 pack、4 push），帧格式为 `op u8 | len u32 LE | payload`，响应为 `status u8 | len u32 | payload`。
+`<id>` 是项目的 16 位十六进制 id（`project.toml` 中记录），地址里不含文件系统路径；服务端在自己的 root（`--root` 或 `DESIGN_SPACE_ROOT`，默认 `~/.foundry/design-spaces`）下按 id 查找仓库。多段路径仍作为显式仓库路径兼容（`--repo <dir>`），但不用于新地址。
+
+客户端用系统 `ssh` 启动 `ds-server stdio --project <id>`，在同一 stdin/stdout 上跑同样的 4 种消息（1 refs、2 fetch、3 pack、4 push），帧格式为 `op u8 | len u32 LE | payload`，响应为 `status u8 | len u32 | payload`。
 
 服务端不需要自己实现 SSH 协议，交给 OpenSSH（和 git 的 upload-pack 一样）。sshd 配置示例：
 
 ```text
 Match User ds
-  ForceCommand /usr/local/bin/ds serve --stdio --repo /srv/design
+  ForceCommand /usr/local/bin/ds-server stdio --root /srv/design-spaces
   AllowTcpForwarding no
   X11Forwarding no
 ```
+
+ForceCommand 会忽略客户端命令行，但 OpenSSH 把它保留在 `SSH_ORIGINAL_COMMAND` 中；`ds-server stdio` 只从里面取 `--project <id>`，不接受客户端传入的 `--root` 或 `--repo`，root 始终由服务端配置决定。
 
 认证、加密和用户隔离由 sshd 完成；HTTP 模式下用 `DS_TOKEN`。
 
@@ -512,17 +527,21 @@ Match User ds
 ## 14. CLI
 
 ```text
-ds init --source <url> [--remote <url>]   # 立即 clone
+ds clone <ds-url> [--source <git-url>] [--branch <name>] [<dir>]  # init + fast-forward
+ds init --source <url>                    # 只创建本地仓库，不接触远端
+ds remote add <url>                       # 给已创建的仓库设置 origin
+ds remote show
+ds remote set-url <url>
 ds source status                          # 当前源码 ref 和 commit
 ds source branch                          # 远端分支，git branch 风格
-ds source fetch                           # 显式拉取；scan 不自动拉取
+ds source fetch                           # 显式拉取
 ds source checkout <branch|tag|commit>    # 切换源码 ref
 ds source log [<ref>] [--limit N]         # 源码提交日志
-ds scan                                   # 只扫当前 source-head，写入当前设计分支；不拉取
+ds create <name> [--design T|--design-file F] [--path P] [--lines A-B] [--parent N]  # 创建概念元素并推进版本
 ds branch [<name>] [-d <name>]
 ds checkout [-b] <name>
 ds status [--missing] [--path P] [--type T] [--limit N]
-ds describe <name> --design-file <file> | --design <text>
+ds describe <name> --design-file <file> | --design <text>          # 修改设计并推进版本
 ds show <name> [--at <ref>] [--source]
 ds list [--ref <ref>] [--path P] [--type T]
 ds log [ref]
@@ -535,17 +554,31 @@ ds gc                         # 清不可达 + repack + 清旧 cache
 ds verify <pack>
 ds cat <hash>
 ds ls
-ds serve --listen <addr> --repo <dir>
-ds serve --stdio --repo <dir>
+```
+
+独立服务端 `ds-server`：
+
+```text
+ds-server serve --root <dir> --listen <addr> [--host H] [--user U] [--port P]
+ds-server stdio --root <dir> --project <id>   # 给 sshd / ssh 用
+ds-server stdio --repo <dir>                  # 兼容：显式仓库路径
+ds-server project create --root <dir> --name <name> [--source <git-url>] [--host H] [--user U] [--port P]
+ds-server project list --root <dir>
+ds-server project show <name> --root <dir>
+ds-server project set-source <name> --source <git-url> --root <dir>
+ds-server gc --repo <dir>
+ds-server repack --repo <dir>
 ```
 
 约定：
 
 - 输出是给人看的 git 风格文本；进度日志走 stderr，结果走 stdout；
 - 工作区 = 运行 `ds init` 的目录；`--dir` 指工作区根目录，默认从当前目录向上找 `.ds`；工具状态只在 `<根>/.ds/` 里；
-- `-q` 关闭进度日志，`-v` 输出每个文件的解析进度；
-- `init` 在返回前完成 bare clone；`scan` 不 fetch，只扫描当前 `source-head`；
-- `scan` 输出：当前分支、源码 ref 和短 commit、变化/未变/未解析文件数、扫描元素数、复用设计数、新版本短 hash 和缺失设计数；具体缺哪些设计用 `status --missing` 查；
+- `-q` 关闭进度日志，`-v` 输出详细信息；
+- `init` 在返回前完成 bare clone；源码仅供智能体只读阅读，不产生元素；
+- `clone <ds-url> [--source <git-url>] [--branch <name>] [<dir>]` 等价于在 `<dir>`（默认取 URL 最后一段）里 `init` 再 `pull` 选中的分支（默认 `main`、其次 `master`、否则唯一分支）；失败时删除自己新建的目录；源码仓库地址优先取 `--source`，否则取设计空间项目元数据里的 `source`（refs 响应里的 `source` 字段，创建项目时由 `--source` 或 Foundry 写入）；两者都没有时提示传 `--source`；
+- `create` 输出元素名、推导/指定的父节点、新版本短 hash 和缺失设计数；每个元素一次版本提交；
+- 元素是概念对象：名称、设计文本、可选源码锚点（`--path`、`--lines`）、可选父节点都由作者给出；工具不解析代码；
 - `status` 输出当前分支、版本和源码 commit，然后每个元素一行 `type name path:lines designed|not designed`，末尾汇总；
 - `branch` 像 `git branch`：`* name <短版本>`；
 - `source branch` 像 `git branch`；`source status`、`source fetch`、`source checkout`、`source log` 用句子和短 hash；
@@ -553,15 +586,14 @@ ds serve --stdio --repo <dir>
 - `pack` 输出打包节点数、新 pack 短 hash、删除的 loose 数量；`--output` 模式明确标注“仅导出”；
 - `repack` 输出打包节点数、新 pack 短 hash、删除的 pack/loose 数量；`gc` 额外输出可达节点数和清理的过期 cache 数；
 - `push` / `fetch` / `pull` 输出句子，例如 `Pushed main to origin: 7c9eed9b (12 node(s))`；无变化时是 `Everything up-to-date ...`；
-- remote URL 来自 `init --remote <url>`；支持 `http(s)://` 和 `ssh://[user@]host[:port]/abs/path`；
+- `init` 只创建本地仓库，不设置、不访问远端；远端由 `remote add/set-url <url>` 或 `clone <url>` 设置；支持 `http(s)://...`、`ssh://[user@]host[:port]/<id>` 和 `ds://[user@]host[:port]/<id>`（`ds://` 走 OpenSSH + `ds-server stdio --project <id>`）；`ds://localhost/<id>`、`ds://127.0.0.1/<id>` 在本机 root（`DESIGN_SPACE_ROOT`，默认 `~/.foundry/design-spaces`）存在该项目时直接走本地仓库，便于没有 sshd 的本地 Foundry；需要强制 SSH 时用 `ssh://localhost/<id>`；`<id>` 是项目 id，地址不含服务器路径，服务端在自己的 root 下解析；多段路径按兼容方式当作显式仓库路径；
 - HTTP 认证用环境变量 `DS_TOKEN`（客户端和服务端都读），走 `Authorization: Bearer`；token 不进入命令行和日志；
 - `show --source` 只输出元素源码：用元素的 commit + path 从 `.ds/source` 的 git blob 里按 byte span 取，不读工作区、不 checkout；`show` 和 `log` 里的 commit 用 git 原始十六进制（SHA-1 为 40 位），不是内部补零的 64 位；
 - 命令行不接收 JSON 输入；
-- `init`、`source status|branch|fetch|checkout|log`、`scan`、`branch`、`checkout`、`status`、`describe`、`show`、`list`、`log`、`pack`、`verify`、`cat`、`ls` 已经实现；
-- `init` 完成 bare clone；`scan` 只读本地对象，不 fetch，不 checkout，不执行代码；
-- `scan` 已接入 tree-sitter 的 C++、Rust、Python、Go、Java 适配器；
-- 每个 git blob 都有一个 `file` 对象；没有适配器、解析不出元素、非 UTF-8/超大/二进制只影响"是否解析"，不影响文件对象本身；`scan` 的“未解析”是本版本中没有语言元素的文件数，`-v` 对本次解析的失败文件列出原因；
-- 文档、配置、锁文件等有文件对象，但不产生语言元素、不总结；
+- `clone`、`init`、`remote add|show|set-url`、`source status|branch|fetch|checkout|log`、`create`、`branch`、`checkout`、`status`、`describe`、`show`、`list`、`log`、`pack`、`verify`、`cat`、`ls` 已经实现；
+- `init` 完成 bare clone；源码只读，不 fetch，不 checkout，不执行代码；
+- 没有代码解析器，也没有 tree-sitter 适配器；所有元素由 `ds create` 显式创建；
+- 文件对象、语言元素都不会自动产生；智能体按需要创建概念元素，并用 `--path`/`--lines` 记录证据；
 - `status` 默认只列语言元素；`status --files` 包含文件对象（显示为 file）；`list --files` 走 files 视图；`show <path>` 可以查看文件对象，`show <path> --source` 输出整个文件；
 - `describe` 文件对象会报错（文件不总结）；
 
@@ -569,7 +601,7 @@ ds serve --stdio --repo <dir>
 
 - 节点不可变，hash 即地址；
 - 语言元素的 design_hash 指向 DES，尚未写设计时为 0；文件对象恒为 0；
-- ref 只能快进，更新必须 CAS；scan/describe 各产生一个版本；
+- ref 只能快进，更新必须 CAS；create/describe 各产生一个版本；
 - 子节点变 → 视图路径上的 IDX 变 → 虚拟根变 → VER 变；
 - 元素对象的 content/input hash 由工具计算；
 - 上传下载按树差异走。
@@ -584,36 +616,30 @@ ds serve --stdio --repo <dir>
 - loose store；
 - pack 写入/读取/校验；
 - 本地分支：`branch`、`checkout`、`HEAD`；未产生版本的分支用 `branches/<name>` 标记；
-- `scan` 生成对象/根/VER 并推进分支；`describe` 生成新版本并推进分支；`status` 读当前版本；
-- tree-sitter 适配器：
-  - C++：namespace/class/struct/union/enum/function/method/field/宏/include/#ifdef 条件块；类内声明与类外定义合并；
-  - Rust：mod/struct/enum/trait/impl（方法合并到类型）/fn/const/static/type/宏/字段/变体；顶层名字按模块路径加前缀（`crate`、`src::foo` 等）；
-  - Python：class/function/method/赋值（常量与变量）；顶层名字按模块路径加前缀；
-  - Go：package/struct/interface/func/method/field/const/var/type；顶层名字按 package 加前缀；
-  - Java：package/class/interface/enum/record/annotation_type/method/constructor/field/enum_constant/static initializer；名字按 package 分层；
-- 文件对象：每个 blob 一个 `file` 对象（无设计），进入 files 视图；未解析的文件也照样有对象；
-- `status --files`、`list --files`、`show <path> --source` 可以查看文件对象和未解析文件；
-- `scan` 只能前进：新 commit 必须是分支基点 commit 的后代；
-- `scan` 按 blob oid 跳过未变文件，只解析变化的文件；未变文件从基点版本和 tree cache 复用元素与设计；
-- `scan` 复用 base version 的设计：自底向上算 content/input hash，`input_hash` 相同就拷回旧设计；父元素的 input 依赖子元素的 design_hash，所以子元素没命中时父元素不会误复用；
-- 每次 `scan` / `describe`：自底向上算 hash、写 OBJ/DES/IDX/VER、建 views、原子推进 ref；缺少设计的元素 `design_hash = 0`；
-- 读取：`show`（含按 span 打印源码的 `--source`）、`list`、`log`；
+- `create` 生成概念元素/根/VER 并推进分支；`describe` 生成新版本并推进分支；`status` 读当前版本；
+- 元素由智能体/人显式创建：名称、可选设计、可选 `--path`/`--lines` 证据锚点、可选 `--parent`；
+- 没有代码解析器、tree-sitter 适配器或自动文件元素；源码只读；
+- 父子链接由 `--parent` 或已存在的 `::` 名称前缀推导；缺失 cache 时从名称重建；
+- 每次 `create` / `describe`：自底向上算 hash、写 OBJ/DES/IDX/VER、建 views、原子推进 ref；缺少设计的元素 `design_hash = 0`；
+- 读取：`status`、`show`（有锚点时可按 span 打印 `--source`）、`list`、`log`；
 - 存储维护：`pack` 把 loose 节点打进 `packs/` 后删除 loose（`--output` 模式只导出、不删除）；`repack` 把全部节点合成一个 pack 并删旧 pack/loose；`gc` 从 refs 求可达闭包、重打包、删不可达节点和过期 tree cache；
-- 远端：`serve`（HTTP / SSH stdio）、`push`、`fetch`、`pull`；按版本根做树差异，只传变化节点；服务端校验 pack、祖先关系和节点闭包，ref 原子更新；
-- 传输：HTTP（axum，`/v1/refs`、`/v1/fetch`、`/v1/packs`、`/v1/push`）；SSH 用系统 `ssh` 启动 `ds serve --stdio`，同一套消息走 framed stdio；
+- 服务端：独立二进制 `ds-server`；负责项目与设计空间仓库、多项目 HTTP API、`stdio`（给 sshd）以及服务端 `gc/repack`；
+- 项目：ds 只按名字分配设计空间仓库并生成 `ds://user@host[:port]/<16 位 id>`，不要求 git 仓库；可选记录源码仓库地址（`project create --source`，由 Foundry 传入）供 `clone` 使用；git 必填是上层（Foundry）项目创建的业务规则；地址不含文件系统路径，服务端按 id 在 root 下解析；名字只是显示信息，允许重名——每次创建都分配新 id 和独立仓库，目录为 `<root>/<id>`；旧版本创建的 `<root>/<slug>` 目录仍可读；可用 `project list/show` 查看地址；
+- 远端：`push`、`fetch`、`pull`；按版本根做树差异，只传变化节点；服务端校验 pack、祖先关系和节点闭包，ref 原子更新；
+- 传输：HTTP（axum，`/v1/refs`、`/v1/fetch`、`/v1/packs`、`/v1/push`）；SSH 用系统 `ssh` 启动 `ds-server stdio`，同一套消息走 framed stdio；
 - CLI：上述命令加 `init`、`pack`、`verify`、`cat`、`ls`；
-- 59 个单元测试，clippy 通过。
+- 61 个单元测试，clippy 通过。
 
 已知限制：
 
-- Go 的方法目前是顶层实体（`pkg::Type::Method`），没有挂到 struct 的 children 上；
-- Java 的名字分隔符统一用 `::`，没有使用语言原生的 `.` / `#`；
-- 条件编译块保留为容器，但同名实体在互斥分支里会用行号区分；
-- 只有 C++、Rust、Python、Go、Java 有语法适配器，其余语言（包括 TS/JS）暂不产生元素，`scan` 会列入 skipped。
+- 概念元素的完整性和正确性依赖智能体阅读代码的质量；工具只做结构校验；
+- 名称是分支内的身份；重命名需要创建新元素并迁移设计（尚无 rename 命令）；
+- 父/子链接只存在本地 tree cache；从远端 clone 后按 `::` 名称重建；
+- 源码锚点只是证据，不保证覆盖全部代码；
 
 下一步：
 
-1. 更多 tree-sitter 适配器；
+1. 元素重命名/合并/拆分与设计迁移；
 2. `packages` 视图与视图差异 `diff`；
-3. 原生 SSH 监听（当前 SSH 通过 OpenSSH + `ds serve --stdio` 提供）、TLS；
+3. 原生 SSH 监听（当前 SSH 通过 OpenSSH + `ds-server stdio` 提供）、TLS；
 4. zstd 压缩、MIDX、repack/gc。

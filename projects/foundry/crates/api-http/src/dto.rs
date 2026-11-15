@@ -199,6 +199,8 @@ pub struct CreateProjectRequest {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Git repository this project works on. Required.
+    pub git_repository: String,
     pub root_workflow_id: String,
 }
 
@@ -207,6 +209,7 @@ impl CreateProjectRequest {
         CreateProject {
             name: self.name,
             description: self.description,
+            git_repository: self.git_repository.trim().to_string(),
             root_workflow_id: WorkflowId::new(self.root_workflow_id),
         }
     }
@@ -275,6 +278,8 @@ pub struct NewProjectForm {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub git_repository: String,
+    #[serde(default)]
     pub root_workflow_id: String,
 }
 
@@ -283,6 +288,7 @@ impl NewProjectForm {
         CreateProject {
             name: self.name.trim().to_string(),
             description: optional_text(&self.description),
+            git_repository: self.git_repository.trim().to_string(),
             root_workflow_id: WorkflowId::new(self.root_workflow_id.trim()),
         }
     }

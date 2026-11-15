@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "roles": [],
+  "initial_stage": "noop",
+  "stages": [
+    {
+      "name": "noop",
+      "created": [
+        {"set_state": "in_progress"}
+      ],
+      "transitions": [
+        {"on": "true", "action": "result = 'completed'", "to": "ended"}
+      ]
+    }
+  ]
+}

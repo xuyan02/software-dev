@@ -454,12 +454,14 @@ impl ProjectRepository for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
             "insert into projects \
-             (id, name, description, status, root_task_id, version, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, name, description, git_repository, design_space_url, status, root_task_id, version, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(project.id)
         .bind(&project.name)
         .bind(&project.description)
+        .bind(&project.git_repository)
+        .bind(&project.design_space_url)
         .bind(project.status.as_str())
         .bind(project.root_task_id)
         .bind(project.version as i32)
@@ -482,12 +484,14 @@ impl ProjectRepository for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
             "insert into projects \
-             (id, name, description, status, root_task_id, version, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, name, description, git_repository, design_space_url, status, root_task_id, version, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(project.id)
         .bind(&project.name)
         .bind(&project.description)
+        .bind(&project.git_repository)
+        .bind(&project.design_space_url)
         .bind(project.status.as_str())
         .bind(project.root_task_id)
         .bind(project.version as i32)
@@ -506,13 +510,15 @@ impl ProjectRepository for PostgresStore {
     async fn save(&self, project: &Project, expected_version: u32) -> Result<(), RepoError> {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let result = sqlx::query(
-            "update projects set name = $3, description = $4, status = $5, \
-             version = $6, updated_at = $7 where id = $1 and version = $2",
+            "update projects set name = $3, description = $4, git_repository = $5, design_space_url = $6, \
+             status = $7, version = $8, updated_at = $9 where id = $1 and version = $2",
         )
         .bind(project.id)
         .bind(expected_version as i32)
         .bind(&project.name)
         .bind(&project.description)
+        .bind(&project.git_repository)
+        .bind(&project.design_space_url)
         .bind(project.status.as_str())
         .bind(project.version as i32)
         .bind(project.updated_at)
@@ -536,7 +542,7 @@ impl ProjectRepository for PostgresStore {
 
     async fn get(&self, id: Uuid) -> Result<Option<Project>, RepoError> {
         let row = sqlx::query_as::<_, ProjectRow>(
-            "select id, name, description, status, root_task_id, version, created_at, updated_at \
+            "select id, name, description, git_repository, design_space_url, status, root_task_id, version, created_at, updated_at \
              from projects where id = $1",
         )
         .bind(id)
@@ -793,7 +799,7 @@ impl ProjectRepository for PostgresStore {
     async fn list(&self, filter: ProjectFilter) -> Result<Vec<Project>, RepoError> {
         let status = filter.status.map(|status| status.as_str().to_string());
         let rows = sqlx::query_as::<_, ProjectRow>(
-            "select id, name, description, status, root_task_id, version, created_at, updated_at \
+            "select id, name, description, git_repository, design_space_url, status, root_task_id, version, created_at, updated_at \
              from projects \
              where ($1::text is null or status = $1) \
              and ($2::text is null or strpos(lower(name), lower($2)) > 0) \
@@ -820,6 +826,8 @@ type ProjectRow = (
     String,
     Option<String>,
     String,
+    String,
+    String,
     Option<Uuid>,
     i32,
     OffsetDateTime,
@@ -832,11 +840,24 @@ trait IntoProject {
 
 impl IntoProject for ProjectRow {
     fn into_project(self, members: Vec<ProjectMember>) -> Result<Project, RepoError> {
-        let (id, name, description, status, root_task_id, version, created_at, updated_at) = self;
+        let (
+            id,
+            name,
+            description,
+            git_repository,
+            design_space_url,
+            status,
+            root_task_id,
+            version,
+            created_at,
+            updated_at,
+        ) = self;
         Ok(Project {
             id,
             name,
             description,
+            git_repository,
+            design_space_url,
             status: parse_enum(&status)?,
             root_task_id,
             members,

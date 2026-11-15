@@ -31,6 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod agent_admin;
+mod design_space;
 mod platform_agents;
 mod supervisor;
 
@@ -64,12 +65,30 @@ async fn main() -> anyhow::Result<()> {
 
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
+    let (local_design_space, design_space_base, design_space_root) = match &config.design_space_url
+    {
+        Some(url) => (None, url.clone(), None),
+        None => {
+            let (child, base, root) = design_space::start_local()
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            tracing::info!(url = %base, "started local ds-server");
+            (Some(child), base, Some(root))
+        }
+    };
+    // Keep the child alive until the control plane exits. Dropping it kills
+    // ds-server (`kill_on_drop`).
+    let _local_design_space = local_design_space;
+    let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> = Arc::new(
+        design_space::HttpDesignSpaceProvisioner::new(&design_space_base),
+    );
     let projects = Arc::new(ProjectService::new(
         Arc::clone(&store),
         Arc::clone(&store),
         Arc::clone(&events),
         Arc::clone(&workflows),
         Arc::clone(&task_dispatcher),
+        design_spaces,
     ));
     let task_repository: Arc<dyn TaskRepository> = store.clone();
     let tasks = Arc::new(TaskService::new(
@@ -171,6 +190,8 @@ async fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| "qwen2.5-coder".to_string()),
     ));
+    let design_space_access =
+        design_space_root.map(|root| Arc::new(foundry_api_http::DesignSpaceAccess::new(root)));
     let state = AppState {
         issues: Arc::new(issues),
         accounts,
@@ -187,6 +208,7 @@ async fn main() -> anyhow::Result<()> {
         editor: Arc::new(foundry_api_http::EditorAssets::new(resolve_editor_dir(
             &config.editor_dir,
         ))),
+        design_space: design_space_access,
     };
     let app = foundry_api_http::router(state);
     tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));

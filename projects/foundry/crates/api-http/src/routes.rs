@@ -188,6 +188,8 @@ pub struct AppState {
     pub auth: Arc<dyn AuthUseCases>,
     pub setup: Arc<SetupState>,
     pub editor: Arc<EditorAssets>,
+    /// Local design-space reader; absent in remote design-space mode.
+    pub design_space: Option<Arc<crate::design_space::DesignSpaceAccess>>,
 }
 
 /// The built workflow-editor SPA served under `/workflows/editor/`.
@@ -997,6 +999,132 @@ pub async fn project_page(
             .into_response()
         }
         Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn design_space_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let Some(access) = state.design_space.as_ref() else {
+        return Html(foundry_web::design_space_unavailable_page(
+            &session.context,
+            &project,
+            "控制台没有连接到本地设计空间（Foundry 由远程 DESIGN_SPACE_URL 启动）。",
+        ))
+        .into_response();
+    };
+    match access.overview(&project).await {
+        Ok(overview) => Html(foundry_web::design_space_page(
+            &session.context,
+            &project,
+            &overview,
+        ))
+        .into_response(),
+        Err(error) => Html(foundry_web::design_space_unavailable_page(
+            &session.context,
+            &project,
+            &error,
+        ))
+        .into_response(),
+    }
+}
+
+pub async fn design_space_tree(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "项目不存在" })),
+        )
+            .into_response();
+    };
+    let Some(access) = state.design_space.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "控制台没有连接到本地设计空间" })),
+        )
+            .into_response();
+    };
+    match access.overview(&project).await {
+        Ok(overview) => Json(overview).into_response(),
+        Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
+    }
+}
+
+pub async fn design_space_element(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, hash)): Path<(Uuid, String)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let Some(access) = state.design_space.as_ref() else {
+        return Html(foundry_web::design_space_element_error(
+            "控制台没有连接到本地设计空间",
+        ))
+        .into_response();
+    };
+    let source_url = format!("/projects/{id}/design-space/elements/{hash}/source");
+    match access.element(&project, &hash).await {
+        Ok(detail) => Html(foundry_web::design_space_element(&detail, &source_url)).into_response(),
+        Err(error) => Html(foundry_web::design_space_element_error(&error)).into_response(),
+    }
+}
+
+pub async fn design_space_element_source(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, hash)): Path<(Uuid, String)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let Some(access) = state.design_space.as_ref() else {
+        return Html(foundry_web::design_space_source_error(
+            "控制台没有连接到本地设计空间",
+        ))
+        .into_response();
+    };
+    match access.source(&project, &hash).await {
+        Ok(source) => Html(foundry_web::design_space_source(&source)).into_response(),
+        Err(error) => Html(foundry_web::design_space_source_error(&error)).into_response(),
     }
 }
 

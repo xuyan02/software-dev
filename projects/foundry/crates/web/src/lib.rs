@@ -12,6 +12,71 @@ use foundry_domain::{
     TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowDefinition,
     WorkflowOption, WorkflowOwner,
 };
+use serde::Serialize;
+
+/// One design-space element as sent to the tree endpoint and rendered in the
+/// console. `hash` addresses the immutable element object.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignSpaceElement {
+    pub hash: String,
+    pub name: String,
+    pub path: String,
+    /// Language prefix from the type tag (`rust`, `cpp`, ...), empty for files.
+    pub lang: String,
+    /// Kind part of the type tag (`function`, `class`, `file`, ...).
+    pub kind: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub has_design: bool,
+    pub is_file: bool,
+}
+
+/// Everything the tree view needs in one payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignSpaceOverview {
+    pub branch: String,
+    /// Version hex, absent when the branch has no version yet.
+    pub version: Option<String>,
+    pub source_commit: String,
+    pub file_count: usize,
+    pub element_count: usize,
+    pub designed_count: usize,
+    pub elements: Vec<DesignSpaceElement>,
+}
+
+/// Element metadata plus its design text.
+#[derive(Debug, Clone)]
+pub struct DesignSpaceDetail {
+    pub hash: String,
+    pub name: String,
+    pub lang: String,
+    pub kind: String,
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub design: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesignSpaceLine {
+    pub number: u32,
+    pub text: String,
+    pub in_element: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesignSpaceSource {
+    pub commit: String,
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    pub first_line: u32,
+    pub last_line: u32,
+    pub total_lines: u32,
+    pub lines: Vec<DesignSpaceLine>,
+}
 
 const STYLE: &str = r#"
 :root { color-scheme: light dark; --fg:#1b1f23; --muted:#57606a; --bg:#ffffff;
@@ -77,6 +142,13 @@ a { color: var(--accent); }
              word-break:break-word; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
              font-size:12px; line-height:1.5; }
 .meta { display:flex; flex-wrap:wrap; gap:10px 22px; color:var(--muted); font-size:13px; }
+.details { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:10px 22px;
+           align-items:baseline; background:var(--panel); border:1px solid var(--line);
+           border-radius:8px; padding:16px 18px; margin:14px 0 22px; }
+.details dt { color:var(--muted); font-size:12px; white-space:nowrap; }
+.details dd { margin:0; min-width:0; font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+              font-size:13px; word-break:break-all; }
+.details dd.plain { font-family:inherit; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
         padding:16px 18px; margin:12px 0; }
 .markdown > :first-child { margin-top:0; }
@@ -209,6 +281,97 @@ a.stat:hover { border-color:var(--accent); }
 .inline-form button { padding:5px 10px; font-size:13px; }
 .login { max-width:420px; margin:8vh auto; padding:0 20px; }
 .login .card { padding:24px; }
+main.wide { max-width:1500px; padding:24px 28px 40px; }
+.ds-crumbs { margin:0 0 10px; }
+.ds-head { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:14px; }
+.ds-head h1 { margin:0; }
+.ds-head .sub { margin:4px 0 0; }
+.ds-stats { display:flex; gap:8px; flex-wrap:wrap; }
+.ds-stat { min-width:88px; padding:8px 12px; border:1px solid var(--line); border-radius:8px;
+          background:var(--panel); }
+.ds-stat b { display:block; font-size:19px; line-height:1.2; font-variant-numeric:tabular-nums; }
+.ds-stat span { color:var(--muted); font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+.ds-shell { display:grid; grid-template-columns:minmax(280px,380px) minmax(0,1fr);
+            gap:16px; align-items:start; margin-top:18px; }
+.ds-pane { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           overflow:hidden; }
+.ds-tree-pane { position:sticky; top:16px; height:calc(100vh - 32px);
+                display:flex; flex-direction:column; }
+.ds-tools { display:flex; flex-direction:column; gap:8px; padding:12px;
+            border-bottom:1px solid var(--line); background:var(--bg); }
+.ds-tools input { width:100%; font:inherit; font-size:13px; color:var(--fg);
+                  background:var(--bg); border:1px solid var(--line); border-radius:6px;
+                  padding:7px 9px; }
+.ds-tools-row { display:flex; gap:6px; }
+.ds-tools-row button { flex:1; padding:5px 8px; font-size:12px; }
+.ds-tree { overflow:auto; padding:8px 10px 16px; font-size:13px; }
+.ds-list { display:flex; flex-direction:column; gap:1px; }
+.ds-row { display:flex; align-items:center; gap:5px; height:26px; min-height:26px;
+          padding:0 6px; line-height:1.2; border-radius:6px; cursor:pointer;
+          border:1px solid transparent; color:var(--fg); overflow:hidden; }
+.ds-row:hover { background:var(--bg); }
+.ds-row.active { background:var(--accent-soft); border-color:var(--accent); }
+.ds-row .ds-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.ds-caret { width:12px; flex:none; color:var(--muted); font-size:9px; line-height:1; }
+.ds-caret::before { content:"\25B6"; }
+.ds-row.open > .ds-caret::before { content:"\25BC"; }
+.ds-caret.empty { visibility:hidden; }
+.ds-folder, .ds-file { flex:none; display:inline-flex; align-items:center;
+                       justify-content:center; width:16px; height:16px; }
+.ds-folder { color:var(--accent); }
+.ds-file { color:var(--muted); }
+.ds-folder svg, .ds-file svg { display:block; width:14px; height:14px; }
+.ds-chip { flex:none; display:inline-flex; align-items:center; justify-content:center;
+           height:16px; min-width:34px; padding:0 4px; border-radius:4px;
+           font:600 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+           background:var(--bg); border:1px solid var(--line); color:var(--muted);
+           letter-spacing:.03em; }
+.ds-chip.file { min-width:24px; }
+.ds-dot { width:5px; height:5px; border-radius:50%; flex:none; }
+.ds-dot.on { background:#2da44e; }
+.ds-dot.off { background:transparent; border:1px solid var(--line); }
+.ds-meta { margin-left:auto; color:var(--muted); min-width:0; overflow:hidden;
+           text-overflow:ellipsis; white-space:nowrap;
+           font:11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ds-right { margin-left:auto; display:flex; align-items:center; gap:6px; flex:none; }
+.ds-count { margin-left:auto; color:var(--muted); font-size:11px;
+            font-variant-numeric:tabular-nums; }
+.ds-right .ds-count { margin-left:0; }
+.ds-action { background:none; border:0; padding:0 2px; color:var(--accent);
+             font:inherit; font-size:11px; cursor:pointer; }
+.ds-action:hover { text-decoration:underline; }
+.ds-children { display:flex; flex-direction:column; gap:1px; margin-left:12px;
+               padding-left:8px; border-left:1px solid var(--line); }
+.ds-empty, .ds-loading { color:var(--muted); padding:28px 16px; text-align:center; }
+.ds-detail-pane { padding:0; min-height:64vh; }
+.ds-detail { padding:22px 24px 32px; }
+.ds-detail-head { display:flex; flex-direction:column; gap:6px; padding-bottom:14px;
+                  border-bottom:1px solid var(--line); }
+.ds-detail-head h2 { margin:0; font-size:20px; line-height:1.3; word-break:break-word; }
+.ds-detail-kinds { display:flex; gap:6px; align-items:center; }
+.ds-path { color:var(--muted); font:12px ui-monospace, SFMono-Regular, Menlo, monospace;
+           word-break:break-all; }
+.ds-tabs { display:flex; gap:4px; margin:16px 0 0; border-bottom:1px solid var(--line); }
+.ds-tabs button { background:none; border:0; border-bottom:2px solid transparent;
+                  color:var(--muted); padding:8px 12px; font:inherit; font-size:13px;
+                  cursor:pointer; }
+.ds-tabs button.active { color:var(--accent); border-bottom-color:var(--accent);
+                         font-weight:600; }
+.ds-panel { padding-top:16px; }
+.ds-panel[hidden] { display:none; }
+.ds-code { background:var(--bg); border:1px solid var(--line); border-radius:8px;
+           overflow:auto; max-height:62vh; padding:10px 0;
+           font:12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ds-line { display:flex; gap:12px; padding:0 12px; white-space:pre; }
+.ds-line.in { background:var(--accent-soft); box-shadow:inset 2px 0 0 var(--accent); }
+.ds-line .ln { flex:none; width:44px; text-align:right; color:var(--muted);
+               user-select:none; font-variant-numeric:tabular-nums; }
+.ds-line .tx { white-space:pre; }
+.ds-source-meta { color:var(--muted); margin-bottom:8px; display:flex; gap:12px;
+                  flex-wrap:wrap; font:12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ds-source-error { color:var(--annotation-fg); background:var(--annotation-bg);
+                   border:1px solid var(--annotation-border); border-radius:8px;
+                   padding:12px 14px; }
 @media (max-width: 800px) {
   .app { display:block; }
   .sidebar { position:static; height:auto; border-right:0; border-bottom:1px solid var(--line);
@@ -224,8 +387,12 @@ a.stat:hover { border-color:var(--accent); }
   .project-switch { padding:0; }
   .sidebar-user { border-top:0; padding:0; }
   main { padding:24px 16px 64px; }
+  main.wide { padding:20px 14px 40px; }
   .two-col, .stats { grid-template-columns:1fr; }
   .grid { grid-template-columns:1fr; }
+  .ds-shell { grid-template-columns:1fr; }
+  .ds-tree-pane { position:static; height:52vh; }
+  .ds-detail-pane { min-height:40vh; }
 }
 @media (max-width: 640px) { .grid { grid-template-columns:1fr; } }
 "#;
@@ -237,6 +404,27 @@ fn escape(input: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Show `ds://` addresses with percent escapes decoded; the stored value keeps
+/// the encoded form.
+fn display_percent_encoded(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                index += 3;
+                continue;
+            }
+        }
+        out.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A small Markdown subset for Issue comments: headings, lists, code blocks,
@@ -860,6 +1048,20 @@ fn bare_layout(title: &str, body: &str) -> String {
 }
 
 fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> String {
+    layout_page(ctx, active, title, body, false)
+}
+
+fn layout_wide(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> String {
+    layout_page(ctx, active, title, body, true)
+}
+
+fn layout_page(
+    ctx: &ConsoleContext,
+    active: Section,
+    title: &str,
+    body: &str,
+    wide: bool,
+) -> String {
     let project_switch = if ctx.projects.is_empty() {
         String::new()
     } else {
@@ -1066,6 +1268,7 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
         },
     );
 
+    let main_class = if wide { r#" class="wide""# } else { "" };
     format!(
         r#"<!doctype html>
 <html lang="zh-CN">
@@ -1078,7 +1281,7 @@ fn layout(ctx: &ConsoleContext, active: Section, title: &str, body: &str) -> Str
 <body>
 <div class="app">
 <aside class="sidebar">{nav}</aside>
-<main>{body}</main>
+<main{main_class}>{body}</main>
 </div>
 </body>
 </html>"#,
@@ -3023,6 +3226,7 @@ pub fn projects_page(
     let root_field = format!(
         r#"<div class="field"><label for="root_workflow_id">根流程 *</label><select id="root_workflow_id" name="root_workflow_id" required>{root_options}</select><p class="hint">项目创建时固定根 Task 的已发布版本；之后流程的修改不会影响这个项目。</p></div>"#
     );
+    let git_field = input_field("git_repository", "Git 仓库 *", "", true);
 
     let body = format!(
         r#"<h1>项目</h1>
@@ -3036,6 +3240,7 @@ pub fn projects_page(
 <form method="post" action="/projects">
   {name}
   {description}
+  {git_field}
   {root_field}
   <p class="hint">创建者成为项目 Owner。项目名称可以修改。</p>
   <div class="actions"><button type="submit">创建项目</button></div>
@@ -3185,18 +3390,22 @@ pub fn project_page(
         String::new()
     };
 
+    let short_id = project.id.to_string()[..8].to_string();
+    let design_space_display = escape(&display_percent_encoded(&project.design_space_url));
     let body = format!(
         r#"<p><a href="/projects">← 返回项目列表</a></p>
 <h1>{name}</h1>
 <p class="sub"><span class="badge">{status}</span></p>
 {error_html}
-<div class="meta">
-  <span>ID <code>{id}</code></span>
-  <span>成员 {member_count}</span>
-  <span>版本 {version}</span>
-</div>
+<dl class="details">
+  <dt>项目 ID</dt><dd><code title="{id}">{short_id}</code></dd>
+  <dt>Git 仓库</dt><dd>{git_repository}</dd>
+  <dt>设计空间</dt><dd>{design_space_display}</dd>
+  <dt>成员</dt><dd class="plain">{member_count}</dd>
+  <dt>版本</dt><dd class="plain">{version}</dd>
+</dl>
 <h2>描述</h2><div class="card">{description}</div>
-<p><a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a> <a class="button secondary" href="/projects/{id}/documents/design">详细设计</a> <a class="button secondary" href="/projects/{id}/documents/development">开发记录</a> <a class="button secondary" href="/projects/{id}/documents/test_plan">测试计划</a> <a class="button secondary" href="/projects/{id}/documents/test_report">测试报告</a></p>
+<p><a class="button secondary" href="/projects/{id}/design-space">设计空间</a> <a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a> <a class="button secondary" href="/projects/{id}/documents/design">详细设计</a> <a class="button secondary" href="/projects/{id}/documents/development">开发记录</a> <a class="button secondary" href="/projects/{id}/documents/test_plan">测试计划</a> <a class="button secondary" href="/projects/{id}/documents/test_report">测试报告</a></p>
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>
@@ -3207,6 +3416,9 @@ pub fn project_page(
         status = project_status_label(project.status),
         error_html = error_html,
         id = project.id,
+        git_repository = escape(&project.git_repository),
+        design_space_display = design_space_display,
+        short_id = short_id,
         member_count = members.len(),
         version = project.version,
         description = project
@@ -3219,6 +3431,856 @@ pub fn project_page(
     );
     layout(ctx, Section::Projects, &project.name, &body)
 }
+
+fn short_id(value: &str) -> &str {
+    &value[..value.len().min(12)]
+}
+
+fn language_chip(lang: &str) -> &str {
+    match lang {
+        "rust" => "RS",
+        "cpp" => "C++",
+        "c" => "C",
+        "python" => "PY",
+        "typescript" => "TS",
+        "javascript" => "JS",
+        "jsx" => "JSX",
+        "tsx" => "TSX",
+        "go" => "GO",
+        "java" => "JAVA",
+        "kotlin" => "KT",
+        "csharp" => "C#",
+        "ruby" => "RB",
+        "php" => "PHP",
+        "swift" => "SWIFT",
+        "scala" => "SCALA",
+        "shell" => "SH",
+        "sql" => "SQL",
+        "lua" => "LUA",
+        "dart" => "DART",
+        "elixir" => "EX",
+        "haskell" => "HS",
+        "text" => "TXT",
+        other if !other.is_empty() => other,
+        _ => "—",
+    }
+}
+
+fn element_kind_label(kind: &str) -> &str {
+    match kind {
+        "function" => "函数",
+        "method" => "方法",
+        "class" => "类",
+        "struct" => "结构体",
+        "interface" => "接口",
+        "enum" => "枚举",
+        "trait" => "Trait",
+        "module" => "模块",
+        "namespace" => "命名空间",
+        "concept" => "概念",
+        "variable" => "变量",
+        "constant" => "常量",
+        "macro" => "宏",
+        "file" => "文件",
+        "binary_file" => "二进制文件",
+        "text_file" => "文本文件",
+        other => other,
+    }
+}
+
+/// Full design-space page: header, tree shell and the client-side tree.
+pub fn design_space_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    overview: &DesignSpaceOverview,
+) -> String {
+    let tree_url = format!("/projects/{}/design-space/tree", project.id);
+    let element_url = format!("/projects/{}/design-space/elements/", project.id);
+    let version = match &overview.version {
+        Some(version) => format!(
+            r#"分支 <code>{branch}</code> · 版本 <code>{version}</code> · 源码 <code>{commit}</code>"#,
+            branch = escape(&overview.branch),
+            version = escape(short_id(version)),
+            commit = escape(short_id(&overview.source_commit)),
+        ),
+        None => format!(
+            r#"分支 <code>{branch}</code> · 尚无版本"#,
+            branch = escape(&overview.branch)
+        ),
+    };
+    let coverage = if overview.element_count == 0 {
+        0
+    } else {
+        overview.designed_count * 100 / overview.element_count
+    };
+    let body = format!(
+        r#"<p class="ds-crumbs"><a href="/projects/{id}">← {name}</a></p>
+<header class="ds-head">
+  <div>
+    <h1>设计空间</h1>
+    <p class="sub">{version}</p>
+  </div>
+  <div class="ds-stats">
+    <div class="ds-stat"><b>{files}</b><span>文件</span></div>
+    <div class="ds-stat"><b>{elements}</b><span>元素</span></div>
+    <div class="ds-stat"><b>{designed}</b><span>已有设计</span></div>
+    <div class="ds-stat"><b>{coverage}%</b><span>覆盖率</span></div>
+  </div>
+</header>
+<div class="ds-shell" id="ds-shell"
+     data-project-id="{id}"
+     data-tree-url="{tree_url}"
+     data-element-url="{element_url}">
+  <aside class="ds-pane ds-tree-pane">
+    <div class="ds-tools">
+      <input id="ds-search" type="search" placeholder="搜索元素、文件或路径…" autocomplete="off" spellcheck="false">
+      <div class="ds-tools-row">
+        <button class="secondary" type="button" id="ds-expand">展开全部</button>
+        <button class="secondary" type="button" id="ds-collapse">收起全部</button>
+      </div>
+    </div>
+    <div class="ds-tree" id="ds-tree" aria-label="设计空间树">
+      <div class="ds-loading">正在加载元素树…</div>
+    </div>
+  </aside>
+  <section class="ds-pane ds-detail-pane" id="ds-detail" aria-live="polite">
+    <div class="ds-empty">
+      <p>从左侧选择一个元素。</p>
+      <p class="hint">绿色圆点表示该元素已有设计；点击“源码”可以查看对应代码。</p>
+    </div>
+  </section>
+</div>"#,
+        id = project.id,
+        name = escape(&project.name),
+        version = version,
+        files = overview.file_count,
+        elements = overview.element_count,
+        designed = overview.designed_count,
+        coverage = coverage,
+        tree_url = escape(&tree_url),
+        element_url = escape(&element_url),
+    );
+    let mut html = layout_wide(ctx, Section::Projects, &project.name, &body);
+    html = html.replace("</body>", &format!("{DESIGN_SPACE_SCRIPT}</body>"));
+    html
+}
+
+/// Page shown when the console cannot read this project's design space.
+pub fn design_space_unavailable_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    message: &str,
+) -> String {
+    let body = format!(
+        r#"<p class="ds-crumbs"><a href="/projects/{id}">← {name}</a></p>
+<h1>设计空间</h1>
+<div class="ds-shell" style="grid-template-columns:1fr">
+  <section class="ds-pane ds-detail-pane">
+    <div class="ds-detail">
+      <div class="ds-source-error">{message}</div>
+      <p class="hint">本地模式启动 Foundry 时可以直接读取设计空间；远程设计空间暂不支持在控制台浏览。</p>
+    </div>
+  </section>
+</div>"#,
+        id = project.id,
+        name = escape(&project.name),
+        message = escape(message),
+    );
+    layout_wide(ctx, Section::Projects, &project.name, &body)
+}
+
+/// One element's detail fragment: design tab plus a lazily loaded source tab.
+pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> String {
+    let chip = if detail.kind == "file" {
+        r#"<span class="ds-chip file">FILE</span>"#.to_string()
+    } else if detail.lang.is_empty() {
+        r#"<span class="ds-chip">概念</span>"#.to_string()
+    } else {
+        format!(
+            r#"<span class="ds-chip">{}</span>"#,
+            escape(language_chip(&detail.lang))
+        )
+    };
+    let lines_label = if detail.path.is_empty() {
+        "无源码锚点".to_string()
+    } else if detail.start_line == 0 {
+        "整个文件".to_string()
+    } else {
+        format!("L{}–L{}", detail.start_line, detail.end_line)
+    };
+    let location = if detail.path.is_empty() {
+        escape(&lines_label)
+    } else {
+        format!("{} · {}", escape(&detail.path), lines_label)
+    };
+    let source_tabs = if detail.path.is_empty() {
+        String::new()
+    } else {
+        r#"<button type="button" data-ds-tab="source">源码</button>"#.to_string()
+    };
+    let source_panel = if detail.path.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="ds-panel" data-ds-panel="source" hidden data-source-url="{source_url}">
+    <div class="ds-loading">打开“源码”标签后加载…</div>
+  </div>"#,
+            source_url = escape(source_url)
+        )
+    };
+    let short_name = if detail.kind == "file" {
+        detail.path.rsplit('/').next().unwrap_or(&detail.path)
+    } else {
+        detail.name.rsplit("::").next().unwrap_or(&detail.name)
+    };
+    let full_name_line = if detail.name != short_name {
+        format!(
+            r#"<div class="ds-path">全名 <code>{}</code></div>"#,
+            escape(&detail.name)
+        )
+    } else {
+        String::new()
+    };
+    let design = match &detail.design {
+        Some(text) if !text.trim().is_empty() => format!(
+            r#"<div class="markdown">{}</div>"#,
+            markdown_to_html(text)
+        ),
+        Some(_) => r#"<div class="ds-empty">设计为空。</div>"#.to_string(),
+        None if detail.kind == "file" => {
+            r#"<div class="ds-empty">文件对象没有设计文本，可以查看源码。</div>"#.to_string()
+        }
+        None => r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>ds describe</code> 补充。</div>"#
+            .to_string(),
+    };
+    format!(
+        r#"<div class="ds-detail" data-hash="{hash}">
+  <div class="ds-detail-head">
+    <div class="ds-detail-kinds">{chip}<span class="badge">{kind}</span><span class="ds-dot {dot}" title="{dot_title}"></span></div>
+    <h2 title="{full_name}">{name}</h2>
+    {full_name_line}
+    <div class="ds-path">{location}</div>
+    <div class="ds-path">对象 <code title="{hash}">{short}</code> · 设计 <code>{design_state}</code></div>
+  </div>
+  <div class="ds-tabs" role="tablist">
+    <button type="button" class="active" data-ds-tab="design">设计</button>
+    {source_tabs}
+  </div>
+  <div class="ds-panel" data-ds-panel="design">{design}</div>
+  {source_panel}
+</div>"#,
+        hash = escape(&detail.hash),
+        chip = chip,
+        kind = escape(element_kind_label(&detail.kind)),
+        dot = if detail.design.is_some() { "on" } else { "off" },
+        dot_title = if detail.design.is_some() {
+            "已有设计"
+        } else {
+            "尚无设计"
+        },
+        name = escape(short_name),
+        full_name = escape(&detail.name),
+        full_name_line = full_name_line,
+        location = location,
+        source_tabs = source_tabs,
+        source_panel = source_panel,
+        short = escape(short_id(&detail.hash)),
+        design_state = if detail.design.is_some() {
+            "已编写"
+        } else {
+            "缺失"
+        },
+        design = design,
+    )
+}
+
+pub fn design_space_element_error(message: &str) -> String {
+    format!(
+        r#"<div class="ds-detail"><div class="ds-source-error">{}</div></div>"#,
+        escape(message)
+    )
+}
+
+/// Source lines around the element, with the element's own lines highlighted.
+pub fn design_space_source(source: &DesignSpaceSource) -> String {
+    let lines = source
+        .lines
+        .iter()
+        .map(|line| {
+            format!(
+                r#"<div class="ds-line{in_element}"><span class="ln">{number}</span><span class="tx">{text}</span></div>"#,
+                in_element = if line.in_element { " in" } else { "" },
+                number = line.number,
+                text = escape(&line.text),
+            )
+        })
+        .collect::<String>();
+    let element_span = if source.start_line == 0 {
+        String::new()
+    } else {
+        format!(
+            "<span>元素 {start}–{end}</span>",
+            start = source.start_line,
+            end = source.end_line
+        )
+    };
+    format!(
+        r#"<div class="ds-source">
+  <div class="ds-source-meta">
+    <span>commit {commit}</span>
+    <span>{path}</span>
+    <span>第 {first}–{last} 行 / 共 {total} 行</span>
+    {element_span}
+  </div>
+  <div class="ds-code">{lines}</div>
+</div>"#,
+        commit = escape(short_id(&source.commit)),
+        path = escape(&source.path),
+        first = source.first_line,
+        last = source.last_line,
+        total = source.total_lines,
+        element_span = element_span,
+        lines = lines,
+    )
+}
+
+pub fn design_space_source_error(message: &str) -> String {
+    format!(r#"<div class="ds-source-error">{}</div>"#, escape(message))
+}
+
+const DESIGN_SPACE_SCRIPT: &str = r##"<script>
+(() => {
+  const shell = document.getElementById('ds-shell');
+  if (!shell) return;
+  const treeEl = document.getElementById('ds-tree');
+  const detailEl = document.getElementById('ds-detail');
+  const searchEl = document.getElementById('ds-search');
+  const expandBtn = document.getElementById('ds-expand');
+  const collapseBtn = document.getElementById('ds-collapse');
+  const treeUrl = shell.dataset.treeUrl;
+  const elementUrl = shell.dataset.elementUrl;
+  const storeKey = 'foundry.ds.tree.v2.' + shell.dataset.projectId;
+  const glyphs = {
+    rust: 'RS', cpp: 'C++', c: 'C', python: 'PY', typescript: 'TS',
+    javascript: 'JS', jsx: 'JSX', tsx: 'TSX', go: 'GO', java: 'JAVA',
+    kotlin: 'KT', csharp: 'C#', ruby: 'RB', php: 'PHP', swift: 'SWIFT',
+    scala: 'SCALA', shell: 'SH', sql: 'SQL', lua: 'LUA', dart: 'DART',
+    elixir: 'EX', haskell: 'HS', text: 'TXT'
+  };
+  const folderIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 3.5h4.2l1.3 1.6h7.5v7.4h-13z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>';
+  const fileIcon = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3 1.5h6.2L13 5.3v9.2H3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M9.2 1.5v3.8H13" fill="none" stroke="currentColor"/></svg>';
+  const rootIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor"/><path d="M2 6h12M6 6v8" fill="none" stroke="currentColor"/></svg>';
+  const langLabel = (lang) => glyphs[lang] || (lang ? lang.slice(0, 4).toUpperCase() : '');
+  const shortName = (name) => { const parts = String(name).split('::'); return parts[parts.length - 1] || String(name); };
+  const baseName = (path) => { const parts = String(path).split('/'); return parts[parts.length - 1] || String(path); };
+  let expanded = new Set(['root', 'view:namespaces']);
+  try {
+    const saved = localStorage.getItem(storeKey);
+    if (saved) expanded = new Set(JSON.parse(saved));
+  } catch (_) {}
+  let data = null;
+  let nsRoot = null;
+  let fileRoot = null;
+  let selected = null;
+  let query = '';
+  let timer = 0;
+  const sourceCache = new Map();
+  const save = () => { try { localStorage.setItem(storeKey, JSON.stringify([...expanded])); } catch (_) {} };
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+  const byName = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN');
+
+  function buildNamespaces(elements) {
+    const root = { name: '命名空间', path: '', children: new Map(), element: null, count: 0 };
+    for (const item of elements) {
+      if (item.isFile) continue;
+      const parts = String(item.name).split('::').filter(Boolean);
+      if (!parts.length) continue;
+      let node = root;
+      const acc = [];
+      for (let index = 0; index < parts.length; index += 1) {
+        const segment = parts[index];
+        acc.push(segment);
+        let next = node.children.get(segment);
+        if (!next) {
+          next = { name: segment, path: acc.join('::'), children: new Map(), element: null, count: 0 };
+          node.children.set(segment, next);
+        }
+        node = next;
+        if (index === parts.length - 1) node.element = item;
+      }
+    }
+    const annotate = (node) => {
+      let count = node.element ? 1 : 0;
+      for (const child of node.children.values()) count += annotate(child);
+      node.count = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
+  // Inside a file, strip the module prefix shared by every element so the
+  // remaining tree starts at the top-level entity and keeps parent/child
+  // relationships (class -> method, enum -> variant, ...).
+  function relativeElementTree(items) {
+    const partsList = items.map((item) => String(item.name).split('::').filter(Boolean));
+    const minLength = Math.min(...partsList.map((parts) => parts.length));
+    let common = minLength;
+    for (let index = 0; index < common; index += 1) {
+      if (!partsList.every((parts) => parts[index] === partsList[0][index])) {
+        common = index;
+        break;
+      }
+    }
+    const strip = Math.max(0, Math.min(common, minLength - 1));
+    const root = { name: '', path: '', children: new Map(), element: null, count: 0 };
+    items.forEach((item, index) => {
+      const parts = partsList[index];
+      let relative = parts.slice(strip);
+      if (!relative.length) relative = [parts[parts.length - 1]];
+      let node = root;
+      const acc = [];
+      for (let part = 0; part < relative.length; part += 1) {
+        const segment = relative[part];
+        acc.push(segment);
+        let next = node.children.get(segment);
+        if (!next) {
+          next = { name: segment, path: acc.join('::'), children: new Map(), element: null, count: 0 };
+          node.children.set(segment, next);
+        }
+        node = next;
+        if (part === relative.length - 1) node.element = item;
+      }
+    });
+    const annotate = (node) => {
+      let count = node.element ? 1 : 0;
+      for (const child of node.children.values()) count += annotate(child);
+      node.count = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
+  function buildFiles(elements) {
+    const root = { name: '文件', path: '', dirs: new Map(), files: new Map(), fileCount: 0 };
+    const filesByPath = new Map();
+    const dirFor = (segments) => {
+      let node = root;
+      let acc = '';
+      for (const segment of segments) {
+        acc = acc ? acc + '/' + segment : segment;
+        if (!node.dirs.has(segment)) {
+          node.dirs.set(segment, { name: segment, path: acc, dirs: new Map(), files: new Map(), fileCount: 0 });
+        }
+        node = node.dirs.get(segment);
+      }
+      return node;
+    };
+    const addFile = (path, item) => {
+      const segments = String(path).split('/');
+      const name = segments.pop();
+      const dir = dirFor(segments);
+      if (dir.files.has(name)) {
+        const existing = dir.files.get(name);
+        if (item && !existing.item) existing.item = item;
+        return existing;
+      }
+      const file = { name, path, item, elements: [], tree: null };
+      dir.files.set(name, file);
+      dir.fileCount += 1;
+      filesByPath.set(path, file);
+      return file;
+    };
+    for (const item of elements) {
+      if (item.isFile) addFile(item.path, item);
+    }
+    // An element path always has a blob, but a tree row keeps source browsing
+    // available even if the file object is missing.
+    for (const item of elements) {
+      if (item.isFile || !item.path) continue;
+      const file = addFile(item.path, null);
+      file.elements.push(item);
+    }
+    for (const file of filesByPath.values()) {
+      file.elements.sort((a, b) => a.startLine - b.startLine || byName(a, b));
+      if (file.elements.length) file.tree = relativeElementTree(file.elements);
+    }
+    const annotate = (node) => {
+      let count = node.fileCount;
+      for (const dir of node.dirs.values()) count += annotate(dir);
+      node.fileCount = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
+  function chip(item) {
+    const label = item.isFile ? 'FILE' : (item.kind === 'concept' ? '概念' : (langLabel(item.lang) || '—'));
+    const node = el('span', 'ds-chip' + (item.isFile ? ' file' : ''), label);
+    node.title = (item.lang ? item.lang + ' · ' : '') + item.kind;
+    return node;
+  }
+
+  function toggle(key) {
+    if (expanded.has(key)) expanded.delete(key);
+    else expanded.add(key);
+    save();
+    renderTree();
+  }
+
+  function caret(hasChildren, key) {
+    const node = el('span', 'ds-caret' + (hasChildren ? '' : ' empty'));
+    if (hasChildren) {
+      node.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggle(key);
+      });
+    }
+    return node;
+  }
+
+  function countLabel(count, unit) {
+    return count ? count + ' ' + unit : '';
+  }
+
+  function virtualRow(key, label, meta, icon, children) {
+    const wrap = el('div');
+    const open = expanded.has(key);
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    row.appendChild(caret(true, key));
+    const glyph = el('span', 'ds-folder');
+    glyph.innerHTML = icon;
+    row.appendChild(glyph);
+    const name = el('span', 'ds-name', label);
+    row.appendChild(name);
+    row.appendChild(el('span', 'ds-count', meta));
+    row.addEventListener('click', () => toggle(key));
+    wrap.appendChild(row);
+    if (open) {
+      const kids = children();
+      kids.classList.add('ds-children');
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function namespaceRow(node, keyPrefix) {
+    const wrap = el('div');
+    const prefix = keyPrefix || '';
+    const key = 'ns:' + prefix + node.path;
+    const open = expanded.has(key);
+    const item = node.element;
+    const hasChildren = node.children.size > 0;
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (item && selected === item.hash) row.classList.add('active');
+    if (item) row.dataset.hash = item.hash;
+    row.appendChild(caret(hasChildren, key));
+    if (item) {
+      row.appendChild(chip(item));
+      const name = el('span', 'ds-name', shortName(item.name));
+      name.title = item.name;
+      row.appendChild(name);
+      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+      row.appendChild(el('span', 'ds-meta', item.startLine ? 'L' + item.startLine + '–' + item.endLine : ''));
+    } else {
+      const glyph = el('span', 'ds-folder');
+      glyph.innerHTML = folderIcon;
+      row.appendChild(glyph);
+      const name = el('span', 'ds-name', node.name);
+      name.title = node.path;
+      row.appendChild(name);
+      row.appendChild(el('span', 'ds-count', countLabel(node.count, '元素')));
+    }
+    row.addEventListener('click', () => {
+      if (item) select(item);
+      else if (hasChildren) toggle(key);
+    });
+    wrap.appendChild(row);
+    if (open && hasChildren) {
+      const kids = el('div', 'ds-children');
+      for (const child of [...node.children.values()].sort(byName)) kids.appendChild(namespaceRow(child, prefix));
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function fileDirRow(node) {
+    const wrap = el('div');
+    const key = 'fd:' + node.path;
+    const open = expanded.has(key);
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    row.appendChild(caret(true, key));
+    const glyph = el('span', 'ds-folder');
+    glyph.innerHTML = folderIcon;
+    row.appendChild(glyph);
+    const name = el('span', 'ds-name', node.name);
+    name.title = node.path;
+    row.appendChild(name);
+    row.appendChild(el('span', 'ds-count', countLabel(node.fileCount, '文件')));
+    row.addEventListener('click', () => toggle(key));
+    wrap.appendChild(row);
+    if (open) {
+      const kids = el('div', 'ds-children');
+      for (const dir of [...node.dirs.values()].sort(byName)) kids.appendChild(fileDirRow(dir));
+      for (const file of [...node.files.values()].sort(byName)) kids.appendChild(fileRow(file));
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function fileRow(file) {
+    const wrap = el('div');
+    const key = 'fe:' + file.path;
+    const open = expanded.has(key);
+    const hasElements = file.elements.length > 0;
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (file.item && selected === file.item.hash) row.classList.add('active');
+    if (file.item) row.dataset.hash = file.item.hash;
+    row.appendChild(caret(hasElements, key));
+    const glyph = el('span', 'ds-file');
+    glyph.innerHTML = fileIcon;
+    row.appendChild(glyph);
+    const name = el('span', 'ds-name', file.name);
+    name.title = file.path;
+    row.appendChild(name);
+    const right = el('span', 'ds-right');
+    if (hasElements) right.appendChild(el('span', 'ds-count', countLabel(file.elements.length, '元素')));
+    if (file.item) {
+      const source = el('button', 'ds-action', '源码');
+      source.type = 'button';
+      source.title = '查看文件源码';
+      source.addEventListener('click', (event) => {
+        event.stopPropagation();
+        select(file.item);
+      });
+      right.appendChild(source);
+    }
+    row.appendChild(right);
+    row.addEventListener('click', () => {
+      // Files are containers first: clicking a file with elements expands it.
+      // The 源码 button opens the file object itself.
+      if (hasElements) toggle(key);
+      else if (file.item) select(file.item);
+    });
+    wrap.appendChild(row);
+    if (open && hasElements) {
+      const kids = el('div', 'ds-children');
+      for (const child of [...file.tree.children.values()].sort(byName)) {
+        kids.appendChild(namespaceRow(child, file.path + '/'));
+      }
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function searchRow(item) {
+    const row = el('div', 'ds-row');
+    if (selected === item.hash) row.classList.add('active');
+    row.dataset.hash = item.hash;
+    row.appendChild(el('span', 'ds-caret empty'));
+    row.appendChild(chip(item));
+    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : shortName(item.name));
+    name.title = item.isFile ? item.path : item.name;
+    row.appendChild(name);
+    row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+    const meta = item.path + (item.startLine ? ':' + item.startLine : '');
+    row.appendChild(el('span', 'ds-meta', meta));
+    row.addEventListener('click', () => select(item));
+    return row;
+  }
+
+  function renderSearch() {
+    const matches = data.elements.filter((item) =>
+      (item.name + ' ' + item.path).toLowerCase().includes(query));
+    if (!matches.length) {
+      treeEl.replaceChildren(el('div', 'ds-empty', '没有匹配的元素'));
+      return;
+    }
+    const shown = matches.slice(0, 400);
+    const list = el('div', 'ds-list');
+    for (const item of shown) list.appendChild(searchRow(item));
+    const note = matches.length > shown.length
+      ? '显示前 ' + shown.length + ' / ' + matches.length + ' 个结果'
+      : matches.length + ' 个结果';
+    treeEl.replaceChildren(list, el('div', 'ds-empty', note));
+  }
+
+  function renderTree() {
+    if (!data) return;
+    if (query) {
+      renderSearch();
+      return;
+    }
+    if (!data.elements.length) {
+      treeEl.replaceChildren(el('div', 'ds-empty',
+        '设计空间还没有元素。用 ds create 创建概念元素并 ds push 后刷新页面。'));
+      return;
+    }
+    const list = el('div', 'ds-list');
+    list.appendChild(virtualRow(
+      'root',
+      '设计空间',
+      countLabel(data.elementCount, '元素'),
+      rootIcon,
+      () => {
+        const kids = el('div', 'ds-list');
+        kids.appendChild(virtualRow(
+          'view:namespaces',
+          '命名空间',
+          countLabel(data.elementCount, '元素'),
+          folderIcon,
+          () => {
+            const namespaces = el('div', 'ds-list');
+            for (const child of [...nsRoot.children.values()].sort(byName)) {
+              namespaces.appendChild(namespaceRow(child));
+            }
+            return namespaces;
+          }
+        ));
+        if (fileRoot.fileCount) {
+          kids.appendChild(virtualRow(
+            'view:files',
+            '文件',
+            countLabel(fileRoot.fileCount, '文件'),
+            folderIcon,
+            () => {
+              const files = el('div', 'ds-list');
+              for (const dir of [...fileRoot.dirs.values()].sort(byName)) files.appendChild(fileDirRow(dir));
+              for (const file of [...fileRoot.files.values()].sort(byName)) files.appendChild(fileRow(file));
+              return files;
+            }
+          ));
+        }
+        return kids;
+      }
+    ));
+    treeEl.replaceChildren(list);
+  }
+
+  async function select(item) {
+    if (!item || !item.hash) return;
+    selected = item.hash;
+    for (const row of document.querySelectorAll('.ds-row.active')) row.classList.remove('active');
+    for (const row of document.querySelectorAll('.ds-row[data-hash="' + CSS.escape(item.hash) + '"]')) {
+      row.classList.add('active');
+    }
+    detailEl.replaceChildren(el('div', 'ds-loading', '加载元素…'));
+    try {
+      const response = await fetch(elementUrl + encodeURIComponent(item.hash), { headers: { accept: 'text/html' } });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      detailEl.innerHTML = await response.text();
+      bindTabs();
+    } catch (error) {
+      detailEl.replaceChildren(el('div', 'ds-source-error', '无法加载元素：' + error.message));
+    }
+  }
+
+  function bindTabs() {
+    const buttons = detailEl.querySelectorAll('[data-ds-tab]');
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => {
+        for (const other of buttons) other.classList.toggle('active', other === button);
+        for (const panel of detailEl.querySelectorAll('[data-ds-panel]')) {
+          panel.hidden = panel.dataset.dsPanel !== button.dataset.dsTab;
+        }
+        if (button.dataset.dsTab === 'source') loadSource();
+      });
+    });
+  }
+
+  function loadSource() {
+    const panel = detailEl.querySelector('[data-ds-panel="source"]');
+    if (!panel || panel.dataset.loaded === '1' || panel.dataset.loading === '1') return;
+    const url = panel.dataset.sourceUrl;
+    if (sourceCache.has(url)) {
+      panel.innerHTML = sourceCache.get(url);
+      panel.dataset.loaded = '1';
+      return;
+    }
+    panel.dataset.loading = '1';
+    panel.replaceChildren(el('div', 'ds-loading', '正在读取源码…'));
+    fetch(url, { headers: { accept: 'text/html' } })
+      .then(async (response) => {
+        const html = await response.text();
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        sourceCache.set(url, html);
+        panel.innerHTML = html;
+        panel.dataset.loaded = '1';
+      })
+      .catch((error) => {
+        panel.replaceChildren(el('div', 'ds-source-error', '无法读取源码：' + error.message));
+      })
+      .finally(() => { delete panel.dataset.loading; });
+  }
+
+  function collectNamespaces(node, keyPrefix) {
+    const prefix = keyPrefix || '';
+    for (const child of node.children.values()) {
+      expanded.add('ns:' + prefix + child.path);
+      collectNamespaces(child, prefix);
+    }
+  }
+
+  function collectFiles(node) {
+    for (const dir of node.dirs.values()) {
+      expanded.add('fd:' + dir.path);
+      collectFiles(dir);
+    }
+    for (const file of node.files.values()) {
+      if (file.tree) {
+        expanded.add('fe:' + file.path);
+        collectNamespaces(file.tree, file.path + '/');
+      }
+    }
+  }
+
+  searchEl.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      query = searchEl.value.trim().toLowerCase();
+      renderTree();
+    }, 120);
+  });
+  expandBtn.addEventListener('click', () => {
+    if (!nsRoot) return;
+    expanded.add('root');
+    expanded.add('view:namespaces');
+    if (fileRoot.fileCount) expanded.add('view:files');
+    collectNamespaces(nsRoot);
+    collectFiles(fileRoot);
+    save();
+    renderTree();
+  });
+  collapseBtn.addEventListener('click', () => {
+    expanded.clear();
+    save();
+    renderTree();
+  });
+
+  fetch(treeUrl, { headers: { accept: 'application/json' } })
+    .then(async (response) => {
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      return response.json();
+    })
+    .then((payload) => {
+      if (payload.error) throw new Error(payload.error);
+      data = payload;
+      nsRoot = buildNamespaces(data.elements);
+      fileRoot = buildFiles(data.elements);
+      renderTree();
+    })
+    .catch((error) => {
+      treeEl.replaceChildren(el('div', 'ds-source-error', '无法加载设计空间：' + error.message));
+    });
+})();
+</script>"##;
 
 pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option<&str>) -> String {
     let error_html = error
@@ -3918,6 +4980,23 @@ mod tests {
     }
 
     #[test]
+    fn projects_page_requires_a_git_repository_field() {
+        let owner = Account::new(
+            "owner".to_string(),
+            "Owner".to_string(),
+            AccountKind::Human,
+            AccountRole::Member,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let ctx = ConsoleContext::new(&owner, &[], None);
+        let html = projects_page(&ctx, &[], &[], None);
+        assert!(html.contains(r#"name="git_repository""#));
+        assert!(html.contains("Git 仓库"));
+    }
+
+    #[test]
     fn anchor_document_page_renders_annotation_controls() {
         let owner = Account::new(
             "owner".to_string(),
@@ -3928,7 +5007,8 @@ mod tests {
             Some("hash".to_string()),
         )
         .unwrap();
-        let project = Project::new("Project", None, owner.id).unwrap();
+        let project =
+            Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
         let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
         let annotations = vec![
             AnchorAnnotation {
@@ -4059,6 +5139,157 @@ mod tests {
     }
 
     #[test]
+    fn project_page_shows_repository_and_design_space() {
+        let owner = Account::new(
+            "owner".to_string(),
+            "Owner".to_string(),
+            AccountKind::Human,
+            AccountRole::Member,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let mut project =
+            Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
+        project.design_space_url = "ds://u@h/0b16bc99e483d732".to_string();
+        let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
+        let html = project_page(&ctx, &project, &[], false, None);
+        assert!(html.contains("git@example.com:test/repo.git"));
+        assert!(html.contains("ds://u@h/0b16bc99e483d732"));
+        assert!(html.contains(&project.id.to_string()[..8]));
+        // Older stored addresses may still be percent-encoded.
+        assert_eq!(
+            display_percent_encoded("ds://u@h/%E8%BD%AF%E4%BB%B6"),
+            "ds://u@h/软件"
+        );
+    }
+
+    #[test]
+    fn design_space_page_renders_tree_shell_and_escapes_content() {
+        let owner = Account::new(
+            "owner".to_string(),
+            "Owner".to_string(),
+            AccountKind::Human,
+            AccountRole::Member,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let mut project =
+            Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
+        project.design_space_url = "ds://u@h/0b16bc99e483d732".to_string();
+        let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
+        let overview = DesignSpaceOverview {
+            branch: "main".to_string(),
+            version: Some("ab".repeat(32)),
+            source_commit: "cd".repeat(20),
+            file_count: 4,
+            element_count: 12,
+            designed_count: 3,
+            elements: vec![DesignSpaceElement {
+                hash: "ef".repeat(32),
+                name: "Fn <script>".to_string(),
+                path: "src/<main>.rs".to_string(),
+                lang: "rust".to_string(),
+                kind: "function".to_string(),
+                start_line: 3,
+                end_line: 9,
+                has_design: true,
+                is_file: false,
+            }],
+        };
+        let html = design_space_page(&ctx, &project, &overview);
+        assert!(html.contains("id=\"ds-shell\""));
+        assert!(html.contains(&format!(
+            "data-tree-url=\"/projects/{}/design-space/tree\"",
+            project.id
+        )));
+        assert!(html.contains("25%"));
+
+        let detail = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "Fn <script>".to_string(),
+                lang: "rust".to_string(),
+                kind: "function".to_string(),
+                path: "src/<main>.rs".to_string(),
+                start_line: 3,
+                end_line: 9,
+                design: Some("<script>alert(1)</script>".to_string()),
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(detail.contains("&lt;script&gt;alert(1)"));
+        assert!(!detail.contains("<script>alert(1)"));
+
+        let source = design_space_source(&DesignSpaceSource {
+            commit: "cd".repeat(20),
+            path: "src/<main>.rs".to_string(),
+            start_line: 3,
+            end_line: 4,
+            first_line: 3,
+            last_line: 4,
+            total_lines: 4,
+            lines: vec![
+                DesignSpaceLine {
+                    number: 3,
+                    text: "    let x = 1 < 2;".to_string(),
+                    in_element: true,
+                },
+                DesignSpaceLine {
+                    number: 4,
+                    text: "</script>".to_string(),
+                    in_element: false,
+                },
+            ],
+        });
+        assert!(source.contains("&lt; 2"));
+        assert!(!source.contains("</script>"));
+        assert!(source.contains("ds-line in"));
+    }
+
+    #[test]
+    fn concept_detail_has_no_source_tab() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "Auth::Login".to_string(),
+                lang: String::new(),
+                kind: "concept".to_string(),
+                path: String::new(),
+                start_line: 0,
+                end_line: 0,
+                design: Some("登录流程".to_string()),
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains(">概念<"));
+        assert!(html.contains("无源码锚点"));
+        assert!(!html.contains(r#"data-ds-tab="source""#));
+        assert!(!html.contains("data-source-url"));
+    }
+
+    #[test]
+    fn element_titles_use_short_names() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "crate::util::Helper".to_string(),
+                lang: "rust".to_string(),
+                kind: "function".to_string(),
+                path: "src/util.rs".to_string(),
+                start_line: 3,
+                end_line: 9,
+                design: None,
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains(r#"<h2 title="crate::util::Helper">Helper</h2>"#));
+        assert!(html.contains("全名 <code>crate::util::Helper</code>"));
+        assert!(!html.contains(">crate::util::Helper</h2>"));
+    }
+
+    #[test]
     fn project_page_offers_delete_only_to_managers() {
         let owner = Account::new(
             "owner".to_string(),
@@ -4069,7 +5300,8 @@ mod tests {
             Some("hash".to_string()),
         )
         .unwrap();
-        let project = Project::new("Project", None, owner.id).unwrap();
+        let project =
+            Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
         let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
 
         let manager_html = project_page(&ctx, &project, &[], true, None);

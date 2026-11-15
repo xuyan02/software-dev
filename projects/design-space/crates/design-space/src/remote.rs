@@ -31,6 +31,9 @@ use crate::store::Store;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefsResponse {
     pub refs: BTreeMap<String, String>,
+    /// Source repository clients should clone; absent when unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,17 +104,28 @@ pub struct FetchSummary {
 pub struct ServerRepo {
     root: PathBuf,
     store: Store,
+    source: Option<String>,
 }
 
 impl ServerRepo {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_with_source(root, None)
+    }
+
+    /// Server repository that advertises its source repository in `refs`.
+    pub fn open_with_source(root: &Path, source: Option<String>) -> Result<Self> {
         for dir in ["objects", "packs", "refs/heads", "tmp"] {
             fs::create_dir_all(root.join(dir))?;
         }
         Ok(Self {
             root: root.to_path_buf(),
             store: Store::new(root),
+            source,
         })
+    }
+
+    pub fn source(&self) -> Option<&str> {
+        self.source.as_deref()
     }
 
     pub fn root(&self) -> &Path {
@@ -399,6 +413,15 @@ fn remote_ref_path(dir: &Path, remote: &str, branch: &str) -> Result<PathBuf> {
 
 pub trait Transport {
     fn refs(&mut self) -> Result<BTreeMap<String, String>>;
+    /// Branch map plus the advertised source repository, when the remote has
+    /// one. Implementations that can return both in one round trip override
+    /// this; the default falls back to `refs` without a source.
+    fn refs_info(&mut self) -> Result<RefsResponse> {
+        Ok(RefsResponse {
+            refs: self.refs()?,
+            source: None,
+        })
+    }
     fn fetch(&mut self, want: &str, have: Option<&str>) -> Result<Vec<u8>>;
     fn send_pack(&mut self, bytes: &[u8]) -> Result<String>;
     fn push(&mut self, request: &PushRequest) -> Result<PushResult>;
@@ -409,12 +432,96 @@ pub fn open_transport(url: &str) -> Result<Box<dyn Transport>> {
     if url.starts_with("http://") || url.starts_with("https://") {
         return Ok(Box::new(HttpTransport::new(url)?));
     }
+    if let Some(rest) = url.strip_prefix("ds://") {
+        // A ds:// address pointing at this machine can be served directly
+        // when the same user already owns the design-space root. This is what
+        // lets `ds clone ds://localhost/<id>` work without an sshd.
+        if let Some(local) = local_transport(rest)? {
+            return Ok(Box::new(local));
+        }
+        return Ok(Box::new(SshTransport::start(rest)?));
+    }
     if let Some(rest) = url.strip_prefix("ssh://") {
         return Ok(Box::new(SshTransport::start(rest)?));
     }
     Err(Error::Config(format!(
         "unsupported remote URL {url}; use http(s):// or ssh://"
     )))
+}
+
+/// In-process transport over a local design-space repository.
+struct LocalTransport {
+    repo: ServerRepo,
+}
+
+fn local_transport(rest: &str) -> Result<Option<LocalTransport>> {
+    let Some(root) = local_root() else {
+        return Ok(None);
+    };
+    local_transport_at(&root, rest)
+}
+
+fn local_transport_at(root: &Path, rest: &str) -> Result<Option<LocalTransport>> {
+    let Some(id) = loopback_project_id(rest) else {
+        return Ok(None);
+    };
+    let Ok(project) = crate::project::find_by_id(root, &id) else {
+        return Ok(None);
+    };
+    let repo = ServerRepo::open_with_source(&project.dir, project.meta.source)?;
+    Ok(Some(LocalTransport { repo }))
+}
+
+fn local_root() -> Option<PathBuf> {
+    match std::env::var("DESIGN_SPACE_ROOT") {
+        Ok(root) if !root.trim().is_empty() => return Some(PathBuf::from(root)),
+        _ => {}
+    }
+    std::env::var("HOME")
+        .ok()
+        .filter(|home| !home.trim().is_empty())
+        .map(|home| PathBuf::from(home).join(".foundry").join("design-spaces"))
+}
+
+/// Extract the project id from a loopback `ds://` address, e.g.
+/// `user@localhost:2222/<id>` or `127.0.0.1/<id>`.
+fn loopback_project_id(rest: &str) -> Option<String> {
+    let (authority, path) = rest.split_once('/')?;
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host.split(':').next().unwrap_or(host);
+    if host != "localhost" && host != "127.0.0.1" {
+        return None;
+    }
+    let id = path.trim_matches('/');
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id.to_owned())
+}
+
+impl Transport for LocalTransport {
+    fn refs(&mut self) -> Result<BTreeMap<String, String>> {
+        self.repo.refs()
+    }
+
+    fn refs_info(&mut self) -> Result<RefsResponse> {
+        Ok(RefsResponse {
+            refs: self.repo.refs()?,
+            source: self.repo.source().map(str::to_owned),
+        })
+    }
+
+    fn fetch(&mut self, want: &str, have: Option<&str>) -> Result<Vec<u8>> {
+        self.repo.fetch_pack(want, have)
+    }
+
+    fn send_pack(&mut self, bytes: &[u8]) -> Result<String> {
+        self.repo.receive_pack(bytes)
+    }
+
+    fn push(&mut self, request: &PushRequest) -> Result<PushResult> {
+        self.repo.push(request)
+    }
 }
 
 fn auth_header() -> Option<String> {
@@ -453,8 +560,12 @@ impl HttpTransport {
 
 impl Transport for HttpTransport {
     fn refs(&mut self) -> Result<BTreeMap<String, String>> {
+        Ok(self.refs_info()?.refs)
+    }
+
+    fn refs_info(&mut self) -> Result<RefsResponse> {
         match self.request("GET", "/v1/refs").call() {
-            Ok(response) => Ok(response.into_json::<RefsResponse>()?.refs),
+            Ok(response) => Ok(response.into_json::<RefsResponse>()?),
             Err(ureq::Error::Status(code, response)) => {
                 Err(Self::status_error(code, &response.into_string()?))
             }
@@ -526,20 +637,13 @@ struct SshTransport {
 
 impl SshTransport {
     fn start(url: &str) -> Result<Self> {
-        let (authority, path) = url
-            .split_once('/')
-            .ok_or_else(|| Error::Config("ssh URL needs a repository path".into()))?;
-        if path.is_empty() {
-            return Err(Error::Config("ssh URL needs a repository path".into()));
-        }
-
-        let (user_host, port) = split_authority(authority)?;
+        let (authority, port, path) = parse_destination(url)?;
         let mut command = Command::new("ssh");
         if let Some(port) = port {
             command.args(["-p", &port]);
         }
-        command.arg(user_host);
-        command.arg(build_remote_command(&format!("/{path}")));
+        command.arg(authority);
+        command.arg(build_remote_command(&path));
         command.stdin(Stdio::piped()).stdout(Stdio::piped());
 
         let mut child = command
@@ -591,8 +695,12 @@ impl Drop for SshTransport {
 
 impl Transport for SshTransport {
     fn refs(&mut self) -> Result<BTreeMap<String, String>> {
+        Ok(self.refs_info()?.refs)
+    }
+
+    fn refs_info(&mut self) -> Result<RefsResponse> {
         let response = self.request(OP_REFS, &[])?;
-        Ok(serde_json::from_slice::<RefsResponse>(&response)?.refs)
+        Ok(serde_json::from_slice::<RefsResponse>(&response)?)
     }
 
     fn fetch(&mut self, want: &str, have: Option<&str>) -> Result<Vec<u8>> {
@@ -618,6 +726,43 @@ impl Transport for SshTransport {
     }
 }
 
+/// Split `user@host[:port]/abs/path` into ssh authority, optional port and a
+/// percent-decoded repository path.
+fn parse_destination(url: &str) -> Result<(String, Option<String>, String)> {
+    let (authority, path) = url
+        .split_once('/')
+        .ok_or_else(|| Error::Config("ds/ssh URL needs a repository path".into()))?;
+    if path.is_empty() {
+        return Err(Error::Config("ds/ssh URL needs a repository path".into()));
+    }
+    let (user_host, port) = split_authority(authority)?;
+    Ok((user_host, port, format!("/{}", percent_decode(path)?)))
+}
+
+fn percent_decode(text: &str) -> Result<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(Error::Config("truncated percent escape in URL".into()));
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3])
+                .map_err(|error| Error::Config(error.to_string()))?;
+            out.push(
+                u8::from_str_radix(hex, 16)
+                    .map_err(|_| Error::Config(format!("bad percent escape %{hex}")))?,
+            );
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|error| Error::Config(error.to_string()))
+}
+
 fn split_authority(authority: &str) -> Result<(String, Option<String>)> {
     let (host, port) = match authority.rsplit_once(':') {
         Some((host, port))
@@ -634,7 +779,16 @@ fn split_authority(authority: &str) -> Result<(String, Option<String>)> {
 }
 
 fn build_remote_command(path: &str) -> String {
-    format!("ds serve --stdio --repo '{}'", path.replace('\'', "'\\''"))
+    let command =
+        std::env::var("DS_REMOTE_COMMAND").unwrap_or_else(|_| "ds-server stdio".to_owned());
+    let trimmed = path.trim_start_matches('/');
+    let quoted = trimmed.replace('\'', "'\\''");
+    if trimmed.contains('/') {
+        // Legacy address carrying an absolute repository path.
+        format!("{command} --repo '/{quoted}'")
+    } else {
+        format!("{command} --project '{quoted}'")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -828,7 +982,8 @@ async fn http_refs(
         return Err(unauthorized());
     }
     let refs = state.server.refs().map_err(bad)?;
-    Ok(axum::Json(RefsResponse { refs }).into_response())
+    let source = state.server.source().map(str::to_owned);
+    Ok(axum::Json(RefsResponse { refs, source }).into_response())
 }
 
 async fn http_fetch(
@@ -915,8 +1070,19 @@ pub fn serve_http(repo: &Path, listen: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // SSH / stdio server
 
+/// Serve one project by its `ds://` id. The URL never carries a filesystem
+/// path; the server resolves it under its root.
+pub fn serve_project_stdio(root: &Path, project_id: &str) -> Result<()> {
+    let project = crate::project::find_by_id(root, project_id)?;
+    serve_stdio_with_source(&project.dir, project.meta.source)
+}
+
 pub fn serve_stdio(repo: &Path) -> Result<()> {
-    let server = ServerRepo::open(repo)?;
+    serve_stdio_with_source(repo, None)
+}
+
+pub fn serve_stdio_with_source(repo: &Path, source: Option<String>) -> Result<()> {
+    let server = ServerRepo::open_with_source(repo, source)?;
     let stdin = std::io::stdin();
     let mut input = BufReader::new(stdin.lock());
     let mut output = std::io::stdout();
@@ -947,6 +1113,7 @@ fn dispatch(server: &ServerRepo, op: u8, payload: &[u8]) -> Result<Vec<u8>> {
     match op {
         OP_REFS => Ok(serde_json::to_vec(&RefsResponse {
             refs: server.refs()?,
+            source: server.source().map(str::to_owned),
         })?),
         OP_FETCH => {
             let request: FetchRequest = serde_json::from_slice(payload)?;
@@ -1039,6 +1206,72 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let server = ServerRepo::open(&temp.path().join("server")).unwrap();
         (temp, server)
+    }
+
+    #[test]
+    fn parses_ssh_destinations() {
+        assert_eq!(
+            parse_destination("ds@host:2222/srv/ds/demo").unwrap(),
+            ("ds@host".into(), Some("2222".into()), "/srv/ds/demo".into())
+        );
+        assert_eq!(
+            parse_destination("host/a%20b").unwrap(),
+            ("host".into(), None, "/a b".into())
+        );
+        assert!(parse_destination("host").is_err());
+    }
+
+    #[test]
+    fn remote_command_passes_project_id_not_a_path() {
+        // A single-segment path is a project id resolved under the server root.
+        assert!(
+            build_remote_command("/01a1db53c0ffee42").ends_with("--project '01a1db53c0ffee42'")
+        );
+        // Multi-segment paths remain supported as legacy absolute repos.
+        assert!(
+            build_remote_command("/srv/design-spaces/demo")
+                .ends_with("--repo '/srv/design-spaces/demo'")
+        );
+    }
+
+    #[test]
+    fn loopback_addresses_use_the_local_repository() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let project = crate::project::create(
+            &root,
+            "Demo",
+            Some("git@example.com:demo.git"),
+            "localhost",
+            Some("u"),
+            None,
+        )
+        .unwrap();
+        let id = &project.meta.id;
+        let mut transport = local_transport_at(&root, &format!("u@localhost/{id}"))
+            .unwrap()
+            .unwrap();
+        let info = transport.refs_info().unwrap();
+        assert_eq!(info.source.as_deref(), Some("git@example.com:demo.git"));
+        assert!(info.refs.is_empty());
+        assert!(
+            local_transport_at(&root, &format!("u@remotehost/{id}"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn refs_advertise_the_recorded_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = ServerRepo::open_with_source(
+            &temp.path().join("repo"),
+            Some("git@example.com:demo.git".into()),
+        )
+        .unwrap();
+        let bytes = dispatch(&repo, OP_REFS, &[]).unwrap();
+        let response: RefsResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response.source.as_deref(), Some("git@example.com:demo.git"));
     }
 
     #[test]

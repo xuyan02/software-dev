@@ -88,6 +88,9 @@ pub const T_VERSION: u32 = 0x0000_0008;
 pub const T_BINARY_FILE: u32 = 0x0000_0009;
 pub const T_GENERATED_FILE: u32 = 0x0000_000A;
 pub const T_TEXT_FILE: u32 = 0x0000_000B;
+/// A conceptual element authored by an agent or human. It has no language
+/// identity; names, anchors and relationships come from the author.
+pub const T_CONCEPT: u32 = 0x0000_000C;
 
 // ---------------------------------------------------------------------------
 // C (0x0001)
@@ -410,6 +413,7 @@ pub fn type_name(ty: u32) -> Option<&'static str> {
         T_BINARY_FILE => "binary_file",
         T_GENERATED_FILE => "generated_file",
         T_TEXT_FILE => "text_file",
+        T_CONCEPT => "concept",
 
         C_FUNCTION => "c:function",
         C_VARIABLE => "c:variable",

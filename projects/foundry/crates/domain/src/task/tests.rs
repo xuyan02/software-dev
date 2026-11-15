@@ -147,6 +147,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         vec![
             "architecture_design",
             "detailed_design",
+            "empty",
             "goal_clarification",
             "interaction_design",
             "iteration",
@@ -1355,6 +1356,21 @@ fn pending_task_without_dependencies_can_complete_directly() {
     assert_eq!(mutation.task.state, TaskState::Completed);
     assert_eq!(mutation.task.result.as_deref(), Some("completed"));
     assert_eq!(mutation.task.stage.as_deref(), Some("only"));
+}
+
+#[test]
+fn empty_builtin_completes_immediately() {
+    let workflow = builtin("empty");
+    let leaf = task("empty", TaskState::Pending, None);
+    let mutation = apply(
+        &workflow,
+        aggregate(leaf, vec![], vec![], vec![]),
+        TaskEvent::Created,
+        now(),
+    )
+    .unwrap();
+    assert_eq!(mutation.task.state, TaskState::Completed);
+    assert_eq!(mutation.task.result.as_deref(), Some("completed"));
 }
 
 struct BadOrder;

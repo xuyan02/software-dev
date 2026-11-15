@@ -53,7 +53,11 @@ fn collect(store: &Store, dir: &Path) -> Result<Reachable> {
                 if !is_zero(&version.parent) {
                     stack.push(version.parent);
                 }
-                stack.push(version.root);
+                // History may carry version nodes without their trees (for
+                // example a first push sends only the current snapshot).
+                if store.contains(&version.root) {
+                    stack.push(version.root);
+                }
             }
             Node::Index(index) => stack.extend(index.entries.iter().map(|entry| entry.hash)),
             Node::Object(object) => {

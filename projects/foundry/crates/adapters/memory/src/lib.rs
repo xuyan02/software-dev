@@ -487,7 +487,7 @@ mod tests {
             Some("hash".to_string()),
         )
         .unwrap();
-        Project::new("Foundry", None, owner.id).unwrap()
+        Project::new("Foundry", None, "git@example.com:test/repo.git", owner.id).unwrap()
     }
 
     fn issue(project_id: Uuid, title: &str) -> Issue {
@@ -579,7 +579,7 @@ mod tests {
             Err(RepoError::Duplicate(_))
         ));
 
-        let project = Project::new("Foundry", None, first.id).unwrap();
+        let project = Project::new("Foundry", None, "git@example.com:test/repo.git", first.id).unwrap();
         ProjectRepository::insert(&store, &project).await.unwrap();
         let duplicate_project = project.clone();
         assert!(matches!(
@@ -600,7 +600,7 @@ mod tests {
             Some("hash".to_string()),
         )
         .unwrap();
-        let project = Project::new("Foundry", None, owner.id).unwrap();
+        let project = Project::new("Foundry", None, "git@example.com:test/repo.git", owner.id).unwrap();
         ProjectRepository::insert(&store, &project).await.unwrap();
         let loaded = ProjectRepository::get(&store, project.id)
             .await

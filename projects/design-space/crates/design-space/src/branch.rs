@@ -3,7 +3,7 @@
 //! A local branch has an optional committed tip (`refs/heads/<name>`) and an
 //! optional working state (`work/<name>/`). `HEAD` names the current branch,
 //! like git's symbolic `HEAD`. The branch is created as an unborn branch by
-//! `scan --branch` or `switch --create`; its ref appears on the first commit.
+//! ``create`` or ``checkout -b``; its ref appears on the first commit.
 
 use std::fs;
 use std::path::{Path, PathBuf};

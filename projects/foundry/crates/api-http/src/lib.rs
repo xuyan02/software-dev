@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod design_space;
 pub mod dto;
 pub mod error;
 // Legacy requirements-document handlers remain while those routes are retired;
@@ -6,6 +7,7 @@ pub mod error;
 #[allow(dead_code)]
 mod routes;
 
+pub use design_space::DesignSpaceAccess;
 pub use error::ApiError;
 pub use routes::{AppState, EditorAssets, SetupState};
 
@@ -90,6 +92,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/projects/{id}/project-document",
             get(routes::project_document_redirect),
+        )
+        .route(
+            "/projects/{id}/design-space",
+            get(routes::design_space_page),
+        )
+        .route(
+            "/projects/{id}/design-space/tree",
+            get(routes::design_space_tree),
+        )
+        .route(
+            "/projects/{id}/design-space/elements/{hash}",
+            get(routes::design_space_element),
+        )
+        .route(
+            "/projects/{id}/design-space/elements/{hash}/source",
+            get(routes::design_space_element_source),
         )
         .route("/projects/{id}/edit", post(routes::update_project_form))
         .route("/projects/{id}/delete", post(routes::delete_project_form))

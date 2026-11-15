@@ -2,7 +2,7 @@
 //!
 //! The source URL is fixed in `.design/config`. `init` clones one bare
 //! repository into `.design/source`; later fetches are explicit
-//! (`ds source fetch`), never implicit in `scan`.
+//! (`ds source fetch`), never implicit in `create`.
 //!
 //! The tool tracks its own current source ref in `.design/source-head`
 //! (`branch <name>` or `commit <sha>`), so switching branches or pinning a

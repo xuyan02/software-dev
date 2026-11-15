@@ -327,7 +327,7 @@ fn tree_cache_path(dir: &Path, version: &Hash) -> PathBuf {
 /// Persist the element hierarchy of a committed version.
 ///
 /// Versions store hashes and spans but not parent/child links. Incremental
-/// scan needs the links to rebuild unchanged files without parsing; this local
+/// `create` and `describe` keep the links locally; this cache
 /// cache provides them. A missing cache only costs a full re-parse, never
 /// correctness.
 fn write_tree_cache(dir: &Path, version: &Hash, elements: &[Element]) -> Result<()> {
@@ -373,9 +373,10 @@ pub fn elements_at(
     collect_view(store, &view, &mut entries)?;
 
     let cached = if hierarchy {
-        Some(read_tree_cache(dir, version).ok_or_else(|| {
-            Error::Config("tree cache is missing for this version; run `ds scan`".into())
-        })?)
+        Some(
+            read_tree_cache(dir, version)
+                .ok_or_else(|| Error::Config("tree cache is missing for this version".into()))?,
+        )
     } else {
         None
     };
@@ -708,8 +709,14 @@ pub fn resolve_version(store: &Store, dir: &Path, at: Option<&str>) -> Result<Ha
         Some(value) if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) => {
             from_hex(value)?
         }
-        Some(reference) => read_ref(dir, reference)?,
-        None => read_ref(dir, &branch::current(dir)?)?,
+        Some(reference) => read_ref(dir, reference)
+            .map_err(|_| Error::Config(format!("ref {reference} has no version")))?,
+        None => {
+            let name = branch::current(dir)?;
+            read_ref(dir, &name).map_err(|_| {
+                Error::Config(format!("branch {name} has no version; run `ds create`"))
+            })?
+        }
     };
     store.get(&address)?;
     Ok(address)

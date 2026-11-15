@@ -65,6 +65,12 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// Git repository this project works on. Required.
+    #[serde(default)]
+    pub git_repository: String,
+    /// `ds://` address of this project's design space. Provisioned on create.
+    #[serde(default)]
+    pub design_space_url: String,
     pub status: ProjectStatus,
     #[serde(default)]
     pub root_task_id: Option<Uuid>,
@@ -97,13 +103,22 @@ impl Project {
     pub fn new(
         name: impl Into<String>,
         description: Option<String>,
+        git_repository: impl Into<String>,
         owner_id: Uuid,
     ) -> Result<Self, ProjectValidationError> {
+        let git_repository = git_repository.into().trim().to_string();
+        if git_repository.is_empty() {
+            return Err(ProjectValidationError(vec![
+                "git repository is required".to_string(),
+            ]));
+        }
         let now = OffsetDateTime::now_utc();
         let project = Self {
             id: Uuid::now_v7(),
             name: name.into().trim().to_string(),
             description,
+            git_repository,
+            design_space_url: String::new(),
             status: ProjectStatus::Active,
             root_task_id: None,
             members: vec![ProjectMember {
@@ -275,7 +290,13 @@ mod tests {
     use super::*;
 
     fn project() -> Project {
-        Project::new("Payments", None, Uuid::now_v7()).unwrap()
+        Project::new("Payments", None, "git@example.com:test/repo.git", Uuid::now_v7()).unwrap()
+    }
+
+    #[test]
+    fn new_project_requires_a_git_repository() {
+        let error = Project::new("Payments", None, "  ", Uuid::now_v7()).unwrap_err();
+        assert!(error.0.iter().any(|message| message.contains("git repository")));
     }
 
     #[test]

@@ -22,6 +22,16 @@ use std::sync::Arc;
 use tower::ServiceExt;
 use uuid::Uuid;
 
+struct TestDesignSpaces;
+
+#[async_trait::async_trait]
+impl foundry_app::ports::DesignSpaceProvisioner for TestDesignSpaces {
+    async fn create_design_space(&self, name: &str, _source: &str) -> Result<String, String> {
+        let slug = name.trim().to_lowercase().replace(' ', "-");
+        Ok(format!("ds://test/{slug}"))
+    }
+}
+
 struct Harness {
     router: Router,
     store: Arc<InMemoryStore>,
@@ -64,6 +74,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&events),
         catalog.clone(),
         dispatcher.clone(),
+        Arc::new(TestDesignSpaces),
     ));
     let auth = Arc::new(AuthService::new(Arc::clone(&store), Arc::clone(&store), 24));
     let task_repository: Arc<dyn TaskRepository> = store.clone();
@@ -103,6 +114,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             CreateProject {
                 name: "Primary".to_string(),
                 description: None,
+                git_repository: "git@example.com:test/repo.git".to_string(),
                 root_workflow_id: WorkflowId::new("project"),
             },
         )
@@ -132,6 +144,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             None,
         )),
         editor: Arc::new(foundry_api_http::EditorAssets::new(editor_dir)),
+        design_space: None,
     });
 
     let token = login(&router, "admin", "admin-password").await;
@@ -226,7 +239,7 @@ async fn only_owners_can_delete_a_project_and_deletion_removes_its_data() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Retired", "root_workflow_id": "project" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Retired", "root_workflow_id": "project" }),
         ),
     )
     .await;
@@ -354,7 +367,7 @@ async fn project_console_delete_redirects_and_clears_the_project_cookie() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Console delete", "root_workflow_id": "project" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Console delete", "root_workflow_id": "project" }),
         ),
     )
     .await;
@@ -417,10 +430,12 @@ async fn only_owners_manage_projects_and_archived_projects_can_be_restored() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Payments", "root_workflow_id": "project" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Payments", "root_workflow_id": "project" }),
         ),
     )
     .await;
+    assert_eq!(project["design_space_url"], "ds://test/payments");
+    assert_eq!(project["git_repository"], "git@example.com:test/repo.git");
     let project_id = project["id"].as_str().unwrap().to_string();
 
     body_json(
@@ -942,7 +957,7 @@ async fn issues_are_isolated_between_projects() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Payments", "root_workflow_id": "project" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Payments", "root_workflow_id": "project" }),
         ),
     )
     .await;
@@ -1046,7 +1061,7 @@ async fn project_roles_limit_contributions_and_visibility() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Payments", "root_workflow_id": "project" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Payments", "root_workflow_id": "project" }),
         ),
     )
     .await;
@@ -1232,7 +1247,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        14
+        15
     );
 
     let created = body_json(
@@ -1275,6 +1290,7 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&events),
         catalog.clone(),
         dispatcher.clone(),
+        Arc::new(TestDesignSpaces),
     ));
     let auth = Arc::new(AuthService::new(Arc::clone(&store), Arc::clone(&store), 24));
     let task_repository: Arc<dyn TaskRepository> = store.clone();
@@ -1336,6 +1352,7 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         auth: auth.clone(),
         setup: Arc::clone(&setup),
         editor: Arc::new(foundry_api_http::EditorAssets::new(missing_editor_dir())),
+        design_space: None,
     });
 
     // Every route is blocked and API calls get a 503.
@@ -1698,7 +1715,7 @@ async fn project_creation_rejects_an_unknown_root_workflow() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Payments", "root_workflow_id": "missing" }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Payments", "root_workflow_id": "missing" }),
         ),
     )
     .await;
@@ -2015,7 +2032,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 14);
+    assert_eq!(platform.len(), 15);
     assert!(
         platform
             .iter()
@@ -2183,7 +2200,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 15);
+    assert_eq!(own.as_array().unwrap().len(), 16);
 }
 
 #[tokio::test]
@@ -2558,7 +2575,7 @@ async fn project_creation_requires_a_published_root_workflow() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Blocked", "root_workflow_id": id }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Blocked", "root_workflow_id": id }),
         ),
     )
     .await;
@@ -2633,7 +2650,7 @@ async fn a_published_account_workflow_can_root_a_project() {
             "/api/v1/projects",
             Some(&harness.admin_token),
             None,
-            json!({ "name": "Account project", "root_workflow_id": id }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Account project", "root_workflow_id": id }),
         ),
     )
     .await;
@@ -2722,7 +2739,7 @@ async fn an_account_workflow_goes_from_creation_to_a_project_root() {
             "/api/v1/projects",
             Some(&token),
             None,
-            json!({ "name": "Lifecycle project", "root_workflow_id": id }),
+            json!({ "git_repository": "git@example.com:test/repo.git", "name": "Lifecycle project", "root_workflow_id": id }),
         ),
     )
     .await;

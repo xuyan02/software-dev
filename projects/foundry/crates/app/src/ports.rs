@@ -5,6 +5,14 @@ use foundry_domain::{
 };
 use uuid::Uuid;
 
+/// Allocates a server-side design space for a new project.
+#[async_trait::async_trait]
+pub trait DesignSpaceProvisioner: Send + Sync {
+    /// `source` is the project's git repository, stored so `ds clone` can
+    /// clone it without an extra argument. Returns the `ds://` address.
+    async fn create_design_space(&self, name: &str, source: &str) -> Result<String, String>;
+}
+
 /// Storage for issues. Same optimistic concurrency contract as requirements.
 #[async_trait::async_trait]
 pub trait IssueRepository: Send + Sync {

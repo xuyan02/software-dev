@@ -28,6 +28,8 @@ pub struct UpdateAccount {
 pub struct CreateProject {
     pub name: String,
     pub description: Option<String>,
+    /// Git repository this project works on. Required.
+    pub git_repository: String,
     pub root_workflow_id: WorkflowId,
 }
 

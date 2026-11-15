@@ -11,6 +11,7 @@ foundry-app.workspace = true
 foundry-shared.workspace = true
 foundry-api-mcp.workspace = true
 foundry-web.workspace = true
+design-space.workspace = true
 axum.workspace = true
 tower-http.workspace = true
 serde.workspace = true
