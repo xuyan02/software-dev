@@ -468,6 +468,17 @@ impl LinuxCapsule {
         self.podman.exec(&self.name, &["sh", "-c", script]).await
     }
 
+    /// Like [`Self::exec`], but `on_line(stream, line)` runs for each output
+    /// line while the command is still running.
+    pub async fn exec_streaming<F>(&self, script: &str, on_line: F) -> Result<ExecOutput>
+    where
+        F: Fn(&str, &str) + Send + Sync + 'static,
+    {
+        self.podman
+            .exec_streaming(&self.name, &["sh", "-c", script], on_line)
+            .await
+    }
+
     pub async fn upload(&self, local: &Path, container_path: &str) -> Result<()> {
         let source = local
             .to_str()

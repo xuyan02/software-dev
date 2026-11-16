@@ -1,6 +1,8 @@
 use crate::{Error, ExecOutput, Result};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Command;
 
 #[derive(Clone)]
@@ -108,6 +110,55 @@ impl Podman {
             status: output.status.code(),
             stdout: output.stdout,
             stderr: output.stderr,
+        })
+    }
+
+    /// Run exec and invoke `on_line(stream, line)` for every output line as it
+    /// arrives. The full output is still returned when the command exits.
+    pub async fn exec_streaming<F>(
+        &self,
+        name: &str,
+        argv: &[&str],
+        on_line: F,
+    ) -> Result<ExecOutput>
+    where
+        F: Fn(&str, &str) + Send + Sync + 'static,
+    {
+        let on_line = Arc::new(on_line);
+        let mut command = Command::new(&self.program);
+        command
+            .args(["exec", name])
+            .args(argv)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|error| Error::Backend(format!("failed to run podman: {error}")))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| Error::Backend("podman stdout is unavailable".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::Backend("podman stderr is unavailable".into()))?;
+        let (stdout, stderr, status) = tokio::join!(
+            read_stream(stdout, "stdout", Arc::clone(&on_line)),
+            read_stream(stderr, "stderr", on_line),
+            child.wait(),
+        );
+        let stdout =
+            stdout.map_err(|error| Error::Backend(format!("read podman stdout: {error}")))?;
+        let stderr =
+            stderr.map_err(|error| Error::Backend(format!("read podman stderr: {error}")))?;
+        let status =
+            status.map_err(|error| Error::Backend(format!("wait for podman: {error}")))?;
+        Ok(ExecOutput {
+            status: status.code(),
+            stdout,
+            stderr,
         })
     }
 
@@ -220,6 +271,34 @@ fn find_gateway(value: &serde_json::Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+async fn read_stream<R>(
+    reader: R,
+    stream: &'static str,
+    on_line: Arc<impl Fn(&str, &str) + Send + Sync>,
+) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(reader);
+    let mut all = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) => break,
+            Ok(_) => {
+                all.extend_from_slice(&line);
+                on_line(
+                    stream,
+                    String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']),
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(all)
 }
 
 #[cfg(test)]

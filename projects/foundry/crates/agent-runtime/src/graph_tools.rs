@@ -16,6 +16,7 @@ use graph_agent::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// First tool-specific error code used by the Foundry adapter. Foundry tools
 /// do not expose their own numeric codes yet.
@@ -42,6 +43,13 @@ impl GraphTool for GraphToolAdapter {
         arguments: Value,
         context: &GraphToolContext,
     ) -> Result<GraphToolOutput, GraphToolError> {
+        let name = self.inner.spec().name;
+        let started = Instant::now();
+        tracing::info!(
+            tool = %name,
+            arguments = %loggable(&arguments),
+            "tool call started"
+        );
         let context = FoundryToolContext {
             agent_id: context.agent_id.clone().unwrap_or_default(),
             task_id: context.task_id.clone().unwrap_or_default(),
@@ -49,10 +57,32 @@ impl GraphTool for GraphToolAdapter {
         };
         match self.inner.call(arguments, &context).await {
             Ok(output) if output.is_error => {
+                tracing::warn!(
+                    tool = %name,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %output.content,
+                    "tool call failed"
+                );
                 Err(GraphToolError::new(FOUNDRY_TOOL_FAILED, output.content))
             }
-            Ok(output) => Ok(GraphToolOutput::Text(output.content)),
-            Err(error) => Err(map_error(error)),
+            Ok(output) => {
+                tracing::info!(
+                    tool = %name,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    output_bytes = output.content.len(),
+                    "tool call finished"
+                );
+                Ok(GraphToolOutput::Text(output.content))
+            }
+            Err(error) => {
+                tracing::warn!(
+                    tool = %name,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %error,
+                    "tool call failed"
+                );
+                Err(map_error(error))
+            }
         }
     }
 }
@@ -80,6 +110,31 @@ fn map_error(error: FoundryToolError) -> GraphToolError {
         }
         FoundryToolError::Failed(message) => GraphToolError::new(FOUNDRY_TOOL_FAILED, message),
     }
+}
+
+/// Log arguments without URL userinfo, which may carry a repository token.
+fn loggable(arguments: &Value) -> String {
+    let text = arguments.to_string();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(index) = rest.find("://") {
+        let (before, after) = rest.split_at(index + 3);
+        out.push_str(before);
+        let stop = after
+            .find(['@', '/', '"', ' ', '\n']);
+        match stop {
+            Some(at) if after.as_bytes()[at] == b'@' => {
+                out.push_str("***@");
+                rest = &after[at + 1..];
+            }
+            _ => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 #[cfg(test)]

@@ -135,11 +135,32 @@ impl Shell for CapsuleShell {
 
     async fn exec(&self, command: &str) -> Result<ShellOutput, ToolError> {
         let command = format!("export DS_TOKEN_FILE=/run/foundry/ds-token; {command}");
+        tracing::info!(
+            target: "foundry_agentd::shell",
+            command = %truncate_log_line(&redact_credentials(&command)),
+            "shell command started"
+        );
         let output = self
             .capsule
-            .exec(&command)
+            .exec_streaming(&command, |stream, line| {
+                if !line.is_empty() {
+                    tracing::info!(
+                        target: "foundry_agentd::shell",
+                        stream,
+                        line = %truncate_log_line(line),
+                        "shell output"
+                    );
+                }
+            })
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
+        tracing::info!(
+            target: "foundry_agentd::shell",
+            exit_code = ?output.status,
+            stdout_bytes = output.stdout.len(),
+            stderr_bytes = output.stderr.len(),
+            "shell command finished"
+        );
         Ok(ShellOutput {
             exit_code: output.status,
             stdout: output.stdout_string(),
@@ -468,6 +489,39 @@ async fn finish_codesummary(client: &FoundryClient, task: &AssignedTask, succeed
             "cannot finish code summary task"
         ),
     }
+}
+
+fn redact_credentials(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(index) = rest.find("://") {
+        let (before, after) = rest.split_at(index + 3);
+        out.push_str(before);
+        let stop = after
+            .find(['@', '/', '"', ' ', '\n']);
+        match stop {
+            Some(at) if after.as_bytes()[at] == b'@' => {
+                out.push_str("***@");
+                rest = &after[at + 1..];
+            }
+            _ => {
+                out.push_str(after);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn truncate_log_line(line: &str) -> String {
+    const MAX_CHARS: usize = 4096;
+    if line.chars().count() <= MAX_CHARS {
+        return line.to_owned();
+    }
+    let mut truncated: String = line.chars().take(MAX_CHARS).collect();
+    truncated.push('…');
+    truncated
 }
 
 fn shell_quote(text: &str) -> String {
