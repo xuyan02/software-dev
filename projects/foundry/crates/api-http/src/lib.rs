@@ -130,6 +130,11 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/agents", get(routes::agents_index))
         .route("/agents/{id}/logs", get(routes::agent_logs_page))
+        .route("/agents/{id}/logs/state", get(routes::agent_log_state))
+        .route(
+            "/agents/{id}/logs/content",
+            get(routes::agent_log_content),
+        )
         .route("/agents/{id}/start", post(routes::start_agent_form))
         .route("/agents/{id}/stop", post(routes::stop_agent_form))
         .route("/agents/{id}/restart", post(routes::restart_agent_form))

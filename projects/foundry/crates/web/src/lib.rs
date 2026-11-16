@@ -4410,18 +4410,64 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
     layout(ctx, Section::Agents, "智能体", &body)
 }
 
-pub fn agent_logs_page(ctx: &ConsoleContext, definition: &AgentDefinition, log: &str) -> String {
-    let content = if log.trim().is_empty() {
-        r#"<p class="empty">还没有日志。智能体启动后，进程的 stdout/stderr 会写入这里。</p>"#
-            .to_string()
-    } else {
-        format!(r#"<pre class="agent-log">{}</pre>"#, escape(log))
-    };
+pub fn agent_logs_page(
+    ctx: &ConsoleContext,
+    definition: &AgentDefinition,
+    log: &str,
+    fingerprint: &str,
+) -> String {
+    let empty_hidden = if log.trim().is_empty() { "" } else { " hidden" };
+    let content = format!(
+        r#"<p class="empty"{empty_hidden} id="agent-log-empty">还没有日志。智能体启动后，进程的 stdout/stderr 会写入这里。</p>
+<pre class="agent-log" id="agent-log">{log}</pre>"#,
+        log = escape(log)
+    );
+    let script = r#"<script>
+(() => {
+  const id = "__ID__";
+  const pre = document.getElementById('agent-log');
+  const empty = document.getElementById('agent-log-empty');
+  let known = "__FINGERPRINT__";
+  let busy = false;
+  const atBottom = () => pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  const update = async () => {
+    const state = await fetch('/agents/' + id + '/logs/state', {
+      cache: 'no-store',
+      credentials: 'same-origin'
+    });
+    if (!state.ok) return;
+    const next = (await state.text()).trim();
+    if (next === known) return;
+    const response = await fetch('/agents/' + id + '/logs/content', {
+      cache: 'no-store',
+      credentials: 'same-origin'
+    });
+    if (!response.ok) return;
+    known = next;
+    const text = await response.text();
+    const bottom = atBottom();
+    pre.textContent = text;
+    if (empty) empty.hidden = text.trim().length > 0;
+    if (bottom) pre.scrollTop = pre.scrollHeight;
+  };
+  const tick = async () => {
+    if (busy || document.hidden) return;
+    busy = true;
+    try { await update(); } catch (_) {}
+    busy = false;
+  };
+  setInterval(tick, 2000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  pre.scrollTop = pre.scrollHeight;
+})();
+</script>"#
+        .replace("__ID__", &definition.id.to_string())
+        .replace("__FINGERPRINT__", fingerprint);
     let body = format!(
         r#"<p class="hint"><a href="/agents">← 返回智能体</a> · <a href="/agents/{id}/logs">刷新</a></p>
 <h1>{name} 日志</h1>
 <p class="sub"><code>@{account}</code> · <code>{role}</code> · 最近 256 KB</p>
-{content}"#,
+{content}{script}"#,
         id = definition.id,
         name = escape(&definition.name),
         account = escape(&definition.account_handle),
@@ -5368,11 +5414,12 @@ mod tests {
         };
         let log = "[info] tool <script>\n<b>bad</b>\n";
 
-        let html = agent_logs_page(&ctx, &definition, log);
+        let html = agent_logs_page(&ctx, &definition, log, "1:1");
 
         assert!(html.contains("Clarifier &lt;script&gt;"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&lt;b&gt;bad&lt;/b&gt;"));
-        assert!(!html.contains("<script>"));
+        // The log payload is escaped; only the refresh script is real.
+        assert_eq!(html.matches("<script>").count(), 1);
     }
 }

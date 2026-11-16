@@ -602,14 +602,35 @@ pub async fn agents_index(State(state): State<AppState>, headers: HeaderMap) -> 
     agents_response(&state, &session, None).await
 }
 
-/// Agents belong to the console's current project. Platform agents have no
-/// project and are visible in every project.
+/// Agents belong to the console's current project.
 fn agents_scope(session: &WebAccountSession) -> Option<Uuid> {
     session
         .context
         .current
         .as_ref()
         .and_then(|project| project.id.parse::<Uuid>().ok())
+}
+
+async fn visible_agent(
+    state: &AppState,
+    session: &WebAccountSession,
+    id: Uuid,
+) -> Result<foundry_domain::AgentDefinition, Response> {
+    if session.account.role != AccountRole::Admin {
+        return Err(auth::web_forbidden("仅管理员可以查看智能体日志。"));
+    }
+    match state
+        .agents
+        .overview(session.account.actor(), agents_scope(session))
+        .await
+    {
+        Ok(overview) => overview
+            .definitions
+            .into_iter()
+            .find(|definition| definition.id == id)
+            .ok_or_else(|| auth::web_error(ServiceError::not_found("agent", id))),
+        Err(error) => Err(auth::web_error(error)),
+    }
 }
 
 pub async fn agent_logs_page(
@@ -621,29 +642,58 @@ pub async fn agent_logs_page(
         Ok(session) => session,
         Err(response) => return response,
     };
-    if session.account.role != AccountRole::Admin {
-        return auth::web_forbidden("仅管理员可以查看智能体日志。");
-    }
-    let definition = match state
-        .agents
-        .overview(session.account.actor(), agents_scope(&session))
-        .await
-    {
-        Ok(overview) => overview
-            .definitions
-            .into_iter()
-            .find(|definition| definition.id == id),
-        Err(error) => return auth::web_error(error),
+    let definition = match visible_agent(&state, &session, id).await {
+        Ok(definition) => definition,
+        Err(response) => return response,
     };
-    let Some(definition) = definition else {
-        return auth::web_error(ServiceError::not_found("agent", id));
-    };
-    match state.agent_logs.tail(&id.to_string(), 256 * 1024) {
+    let key = id.to_string();
+    let fingerprint = state
+        .agent_logs
+        .fingerprint(&key)
+        .unwrap_or_else(|_| "none".to_string());
+    match state.agent_logs.tail(&key, 256 * 1024) {
         Ok(log) => no_store(foundry_web::agent_logs_page(
             &session.context,
             &definition,
             &log,
+            &fingerprint,
         )),
+        Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
+    }
+}
+
+pub async fn agent_log_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = visible_agent(&state, &session, id).await {
+        return response;
+    }
+    match state.agent_logs.fingerprint(&id.to_string()) {
+        Ok(fingerprint) => no_store_text(fingerprint),
+        Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
+    }
+}
+
+pub async fn agent_log_content(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if let Err(response) = visible_agent(&state, &session, id).await {
+        return response;
+    }
+    match state.agent_logs.tail(&id.to_string(), 256 * 1024) {
+        Ok(log) => no_store_text(log),
         Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
     }
 }
@@ -2782,6 +2832,18 @@ pub async fn task_state(
 
 fn no_store(body: String) -> Response {
     let mut response = Html(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn no_store_text(body: String) -> Response {
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));

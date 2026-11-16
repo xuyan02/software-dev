@@ -319,6 +319,23 @@ impl AgentLogFiles {
         std::fs::create_dir_all(&self.dir)
     }
 
+    /// Cheap change detector for the log viewer: size and mtime.
+    pub fn fingerprint(&self, agent_id: &str) -> std::io::Result<String> {
+        match std::fs::metadata(self.path(agent_id)) {
+            Ok(metadata) => {
+                let modified = metadata
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default();
+                Ok(format!("{}:{}", metadata.len(), modified.as_nanos()))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok("none".to_string())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     /// Read at most `max_bytes` from the end of the log. A partial first line
     /// is dropped so the viewer starts on a line boundary.
     pub fn tail(&self, agent_id: &str, max_bytes: u64) -> std::io::Result<String> {
