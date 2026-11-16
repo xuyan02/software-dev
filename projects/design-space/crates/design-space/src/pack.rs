@@ -1,645 +1,486 @@
-//! Single-file pack format.
+//! PAK1 pack encoding.
 //!
-//! ```text
-//! header (16)
-//! records
-//! index
-//! trailer (64)
-//! ```
-//!
-//! Every record is 8-byte aligned. The trailer's checksum covers the header,
-//! records and index, so a pack can be verified without an external file.
+//! A pack stores design objects, commits, design documents, and symbols in one
+//! file. The index is sorted by `(record_type, hash)` and maps each record to
+//! its byte offset. Raw records are the only codec implemented.
 
+use crate::format::{decode_commit_checked, decode_object_checked, hash_bytes};
+use crate::model::{CommitHash, Hash32, ObjectHash};
+use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::fs;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-
-use crate::error::{Error, Result};
-use crate::hash::{Hash, hash, to_hex};
-use crate::node::Node;
 
 pub const PACK_MAGIC: &[u8; 4] = b"PAK1";
 pub const INDEX_MAGIC: &[u8; 4] = b"PKI1";
 pub const TRAILER_MAGIC: &[u8; 4] = b"TRL1";
-pub const PACK_VERSION: u32 = 1;
-
-pub const HEADER_SIZE: usize = 16;
-pub const RECORD_HEADER_SIZE: usize = 16;
-pub const INDEX_HEADER_SIZE: usize = 24;
-pub const INDEX_ENTRY_SIZE: usize = 40;
+pub const VERSION: u32 = 1;
+pub const INDEX_ENTRY_SIZE: u32 = 48;
 pub const TRAILER_SIZE: usize = 64;
 
-pub const RECORD_OBJECT: u8 = 1;
-pub const RECORD_DESIGN: u8 = 2;
-pub const RECORD_INDEX: u8 = 3;
-pub const RECORD_VERSION: u8 = 4;
+pub const TYPE_OBJECT: u8 = 1;
+pub const TYPE_DOC: u8 = 2;
+pub const TYPE_SYMBOL: u8 = 3;
+pub const TYPE_COMMIT: u8 = 4;
 
-pub const CODEC_RAW: u8 = 0;
-
-pub struct WrittenPack {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackRecord {
+    pub record_type: u8,
+    pub hash: Hash32,
     pub bytes: Vec<u8>,
-    pub checksum: Hash,
-    pub count: usize,
 }
 
-pub struct Pack {
-    bytes: Vec<u8>,
-    checksum: Hash,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IndexEntry {
+    record_type: u8,
+    hash: Hash32,
+    offset: u64,
+}
+
+#[derive(Debug, Clone)]
+struct Layout {
+    entries: Vec<IndexEntry>,
+    pack_hash: Hash32,
     index_offset: usize,
-    entries: Vec<(Hash, u64)>,
 }
 
-impl Pack {
-    pub fn open(path: &Path) -> Result<Self> {
-        Self::from_bytes(fs::read(path)?)
+pub fn record_type_for_dir(dir: &str) -> Option<u8> {
+    match dir {
+        "objects" => Some(TYPE_OBJECT),
+        "docs" => Some(TYPE_DOC),
+        "symbols" => Some(TYPE_SYMBOL),
+        "commits" => Some(TYPE_COMMIT),
+        _ => None,
     }
+}
 
-    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
-        if bytes.len() < TRAILER_SIZE {
-            return Err(Error::InvalidPack(
-                "file is smaller than the trailer".into(),
-            ));
-        }
+pub fn dir_for_record_type(record_type: u8) -> Option<&'static str> {
+    match record_type {
+        TYPE_OBJECT => Some("objects"),
+        TYPE_DOC => Some("docs"),
+        TYPE_SYMBOL => Some("symbols"),
+        TYPE_COMMIT => Some("commits"),
+        _ => None,
+    }
+}
 
-        let trailer_start = bytes.len() - TRAILER_SIZE;
-        let trailer = &bytes[trailer_start..];
-        if &trailer[..4] != TRAILER_MAGIC {
-            return Err(Error::InvalidPack("bad trailer magic".into()));
-        }
-        let version = le_u32(trailer, 4)?;
-        if version != PACK_VERSION {
-            return Err(Error::InvalidPack(format!(
-                "unsupported pack version {version}"
-            )));
-        }
-        let pack_size = le_u64(trailer, 8)? as usize;
-        let index_offset = le_u64(trailer, 16)? as usize;
-        let index_size = le_u64(trailer, 24)? as usize;
-        let checksum: Hash = trailer[32..64].try_into().expect("32 bytes");
-
-        if pack_size != bytes.len() {
-            return Err(Error::InvalidPack(format!(
-                "trailer says {pack_size} bytes, file has {}",
-                bytes.len()
-            )));
-        }
-        let actual = hash(&bytes[..trailer_start]);
-        if actual != checksum {
-            return Err(Error::PackChecksum);
-        }
-        if index_offset
-            .checked_add(index_size)
-            .is_none_or(|end| end != trailer_start)
+/// Encode records into a pack. Records are sorted and deduplicated.
+pub fn encode_pack(mut records: Vec<PackRecord>) -> Result<(Vec<u8>, Hash32)> {
+    for record in &records {
+        validate_record(record.record_type, record.hash, &record.bytes)?;
+    }
+    records
+        .sort_by(|left, right| (left.record_type, left.hash).cmp(&(right.record_type, right.hash)));
+    let mut deduped: Vec<PackRecord> = Vec::with_capacity(records.len());
+    for record in records {
+        if let Some(previous) = deduped.last()
+            && previous.record_type == record.record_type
+            && previous.hash == record.hash
         {
-            return Err(Error::InvalidPack(
-                "index does not end at the trailer".into(),
-            ));
-        }
-
-        let index = &bytes[index_offset..index_offset + index_size];
-        let entries = parse_index(index)?;
-
-        Ok(Self {
-            bytes,
-            checksum,
-            index_offset,
-            entries,
-        })
-    }
-
-    pub fn checksum(&self) -> &Hash {
-        &self.checksum
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn hashes(&self) -> impl Iterator<Item = &Hash> {
-        self.entries.iter().map(|(address, _)| address)
-    }
-
-    pub fn contains(&self, address: &Hash) -> bool {
-        self.entries
-            .binary_search_by(|(candidate, _)| candidate.cmp(address))
-            .is_ok()
-    }
-
-    pub fn get(&self, address: &Hash) -> Result<Node> {
-        let position = self
-            .entries
-            .binary_search_by(|(candidate, _)| candidate.cmp(address))
-            .map_err(|_| Error::NotFound(to_hex(address)))?;
-        let (_, offset) = self.entries[position];
-        let offset =
-            usize::try_from(offset).map_err(|_| Error::InvalidPack("offset overflow".into()))?;
-
-        if offset < HEADER_SIZE || offset + RECORD_HEADER_SIZE > self.index_offset {
-            return Err(Error::InvalidPack(format!(
-                "record offset {offset} is outside the record area"
-            )));
-        }
-        let record = &self.bytes[offset..];
-        let record_size = le_u32(record, 0)? as usize;
-        if offset + record_size > self.index_offset {
-            return Err(Error::InvalidPack("record crosses into the index".into()));
-        }
-        decode_record(address, &record[..record_size])
-    }
-}
-
-/// Index of one pack file. Opens the trailer and index only; node payloads are
-/// read on demand.
-pub struct PackIndex {
-    path: PathBuf,
-    checksum: Hash,
-    index_offset: usize,
-    entries: Vec<(Hash, u64)>,
-}
-
-impl PackIndex {
-    pub fn open(path: &Path) -> Result<Self> {
-        let mut file = File::open(path)?;
-        let length = file.metadata()?.len();
-        if length < TRAILER_SIZE as u64 {
-            return Err(Error::InvalidPack(
-                "file is smaller than the trailer".into(),
-            ));
-        }
-        file.seek(SeekFrom::Start(length - TRAILER_SIZE as u64))?;
-        let mut trailer = [0u8; TRAILER_SIZE];
-        file.read_exact(&mut trailer)?;
-
-        if &trailer[..4] != TRAILER_MAGIC {
-            return Err(Error::InvalidPack("bad trailer magic".into()));
-        }
-        let version = le_u32(&trailer, 4)?;
-        if version != PACK_VERSION {
-            return Err(Error::InvalidPack(format!(
-                "unsupported pack version {version}"
-            )));
-        }
-        let pack_size = le_u64(&trailer, 8)?;
-        if pack_size != length {
-            return Err(Error::InvalidPack(format!(
-                "trailer says {pack_size} bytes, file has {length}"
-            )));
-        }
-        let index_offset = le_u64(&trailer, 16)? as usize;
-        let index_size = le_u64(&trailer, 24)? as usize;
-        let checksum: Hash = trailer[32..64].try_into().expect("32 bytes");
-        if index_offset
-            .checked_add(index_size)
-            .is_none_or(|end| end as u64 != length - TRAILER_SIZE as u64)
-        {
-            return Err(Error::InvalidPack(
-                "index does not end at the trailer".into(),
-            ));
-        }
-
-        file.seek(SeekFrom::Start(index_offset as u64))?;
-        let mut index = vec![0u8; index_size];
-        file.read_exact(&mut index)?;
-        let entries = parse_index(&index)?;
-        Ok(Self {
-            path: path.to_path_buf(),
-            checksum,
-            index_offset,
-            entries,
-        })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn checksum(&self) -> &Hash {
-        &self.checksum
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn hashes(&self) -> impl Iterator<Item = &Hash> {
-        self.entries.iter().map(|(address, _)| address)
-    }
-
-    pub fn contains(&self, address: &Hash) -> bool {
-        self.entries
-            .binary_search_by(|(candidate, _)| candidate.cmp(address))
-            .is_ok()
-    }
-
-    pub fn get(&self, address: &Hash) -> Result<Node> {
-        let position = self
-            .entries
-            .binary_search_by(|(candidate, _)| candidate.cmp(address))
-            .map_err(|_| Error::NotFound(to_hex(address)))?;
-        let (_, offset) = self.entries[position];
-        let offset =
-            usize::try_from(offset).map_err(|_| Error::InvalidPack("offset overflow".into()))?;
-        if offset < HEADER_SIZE || offset + RECORD_HEADER_SIZE > self.index_offset {
-            return Err(Error::InvalidPack(format!(
-                "record offset {offset} is outside the record area"
-            )));
-        }
-
-        let mut file = File::open(&self.path)?;
-        file.seek(SeekFrom::Start(offset as u64))?;
-        let mut header = [0u8; RECORD_HEADER_SIZE];
-        file.read_exact(&mut header)?;
-        let record_size = le_u32(&header, 0)? as usize;
-        if record_size < RECORD_HEADER_SIZE || !record_size.is_multiple_of(8) {
-            return Err(Error::InvalidPack(format!(
-                "invalid record size {record_size}"
-            )));
-        }
-        if offset + record_size > self.index_offset {
-            return Err(Error::InvalidPack("record crosses into the index".into()));
-        }
-        let mut record = vec![0u8; record_size];
-        record[..RECORD_HEADER_SIZE].copy_from_slice(&header);
-        file.read_exact(&mut record[RECORD_HEADER_SIZE..])?;
-        decode_record(address, &record)
-    }
-}
-
-/// Multi-pack index: hash → pack, built by reading each pack's index.
-pub struct MultiPackIndex {
-    packs: Vec<PackIndex>,
-    index: BTreeMap<Hash, usize>,
-}
-
-impl MultiPackIndex {
-    pub fn open(dir: &Path) -> Result<Self> {
-        let mut packs = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries {
-                let entry = entry?;
-                if entry.path().extension().is_some_and(|ext| ext == "pack") {
-                    packs.push(PackIndex::open(&entry.path())?);
-                }
+            if previous.bytes != record.bytes {
+                bail!(
+                    "conflicting records for type {} hash {}",
+                    record.record_type,
+                    record.hash.to_hex()
+                );
             }
+            continue;
         }
-        packs.sort_by(|a, b| a.path().cmp(b.path()));
-        let mut index = BTreeMap::new();
-        for (position, pack) in packs.iter().enumerate() {
-            for hash in pack.hashes() {
-                index.entry(*hash).or_insert(position);
-            }
-        }
-        Ok(Self { packs, index })
+        deduped.push(record);
     }
-
-    pub fn get(&self, address: &Hash) -> Result<Node> {
-        let position = self
-            .index
-            .get(address)
-            .ok_or_else(|| Error::NotFound(to_hex(address)))?;
-        self.packs[*position].get(address)
-    }
-
-    pub fn contains(&self, address: &Hash) -> bool {
-        self.index.contains_key(address)
-    }
-
-    pub fn hashes(&self) -> impl Iterator<Item = &Hash> {
-        self.index.keys()
-    }
-
-    pub fn packs(&self) -> &[PackIndex] {
-        &self.packs
-    }
-}
-
-fn parse_index(index: &[u8]) -> Result<Vec<(Hash, u64)>> {
-    if index.len() < INDEX_HEADER_SIZE {
-        return Err(Error::InvalidPack("index is truncated".into()));
-    }
-    if &index[..4] != INDEX_MAGIC {
-        return Err(Error::InvalidPack("bad index magic".into()));
-    }
-    let index_version = le_u32(index, 4)?;
-    if index_version != PACK_VERSION {
-        return Err(Error::InvalidPack(format!(
-            "unsupported index version {index_version}"
-        )));
-    }
-    let count = le_u64(index, 8)? as usize;
-    let entry_size = le_u32(index, 16)? as usize;
-    if entry_size != INDEX_ENTRY_SIZE {
-        return Err(Error::InvalidPack(format!(
-            "unexpected index entry size {entry_size}"
-        )));
-    }
-    let expected_size = INDEX_HEADER_SIZE
-        .checked_add(
-            count
-                .checked_mul(INDEX_ENTRY_SIZE)
-                .ok_or_else(|| Error::InvalidPack("index size overflow".into()))?,
-        )
-        .ok_or_else(|| Error::InvalidPack("index size overflow".into()))?;
-    if expected_size != index.len() {
-        return Err(Error::InvalidPack(format!(
-            "index size {}, expected {expected_size}",
-            index.len()
-        )));
-    }
-
-    let mut entries = Vec::with_capacity(count);
-    let mut cursor = INDEX_HEADER_SIZE;
-    for _ in 0..count {
-        let address: Hash = index[cursor..cursor + 32].try_into().expect("32 bytes");
-        let offset = le_u64(index, cursor + 32)?;
-        entries.push((address, offset));
-        cursor += INDEX_ENTRY_SIZE;
-    }
-    for pair in entries.windows(2) {
-        if pair[0].0 >= pair[1].0 {
-            return Err(Error::InvalidPack(
-                "index entries are not strictly sorted".into(),
-            ));
-        }
-    }
-    Ok(entries)
-}
-
-fn decode_record(address: &Hash, record: &[u8]) -> Result<Node> {
-    let record_size = le_u32(record, 0)? as usize;
-    let compressed_size = le_u32(record, 4)? as usize;
-    let record_type = record[8];
-    let codec = record[9];
-    let original_size = le_u32(record, 12)? as usize;
-
-    if record_size < RECORD_HEADER_SIZE || !record_size.is_multiple_of(8) {
-        return Err(Error::InvalidPack(format!(
-            "invalid record size {record_size}"
-        )));
-    }
-    if record.len() < record_size {
-        return Err(Error::InvalidPack("record is truncated".into()));
-    }
-    if RECORD_HEADER_SIZE + compressed_size > record_size {
-        return Err(Error::InvalidPack(
-            "compressed payload is larger than the record".into(),
-        ));
-    }
-    if codec != CODEC_RAW {
-        return Err(Error::UnsupportedCodec(codec));
-    }
-    if compressed_size != original_size {
-        return Err(Error::InvalidPack("raw record sizes disagree".into()));
-    }
-
-    let payload = &record[RECORD_HEADER_SIZE..RECORD_HEADER_SIZE + compressed_size];
-    let actual = hash(payload);
-    if actual != *address {
-        return Err(Error::InvalidPack(format!(
-            "record {} hashes to {}",
-            to_hex(address),
-            to_hex(&actual)
-        )));
-    }
-
-    let node = Node::decode(payload)?;
-    if record_type_of(&node) != record_type {
-        return Err(Error::InvalidPack(
-            "record type does not match its node".into(),
-        ));
-    }
-    Ok(node)
-}
-
-/// Serialize nodes into a pack. Nodes are sorted and deduplicated by address.
-pub fn write(nodes: &[Node]) -> Result<WrittenPack> {
-    let mut items = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        node.validate()?;
-        let payload = node.encode();
-        items.push((hash(&payload), payload, record_type_of(node)));
-    }
-    items.sort_by(|a, b| a.0.cmp(&b.0));
-    items.dedup_by(|a, b| a.0 == b.0);
 
     let mut out = Vec::new();
     out.extend_from_slice(PACK_MAGIC);
-    out.extend_from_slice(&PACK_VERSION.to_le_bytes());
+    out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&0u64.to_le_bytes());
 
-    let mut offsets = Vec::with_capacity(items.len());
-    for (address, payload, record_type) in &items {
+    let mut offsets = BTreeMap::new();
+    for record in &deduped {
         let offset = out.len() as u64;
-        let payload_len = u32::try_from(payload.len())
-            .map_err(|_| Error::InvalidPack("node is too large for a pack".into()))?;
-        let raw_size = RECORD_HEADER_SIZE
-            .checked_add(payload.len())
-            .ok_or_else(|| Error::InvalidPack("record size overflow".into()))?;
-        let padding = raw_size.next_multiple_of(8) - raw_size;
-        let record_size = u32::try_from(raw_size + padding)
-            .map_err(|_| Error::InvalidPack("record is too large".into()))?;
-
-        out.extend_from_slice(&record_size.to_le_bytes());
-        out.extend_from_slice(&payload_len.to_le_bytes());
-        out.push(*record_type);
-        out.push(CODEC_RAW);
+        let size = u32::try_from(16 + record.bytes.len()).context("pack record is too large")?;
+        let payload_size =
+            u32::try_from(record.bytes.len()).context("pack payload is too large")?;
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&payload_size.to_le_bytes());
+        out.push(record.record_type);
+        out.push(0);
         out.extend_from_slice(&0u16.to_le_bytes());
-        out.extend_from_slice(&payload_len.to_le_bytes());
-        out.extend_from_slice(payload);
-        out.extend(std::iter::repeat_n(0u8, padding));
-        offsets.push((*address, offset));
+        out.extend_from_slice(&payload_size.to_le_bytes());
+        out.extend_from_slice(&record.bytes);
+        offsets.insert((record.record_type, record.hash), offset);
     }
 
-    let index_offset = out.len() as u64;
-    let mut index = Vec::new();
-    index.extend_from_slice(INDEX_MAGIC);
-    index.extend_from_slice(&PACK_VERSION.to_le_bytes());
-    index.extend_from_slice(&(offsets.len() as u64).to_le_bytes());
-    index.extend_from_slice(&(INDEX_ENTRY_SIZE as u32).to_le_bytes());
-    index.extend_from_slice(&0u32.to_le_bytes());
-    for (address, offset) in &offsets {
-        index.extend_from_slice(address);
-        index.extend_from_slice(&offset.to_le_bytes());
+    let index_offset = out.len();
+    let count = deduped.len() as u64;
+    out.extend_from_slice(INDEX_MAGIC);
+    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(&count.to_le_bytes());
+    out.extend_from_slice(&INDEX_ENTRY_SIZE.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for record in &deduped {
+        let offset = offsets[&(record.record_type, record.hash)];
+        out.push(record.record_type);
+        out.extend_from_slice(&[0u8; 7]);
+        out.extend_from_slice(&record.hash.0);
+        out.extend_from_slice(&offset.to_le_bytes());
     }
-    out.extend_from_slice(&index);
+    let index_size = out.len() - index_offset;
+    let pack_hash = hash_bytes(&out);
 
     let pack_size = (out.len() + TRAILER_SIZE) as u64;
-    let checksum = hash(&out);
     out.extend_from_slice(TRAILER_MAGIC);
-    out.extend_from_slice(&PACK_VERSION.to_le_bytes());
+    out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&pack_size.to_le_bytes());
-    out.extend_from_slice(&index_offset.to_le_bytes());
-    out.extend_from_slice(&(index.len() as u64).to_le_bytes());
-    out.extend_from_slice(&checksum);
+    out.extend_from_slice(&(index_offset as u64).to_le_bytes());
+    out.extend_from_slice(&(index_size as u64).to_le_bytes());
+    out.extend_from_slice(&pack_hash.0);
+    Ok((out, pack_hash))
+}
 
-    Ok(WrittenPack {
-        bytes: out,
-        checksum,
-        count: offsets.len(),
+/// Decode and fully verify a pack.
+pub fn decode_pack(bytes: &[u8]) -> Result<Vec<PackRecord>> {
+    let layout = parse_layout(bytes)?;
+    let mut records = Vec::with_capacity(layout.entries.len());
+    for entry in &layout.entries {
+        let payload = read_entry(bytes, &layout, *entry)?;
+        records.push(PackRecord {
+            record_type: entry.record_type,
+            hash: entry.hash,
+            bytes: payload,
+        });
+    }
+    Ok(records)
+}
+
+/// Verify a pack and return its pack hash.
+pub fn validate_pack(bytes: &[u8]) -> Result<Hash32> {
+    decode_pack(bytes)?;
+    Ok(parse_layout(bytes)?.pack_hash)
+}
+
+/// Look up one record without decoding unrelated records.
+pub fn read_record(bytes: &[u8], record_type: u8, hash: Hash32) -> Result<Option<Vec<u8>>> {
+    let layout = parse_layout(bytes)?;
+    let Some(entry) = layout
+        .entries
+        .iter()
+        .find(|entry| entry.record_type == record_type && entry.hash == hash)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(read_entry(bytes, &layout, *entry)?))
+}
+
+/// Verify a record payload against its type and hash.
+pub fn validate_record(record_type: u8, hash: Hash32, bytes: &[u8]) -> Result<()> {
+    if hash.is_zero() {
+        bail!("zero hash is not a valid pack record");
+    }
+    match record_type {
+        TYPE_OBJECT => {
+            decode_object_checked(bytes, ObjectHash(hash)).context("invalid object record")?;
+        }
+        TYPE_COMMIT => {
+            decode_commit_checked(bytes, CommitHash(hash)).context("invalid commit record")?;
+        }
+        TYPE_DOC => {
+            if hash_bytes(bytes) != hash {
+                bail!("doc record does not match its hash");
+            }
+            if std::str::from_utf8(bytes).is_err() {
+                bail!("doc record is not UTF-8");
+            }
+        }
+        TYPE_SYMBOL => {
+            if hash_bytes(bytes) != hash {
+                bail!("symbol record does not match its hash");
+            }
+            if bytes.is_empty() || bytes.contains(&0) || std::str::from_utf8(bytes).is_err() {
+                bail!("invalid symbol record");
+            }
+        }
+        _ => bail!("unknown pack record type: {record_type}"),
+    }
+    Ok(())
+}
+
+fn parse_layout(bytes: &[u8]) -> Result<Layout> {
+    if bytes.len() < 16 + 24 + TRAILER_SIZE {
+        bail!("pack is too small");
+    }
+    if &bytes[..4] != PACK_MAGIC {
+        bail!("invalid pack magic");
+    }
+    let version = u32::from_le_bytes(bytes[4..8].try_into().expect("checked length"));
+    if version != VERSION {
+        bail!("unsupported pack version: {version}");
+    }
+    if u64::from_le_bytes(bytes[8..16].try_into().expect("checked length")) != 0 {
+        bail!("pack reserved header is nonzero");
+    }
+
+    let trailer_offset = bytes.len() - TRAILER_SIZE;
+    if &bytes[trailer_offset..trailer_offset + 4] != TRAILER_MAGIC {
+        bail!("invalid pack trailer magic");
+    }
+    let trailer_version = u32::from_le_bytes(
+        bytes[trailer_offset + 4..trailer_offset + 8]
+            .try_into()
+            .expect("checked length"),
+    );
+    if trailer_version != VERSION {
+        bail!("unsupported trailer version: {trailer_version}");
+    }
+    let pack_size = u64::from_le_bytes(
+        bytes[trailer_offset + 8..trailer_offset + 16]
+            .try_into()
+            .expect("checked length"),
+    );
+    let index_offset = u64::from_le_bytes(
+        bytes[trailer_offset + 16..trailer_offset + 24]
+            .try_into()
+            .expect("checked length"),
+    );
+    let index_size = u64::from_le_bytes(
+        bytes[trailer_offset + 24..trailer_offset + 32]
+            .try_into()
+            .expect("checked length"),
+    );
+    let mut pack_hash = [0u8; 32];
+    pack_hash.copy_from_slice(&bytes[trailer_offset + 32..trailer_offset + 64]);
+
+    if pack_size != bytes.len() as u64 {
+        bail!("pack size does not match the trailer");
+    }
+    let index_offset = usize::try_from(index_offset).context("index offset is too large")?;
+    let index_size = usize::try_from(index_size).context("index size is too large")?;
+    if index_offset < 16 || index_size < 24 || index_offset + index_size != trailer_offset {
+        bail!("invalid pack index bounds");
+    }
+    let computed = hash_bytes(&bytes[..trailer_offset]);
+    if computed.0 != pack_hash {
+        bail!("pack hash does not match the trailer");
+    }
+
+    let index = &bytes[index_offset..index_offset + index_size];
+    if &index[..4] != INDEX_MAGIC {
+        bail!("invalid pack index magic");
+    }
+    let index_version = u32::from_le_bytes(index[4..8].try_into().expect("checked length"));
+    if index_version != VERSION {
+        bail!("unsupported index version: {index_version}");
+    }
+    let count = u64::from_le_bytes(index[8..16].try_into().expect("checked length"));
+    let entry_size = u32::from_le_bytes(index[16..20].try_into().expect("checked length"));
+    if entry_size != INDEX_ENTRY_SIZE {
+        bail!("unsupported index entry size: {entry_size}");
+    }
+    if u32::from_le_bytes(index[20..24].try_into().expect("checked length")) != 0 {
+        bail!("index reserved field is nonzero");
+    }
+    let count = usize::try_from(count).context("too many index entries")?;
+    let expected = 24usize
+        .checked_add(
+            count
+                .checked_mul(INDEX_ENTRY_SIZE as usize)
+                .context("index too large")?,
+        )
+        .context("index too large")?;
+    if index_size != expected {
+        bail!("index size does not match its entry count");
+    }
+
+    let mut entries = Vec::with_capacity(count);
+    for entry in 0..count {
+        let start = 24 + entry * INDEX_ENTRY_SIZE as usize;
+        let item = &index[start..start + INDEX_ENTRY_SIZE as usize];
+        let record_type = item[0];
+        if !(TYPE_OBJECT..=TYPE_COMMIT).contains(&record_type) {
+            bail!("unknown record type in index: {record_type}");
+        }
+        if item[1..8].iter().any(|byte| *byte != 0) {
+            bail!("index entry reserved field is nonzero");
+        }
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&item[8..40]);
+        let hash = Hash32(hash);
+        if hash.is_zero() {
+            bail!("zero hash in pack index");
+        }
+        let offset = u64::from_le_bytes(item[40..48].try_into().expect("checked length"));
+        if offset < 16 || offset >= index_offset as u64 {
+            bail!("pack record offset is out of bounds");
+        }
+        entries.push(IndexEntry {
+            record_type,
+            hash,
+            offset,
+        });
+    }
+    if entries
+        .windows(2)
+        .any(|pair| (pair[0].record_type, pair[0].hash) >= (pair[1].record_type, pair[1].hash))
+    {
+        bail!("pack index is not sorted and unique");
+    }
+
+    Ok(Layout {
+        entries,
+        pack_hash: Hash32(pack_hash),
+        index_offset,
     })
 }
 
-pub fn record_type_of(node: &Node) -> u8 {
-    match node {
-        Node::Object(_) => RECORD_OBJECT,
-        Node::Design(_) => RECORD_DESIGN,
-        Node::Index(_) => RECORD_INDEX,
-        Node::Version(_) => RECORD_VERSION,
+fn read_entry(bytes: &[u8], layout: &Layout, entry: IndexEntry) -> Result<Vec<u8>> {
+    let offset = usize::try_from(entry.offset).context("record offset is too large")?;
+    if offset + 16 > layout.index_offset {
+        bail!("pack record header is truncated");
     }
-}
-
-fn le_u32(data: &[u8], offset: usize) -> Result<u32> {
-    let bytes = data
-        .get(offset..offset + 4)
-        .ok_or_else(|| Error::InvalidPack("truncated u32".into()))?;
-    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-}
-
-fn le_u64(data: &[u8], offset: usize) -> Result<u64> {
-    let bytes = data
-        .get(offset..offset + 8)
-        .ok_or_else(|| Error::InvalidPack("truncated u64".into()))?;
-    Ok(u64::from_le_bytes([
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-    ]))
+    let record_size =
+        u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("checked")) as usize;
+    let compressed_size =
+        u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().expect("checked")) as usize;
+    let record_type = bytes[offset + 8];
+    let codec = bytes[offset + 9];
+    let reserved = u16::from_le_bytes(bytes[offset + 10..offset + 12].try_into().expect("checked"));
+    let original_size =
+        u32::from_le_bytes(bytes[offset + 12..offset + 16].try_into().expect("checked")) as usize;
+    if record_type != entry.record_type {
+        bail!("pack record type does not match the index");
+    }
+    if codec != 0 {
+        bail!("unsupported pack codec: {codec}");
+    }
+    if reserved != 0 {
+        bail!("pack record reserved field is nonzero");
+    }
+    if compressed_size != original_size {
+        bail!("raw pack record sizes differ");
+    }
+    if record_size < 16 || record_size - 16 < compressed_size {
+        bail!("invalid pack record size");
+    }
+    let end = offset
+        .checked_add(record_size)
+        .context("pack record is too large")?;
+    if end > layout.index_offset {
+        bail!("pack record exceeds the record area");
+    }
+    let payload_end = offset + 16 + compressed_size;
+    let payload = bytes[offset + 16..payload_end].to_vec();
+    validate_record(record_type, entry.hash, &payload)?;
+    Ok(payload)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::node::{DesignNode, IndexEntry, IndexNode, ObjectNode, VersionNode};
-    use crate::types::{CPP_CLASS, T_DIRECTORY, T_VIEW_ROOT};
+    use crate::format::{
+        commit_hash, doc_hash, encode_commit, encode_object, object_hash, symbol_hash,
+    };
+    use crate::model::*;
 
-    fn object(name: &str) -> Node {
-        Node::Object(ObjectNode {
-            ty: CPP_CLASS,
-            commit: [1u8; 32],
-            start_byte: 0,
-            end_byte: 10,
-            start_line: 1,
-            end_line: 2,
-            content_hash: [2u8; 32],
-            input_hash: [3u8; 32],
-            design_hash: [4u8; 32],
-            name: name.into(),
-            path: "src/a.cpp".into(),
-        })
-    }
-
-    fn nodes() -> Vec<Node> {
-        vec![
-            object("acme::Foo"),
-            object("acme::Bar"),
-            Node::Design(DesignNode {
-                text: "design".into(),
+    fn object() -> (Hash32, Vec<u8>) {
+        let object = DesignObject::new(
+            Kind::Directory,
+            ObjectPayload::Directory(DirectoryPayload {
+                qualified_name: symbol_hash("files"),
+                parent: ParentRef::View,
+                source: None,
+                design_doc: DocHash::ZERO,
+                children: vec![],
             }),
-            Node::Index(
-                IndexNode::leaf(
-                    T_DIRECTORY,
-                    vec![IndexEntry {
-                        key: b"foo.cpp".to_vec(),
-                        hash: [9u8; 32],
-                    }],
-                )
-                .unwrap(),
-            ),
-            Node::Version(VersionNode::new([5u8; 32])),
-        ]
-    }
-
-    #[test]
-    fn pack_roundtrips_every_node() {
-        let nodes = nodes();
-        let written = write(&nodes).unwrap();
-        assert_eq!(written.count, nodes.len());
-        let pack = Pack::from_bytes(written.bytes.clone()).unwrap();
-        assert_eq!(pack.checksum(), &written.checksum);
-        assert_eq!(pack.len(), nodes.len());
-        for node in &nodes {
-            assert_eq!(pack.get(&node.hash()).unwrap(), *node);
-        }
-    }
-
-    #[test]
-    fn records_are_eight_byte_aligned() {
-        let written = write(&nodes()).unwrap();
-        let pack = Pack::from_bytes(written.bytes.clone()).unwrap();
-        for (_, offset) in &pack.entries {
-            let offset = *offset as usize;
-            assert!(offset.is_multiple_of(8));
-            let record = &written.bytes[offset..];
-            let record_size = le_u32(record, 0).unwrap() as usize;
-            assert!(record_size.is_multiple_of(8));
-        }
-    }
-
-    #[test]
-    fn pack_index_reads_nodes_and_multipack_finds_them() {
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path().join("packs");
-        fs::create_dir_all(&dir).unwrap();
-        let nodes = nodes();
-        let written = write(&nodes).unwrap();
-        let path = dir.join("test.pack");
-        fs::write(&path, &written.bytes).unwrap();
-
-        let index = PackIndex::open(&path).unwrap();
-        assert_eq!(index.len(), nodes.len());
-        for node in &nodes {
-            assert_eq!(index.get(&node.hash()).unwrap(), *node);
-        }
-
-        let multi = MultiPackIndex::open(&dir).unwrap();
-        for node in &nodes {
-            assert!(multi.contains(&node.hash()));
-            assert_eq!(multi.get(&node.hash()).unwrap(), *node);
-        }
-    }
-
-    #[test]
-    fn corruption_is_detected_by_checksum() {
-        let mut bytes = write(&nodes()).unwrap().bytes;
-        let middle = bytes.len() / 2;
-        bytes[middle] ^= 0xff;
-        assert!(matches!(Pack::from_bytes(bytes), Err(Error::PackChecksum)));
-    }
-
-    #[test]
-    fn missing_hash_is_not_found() {
-        let written = write(&nodes()).unwrap();
-        let pack = Pack::from_bytes(written.bytes).unwrap();
-        assert!(matches!(pack.get(&[0xAAu8; 32]), Err(Error::NotFound(_))));
-    }
-
-    #[test]
-    fn empty_pack_is_valid() {
-        let written = write(&[]).unwrap();
-        let pack = Pack::from_bytes(written.bytes).unwrap();
-        assert!(pack.is_empty());
-    }
-
-    #[test]
-    fn view_root_type_is_an_index_record() {
-        let node = Node::Index(
-            IndexNode::internal(
-                T_VIEW_ROOT,
-                vec![IndexEntry {
-                    key: b"files".to_vec(),
-                    hash: [7u8; 32],
-                }],
-            )
-            .unwrap(),
         );
-        assert_eq!(record_type_of(&node), RECORD_INDEX);
+        (
+            object_hash(&object).unwrap().0,
+            encode_object(&object).unwrap(),
+        )
+    }
+
+    fn commit(view: Hash32) -> (Hash32, Vec<u8>) {
+        let commit = Commit {
+            view: ObjectHash(view),
+            parent: CommitHash::ZERO,
+            message: "test".into(),
+            author: "agent".into(),
+            timestamp: 1,
+        };
+        (commit_hash(&commit).0, encode_commit(&commit))
+    }
+
+    #[test]
+    fn roundtrips_all_record_types() {
+        let (object_hash, object_bytes) = object();
+        let (commit_hash, commit_bytes) = commit(object_hash);
+        let doc = b"design text".to_vec();
+        let doc_hash = doc_hash("design text").0;
+        let symbol = b"namespaces/app".to_vec();
+        let symbol_hash = symbol_hash("namespaces/app").0;
+        let records = vec![
+            PackRecord {
+                record_type: TYPE_OBJECT,
+                hash: object_hash,
+                bytes: object_bytes.clone(),
+            },
+            PackRecord {
+                record_type: TYPE_COMMIT,
+                hash: commit_hash,
+                bytes: commit_bytes,
+            },
+            PackRecord {
+                record_type: TYPE_DOC,
+                hash: doc_hash,
+                bytes: doc,
+            },
+            PackRecord {
+                record_type: TYPE_SYMBOL,
+                hash: symbol_hash,
+                bytes: symbol,
+            },
+        ];
+        let (pack, pack_hash) = encode_pack(records).unwrap();
+        assert_eq!(validate_pack(&pack).unwrap(), pack_hash);
+        let decoded = decode_pack(&pack).unwrap();
+        assert_eq!(decoded.len(), 4);
+        assert_eq!(
+            read_record(&pack, TYPE_OBJECT, object_hash)
+                .unwrap()
+                .unwrap(),
+            object_bytes
+        );
+        assert_eq!(
+            read_record(&pack, TYPE_DOC, doc_hash).unwrap().unwrap(),
+            b"design text"
+        );
+        assert_eq!(
+            read_record(&pack, TYPE_SYMBOL, symbol_hash)
+                .unwrap()
+                .unwrap(),
+            b"namespaces/app"
+        );
+    }
+
+    #[test]
+    fn rejects_tampering() {
+        let (object_hash, object_bytes) = object();
+        let (pack, _) = encode_pack(vec![PackRecord {
+            record_type: TYPE_OBJECT,
+            hash: object_hash,
+            bytes: object_bytes,
+        }])
+        .unwrap();
+        let mut tampered = pack.clone();
+        let last = tampered.len() - TRAILER_SIZE - 1;
+        tampered[last] ^= 0xff;
+        assert!(validate_pack(&tampered).is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_record_hash() {
+        let (_, object_bytes) = object();
+        let result = encode_pack(vec![PackRecord {
+            record_type: TYPE_OBJECT,
+            hash: Hash32([9; 32]),
+            bytes: object_bytes,
+        }]);
+        assert!(result.is_err());
     }
 }

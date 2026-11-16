@@ -1,30 +1,28 @@
-//! A git-like, versioned design space for code elements.
+//! A git-like, versioned design space for conceptual design objects.
 //!
-//! The store is built from immutable, content-addressed nodes:
+//! The storage model is defined by `docs/storage-format.md`:
 //!
-//! - [`node::Node::Object`] — one language element;
-//! - [`node::Node::Design`] — the design text of one element;
-//! - [`node::Node::Index`] — a sorted index node that forms a view tree;
-//! - [`node::Node::Version`] — one snapshot pointer.
+//! - design objects are immutable and content-addressed;
+//! - symbols and design documents are parallel content-addressed objects;
+//! - commits point at a View root;
+//! - worktree/index are mutable local state.
 //!
-//! A version points at a virtual root index node. The virtual root names one
-//! index tree per view (`namespaces`, `files`, `packages`, ...). Index nodes
-//! hash their entries, so a change anywhere below a node changes that node and
-//! every index node above it.
+//! [`catalog::Catalog`] reconstructs the containment graph and rebuilds a
+//! View after edits.
 
-pub mod branch;
-pub mod element;
-pub mod error;
-pub mod gc;
-pub mod hash;
-pub mod node;
+pub mod catalog;
+pub mod cli;
+pub mod format;
+pub mod model;
 pub mod pack;
-pub mod project;
 pub mod remote;
 pub mod server;
 pub mod source;
-pub mod space;
 pub mod store;
-pub mod types;
+pub mod workspace;
 
-pub use error::{Error, Result};
+pub use catalog::{Catalog, CatalogError};
+pub use format::{FormatError, object_hash};
+pub use model::*;
+pub use store::{Store, StoreError};
+pub use workspace::{Workspace, WorkspaceError};

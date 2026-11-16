@@ -1,0 +1,1388 @@
+//! Canonical binary encoding for design-space records.
+//!
+//! The format mirrors `docs/storage-format.md`:
+//!
+//! - DSO1: design object record;
+//! - CMT1: commit record;
+//! - docs/symbols are raw UTF-8 text files and have no record header.
+//!
+//! All integers are little-endian. Hashes are raw 32-byte values; zero is the
+//! None sentinel for optional hash fields.
+
+use crate::model::*;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
+
+pub const FORMAT_VERSION: u8 = 1;
+pub const DSO_MAGIC: &[u8; 4] = b"DSO1";
+pub const CMT_MAGIC: &[u8; 4] = b"CMT1";
+
+#[derive(Debug, thiserror::Error)]
+pub enum FormatError {
+    #[error("unexpected end of input")]
+    UnexpectedEof,
+    #[error("trailing bytes after record")]
+    TrailingBytes,
+    #[error("invalid magic")]
+    InvalidMagic,
+    #[error("unsupported format version: {0}")]
+    UnsupportedVersion(u8),
+    #[error("invalid kind: {0:#04x}")]
+    InvalidKind(u8),
+    #[error("invalid {0} tag: {1:#04x}")]
+    InvalidTag(&'static str, u8),
+    #[error("invalid UTF-8 in {0}")]
+    InvalidUtf8(&'static str),
+    #[error("invalid value in {0}")]
+    InvalidValue(&'static str),
+    #[error("required hash is zero: {0}")]
+    RequiredHashZero(&'static str),
+    #[error("object kind and payload do not match")]
+    KindMismatch,
+    #[error("list is not sorted or contains duplicates: {0}")]
+    NonCanonicalList(&'static str),
+    #[error("hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+}
+
+pub type Result<T> = std::result::Result<T, FormatError>;
+
+// ---------------------------------------------------------------------------
+// Hashing
+// ---------------------------------------------------------------------------
+
+pub fn hash_bytes(bytes: &[u8]) -> Hash32 {
+    Hash32(Sha256::digest(bytes).into())
+}
+
+pub fn object_hash(object: &DesignObject) -> Result<ObjectHash> {
+    validate_object(object)?;
+    let payload = encode_payload(object)?;
+    let mut hasher = Sha256::new();
+    hasher.update([FORMAT_VERSION]);
+    hasher.update([object.kind.as_byte()]);
+    hasher.update(payload);
+    Ok(ObjectHash(Hash32(hasher.finalize().into())))
+}
+
+/// Validate the local structural invariants of a design object.
+///
+/// Cross-object checks (parent/child consistency, symbol/doc existence, and
+/// relationship closure) belong to the workspace layer.
+pub fn validate_object(object: &DesignObject) -> Result<()> {
+    if !object.check_kind() {
+        return Err(FormatError::KindMismatch);
+    }
+
+    match &object.payload {
+        ObjectPayload::View(p) => validate_view(p),
+        ObjectPayload::Directory(p) => {
+            require_hash(p.qualified_name, "directory qualified_name")?;
+            validate_parent_ref(p.parent)?;
+            validate_opt_path_source(p.source)?;
+            validate_object_hashes(&p.children, "directory children")?;
+            Ok(())
+        }
+        ObjectPayload::File(p) => {
+            require_hash(p.qualified_name, "file qualified_name")?;
+            require_hash(p.parent, "file parent")?;
+            validate_opt_path_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "file")?;
+            validate_object_hashes(&p.children, "file children")?;
+            Ok(())
+        }
+        ObjectPayload::Namespace(p) => {
+            require_hash(p.qualified_name, "namespace qualified_name")?;
+            validate_parent_ref(p.parent)?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "namespace")?;
+            validate_object_hashes(&p.children, "namespace children")?;
+            Ok(())
+        }
+        ObjectPayload::Class(p) => {
+            require_hash(p.qualified_name, "class qualified_name")?;
+            validate_class_parent(p.parent)?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "class")?;
+            validate_symbol_list(&p.interfaces, "class interfaces", true)?;
+            validate_symbol_list(&p.mixins, "class mixins", false)?;
+            validate_dependencies(&p.explicit_dependencies, "class explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "class implicit dependencies")?;
+            validate_object_hashes(&p.children, "class children")?;
+            Ok(())
+        }
+        ObjectPayload::Interface(p) => {
+            require_hash(p.qualified_name, "interface qualified_name")?;
+            validate_class_parent(p.parent)?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "interface")?;
+            validate_dependencies(&p.explicit_dependencies, "interface explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "interface implicit dependencies")?;
+            validate_object_hashes(&p.children, "interface children")?;
+            Ok(())
+        }
+        ObjectPayload::Method(p) => {
+            require_hash(p.qualified_name, "method qualified_name")?;
+            require_hash(p.parent, "method parent")?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "method")?;
+            validate_dependencies(&p.explicit_dependencies, "method explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "method implicit dependencies")?;
+            Ok(())
+        }
+        ObjectPayload::Function(p) => {
+            require_hash(p.qualified_name, "function qualified_name")?;
+            require_hash(p.namespace, "function namespace")?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "function")?;
+            validate_dependencies(&p.explicit_dependencies, "function explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "function implicit dependencies")?;
+            Ok(())
+        }
+        ObjectPayload::Part(p) => {
+            require_hash(p.qualified_name, "part qualified_name")?;
+            require_hash(p.parent, "part parent")?;
+            validate_span_source(p.source, "part source")?;
+            validate_content_hash(p.content_hash, true, true, "part")?;
+            validate_dependencies(&p.explicit_dependencies, "part explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "part implicit dependencies")?;
+            validate_object_hashes(&p.children, "part children")?;
+            Ok(())
+        }
+        ObjectPayload::Mixin(p) => {
+            require_hash(p.qualified_name, "mixin qualified_name")?;
+            validate_class_parent(p.parent)?;
+            validate_opt_span_source(p.source)?;
+            validate_content_hash(p.content_hash, p.source.is_some(), false, "mixin")?;
+            validate_symbol_list(&p.on, "mixin on", true)?;
+            validate_symbol_list(&p.interfaces, "mixin interfaces", true)?;
+            validate_symbol_list(&p.mixins, "mixin mixins", false)?;
+            validate_dependencies(&p.explicit_dependencies, "mixin explicit dependencies")?;
+            validate_dependencies(&p.implicit_dependencies, "mixin implicit dependencies")?;
+            validate_object_hashes(&p.children, "mixin children")?;
+            Ok(())
+        }
+    }
+}
+
+fn validate_view(p: &ViewPayload) -> Result<()> {
+    require_hash(p.files, "view files")?;
+    require_hash(p.namespaces, "view namespaces")?;
+    // p.design may be zero until the design view exists.
+    Ok(())
+}
+
+fn validate_parent_ref(parent: ParentRef) -> Result<()> {
+    match parent {
+        ParentRef::View => Ok(()),
+        ParentRef::Object(hash) => require_hash(hash, "parent"),
+    }
+}
+
+fn validate_class_parent(parent: ClassParent) -> Result<()> {
+    match parent {
+        ClassParent::TopLevel {
+            file: _,
+            namespace,
+            module: _,
+        } => require_hash(namespace, "top-level namespace parent"),
+        ClassParent::Nested { parent } => require_hash(parent, "nested parent"),
+    }
+}
+
+fn validate_opt_path_source(source: Option<PathSource>) -> Result<()> {
+    if let Some(source) = source {
+        require_hash(source.path, "source.path")?;
+    }
+    Ok(())
+}
+
+fn validate_opt_span_source(source: Option<SpanSource>) -> Result<()> {
+    if let Some(source) = source {
+        validate_span_source(source, "source")?;
+    }
+    Ok(())
+}
+
+fn validate_span_source(source: SpanSource, what: &'static str) -> Result<()> {
+    require_hash(source.path, "source.path")?;
+    if !source.span.is_valid() {
+        return Err(FormatError::InvalidValue(what));
+    }
+    Ok(())
+}
+
+fn validate_content_hash(
+    hash: Hash32,
+    has_source: bool,
+    required: bool,
+    what: &'static str,
+) -> Result<()> {
+    if required && hash.is_zero() {
+        return Err(FormatError::RequiredHashZero(what));
+    }
+    if !hash.is_zero() && !has_source {
+        return Err(FormatError::InvalidValue(what));
+    }
+    if has_source && hash.is_zero() {
+        return Err(FormatError::InvalidValue(what));
+    }
+    Ok(())
+}
+
+fn require_hash<T: IsZeroHash>(hash: T, what: &'static str) -> Result<()> {
+    if hash.is_zero_hash() {
+        Err(FormatError::RequiredHashZero(what))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_symbol_list(hashes: &[SymbolHash], what: &'static str, sorted: bool) -> Result<()> {
+    let mut previous: Option<SymbolHash> = None;
+    let mut seen = HashSet::with_capacity(hashes.len());
+    for hash in hashes {
+        require_hash(*hash, what)?;
+        if !seen.insert(hash.0.0) {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        if let Some(previous) = previous
+            && sorted
+            && previous.0.0 >= hash.0.0
+        {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        previous = Some(*hash);
+    }
+    Ok(())
+}
+
+fn validate_object_hashes(hashes: &[ObjectHash], what: &'static str) -> Result<()> {
+    let mut previous: Option<ObjectHash> = None;
+    for hash in hashes {
+        require_hash(*hash, what)?;
+        if let Some(previous) = previous
+            && previous.0.0 >= hash.0.0
+        {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        previous = Some(*hash);
+    }
+    Ok(())
+}
+
+fn validate_dependencies(deps: &[Dependency], what: &'static str) -> Result<()> {
+    let mut previous: Option<SymbolHash> = None;
+    let mut seen = HashSet::with_capacity(deps.len());
+    for dep in deps {
+        require_hash(dep.target, what)?;
+        if !seen.insert(dep.target.0.0) {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        if let Some(evidence) = dep.evidence {
+            require_hash(evidence.path, what)?;
+            if !evidence.span.is_valid() {
+                return Err(FormatError::InvalidValue(what));
+            }
+        }
+        if let Some(previous) = previous
+            && previous.0.0 >= dep.target.0.0
+        {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        previous = Some(dep.target);
+    }
+    Ok(())
+}
+
+trait IsZeroHash {
+    fn is_zero_hash(&self) -> bool;
+}
+
+macro_rules! impl_zero_hash {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            impl IsZeroHash for $name {
+                fn is_zero_hash(&self) -> bool {
+                    self.is_zero()
+                }
+            }
+        )+
+    };
+}
+
+impl_zero_hash!(ObjectHash, CommitHash, DocHash, SymbolHash);
+
+pub fn commit_hash(commit: &Commit) -> CommitHash {
+    let payload = encode_commit_payload(commit);
+    let mut hasher = Sha256::new();
+    hasher.update([FORMAT_VERSION]);
+    hasher.update(payload);
+    CommitHash(Hash32(hasher.finalize().into()))
+}
+
+pub fn validate_commit(commit: &Commit) -> Result<()> {
+    if commit.view.is_zero() {
+        return Err(FormatError::RequiredHashZero("commit view"));
+    }
+    Ok(())
+}
+
+/// Content hash of an exact source fragment. No normalization is performed.
+pub fn content_hash(bytes: &[u8]) -> Hash32 {
+    hash_bytes(bytes)
+}
+
+pub fn doc_hash(text: &str) -> DocHash {
+    DocHash(hash_bytes(text.as_bytes()))
+}
+
+pub fn symbol_hash(text: &str) -> SymbolHash {
+    SymbolHash(hash_bytes(text.as_bytes()))
+}
+
+// ---------------------------------------------------------------------------
+// DSO1
+// ---------------------------------------------------------------------------
+
+pub fn encode_object(object: &DesignObject) -> Result<Vec<u8>> {
+    validate_object(object)?;
+    let payload = encode_payload(object)?;
+    let mut out = Vec::with_capacity(6 + payload.len());
+    out.extend_from_slice(DSO_MAGIC);
+    out.push(FORMAT_VERSION);
+    out.push(object.kind.as_byte());
+    out.extend_from_slice(&payload);
+    Ok(out)
+}
+
+pub fn decode_object(bytes: &[u8]) -> Result<DesignObject> {
+    let mut reader = Reader::new(bytes);
+    if reader.read(4)? != DSO_MAGIC {
+        return Err(FormatError::InvalidMagic);
+    }
+    let version = reader.read_u8()?;
+    if version != FORMAT_VERSION {
+        return Err(FormatError::UnsupportedVersion(version));
+    }
+    let kind_byte = reader.read_u8()?;
+    let kind = Kind::from_byte(kind_byte).ok_or(FormatError::InvalidKind(kind_byte))?;
+    let payload = decode_payload(kind, &mut reader)?;
+    if !reader.is_empty() {
+        return Err(FormatError::TrailingBytes);
+    }
+    let object = DesignObject { kind, payload };
+    if !object.check_kind() {
+        return Err(FormatError::KindMismatch);
+    }
+    validate_object(&object)?;
+    Ok(object)
+}
+
+/// Verify an encoded DSO1 record against the expected object hash.
+pub fn decode_object_checked(bytes: &[u8], expected: ObjectHash) -> Result<DesignObject> {
+    let object = decode_object(bytes)?;
+    let actual = object_hash(&object)?;
+    if actual != expected {
+        return Err(FormatError::HashMismatch {
+            expected: expected.to_hex(),
+            actual: actual.to_hex(),
+        });
+    }
+    Ok(object)
+}
+
+fn encode_payload(object: &DesignObject) -> Result<Vec<u8>> {
+    if !object.check_kind() {
+        return Err(FormatError::KindMismatch);
+    }
+    let mut out = Vec::new();
+    match &object.payload {
+        ObjectPayload::View(p) => encode_view(p, &mut out),
+        ObjectPayload::Directory(p) => encode_directory(p, &mut out),
+        ObjectPayload::File(p) => encode_file(p, &mut out),
+        ObjectPayload::Namespace(p) => encode_namespace(p, &mut out),
+        ObjectPayload::Class(p) => encode_class(p, &mut out),
+        ObjectPayload::Interface(p) => encode_interface(p, &mut out),
+        ObjectPayload::Method(p) => encode_method(p, &mut out),
+        ObjectPayload::Function(p) => encode_function(p, &mut out),
+        ObjectPayload::Part(p) => encode_part(p, &mut out),
+        ObjectPayload::Mixin(p) => encode_mixin(p, &mut out),
+    }
+    Ok(out)
+}
+
+fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> {
+    Ok(match kind {
+        Kind::View => ObjectPayload::View(decode_view(reader)?),
+        Kind::Directory => ObjectPayload::Directory(decode_directory(reader)?),
+        Kind::File => ObjectPayload::File(decode_file(reader)?),
+        Kind::Namespace => ObjectPayload::Namespace(decode_namespace(reader)?),
+        Kind::Class => ObjectPayload::Class(decode_class(reader)?),
+        Kind::Interface => ObjectPayload::Interface(decode_interface(reader)?),
+        Kind::Method => ObjectPayload::Method(decode_method(reader)?),
+        Kind::Function => ObjectPayload::Function(decode_function(reader)?),
+        Kind::Part => ObjectPayload::Part(decode_part(reader)?),
+        Kind::Mixin => ObjectPayload::Mixin(decode_mixin(reader)?),
+    })
+}
+
+fn encode_view(p: &ViewPayload, out: &mut Vec<u8>) {
+    out.extend_from_slice(&p.source_commit.0);
+    put_hash(out, p.files);
+    put_hash(out, p.namespaces);
+    put_hash(out, p.design);
+}
+
+fn decode_view(r: &mut Reader<'_>) -> Result<ViewPayload> {
+    Ok(ViewPayload {
+        source_commit: GitOid(read_32(r)?),
+        files: ObjectHash(Hash32(read_32(r)?)),
+        namespaces: ObjectHash(Hash32(read_32(r)?)),
+        design: ObjectHash(Hash32(read_32(r)?)),
+    })
+}
+
+fn encode_directory(p: &DirectoryPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_parent_ref(out, p.parent);
+    encode_opt_path_source(out, p.source);
+    put_hash(out, p.design_doc);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_directory(r: &mut Reader<'_>) -> Result<DirectoryPayload> {
+    Ok(DirectoryPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_parent_ref(r)?,
+        source: decode_opt_path_source(r)?,
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_file(p: &FilePayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    encode_opt_path_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_file(r: &mut Reader<'_>) -> Result<FilePayload> {
+    Ok(FilePayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        source: decode_opt_path_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_namespace(p: &NamespacePayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_parent_ref(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_namespace(r: &mut Reader<'_>) -> Result<NamespacePayload> {
+    Ok(NamespacePayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_parent_ref(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_class(p: &ClassPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_class_parent(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    put_hash(out, p.superclass);
+    encode_symbols(out, &p.interfaces);
+    encode_symbols(out, &p.mixins);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_class(r: &mut Reader<'_>) -> Result<ClassPayload> {
+    Ok(ClassPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_class_parent(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        superclass: SymbolHash(Hash32(read_32(r)?)),
+        interfaces: decode_symbols(r)?,
+        mixins: decode_symbols(r)?,
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_interface(p: &InterfacePayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_class_parent(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    put_hash(out, p.extends);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_interface(r: &mut Reader<'_>) -> Result<InterfacePayload> {
+    Ok(InterfacePayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_class_parent(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        extends: SymbolHash(Hash32(read_32(r)?)),
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_method(p: &MethodPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    put_hash(out, p.overrides);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+}
+
+fn decode_method(r: &mut Reader<'_>) -> Result<MethodPayload> {
+    Ok(MethodPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        overrides: SymbolHash(Hash32(read_32(r)?)),
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+    })
+}
+
+fn encode_function(p: &FunctionPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.file);
+    put_hash(out, p.namespace);
+    put_hash(out, p.module);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+}
+
+fn decode_function(r: &mut Reader<'_>) -> Result<FunctionPayload> {
+    Ok(FunctionPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        file: SymbolHash(Hash32(read_32(r)?)),
+        namespace: SymbolHash(Hash32(read_32(r)?)),
+        module: SymbolHash(Hash32(read_32(r)?)),
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+    })
+}
+
+fn encode_part(p: &PartPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    encode_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_part(r: &mut Reader<'_>) -> Result<PartPayload> {
+    Ok(PartPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        source: decode_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_mixin(p: &MixinPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_class_parent(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.design_doc);
+    encode_symbols(out, &p.on);
+    put_hash(out, p.superclass);
+    encode_symbols(out, &p.interfaces);
+    encode_symbols(out, &p.mixins);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_mixin(r: &mut Reader<'_>) -> Result<MixinPayload> {
+    Ok(MixinPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_class_parent(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        design_doc: DocHash(Hash32(read_32(r)?)),
+        on: decode_symbols(r)?,
+        superclass: SymbolHash(Hash32(read_32(r)?)),
+        interfaces: decode_symbols(r)?,
+        mixins: decode_symbols(r)?,
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// CMT1
+// ---------------------------------------------------------------------------
+
+pub fn encode_commit(commit: &Commit) -> Vec<u8> {
+    let payload = encode_commit_payload(commit);
+    let mut out = Vec::with_capacity(8 + payload.len());
+    out.extend_from_slice(CMT_MAGIC);
+    out.push(FORMAT_VERSION);
+    out.extend_from_slice(&[0, 0, 0]);
+    out.extend_from_slice(&payload);
+    out
+}
+
+pub fn decode_commit(bytes: &[u8]) -> Result<Commit> {
+    let mut reader = Reader::new(bytes);
+    if reader.read(4)? != CMT_MAGIC {
+        return Err(FormatError::InvalidMagic);
+    }
+    let version = reader.read_u8()?;
+    if version != FORMAT_VERSION {
+        return Err(FormatError::UnsupportedVersion(version));
+    }
+    let reserved = reader.read(3)?;
+    if reserved != [0, 0, 0] {
+        return Err(FormatError::InvalidValue("CMT1 reserved"));
+    }
+    let commit = decode_commit_payload(&mut reader)?;
+    if !reader.is_empty() {
+        return Err(FormatError::TrailingBytes);
+    }
+    validate_commit(&commit)?;
+    Ok(commit)
+}
+
+pub fn decode_commit_checked(bytes: &[u8], expected: CommitHash) -> Result<Commit> {
+    let commit = decode_commit(bytes)?;
+    let actual = commit_hash(&commit);
+    if actual != expected {
+        return Err(FormatError::HashMismatch {
+            expected: expected.to_hex(),
+            actual: actual.to_hex(),
+        });
+    }
+    Ok(commit)
+}
+
+fn encode_commit_payload(commit: &Commit) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_hash(&mut out, commit.view);
+    put_hash(&mut out, commit.parent);
+    put_string(&mut out, &commit.message);
+    put_string(&mut out, &commit.author);
+    out.extend_from_slice(&commit.timestamp.to_le_bytes());
+    out
+}
+
+fn decode_commit_payload(r: &mut Reader<'_>) -> Result<Commit> {
+    Ok(Commit {
+        view: ObjectHash(Hash32(read_32(r)?)),
+        parent: CommitHash(Hash32(read_32(r)?)),
+        message: read_string(r, "commit message")?,
+        author: read_string(r, "commit author")?,
+        timestamp: i64::from_le_bytes(read_array(r)?),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Primitive encoding
+// ---------------------------------------------------------------------------
+
+fn put_raw_hash(out: &mut Vec<u8>, hash: Hash32) {
+    out.extend_from_slice(&hash.0);
+}
+
+fn put_hash<T: Copy + Into<Hash32>>(out: &mut Vec<u8>, hash: T) {
+    out.extend_from_slice(&hash.into().0);
+}
+
+// Typed hashes are distinct newtypes; these conversions keep the encoder
+// explicit without allowing accidental cross-type assignment in the model.
+macro_rules! impl_hash_into {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            impl From<$name> for Hash32 {
+                fn from(value: $name) -> Self {
+                    value.0
+                }
+            }
+        )+
+    };
+}
+
+impl_hash_into!(ObjectHash, CommitHash, DocHash, SymbolHash);
+
+fn encode_object_hashes(out: &mut Vec<u8>, hashes: &[ObjectHash]) {
+    put_len(out, hashes.len());
+    for hash in hashes {
+        out.extend_from_slice(&hash.0.0);
+    }
+}
+
+fn decode_object_hashes(r: &mut Reader<'_>) -> Result<Vec<ObjectHash>> {
+    decode_vec(r, |r| Ok(ObjectHash(Hash32(read_32(r)?))))
+}
+
+fn encode_symbols(out: &mut Vec<u8>, hashes: &[SymbolHash]) {
+    put_len(out, hashes.len());
+    for hash in hashes {
+        out.extend_from_slice(&hash.0.0);
+    }
+}
+
+fn decode_symbols(r: &mut Reader<'_>) -> Result<Vec<SymbolHash>> {
+    decode_vec(r, |r| Ok(SymbolHash(Hash32(read_32(r)?))))
+}
+
+fn encode_dependencies(out: &mut Vec<u8>, deps: &[Dependency]) {
+    put_len(out, deps.len());
+    for dep in deps {
+        out.extend_from_slice(&dep.target.0.0);
+        match dep.evidence {
+            Some(evidence) => {
+                out.push(1);
+                out.extend_from_slice(&evidence.path.0.0);
+                put_span(out, evidence.span);
+            }
+            None => out.push(0),
+        }
+        out.extend_from_slice(&dep.rationale.0.0);
+    }
+}
+
+fn decode_dependencies(r: &mut Reader<'_>) -> Result<Vec<Dependency>> {
+    decode_vec(r, |r| {
+        let target = SymbolHash(Hash32(read_32(r)?));
+        let evidence = match r.read_u8()? {
+            0 => None,
+            1 => Some(DependencyEvidence {
+                path: SymbolHash(Hash32(read_32(r)?)),
+                span: read_span(r)?,
+            }),
+            tag => return Err(FormatError::InvalidTag("dependency evidence", tag)),
+        };
+        let rationale = DocHash(Hash32(read_32(r)?));
+        Ok(Dependency {
+            target,
+            evidence,
+            rationale,
+        })
+    })
+}
+
+fn encode_parent_ref(out: &mut Vec<u8>, parent: ParentRef) {
+    match parent {
+        ParentRef::View => out.push(1),
+        ParentRef::Object(hash) => {
+            out.push(2);
+            out.extend_from_slice(&hash.0.0);
+        }
+    }
+}
+
+fn decode_parent_ref(r: &mut Reader<'_>) -> Result<ParentRef> {
+    match r.read_u8()? {
+        1 => Ok(ParentRef::View),
+        2 => Ok(ParentRef::Object(SymbolHash(Hash32(read_32(r)?)))),
+        tag => Err(FormatError::InvalidTag("parent ref", tag)),
+    }
+}
+
+fn encode_class_parent(out: &mut Vec<u8>, parent: ClassParent) {
+    match parent {
+        ClassParent::TopLevel {
+            file,
+            namespace,
+            module,
+        } => {
+            out.push(1);
+            out.extend_from_slice(&file.0.0);
+            out.extend_from_slice(&namespace.0.0);
+            out.extend_from_slice(&module.0.0);
+        }
+        ClassParent::Nested { parent } => {
+            out.push(2);
+            out.extend_from_slice(&parent.0.0);
+        }
+    }
+}
+
+fn decode_class_parent(r: &mut Reader<'_>) -> Result<ClassParent> {
+    match r.read_u8()? {
+        1 => Ok(ClassParent::TopLevel {
+            file: SymbolHash(Hash32(read_32(r)?)),
+            namespace: SymbolHash(Hash32(read_32(r)?)),
+            module: SymbolHash(Hash32(read_32(r)?)),
+        }),
+        2 => Ok(ClassParent::Nested {
+            parent: SymbolHash(Hash32(read_32(r)?)),
+        }),
+        tag => Err(FormatError::InvalidTag("class parent", tag)),
+    }
+}
+
+fn encode_opt_path_source(out: &mut Vec<u8>, source: Option<PathSource>) {
+    match source {
+        Some(source) => {
+            out.push(1);
+            out.extend_from_slice(&source.path.0.0);
+        }
+        None => out.push(0),
+    }
+}
+
+fn decode_opt_path_source(r: &mut Reader<'_>) -> Result<Option<PathSource>> {
+    match r.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(PathSource {
+            path: SymbolHash(Hash32(read_32(r)?)),
+        })),
+        tag => Err(FormatError::InvalidTag("path source", tag)),
+    }
+}
+
+fn encode_opt_span_source(out: &mut Vec<u8>, source: Option<SpanSource>) {
+    match source {
+        Some(source) => {
+            out.push(1);
+            encode_span_source(out, source);
+        }
+        None => out.push(0),
+    }
+}
+
+fn decode_opt_span_source(r: &mut Reader<'_>) -> Result<Option<SpanSource>> {
+    match r.read_u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(decode_span_source(r)?)),
+        tag => Err(FormatError::InvalidTag("span source", tag)),
+    }
+}
+
+fn encode_span_source(out: &mut Vec<u8>, source: SpanSource) {
+    out.extend_from_slice(&source.path.0.0);
+    put_span(out, source.span);
+}
+
+fn decode_span_source(r: &mut Reader<'_>) -> Result<SpanSource> {
+    Ok(SpanSource {
+        path: SymbolHash(Hash32(read_32(r)?)),
+        span: read_span(r)?,
+    })
+}
+
+fn put_span(out: &mut Vec<u8>, span: Span) {
+    out.extend_from_slice(&span.start_byte.to_le_bytes());
+    out.extend_from_slice(&span.end_byte.to_le_bytes());
+    out.extend_from_slice(&span.start_line.to_le_bytes());
+    out.extend_from_slice(&span.end_line.to_le_bytes());
+}
+
+fn read_span(r: &mut Reader<'_>) -> Result<Span> {
+    Ok(Span {
+        start_byte: u64::from_le_bytes(read_array(r)?),
+        end_byte: u64::from_le_bytes(read_array(r)?),
+        start_line: u32::from_le_bytes(read_array(r)?),
+        end_line: u32::from_le_bytes(read_array(r)?),
+    })
+}
+
+fn put_len(out: &mut Vec<u8>, len: usize) {
+    out.extend_from_slice(&(len as u32).to_le_bytes());
+}
+
+fn put_string(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+fn read_string(r: &mut Reader<'_>, what: &'static str) -> Result<String> {
+    let len = r.read_u32()? as usize;
+    let bytes = r.read(len)?;
+    String::from_utf8(bytes.to_vec()).map_err(|_| FormatError::InvalidUtf8(what))
+}
+
+fn decode_vec<T>(
+    r: &mut Reader<'_>,
+    mut item: impl FnMut(&mut Reader<'_>) -> Result<T>,
+) -> Result<Vec<T>> {
+    let count = r.read_u32()? as usize;
+    // Avoid preallocating an attacker-controlled huge Vec.
+    let mut out = Vec::with_capacity(count.min(4096));
+    for _ in 0..count {
+        out.push(item(r)?);
+    }
+    Ok(out)
+}
+
+fn read_32(r: &mut Reader<'_>) -> Result<[u8; 32]> {
+    let bytes = r.read(32)?;
+    let mut out = [0u8; 32];
+    out.copy_from_slice(bytes);
+    Ok(out)
+}
+
+fn read_array<const N: usize>(r: &mut Reader<'_>) -> Result<[u8; N]> {
+    let bytes = r.read(N)?;
+    let mut out = [0u8; N];
+    out.copy_from_slice(bytes);
+    Ok(out)
+}
+
+struct Reader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, pos: 0 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pos == self.data.len()
+    }
+
+    fn read(&mut self, len: usize) -> Result<&'a [u8]> {
+        let end = self
+            .pos
+            .checked_add(len)
+            .ok_or(FormatError::UnexpectedEof)?;
+        if end > self.data.len() {
+            return Err(FormatError::UnexpectedEof);
+        }
+        let slice = &self.data[self.pos..end];
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self) -> Result<u8> {
+        Ok(self.read(1)?[0])
+    }
+
+    fn read_u32(&mut self) -> Result<u32> {
+        Ok(u32::from_le_bytes(read_array(self)?))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(byte: u8) -> SymbolHash {
+        SymbolHash(Hash32([byte; 32]))
+    }
+
+    fn o(byte: u8) -> ObjectHash {
+        ObjectHash(Hash32([byte; 32]))
+    }
+
+    fn d(byte: u8) -> DocHash {
+        DocHash(Hash32([byte; 32]))
+    }
+
+    fn roundtrip(object: DesignObject) {
+        let bytes = encode_object(&object).unwrap();
+        let decoded = decode_object(&bytes).unwrap();
+        assert_eq!(object, decoded);
+        let hash = object_hash(&object).unwrap();
+        assert_eq!(hash, object_hash(&decoded).unwrap());
+        decode_object_checked(&bytes, hash).unwrap();
+    }
+
+    #[test]
+    fn roundtrips_view() {
+        roundtrip(DesignObject::new(
+            Kind::View,
+            ObjectPayload::View(ViewPayload {
+                source_commit: GitOid([1; 32]),
+                files: o(2),
+                namespaces: o(3),
+                design: ObjectHash::ZERO,
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_directory() {
+        roundtrip(DesignObject::new(
+            Kind::Directory,
+            ObjectPayload::Directory(DirectoryPayload {
+                qualified_name: s(1),
+                parent: ParentRef::View,
+                source: Some(PathSource { path: s(2) }),
+                design_doc: DocHash::ZERO,
+                children: vec![o(3), o(4)],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_class() {
+        roundtrip(DesignObject::new(
+            Kind::Class,
+            ObjectPayload::Class(ClassPayload {
+                qualified_name: s(1),
+                parent: ClassParent::TopLevel {
+                    file: s(2),
+                    namespace: s(3),
+                    module: SymbolHash::ZERO,
+                },
+                source: Some(SpanSource {
+                    path: s(4),
+                    span: Span {
+                        start_byte: 1,
+                        end_byte: 9,
+                        start_line: 1,
+                        end_line: 2,
+                    },
+                }),
+                content_hash: Hash32([5; 32]),
+                design_doc: d(6),
+                superclass: s(7),
+                interfaces: vec![s(8)],
+                mixins: vec![s(9)],
+                explicit_dependencies: vec![Dependency {
+                    target: s(10),
+                    evidence: Some(DependencyEvidence {
+                        path: s(11),
+                        span: Span {
+                            start_byte: 2,
+                            end_byte: 4,
+                            start_line: 2,
+                            end_line: 2,
+                        },
+                    }),
+                    rationale: DocHash::ZERO,
+                }],
+                implicit_dependencies: vec![Dependency {
+                    target: s(12),
+                    evidence: None,
+                    rationale: d(13),
+                }],
+                children: vec![o(14)],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_interface_extends() {
+        roundtrip(DesignObject::new(
+            Kind::Interface,
+            ObjectPayload::Interface(InterfacePayload {
+                qualified_name: s(1),
+                parent: ClassParent::Nested { parent: s(2) },
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                extends: s(3),
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_method_and_function() {
+        roundtrip(DesignObject::new(
+            Kind::Method,
+            ObjectPayload::Method(MethodPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                overrides: s(3),
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::Function,
+            ObjectPayload::Function(FunctionPayload {
+                qualified_name: s(1),
+                file: s(2),
+                namespace: s(3),
+                module: SymbolHash::ZERO,
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_part_and_mixin() {
+        roundtrip(DesignObject::new(
+            Kind::Part,
+            ObjectPayload::Part(PartPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                source: SpanSource {
+                    path: s(3),
+                    span: Span {
+                        start_byte: 0,
+                        end_byte: 1,
+                        start_line: 1,
+                        end_line: 1,
+                    },
+                },
+                content_hash: Hash32([4; 32]),
+                design_doc: DocHash::ZERO,
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::Mixin,
+            ObjectPayload::Mixin(MixinPayload {
+                qualified_name: s(1),
+                parent: ClassParent::TopLevel {
+                    file: SymbolHash::ZERO,
+                    namespace: s(2),
+                    module: SymbolHash::ZERO,
+                },
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                on: vec![s(3), s(4)],
+                superclass: SymbolHash::ZERO,
+                interfaces: vec![s(5)],
+                mixins: vec![s(6)],
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_commit() {
+        let commit = Commit {
+            view: o(1),
+            parent: CommitHash::ZERO,
+            message: "hello".into(),
+            author: "agent".into(),
+            timestamp: 42,
+        };
+        let bytes = encode_commit(&commit);
+        let decoded = decode_commit(&bytes).unwrap();
+        assert_eq!(commit, decoded);
+        decode_commit_checked(&bytes, commit_hash(&commit)).unwrap();
+    }
+
+    #[test]
+    fn rejects_trailing_bytes() {
+        let object = DesignObject::new(
+            Kind::View,
+            ObjectPayload::View(ViewPayload {
+                source_commit: GitOid::ZERO,
+                files: o(1),
+                namespaces: o(2),
+                design: ObjectHash::ZERO,
+            }),
+        );
+        let mut bytes = encode_object(&object).unwrap();
+        bytes.push(0);
+        assert!(matches!(
+            decode_object(&bytes),
+            Err(FormatError::TrailingBytes)
+        ));
+    }
+
+    #[test]
+    fn rejects_bad_magic() {
+        assert!(matches!(
+            decode_object(b"NOPE"),
+            Err(FormatError::InvalidMagic)
+        ));
+        assert!(matches!(
+            decode_commit(b"NOPE"),
+            Err(FormatError::InvalidMagic)
+        ));
+    }
+
+    #[test]
+    fn docs_and_symbols_are_raw_text_hashes() {
+        assert_eq!(doc_hash("hello"), DocHash(hash_bytes(b"hello")));
+        assert_eq!(symbol_hash("hello"), SymbolHash(hash_bytes(b"hello")));
+        assert_eq!(doc_hash(""), DocHash(hash_bytes(b"")));
+    }
+
+    #[test]
+    fn content_hash_hashes_exact_bytes() {
+        assert_eq!(content_hash(b"a\nb"), hash_bytes(b"a\nb"));
+        assert_ne!(content_hash(b"a\nb"), content_hash(b"a\r\nb"));
+        assert_ne!(content_hash(b""), Hash32::ZERO);
+    }
+
+    #[test]
+    fn rejects_invalid_objects() {
+        let zero_name = DesignObject::new(
+            Kind::Directory,
+            ObjectPayload::Directory(DirectoryPayload {
+                qualified_name: SymbolHash::ZERO,
+                parent: ParentRef::View,
+                source: None,
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        );
+        assert!(matches!(
+            object_hash(&zero_name),
+            Err(FormatError::RequiredHashZero(_))
+        ));
+
+        let hash_without_source = DesignObject::new(
+            Kind::File,
+            ObjectPayload::File(FilePayload {
+                qualified_name: s(1),
+                parent: s(2),
+                source: None,
+                content_hash: Hash32([3; 32]),
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        );
+        assert!(matches!(
+            object_hash(&hash_without_source),
+            Err(FormatError::InvalidValue("file"))
+        ));
+
+        let source_without_hash = DesignObject::new(
+            Kind::File,
+            ObjectPayload::File(FilePayload {
+                qualified_name: s(1),
+                parent: s(2),
+                source: Some(PathSource { path: s(3) }),
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        );
+        assert!(matches!(
+            object_hash(&source_without_hash),
+            Err(FormatError::InvalidValue("file"))
+        ));
+
+        let unsorted_interfaces = DesignObject::new(
+            Kind::Class,
+            ObjectPayload::Class(ClassPayload {
+                qualified_name: s(1),
+                parent: ClassParent::TopLevel {
+                    file: SymbolHash::ZERO,
+                    namespace: s(2),
+                    module: SymbolHash::ZERO,
+                },
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                superclass: SymbolHash::ZERO,
+                interfaces: vec![s(3), s(2)],
+                mixins: vec![],
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        );
+        assert!(matches!(
+            object_hash(&unsorted_interfaces),
+            Err(FormatError::NonCanonicalList(_))
+        ));
+
+        let zero_part_hash = DesignObject::new(
+            Kind::Part,
+            ObjectPayload::Part(PartPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                source: SpanSource {
+                    path: s(3),
+                    span: Span {
+                        start_byte: 0,
+                        end_byte: 1,
+                        start_line: 1,
+                        end_line: 1,
+                    },
+                },
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        );
+        assert!(matches!(
+            object_hash(&zero_part_hash),
+            Err(FormatError::RequiredHashZero("part"))
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_commits() {
+        let commit = Commit {
+            view: ObjectHash::ZERO,
+            parent: CommitHash::ZERO,
+            message: String::new(),
+            author: String::new(),
+            timestamp: 0,
+        };
+        assert!(matches!(
+            validate_commit(&commit),
+            Err(FormatError::RequiredHashZero("commit view"))
+        ));
+        assert!(matches!(
+            decode_commit(&encode_commit(&commit)),
+            Err(FormatError::RequiredHashZero("commit view"))
+        ));
+    }
+}
