@@ -97,6 +97,45 @@ fn staging_diff_reset_branches_and_pack() {
 }
 
 #[test]
+fn clones_a_remote_branch() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source");
+    let clone = dir.path().join("clone");
+    let remote = dir.path().join("remote");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&remote).unwrap();
+
+    ok(&source, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        &source,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        &source,
+        &["create", "class", "Auth", "--namespace", "namespaces/app"],
+    );
+    ok(&source, &["add", "-A"]);
+    ok(&source, &["commit", "-m", "initial"]);
+    ok(&source, &["remote", "add", remote.to_str().unwrap()]);
+    ok(&source, &["push"]);
+
+    ok(
+        &clone,
+        &[
+            "clone",
+            remote.to_str().unwrap(),
+            "--source",
+            "file:///nonexistent",
+            "--branch",
+            "main",
+        ],
+    );
+    let listed = ok(&clone, &["ls"]);
+    assert!(listed.contains("namespaces/app/Auth"));
+    assert!(ok(&clone, &["show", "namespaces/app/Auth"]).contains("kind: Class"));
+}
+
+#[test]
 fn renames_and_reparents_children_and_references() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -207,15 +246,19 @@ fn rejects_invalid_relations_and_unsafe_removals() {
             "namespaces/app/A",
         ],
     );
+    assert!(output.status.success());
+    let output = ds(root, &["verify"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("cycle"));
+
+    ok(root, &["edit", "namespaces/app/B", "--superclass", ""]);
 
     let method = ok(root, &["ls"])
         .lines()
         .find(|line| line.contains("A/foo#"))
         .unwrap()
         .to_owned();
-    let output = ds(
+    ok(
         root,
         &[
             "create",
@@ -229,6 +272,7 @@ fn rejects_invalid_relations_and_unsafe_removals() {
             &method,
         ],
     );
+    let output = ds(root, &["verify"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("closure"));
 

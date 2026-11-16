@@ -1,13 +1,13 @@
 use anyhow::{Result, bail};
 use clap::Parser;
-use design_space::server::{RemoteServer, serve_http, serve_stdio};
+use design_space::server::{RemoteServer, RepoCollection, serve_http, serve_stdio};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
 #[command(name = "ds-server", about = "Serve a design-space remote")]
 struct Args {
-    /// Remote storage root.
+    /// Repository collection root (HTTP) or repository root (--stdio).
     #[arg(long, default_value = ".")]
     root: PathBuf,
 
@@ -33,16 +33,17 @@ fn main() {
 
 fn run() -> Result<()> {
     let args = Args::parse();
-    let mut server = RemoteServer::open(args.root)?;
     if args.stdio {
         if args.token_file.is_some() {
             bail!("--token-file is only used by HTTP; SSH authenticates the connection");
         }
+        let server = RemoteServer::open(args.root)?;
         serve_stdio(&server)
     } else {
+        let mut collection = RepoCollection::open(args.root)?;
         if let Some(path) = args.token_file {
-            server = server.with_token_file(&path)?;
+            collection = collection.with_token_file(&path)?;
         }
-        serve_http(server, args.listen)
+        serve_http(collection, args.listen)
     }
 }

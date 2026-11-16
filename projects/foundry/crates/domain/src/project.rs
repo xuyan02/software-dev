@@ -68,9 +68,15 @@ pub struct Project {
     /// Git repository this project works on. Required.
     #[serde(default)]
     pub git_repository: String,
-    /// `ds://` address of this project's design space. Provisioned on create.
+    /// Branch of the git repository this project reads and writes.
+    #[serde(default = "default_branch")]
+    pub git_branch: String,
+    /// Concrete remote URL of this project's design-space repository.
     #[serde(default)]
     pub design_space_url: String,
+    /// Branch of the project's design space.
+    #[serde(default = "default_branch")]
+    pub design_space_branch: String,
     pub status: ProjectStatus,
     #[serde(default)]
     pub root_task_id: Option<Uuid>,
@@ -81,6 +87,12 @@ pub struct Project {
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
+}
+
+pub const DEFAULT_BRANCH: &str = "main";
+
+fn default_branch() -> String {
+    DEFAULT_BRANCH.to_owned()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -118,7 +130,9 @@ impl Project {
             name: name.into().trim().to_string(),
             description,
             git_repository,
+            git_branch: DEFAULT_BRANCH.to_owned(),
             design_space_url: String::new(),
+            design_space_branch: DEFAULT_BRANCH.to_owned(),
             status: ProjectStatus::Active,
             root_task_id: None,
             members: vec![ProjectMember {
@@ -138,6 +152,12 @@ impl Project {
         let mut errors = Vec::new();
         if self.name.trim().is_empty() {
             errors.push("name is required".to_string());
+        }
+        if self.git_branch.trim().is_empty() {
+            errors.push("git branch is required".to_string());
+        }
+        if self.design_space_branch.trim().is_empty() {
+            errors.push("design-space branch is required".to_string());
         }
         if self.members.is_empty() {
             errors.push("project must have at least one member".to_string());
@@ -184,6 +204,8 @@ impl Project {
         &mut self,
         name: Option<String>,
         description: Option<Option<String>>,
+        git_branch: Option<String>,
+        design_space_branch: Option<String>,
     ) -> Result<(), ProjectValidationError> {
         if self.is_archived() {
             return Err(ProjectValidationError(vec![
@@ -195,6 +217,12 @@ impl Project {
         }
         if let Some(description) = description {
             self.description = description.map(|value| value.trim().to_string());
+        }
+        if let Some(branch) = git_branch {
+            self.git_branch = branch.trim().to_string();
+        }
+        if let Some(branch) = design_space_branch {
+            self.design_space_branch = branch.trim().to_string();
         }
         self.touch();
         self.validate()
@@ -290,13 +318,24 @@ mod tests {
     use super::*;
 
     fn project() -> Project {
-        Project::new("Payments", None, "git@example.com:test/repo.git", Uuid::now_v7()).unwrap()
+        Project::new(
+            "Payments",
+            None,
+            "git@example.com:test/repo.git",
+            Uuid::now_v7(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn new_project_requires_a_git_repository() {
         let error = Project::new("Payments", None, "  ", Uuid::now_v7()).unwrap_err();
-        assert!(error.0.iter().any(|message| message.contains("git repository")));
+        assert!(
+            error
+                .0
+                .iter()
+                .any(|message| message.contains("git repository"))
+        );
     }
 
     #[test]
@@ -305,6 +344,28 @@ mod tests {
         let owner = project.members[0].account_id;
         assert_eq!(project.role_of(owner), Some(ProjectRole::Owner));
         assert_eq!(project.status, ProjectStatus::Active);
+        assert_eq!(project.git_branch, "main");
+        assert_eq!(project.design_space_branch, "main");
+    }
+
+    #[test]
+    fn branches_can_be_updated_but_not_empty() {
+        let mut project = project();
+        project
+            .update(
+                None,
+                None,
+                Some("release".to_string()),
+                Some("design/release".to_string()),
+            )
+            .unwrap();
+        assert_eq!(project.git_branch, "release");
+        assert_eq!(project.design_space_branch, "design/release");
+        assert!(
+            project
+                .update(None, None, Some("  ".to_string()), None)
+                .is_err()
+        );
     }
 
     #[test]

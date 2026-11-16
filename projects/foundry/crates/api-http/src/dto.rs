@@ -201,6 +201,10 @@ pub struct CreateProjectRequest {
     pub description: Option<String>,
     /// Git repository this project works on. Required.
     pub git_repository: String,
+    #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub design_space_branch: Option<String>,
     pub root_workflow_id: String,
 }
 
@@ -210,6 +214,8 @@ impl CreateProjectRequest {
             name: self.name,
             description: self.description,
             git_repository: self.git_repository.trim().to_string(),
+            git_branch: self.git_branch,
+            design_space_branch: self.design_space_branch,
             root_workflow_id: WorkflowId::new(self.root_workflow_id),
         }
     }
@@ -222,6 +228,10 @@ pub struct UpdateProjectRequest {
     #[serde(default)]
     pub description: Option<Option<String>>,
     #[serde(default)]
+    pub git_branch: Option<String>,
+    #[serde(default)]
+    pub design_space_branch: Option<String>,
+    #[serde(default)]
     pub status: Option<ProjectStatus>,
 }
 
@@ -231,6 +241,8 @@ impl UpdateProjectRequest {
             id,
             name: self.name,
             description: self.description,
+            git_branch: self.git_branch,
+            design_space_branch: self.design_space_branch,
             status: self.status,
         }
     }
@@ -280,6 +292,10 @@ pub struct NewProjectForm {
     #[serde(default)]
     pub git_repository: String,
     #[serde(default)]
+    pub git_branch: String,
+    #[serde(default)]
+    pub design_space_branch: String,
+    #[serde(default)]
     pub root_workflow_id: String,
 }
 
@@ -289,6 +305,8 @@ impl NewProjectForm {
             name: self.name.trim().to_string(),
             description: optional_text(&self.description),
             git_repository: self.git_repository.trim().to_string(),
+            git_branch: optional_text(&self.git_branch),
+            design_space_branch: optional_text(&self.design_space_branch),
             root_workflow_id: WorkflowId::new(self.root_workflow_id.trim()),
         }
     }
@@ -301,6 +319,10 @@ pub struct ProjectUpdateForm {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub git_branch: String,
+    #[serde(default)]
+    pub design_space_branch: String,
+    #[serde(default)]
     pub status: String,
 }
 
@@ -310,6 +332,8 @@ impl ProjectUpdateForm {
             id,
             name: (!self.name.trim().is_empty()).then(|| self.name.trim().to_string()),
             description: Some(optional_text(&self.description)),
+            git_branch: optional_text(&self.git_branch),
+            design_space_branch: optional_text(&self.design_space_branch),
             status: if self.status.is_empty() {
                 None
             } else {
@@ -1079,6 +1103,11 @@ impl AssignAgentRequest {
             agent_definition_id: self.agent_definition_id,
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct AgentListQuery {
+    pub project_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Default, Deserialize)]

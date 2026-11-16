@@ -1,26 +1,16 @@
 //! Tool contract, registry and execution.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use uuid::Uuid;
 
-use crate::{ToolError, ToolSpec};
+use crate::ToolError;
 
-/// A tool that marks the run as waiting for human input after its output is
-/// recorded.
-///
-/// The model keeps ownership of the current turn: it may continue with more
-/// tool calls or finish. When it finishes, the worker persists the checkpoint
-/// and resumes when new human input arrives.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PauseRequest {
-    pub issue_id: Uuid,
-    pub last_comment_id: Option<Uuid>,
-}
+pub use graph_agent::ToolDefinition as ToolSpec;
 
+/// Run-scoped identifiers passed to every tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolContext {
     pub agent_id: String,
@@ -57,13 +47,6 @@ pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 
     async fn call(&self, arguments: Value, context: &ToolContext) -> Result<ToolOutput, ToolError>;
-
-    /// Record that the run will wait for human input after this call. The
-    /// model may continue its turn; the wait starts when the model finishes.
-    /// The default is to continue normally.
-    fn pause_after_call(&self, _arguments: &Value, _output: &ToolOutput) -> Option<PauseRequest> {
-        None
-    }
 }
 
 #[derive(Default)]

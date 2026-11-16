@@ -218,7 +218,7 @@ count 是元素数量，不是字节数。
 - 所有内容寻址文件的文件名都是内容 hash 的十六进制；
 - 远程存储根使用同样的 `objects/`、`commits/`、`docs/`、`symbols/`、
   `packs/`、`refs/heads/` 布局，不包含工作区私有的 source/index/worktree。传输规则见
-  `docs/cli.md` 第 9 节。
+  `docs/cli.md` 第 10 节。
 
 ### 2.1 tmp/
 

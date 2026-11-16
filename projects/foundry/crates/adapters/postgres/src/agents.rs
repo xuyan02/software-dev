@@ -43,12 +43,14 @@ type DefinitionRow = (
     Uuid,
     String,
     String,
+    Uuid,
     String,
     String,
     String,
     String,
     serde_json::Value,
     serde_json::Value,
+    bool,
     bool,
     OffsetDateTime,
     OffsetDateTime,
@@ -169,8 +171,8 @@ impl PostgresStore {
 
     pub async fn list_agent_definitions(&self) -> Result<Vec<AgentDefinition>, RepoError> {
         let rows: Vec<DefinitionRow> = sqlx::query_as(
-            "select d.id, d.name, d.account_id, a.handle, d.role, d.model_base_url, d.model_name, \
-             d.api_key_env, d.system_prompt, d.tools, d.skills, d.enabled, d.created_at, d.updated_at \
+            "select d.id, d.name, d.account_id, a.handle, d.role, d.project_id, d.model_base_url, d.model_name, \
+             d.api_key_env, d.system_prompt, d.tools, d.skills, d.shell, d.enabled, d.created_at, d.updated_at \
              from agent_definitions d join accounts a on a.id = d.account_id order by d.name",
         )
         .fetch_all(&self.pool)
@@ -179,10 +181,27 @@ impl PostgresStore {
         rows.into_iter().map(definition_from_row).collect()
     }
 
+    pub async fn list_project_agent_definitions(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Vec<AgentDefinition>, RepoError> {
+        let rows: Vec<DefinitionRow> = sqlx::query_as(
+            "select d.id, d.name, d.account_id, a.handle, d.role, d.project_id, d.model_base_url, d.model_name, \
+             d.api_key_env, d.system_prompt, d.tools, d.skills, d.shell, d.enabled, d.created_at, d.updated_at \
+             from agent_definitions d join accounts a on a.id = d.account_id \
+             where d.project_id = $1 order by d.name",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.into_iter().map(definition_from_row).collect()
+    }
+
     pub async fn agent_definition(&self, id: Uuid) -> Result<Option<AgentDefinition>, RepoError> {
         let row: Option<DefinitionRow> = sqlx::query_as(
-            "select d.id, d.name, d.account_id, a.handle, d.role, d.model_base_url, d.model_name, \
-             d.api_key_env, d.system_prompt, d.tools, d.skills, d.enabled, d.created_at, d.updated_at \
+            "select d.id, d.name, d.account_id, a.handle, d.role, d.project_id, d.model_base_url, d.model_name, \
+             d.api_key_env, d.system_prompt, d.tools, d.skills, d.shell, d.enabled, d.created_at, d.updated_at \
              from agent_definitions d join accounts a on a.id = d.account_id where d.id = $1",
         )
         .bind(id)
@@ -206,20 +225,22 @@ impl PostgresStore {
             .map_err(|error| RepoError::Backend(error.to_string()))?;
         sqlx::query(
             "insert into agent_definitions \
-             (id, name, account_id, role, model_base_url, model_name, api_key_env, system_prompt, \
-              tools, skills, enabled, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)",
+             (id, name, account_id, role, project_id, model_base_url, model_name, api_key_env, system_prompt, \
+              tools, skills, shell, enabled, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)",
         )
         .bind(id)
         .bind(name)
         .bind(account_id)
         .bind(&command.role)
+        .bind(command.project_id)
         .bind(&command.model_base_url)
         .bind(&command.model_name)
         .bind(&command.api_key_env)
         .bind(&command.system_prompt)
         .bind(tools)
         .bind(skills)
+        .bind(command.shell)
         .bind(command.enabled)
         .bind(now)
         .execute(&self.pool)
@@ -242,7 +263,7 @@ impl PostgresStore {
         let affected = sqlx::query(
             "update agent_definitions set \
                model_base_url = $2, model_name = $3, api_key_env = $4, system_prompt = $5, \
-               tools = $6, skills = $7, enabled = $8, role = $9, updated_at = now() \
+               tools = $6, skills = $7, shell = $8, enabled = $9, role = $10, project_id = $11, updated_at = now() \
              where id = $1",
         )
         .bind(id)
@@ -252,8 +273,10 @@ impl PostgresStore {
         .bind(&command.system_prompt)
         .bind(tools)
         .bind(skills)
+        .bind(command.shell)
         .bind(command.enabled)
         .bind(&command.role)
+        .bind(command.project_id)
         .execute(&self.pool)
         .await
         .map_err(map_write_error)?
@@ -371,7 +394,10 @@ impl PostgresStore {
             .map_err(backend)
     }
 
-    pub async fn list_ready_tasks(&self) -> Result<Vec<ReadyTaskView>, RepoError> {
+    pub async fn list_ready_tasks(
+        &self,
+        project_id: Option<Uuid>,
+    ) -> Result<Vec<ReadyTaskView>, RepoError> {
         type Row = (
             Uuid,
             Uuid,
@@ -389,6 +415,7 @@ impl PostgresStore {
              join workflow_versions v \
                on v.workflow_id = t.workflow and v.version = t.workflow_version \
              where t.state in ('pending', 'in_progress') \
+               and ($1::uuid is null or t.project_id = $1) \
                and not exists ( \
                    select 1 from task_dependencies d \
                    join tasks dep on dep.id = d.depends_on_task_id \
@@ -396,6 +423,7 @@ impl PostgresStore {
                ) \
              order by t.created_at",
         )
+        .bind(project_id)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;
@@ -807,12 +835,14 @@ fn definition_from_row(row: DefinitionRow) -> Result<AgentDefinition, RepoError>
         account_id,
         account_handle,
         role,
+        project_id,
         model_base_url,
         model_name,
         api_key_env,
         system_prompt,
         tools,
         skills,
+        shell,
         enabled,
         created_at,
         updated_at,
@@ -827,12 +857,14 @@ fn definition_from_row(row: DefinitionRow) -> Result<AgentDefinition, RepoError>
         account_id,
         account_handle,
         role,
+        project_id,
         model_base_url,
         model_name,
         api_key_env,
         system_prompt,
         tools,
         skills,
+        shell,
         enabled,
         created_at,
         updated_at,

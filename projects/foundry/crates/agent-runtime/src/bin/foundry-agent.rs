@@ -2,17 +2,15 @@
 
 use clap::{Args, Parser, Subcommand};
 use foundry_agent_runtime::{
-    AgentRunRequest, AgentRuntime, Budget, CLARIFY_SYSTEM_PROMPT, ContextBundle, DocumentTool,
-    EchoTool, FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
-    FoundryRequirementsGetTool, FoundryRequirementsValidateTool, InMemoryTrajectory,
-    IssueCommentTool, IssueGetTool, LocalSandbox, ModelResponse, OpenAiCompatibleConfig,
-    OpenAiCompatibleModel, Pricing, RequirementsGetTool, RunOutcome, ScriptedModel,
-    TaskAllowedOperationsTool, TaskCommentTool, TaskLinksListTool, TaskOperationTool, ToolRegistry,
+    AgentRunRequest, AgentRuntime, CLARIFY_SYSTEM_PROMPT, ContextBundle, DocumentTool, EchoTool,
+    FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
+    FoundryRequirementsGetTool, FoundryRequirementsValidateTool, IssueCommentTool, IssueGetTool,
+    LocalSandbox, RequirementsGetTool, TaskAllowedOperationsTool, TaskCommentTool,
+    TaskLinksListTool, TaskOperationTool, ToolRegistry,
 };
+use graph_agent::{LlmResponse, OpenAiCompatibleConfig, OpenAiCompatibleModel, ScriptedModel};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::Mutex;
 
 #[derive(Parser)]
 #[command(name = "foundry-agent", version, about = "Foundry agent runtime")]
@@ -55,10 +53,6 @@ struct RunArgs {
     project_id: Option<String>,
     #[arg(long, env = "FOUNDRY_SANDBOX_ROOT")]
     sandbox_root: Option<String>,
-    #[arg(long, env = "INPUT_PRICE_PER_MILLION", default_value_t = 0.0)]
-    input_price: f64,
-    #[arg(long, env = "OUTPUT_PRICE_PER_MILLION", default_value_t = 0.0)]
-    output_price: f64,
 }
 
 #[derive(Args)]
@@ -86,10 +80,6 @@ struct ClarifyArgs {
     message: String,
     #[arg(long, env = "FOUNDRY_SANDBOX_ROOT")]
     sandbox_root: Option<String>,
-    #[arg(long, env = "INPUT_PRICE_PER_MILLION", default_value_t = 0.0)]
-    input_price: f64,
-    #[arg(long, env = "OUTPUT_PRICE_PER_MILLION", default_value_t = 0.0)]
-    output_price: f64,
 }
 
 #[tokio::main]
@@ -110,21 +100,15 @@ async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     }))));
 
     let model = Arc::new(ScriptedModel::new(vec![
-        ModelResponse::tool_call("requirements_get", json!({})),
-        ModelResponse::final_answer(
+        LlmResponse::tool_call("requirements_get", json!({})),
+        LlmResponse::final_answer(
             "The requirements document is currently empty; start with a user model.",
         ),
     ]));
-    let trajectory = Arc::new(InMemoryTrajectory::new());
-    let runtime = AgentRuntime::new(
-        model,
-        Arc::new(tools),
-        trajectory.clone(),
-        Budget::default(),
-    );
+    let runtime = AgentRuntime::new(model, Arc::new(tools));
 
     let result = runtime
-        .run_to_completion(AgentRunRequest::new(
+        .run(AgentRunRequest::new(
             "agent-demo",
             "task-demo",
             "You are Foundry's requirements analyst.",
@@ -133,7 +117,6 @@ async fn demo() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     println!("{}", serde_json::to_string_pretty(&result)?);
-    println!("{}", serde_json::to_string_pretty(&trajectory.steps())?);
     Ok(())
 }
 
@@ -165,23 +148,13 @@ async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let trajectory = Arc::new(InMemoryTrajectory::new());
-    let mut runtime = AgentRuntime::new(
-        model,
-        Arc::new(tools),
-        trajectory.clone(),
-        Budget::default(),
-    );
-    if args.input_price > 0.0 || args.output_price > 0.0 {
-        runtime = runtime.with_pricing(Pricing::new(args.input_price, args.output_price));
-    }
+    let runtime = AgentRuntime::new(model, Arc::new(tools));
 
     let mut request = AgentRunRequest::new("agent-cli", "task-cli", args.system, args.message);
     request.context = context;
 
-    let result = runtime.run_to_completion(request).await?;
+    let result = runtime.run(request).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
-    println!("{}", serde_json::to_string_pretty(&trajectory.steps())?);
     Ok(())
 }
 
@@ -196,7 +169,6 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         args.foundry_token,
         args.project_id.clone(),
     ));
-    let prompt = CliPrompt::new();
 
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
@@ -230,16 +202,7 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
         format!("task_id = {}", args.task_id),
     );
 
-    let trajectory = Arc::new(InMemoryTrajectory::new());
-    let mut runtime = AgentRuntime::new(
-        model,
-        Arc::new(tools),
-        trajectory.clone(),
-        Budget::default(),
-    );
-    if args.input_price > 0.0 || args.output_price > 0.0 {
-        runtime = runtime.with_pricing(Pricing::new(args.input_price, args.output_price));
-    }
+    let runtime = AgentRuntime::new(model, Arc::new(tools));
 
     let mut request = AgentRunRequest::new(
         "agent-clarifier",
@@ -249,30 +212,8 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     );
     request.context = context;
 
-    let mut outcome = runtime.run(request).await?;
-    loop {
-        match outcome {
-            RunOutcome::Finished(result) => {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-                break;
-            }
-            RunOutcome::WaitingForIssueComment { pause, checkpoint } => {
-                println!(
-                    "\nAgent 已在 Issue {} 下评论。你可以在 Issue 里回复，也可以在这里输入。",
-                    pause.issue_id
-                );
-                let reply = prompt.ask("回复（直接回车结束）: ").await?;
-                if reply.is_empty() {
-                    println!("已结束等待。");
-                    break;
-                }
-                client.comment_issue(pause.issue_id, &reply, false).await?;
-                outcome = runtime.resume(checkpoint, reply, None).await?;
-            }
-        }
-    }
-    println!("{}", serde_json::to_string_pretty(&trajectory.steps())?);
-
+    let result = runtime.run(request).await?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
 
@@ -290,28 +231,4 @@ fn register_foundry_tools(tools: &mut ToolRegistry, client: &Arc<FoundryClient>)
     tools.register(Arc::new(FoundryRequirementsValidateTool::new(Arc::clone(
         client,
     ))));
-}
-
-struct CliPrompt {
-    stdin: Mutex<BufReader<tokio::io::Stdin>>,
-}
-
-impl CliPrompt {
-    fn new() -> Self {
-        Self {
-            stdin: Mutex::new(BufReader::new(tokio::io::stdin())),
-        }
-    }
-
-    async fn ask(&self, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-        use std::io::Write;
-        print!("{prompt}");
-        std::io::stdout().flush()?;
-        let mut line = String::new();
-        let read = self.stdin.lock().await.read_line(&mut line).await?;
-        if read == 0 {
-            return Ok(String::new());
-        }
-        Ok(line.trim().to_string())
-    }
 }

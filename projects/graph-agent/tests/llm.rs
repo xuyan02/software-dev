@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use graph_agent::{
-    Agent, Context, ContextError, Graph, GraphError, LlmConfig, LlmNode, LlmParams, LlmRequest,
-    LlmResponse, LlmRuntime, ModelError, ModelGateway, ModelProfileRef, NodeError, PromptTemplate,
-    SkillError, SkillRegistry, ToolError, ToolRef, ToolRegistry, ToolSpec, TransitionIndex,
+    Agent, Context, ContextError, Graph, GraphError, LlmConfig, LlmMessage, LlmNode, LlmParams,
+    LlmRequest, LlmResponse, LlmRole, LlmRuntime, ModelError, ModelGateway, ModelProfileRef,
+    NodeError, PromptTemplate, SkillError, SkillRegistry, ToolRegistry, TransitionIndex, Usage,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -12,20 +12,25 @@ struct TestModel;
 #[async_trait]
 impl ModelGateway for TestModel {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ModelError> {
+        let system = request
+            .messages
+            .iter()
+            .find(|message| message.role == LlmRole::System)
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        let user = request
+            .messages
+            .iter()
+            .find(|message| message.role == LlmRole::User)
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
         Ok(LlmResponse {
-            output: json!({
-                "system": request.system,
-                "user": request.user,
-            }),
+            message: LlmMessage::assistant(
+                json!({ "system": system, "user": user }).to_string(),
+                vec![],
+            ),
+            usage: Usage::default(),
         })
-    }
-}
-
-struct NoTools;
-
-impl ToolRegistry for NoTools {
-    fn spec(&self, tool: &ToolRef) -> Result<ToolSpec, ToolError> {
-        Err(ToolError::UnknownTool(tool.as_str().to_owned()))
     }
 }
 
@@ -79,7 +84,7 @@ fn test_llm() -> TestLlm {
 fn runtime() -> Arc<LlmRuntime> {
     Arc::new(LlmRuntime::new(
         Arc::new(TestModel),
-        Arc::new(NoTools),
+        Arc::new(ToolRegistry::new()),
         Arc::new(TestSkills),
     ))
 }
@@ -113,10 +118,11 @@ async fn agent_installs_runtime_for_llm_nodes() {
     let mut ctx = Context::new();
     configure_context(&mut ctx);
 
-    let output = agent.run(ctx).await.expect("run");
+    let output = agent.run(ctx, json!(null)).await.expect("run");
     assert_eq!(output.exit().as_str(), "done");
 
-    let result: Value = output.context.node_output("extract").unwrap();
+    let result: Value =
+        serde_json::from_str(output.output.as_str().expect("string output")).unwrap();
     assert_eq!(
         result["system"],
         "共享系统\n\n节点系统\n\n## Skills\n\n### document\n\nDocument skill body\n"
@@ -130,7 +136,10 @@ async fn graph_llm_node_requires_context_runtime() {
     let mut ctx = Context::new();
     configure_context(&mut ctx);
 
-    let error = graph.run(&mut ctx).await.expect_err("run should fail");
+    let error = graph
+        .run(&mut ctx, json!(null))
+        .await
+        .expect_err("run should fail");
     assert!(matches!(
         error,
         GraphError::Node(NodeError::Context(ContextError::MissingLlmRuntime))

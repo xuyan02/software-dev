@@ -1,9 +1,13 @@
 //! Remote storage service.
 //!
-//! The service exposes a content-addressed directory over HTTP or over a
-//! length-prefixed stdio protocol used by the SSH transport. Both expose the
-//! same operations:
+//! The service exposes a repository collection over HTTP or a single
+//! repository over the length-prefixed stdio protocol used by SSH. Each
+//! repository is a directory with the same object/doc/symbol/commit/pack
+//! layout and `refs/heads/*`.
 //!
+//! HTTP operations:
+//!
+//! - list repositories;
 //! - list refs;
 //! - list immutable files;
 //! - read one immutable file;
@@ -13,11 +17,17 @@
 //! Uploads are verified against their content hash before they are published.
 //! HTTP can require a shared bearer token; SSH relies on SSH authentication.
 
+use crate::catalog::Catalog;
+use crate::model::{
+    Commit, CommitHash, DesignObject, DirectoryPayload, DocHash, GitOid, Hash32, Kind,
+    NamespacePayload, ObjectPayload, ParentRef,
+};
 use crate::remote::{
     FILE_ROOTS, MAX_TRANSFER, collect_files, parse_hash, parse_refs, publish, read_token_file,
     valid_branch, valid_relative, write_ref,
 };
 use anyhow::{Context, Result, bail};
+use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path as AxumPath, Request, State};
@@ -26,14 +36,189 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PATH: usize = 4096;
+
+#[derive(Debug, Clone)]
+pub struct RepoCollection {
+    root: PathBuf,
+    token_hash: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedRepo {
+    pub name: String,
+    pub branch: String,
+    pub commit: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateRepoError {
+    #[error("invalid repository name: {0}")]
+    InvalidName(String),
+    #[error("invalid branch: {0}")]
+    InvalidBranch(String),
+    #[error("repository already exists: {0}")]
+    Exists(String),
+    #[error("{0}")]
+    Other(#[from] anyhow::Error),
+}
+
+impl RepoCollection {
+    pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
+        let root = root.into();
+        fs::create_dir_all(&root)?;
+        Ok(Self {
+            root,
+            token_hash: None,
+        })
+    }
+
+    /// Create a repository with an empty initial View on `branch`.
+    ///
+    /// This is the repository-creation interface used by Foundry. The server
+    /// does not create a repository implicitly on push.
+    pub fn create(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<CreatedRepo, CreateRepoError> {
+        if !valid_repo_name(name) {
+            return Err(CreateRepoError::InvalidName(name.to_owned()));
+        }
+        if !valid_branch(branch) {
+            return Err(CreateRepoError::InvalidBranch(branch.to_owned()));
+        }
+        let path = self.root.join(name);
+        match fs::create_dir(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(CreateRepoError::Exists(name.to_owned()));
+            }
+            Err(error) => return Err(CreateRepoError::Other(error.into())),
+        }
+        match init_repo(&path, branch) {
+            Ok(commit) => Ok(CreatedRepo {
+                name: name.to_owned(),
+                branch: branch.to_owned(),
+                commit: commit.to_hex(),
+            }),
+            Err(error) => {
+                let _ = fs::remove_dir_all(&path);
+                Err(CreateRepoError::Other(error))
+            }
+        }
+    }
+
+    pub fn with_token_file(mut self, path: &Path) -> Result<Self> {
+        let token = read_token_file(path)?;
+        self.token_hash = Some(hash_token(&token));
+        Ok(self)
+    }
+
+    pub fn authorized(&self, headers: &HeaderMap) -> bool {
+        authorized(headers, self.token_hash)
+    }
+
+    pub fn repos(&self) -> Result<Vec<String>> {
+        let mut names = Vec::new();
+        if !self.root.is_dir() {
+            return Ok(names);
+        }
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !valid_repo_name(&name) {
+                continue;
+            }
+            if entry.path().join("objects").is_dir() || entry.path().join("refs").is_dir() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    pub fn server(&self, name: &str) -> Result<Option<RemoteServer>> {
+        if !valid_repo_name(name) {
+            bail!("invalid repository name: {name}");
+        }
+        let root = self.root.join(name);
+        if !root.is_dir() {
+            return Ok(None);
+        }
+        Ok(Some(RemoteServer::open(root)?))
+    }
+}
+
+fn valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
+    let store = crate::store::Store::open(root)?;
+    let files = store.put_symbol("files")?;
+    let namespaces = store.put_symbol("namespaces")?;
+    let mut catalog = Catalog::new(GitOid::ZERO);
+    catalog.insert(
+        files,
+        DesignObject::new(
+            Kind::Directory,
+            ObjectPayload::Directory(DirectoryPayload {
+                qualified_name: files,
+                parent: ParentRef::View,
+                source: None,
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        ),
+    )?;
+    catalog.insert(
+        namespaces,
+        DesignObject::new(
+            Kind::Namespace,
+            ObjectPayload::Namespace(NamespacePayload {
+                qualified_name: namespaces,
+                parent: ParentRef::View,
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        ),
+    )?;
+    let view = catalog.rebuild(&store)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let commit = Commit {
+        view,
+        parent: CommitHash::ZERO,
+        message: "initialize".to_owned(),
+        author: "ds-server".to_owned(),
+        timestamp,
+    };
+    let hash = store.put_commit(&commit)?;
+    write_ref(root, branch, hash)?;
+    Ok(hash)
+}
 
 #[derive(Debug, Clone)]
 pub struct RemoteServer {
@@ -69,19 +254,7 @@ impl RemoteServer {
     }
 
     pub fn authorized(&self, headers: &HeaderMap) -> bool {
-        let Some(expected) = self.token_hash else {
-            return true;
-        };
-        let Some(value) = headers.get(AUTHORIZATION) else {
-            return false;
-        };
-        let Ok(value) = value.to_str() else {
-            return false;
-        };
-        let Some((scheme, token)) = value.split_once(' ') else {
-            return false;
-        };
-        scheme.eq_ignore_ascii_case("Bearer") && constant_time_eq(&expected, &hash_token(token))
+        authorized(headers, self.token_hash)
     }
 
     pub fn refs(&self) -> Result<String> {
@@ -187,7 +360,8 @@ impl RemoteServer {
 }
 
 /// Serve the remote over HTTP.
-pub fn serve_http(server: RemoteServer, listen: SocketAddr) -> Result<()> {
+/// Serve the repository collection over HTTP.
+pub fn serve_http(collection: RepoCollection, listen: SocketAddr) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -198,29 +372,33 @@ pub fn serve_http(server: RemoteServer, listen: SocketAddr) -> Result<()> {
             .with_context(|| format!("bind {listen} failed"))?;
         let address = listener.local_addr()?;
         eprintln!("ds-server listening on http://{address}");
-        axum::serve(listener, app(Arc::new(server)))
+        axum::serve(listener, app(Arc::new(collection)))
             .await
             .context("HTTP server failed")?;
         Ok(())
     })
 }
 
-fn app(server: Arc<RemoteServer>) -> Router {
+fn app(collection: Arc<RepoCollection>) -> Router {
     Router::new()
-        .route("/v1/refs", get(get_refs).put(put_refs))
-        .route("/v1/files", get(list_files))
-        .route("/v1/files/{*path}", get(get_file).put(put_file))
+        .route("/repos", get(list_repos).post(create_repo))
+        .route("/{repo}/refs", get(get_refs).put(put_refs))
+        .route("/{repo}/files", get(list_files))
+        .route("/{repo}/files/{*path}", get(get_file).put(put_file))
         .layer(DefaultBodyLimit::max(MAX_TRANSFER))
-        .layer(middleware::from_fn_with_state(server.clone(), require_auth))
-        .with_state(server)
+        .layer(middleware::from_fn_with_state(
+            collection.clone(),
+            require_auth,
+        ))
+        .with_state(collection)
 }
 
 async fn require_auth(
-    State(server): State<Arc<RemoteServer>>,
+    State(collection): State<Arc<RepoCollection>>,
     request: Request,
     next: Next,
 ) -> Response {
-    if server.authorized(request.headers()) {
+    if collection.authorized(request.headers()) {
         return next.run(request).await;
     }
     let mut response = (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response();
@@ -235,6 +413,22 @@ fn hash_token(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }
 
+fn authorized(headers: &HeaderMap, expected: Option<[u8; 32]>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let Some(value) = headers.get(AUTHORIZATION) else {
+        return false;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let Some((scheme, token)) = value.split_once(' ') else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("Bearer") && constant_time_eq(&expected, &hash_token(token))
+}
+
 fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
     left.iter()
         .zip(right)
@@ -245,23 +439,94 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 type ApiError = (StatusCode, String);
 type ApiResult = std::result::Result<Response, ApiError>;
 
-async fn get_refs(State(server): State<Arc<RemoteServer>>) -> ApiResult {
+async fn list_repos(State(collection): State<Arc<RepoCollection>>) -> ApiResult {
+    let mut out = String::new();
+    for repo in collection.repos().map_err(bad_request)? {
+        out.push_str(&repo);
+        out.push('\n');
+    }
+    Ok(out.into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRepoRequest {
+    name: String,
+    #[serde(default)]
+    branch: Option<String>,
+}
+
+async fn create_repo(
+    State(collection): State<Arc<RepoCollection>>,
+    Json(body): Json<CreateRepoRequest>,
+) -> ApiResult {
+    let branch = body.branch.as_deref().unwrap_or("main");
+    let created = collection
+        .create(&body.name, branch)
+        .map_err(|error| match error {
+            CreateRepoError::Exists(name) => (
+                StatusCode::CONFLICT,
+                format!("repository already exists: {name}"),
+            ),
+            CreateRepoError::InvalidName(name) => (
+                StatusCode::BAD_REQUEST,
+                format!("invalid repository name: {name}"),
+            ),
+            CreateRepoError::InvalidBranch(branch) => {
+                (StatusCode::BAD_REQUEST, format!("invalid branch: {branch}"))
+            }
+            CreateRepoError::Other(error) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}"))
+            }
+        })?;
+    Ok((StatusCode::CREATED, Json(created)).into_response())
+}
+
+fn open_repo(
+    collection: &RepoCollection,
+    repo: &str,
+) -> std::result::Result<RemoteServer, ApiError> {
+    collection
+        .server(repo)
+        .map_err(bad_request)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("repository not found: {repo}"),
+            )
+        })
+}
+
+async fn get_refs(
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath(repo): AxumPath<String>,
+) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
     Ok(server.refs().map_err(bad_request)?.into_response())
 }
 
-async fn put_refs(State(server): State<Arc<RemoteServer>>, body: Bytes) -> ApiResult {
+async fn put_refs(
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath(repo): AxumPath<String>,
+    body: Bytes,
+) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
     server.write_refs(&body).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
-async fn list_files(State(server): State<Arc<RemoteServer>>) -> ApiResult {
+async fn list_files(
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath(repo): AxumPath<String>,
+) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
     Ok(server.files().map_err(bad_request)?.into_response())
 }
 
 async fn get_file(
-    State(server): State<Arc<RemoteServer>>,
-    AxumPath(path): AxumPath<String>,
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath((repo, path)): AxumPath<(String, String)>,
 ) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
     match server.read(&path).map_err(bad_request)? {
         Some(bytes) => Ok(bytes.into_response()),
         None => Err((StatusCode::NOT_FOUND, "file not found".to_owned())),
@@ -269,10 +534,11 @@ async fn get_file(
 }
 
 async fn put_file(
-    State(server): State<Arc<RemoteServer>>,
-    AxumPath(path): AxumPath<String>,
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath((repo, path)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
     server.write(&path, &body).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
@@ -488,6 +754,47 @@ mod tests {
                 .is_err()
         );
         assert!(server.refs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn collection_lists_and_opens_repositories() {
+        let dir = tempdir().unwrap();
+        let collection = RepoCollection::open(dir.path().join("repos")).unwrap();
+        RemoteServer::open(dir.path().join("repos/alpha")).unwrap();
+        RemoteServer::open(dir.path().join("repos/beta")).unwrap();
+        assert_eq!(collection.repos().unwrap(), vec!["alpha", "beta"]);
+        assert!(collection.server("alpha").unwrap().is_some());
+        assert!(collection.server("missing").unwrap().is_none());
+        assert!(collection.server("../escape").is_err());
+        assert!(collection.server(".hidden").is_err());
+    }
+
+    #[test]
+    fn creates_repositories_with_an_initial_branch() {
+        let dir = tempdir().unwrap();
+        let collection = RepoCollection::open(dir.path().join("repos")).unwrap();
+        let created = collection.create("alpha", "main").unwrap();
+        assert_eq!(created.name, "alpha");
+        assert_eq!(created.branch, "main");
+        assert_eq!(created.commit.len(), 64);
+        assert_eq!(collection.repos().unwrap(), vec!["alpha"]);
+        let server = collection.server("alpha").unwrap().unwrap();
+        assert_eq!(
+            server.refs().unwrap(),
+            format!("main\t{}\n", created.commit)
+        );
+        assert!(matches!(
+            collection.create("alpha", "main"),
+            Err(CreateRepoError::Exists(_))
+        ));
+        assert!(matches!(
+            collection.create("../bad", "main"),
+            Err(CreateRepoError::InvalidName(_))
+        ));
+        assert!(matches!(
+            collection.create("beta", "bad branch"),
+            Err(CreateRepoError::InvalidBranch(_))
+        ));
     }
 
     #[test]

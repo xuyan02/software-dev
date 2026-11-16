@@ -23,6 +23,7 @@ tracing.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 foundry-adapter-memory.workspace = true
 foundry-adapter-policy.workspace = true
 async-trait.workspace = true

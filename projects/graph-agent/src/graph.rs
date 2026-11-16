@@ -1,4 +1,6 @@
+use crate::message::LlmMessage;
 use crate::{Context, LlmNode, LlmNodeAdapter, Node, NodeError, NodeId, TransitionIndex};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -35,9 +37,12 @@ impl Graph {
     /// Execute until an exit is reached.
     ///
     /// Exits are virtual: they are not executable nodes, and reaching one ends
-    /// the run.
-    pub async fn run(&self, ctx: &mut Context) -> Result<NodeId, GraphError> {
+    /// the run. Each node's return value becomes the next node's input. When an
+    /// exit is reached the framework writes the final output into the shared
+    /// history.
+    pub async fn run(&self, ctx: &mut Context, input: Value) -> Result<GraphOutput, GraphError> {
         let mut current = self.entry.clone();
+        let mut input = input;
 
         loop {
             let node = self
@@ -46,7 +51,7 @@ impl Graph {
                 .ok_or_else(|| GraphError::NodeNotFound(current.clone()))?;
 
             ctx.set_current_node(Some(current.clone()));
-            node.run(ctx).await?;
+            input = node.run(input, ctx).await?;
 
             let index = node.to(ctx)?;
             let next = self.edges.get(&(current.clone(), index)).ok_or_else(|| {
@@ -57,11 +62,35 @@ impl Graph {
             })?;
 
             if self.exits.contains(next) {
-                return Ok(next.clone());
+                let text = render_output(&input);
+                if !text.is_empty() {
+                    ctx.history_mut()
+                        .push(LlmMessage::assistant(text, Vec::new()));
+                }
+                return Ok(GraphOutput {
+                    exit: next.clone(),
+                    output: input,
+                });
             }
 
             current = next.clone();
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GraphOutput {
+    pub exit: NodeId,
+    pub output: Value,
+}
+
+fn render_output(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        Value::Bool(boolean) => boolean.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
 }
 

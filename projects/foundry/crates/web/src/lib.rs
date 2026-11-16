@@ -3227,6 +3227,9 @@ pub fn projects_page(
         r#"<div class="field"><label for="root_workflow_id">根流程 *</label><select id="root_workflow_id" name="root_workflow_id" required>{root_options}</select><p class="hint">项目创建时固定根 Task 的已发布版本；之后流程的修改不会影响这个项目。</p></div>"#
     );
     let git_field = input_field("git_repository", "Git 仓库 *", "", true);
+    let git_branch_field = input_field("git_branch", "Git 分支 *", "main", true);
+    let design_space_branch_field =
+        input_field("design_space_branch", "设计空间分支 *", "main", true);
 
     let body = format!(
         r#"<h1>项目</h1>
@@ -3241,6 +3244,10 @@ pub fn projects_page(
   {name}
   {description}
   {git_field}
+  <div class="grid">
+    {git_branch_field}
+    {design_space_branch_field}
+  </div>
   {root_field}
   <p class="hint">创建者成为项目 Owner。项目名称可以修改。</p>
   <div class="actions"><button type="submit">创建项目</button></div>
@@ -3357,6 +3364,10 @@ pub fn project_page(
     {status}
   </div>
   {description}
+  <div class="grid">
+    {git_branch}
+    {design_space_branch}
+  </div>
   <p class="hint">归档后项目只读。恢复为活跃后才能继续编辑和变更成员。</p>
   <div class="actions"><button type="submit">保存设置</button></div>
 </form>
@@ -3383,6 +3394,13 @@ pub fn project_page(
                 project.description.as_deref().unwrap_or(""),
                 None,
             ),
+            git_branch = input_field("git_branch", "Git 分支", &project.git_branch, true),
+            design_space_branch = input_field(
+                "design_space_branch",
+                "设计空间分支",
+                &project.design_space_branch,
+                true,
+            ),
             handle = input_field("handle", "账号 handle", "", true),
             role = role_field,
         )
@@ -3400,7 +3418,9 @@ pub fn project_page(
 <dl class="details">
   <dt>项目 ID</dt><dd><code title="{id}">{short_id}</code></dd>
   <dt>Git 仓库</dt><dd>{git_repository}</dd>
+  <dt>Git 分支</dt><dd><code>{git_branch}</code></dd>
   <dt>设计空间</dt><dd>{design_space_display}</dd>
+  <dt>设计空间分支</dt><dd><code>{design_space_branch}</code></dd>
   <dt>成员</dt><dd class="plain">{member_count}</dd>
   <dt>版本</dt><dd class="plain">{version}</dd>
 </dl>
@@ -3417,7 +3437,9 @@ pub fn project_page(
         error_html = error_html,
         id = project.id,
         git_repository = escape(&project.git_repository),
+        git_branch = escape(&project.git_branch),
         design_space_display = design_space_display,
+        design_space_branch = escape(&project.design_space_branch),
         short_id = short_id,
         member_count = members.len(),
         version = project.version,
@@ -4375,7 +4397,7 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
 
     let body = format!(
         r#"<h1>智能体</h1>
-<p class="sub">智能体由平台定义，用户不能新建或修改；这里只管理运行状态。</p>
+<p class="sub">这里只显示当前项目的智能体；智能体由平台定义，用户不能新建或修改。</p>
 {error_html}
 <p class="hint">项目文档撰写任务（<code>goal_clarification / clarifier / writer</code>）由 PM Agent 分配智能体。</p>
 <table>
@@ -4993,6 +5015,8 @@ mod tests {
         let ctx = ConsoleContext::new(&owner, &[], None);
         let html = projects_page(&ctx, &[], &[], None);
         assert!(html.contains(r#"name="git_repository""#));
+        assert!(html.contains(r#"name="git_branch""#));
+        assert!(html.contains(r#"name="design_space_branch""#));
         assert!(html.contains("Git 仓库"));
     }
 
@@ -5330,11 +5354,13 @@ mod tests {
             account_id: account.id,
             account_handle: "agent".to_string(),
             role: "goal_clarification:clarifier".to_string(),
+            project_id: uuid::Uuid::now_v7(),
             model_base_url: "http://127.0.0.1:11434/v1".to_string(),
             model_name: "test-model".to_string(),
             api_key_env: "OPENAI_API_KEY".to_string(),
             system_prompt: String::new(),
             tools: Vec::new(),
+            shell: false,
             skills: Vec::new(),
             enabled: true,
             created_at: time::OffsetDateTime::now_utc(),

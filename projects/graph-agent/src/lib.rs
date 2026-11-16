@@ -22,19 +22,29 @@ mod context;
 mod graph;
 mod id;
 mod llm;
+mod message;
 mod node;
+mod openai;
+mod scripted;
 mod template;
+mod tool;
 mod variable;
 
 pub use agent::{Agent, AgentOutput};
-pub use context::{Context, ContextError};
-pub use graph::{Edge, Graph, GraphBuilder, GraphError};
+pub use context::{Context, ContextError, History};
+pub use graph::{Edge, Graph, GraphBuilder, GraphError, GraphOutput};
 pub use id::{NodeId, TransitionIndex};
 pub(crate) use llm::LlmNodeAdapter;
 pub use llm::{
     LlmConfig, LlmNode, LlmParams, LlmRequest, LlmResponse, LlmRuntime, ModelError, ModelGateway,
-    ModelProfileRef, SkillError, SkillRegistry, ToolError, ToolRef, ToolRegistry, ToolSpec,
+    ModelProfileRef, SkillError, SkillRegistry,
 };
+pub use message::{LlmMessage, LlmRole, LlmToolCall, Usage};
 pub use node::{Node, NodeError};
+pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
+pub use scripted::ScriptedModel;
 pub use template::{PromptTemplate, TemplateError};
+pub use tool::{
+    RegistryError, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, ToolRegistry, codes,
+};
 pub use variable::{MapSource, VariableError, VariablePath, VariableSource};

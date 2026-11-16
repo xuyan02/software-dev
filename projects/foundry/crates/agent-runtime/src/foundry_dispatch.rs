@@ -22,7 +22,7 @@ impl Tool for AgentsListTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "agents_list".to_string(),
-            description: "List platform agents with their role, enabled flag and process status."
+            description: "List this agent's project's agents with their role, enabled flag and process status."
                 .to_string(),
             input_schema: json!({ "type": "object", "properties": {} }),
         }
@@ -31,11 +31,17 @@ impl Tool for AgentsListTool {
     async fn call(
         &self,
         _arguments: Value,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
+        let project_id = context
+            .project_id
+            .as_deref()
+            .ok_or_else(|| ToolError::Failed("agents_list requires a project".to_string()))?
+            .parse::<Uuid>()
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
         let agents = self
             .client
-            .dispatch_agents()
+            .dispatch_agents(Some(project_id))
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(agents)
@@ -96,7 +102,7 @@ impl Tool for AgentCreateForRoleTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "agent_create_for_role".to_string(),
-            description: "Create a new platform agent from a template for an unassigned task role."
+            description: "Create a new project agent from a template for an unassigned task role."
                 .to_string(),
             input_schema: json!({
                 "type": "object",

@@ -29,6 +29,13 @@ pub struct SourceRepo {
     format: ObjectFormat,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceChange {
+    pub status: char,
+    pub old_path: Option<String>,
+    pub path: String,
+}
+
 impl SourceRepo {
     pub fn open(root: impl Into<PathBuf>, url: &str, format: ObjectFormat) -> Result<Self> {
         if url.trim().is_empty() {
@@ -208,6 +215,64 @@ impl SourceRepo {
             .filter(|line| !line.is_empty())
             .map(str::to_owned)
             .collect())
+    }
+
+    pub fn is_ancestor(&self, ancestor: &str, descendant: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(self.cache())
+            .args(["merge-base", "--is-ancestor", ancestor, descendant])
+            .output()
+            .context("run git merge-base")?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => bail!(
+                "git merge-base failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        }
+    }
+
+    pub fn changes(&self, base: &str, head: &str) -> Result<Vec<SourceChange>> {
+        let output = self.git_bytes(["diff", "--name-status", "-M", base, head])?;
+        let text = String::from_utf8(output).context("git diff output is not UTF-8")?;
+        let mut changes = Vec::new();
+        for line in text.lines().filter(|line| !line.is_empty()) {
+            let mut fields = line.split('\t');
+            let status = fields.next().context("missing diff status")?;
+            let status = status.chars().next().context("empty diff status")?;
+            match status {
+                'R' => {
+                    let old = fields.next().context("missing rename source")?;
+                    let new = fields.next().context("missing rename target")?;
+                    changes.push(SourceChange {
+                        status: 'R',
+                        old_path: Some(old.to_owned()),
+                        path: new.to_owned(),
+                    });
+                }
+                'C' => {
+                    let _old = fields.next().context("missing copy source")?;
+                    let new = fields.next().context("missing copy target")?;
+                    changes.push(SourceChange {
+                        status: 'A',
+                        old_path: None,
+                        path: new.to_owned(),
+                    });
+                }
+                'A' | 'M' | 'D' | 'T' => {
+                    let path = fields.next().context("missing changed path")?;
+                    changes.push(SourceChange {
+                        status,
+                        old_path: None,
+                        path: path.to_owned(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(changes)
     }
 
     pub fn git_oid(&self, commit: &str) -> Result<GitOid> {

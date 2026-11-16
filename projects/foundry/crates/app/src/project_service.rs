@@ -9,8 +9,8 @@ use crate::ports::{
 use crate::task::TaskDispatcher;
 use crate::workflow::{WorkflowCatalog, WorkflowLookup};
 use foundry_domain::{
-    Account, AccountStatus, Actor, DomainEvent, DomainEventKind, Project, ProjectRole,
-    ProjectStatus, TaskDAO, WorkflowOption,
+    Account, AccountStatus, Actor, DEFAULT_BRANCH, DomainEvent, DomainEventKind, Project,
+    ProjectRole, ProjectStatus, TaskDAO, WorkflowOption,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -94,23 +94,11 @@ where
             }
         };
 
-        let git_repository = command.git_repository.trim();
-        if git_repository.is_empty() {
+        if command.git_repository.trim().is_empty() {
             return Err(ServiceError::Validation(
                 "git_repository is required".to_string(),
             ));
         }
-        let design_space_url = self
-            .design_spaces
-            .create_design_space(command.name.trim(), git_repository)
-            .await
-            .map_err(ServiceError::Internal)?;
-        if design_space_url.trim().is_empty() {
-            return Err(ServiceError::Internal(
-                "design space provisioner returned an empty address".to_string(),
-            ));
-        }
-
         let mut project = Project::new(
             command.name,
             command.description,
@@ -118,6 +106,34 @@ where
             account.id,
         )
         .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        project.git_branch = command
+            .git_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or(DEFAULT_BRANCH)
+            .to_owned();
+        project.design_space_branch = command
+            .design_space_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or(DEFAULT_BRANCH)
+            .to_owned();
+        project
+            .validate()
+            .map_err(|error| ServiceError::Validation(error.to_string()))?;
+
+        let design_space_url = self
+            .design_spaces
+            .create_design_space(&project.id.to_string(), &project.design_space_branch)
+            .await
+            .map_err(ServiceError::Internal)?;
+        if design_space_url.trim().is_empty() {
+            return Err(ServiceError::Internal(
+                "design space provisioner returned an empty address".to_string(),
+            ));
+        }
         project.design_space_url = design_space_url;
         let now = time::OffsetDateTime::now_utc();
         let mut root = TaskDAO::new(
@@ -194,9 +210,18 @@ where
                 .activate()
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
-        if command.name.is_some() || command.description.is_some() {
+        if command.name.is_some()
+            || command.description.is_some()
+            || command.git_branch.is_some()
+            || command.design_space_branch.is_some()
+        {
             project
-                .update(command.name, command.description)
+                .update(
+                    command.name,
+                    command.description,
+                    command.git_branch,
+                    command.design_space_branch,
+                )
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
         if command.status == Some(ProjectStatus::Archived) {

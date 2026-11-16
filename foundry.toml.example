@@ -1,7 +1,7 @@
 # Foundry runtime configuration (example).
 #
-# Copy to ~/.foundry/foundry.toml, or point FOUNDRY_CONFIG at a file elsewhere.
-# Precedence: environment variables > config file > built-in defaults.
+# Copy to ~/.foundry/foundry.toml. Foundry reads no environment variables.
+# Missing keys fall back to built-in defaults.
 # Unknown keys are rejected at startup so typos fail loudly.
 #
 # The config file can contain the database password and the initialization
@@ -25,9 +25,26 @@ bootstrap_password = "change-this-initialization-passphrase"
 
 session_ttl_hours = 168
 
-# Platform model used by managed agents (the PM Agent). The API key can live
-# here or in OPENAI_API_KEY; environment variables take precedence. The key is
-# never written to the database. Keep this file chmod 600.
+# Platform model used by managed agents. The key is never written to the
+# database. Keep this file chmod 600.
 openai_api_key = "sk-..."
 openai_base_url = "https://api.deepseek.com/v1"
 openai_model = "deepseek-chat"
+
+# GitHub App used to mint short-lived repository tokens. The private key stays
+# in this file's directory (or wherever this path points) and is never sent to
+# agents.
+# github_app_id = 5785762
+# github_app_private_key_file = "/home/me/.foundry/github-app.pem"
+# github_api_base = "https://api.github.com"
+
+# Local ds-server. Defaults shown; the listen address must be reachable from
+# agent containers, and design_space_agent_url overrides the host IP written
+# into project records.
+# design_space_root = "/home/me/.foundry/design-spaces"
+# design_space_listen = "0.0.0.0:7700"
+# design_space_token_file = "/home/me/.foundry/design-space-token"
+# design_space_agent_url = "http://192.0.2.10:7700"
+
+# Image used for an agent's persistent shell.
+# shell_image = "localhost/openergasterion-shell:1"

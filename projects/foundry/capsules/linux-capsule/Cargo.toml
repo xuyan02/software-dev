@@ -5,8 +5,6 @@ edition = "2021"
 description = "Isolated Linux capsule with desktop and headless modes, backed by rootless Podman"
 license = "MIT OR Apache-2.0"
 
-# Standalone: this directory is its own workspace and is not a Foundry member.
-[workspace]
 
 [lib]
 name = "linux_capsule"
@@ -35,5 +33,3 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 x11rb = { version = "0.14", features = ["xtest"] }
 
-[profile.release]
-debug = false

@@ -218,7 +218,13 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
 
     let owner = account("owner");
     AccountRepository::insert(&*store, &owner).await.unwrap();
-    let mut project = Project::new(format!("Tasks {}", suffix()), None, "git@example.com:test/repo.git", owner.id).unwrap();
+    let mut project = Project::new(
+        format!("Tasks {}", suffix()),
+        None,
+        "git@example.com:test/repo.git",
+        owner.id,
+    )
+    .unwrap();
     let mut root = TaskDAO::new(
         project.id,
         None,
@@ -298,7 +304,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
 
     // The clarifier role is an agent role with no actor bound and no
     // assignment. The PM sees the Ready task itself and decides.
-    let ready = store.list_ready_tasks().await.unwrap();
+    let ready = store.list_ready_tasks(Some(project.id)).await.unwrap();
     let view = ready
         .iter()
         .find(|view| view.task_id == child.id)
@@ -343,11 +349,13 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
                 name: format!("Clarifier {}", suffix()),
                 account_handle: clarifier_account.handle.clone(),
                 role: "goal_clarification:clarifier".to_string(),
+                project_id: project.id,
                 model_base_url: "http://127.0.0.1:11434/v1".to_string(),
                 model_name: "test-model".to_string(),
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 system_prompt: "Clarify the project.".to_string(),
                 tools: Vec::new(),
+                shell: false,
                 skills: Vec::new(),
                 enabled: true,
             },
@@ -360,7 +368,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
         .assign_task(child.id, "goal_clarification:clarifier", clarifier.id)
         .await
         .unwrap();
-    let ready = store.list_ready_tasks().await.unwrap();
+    let ready = store.list_ready_tasks(Some(project.id)).await.unwrap();
     let view = ready
         .iter()
         .find(|view| view.task_id == child.id)
@@ -580,8 +588,13 @@ async fn requirements_document_round_trips_idempotently_and_conflicts() {
 
     let alice = account("reqdoc");
     AccountRepository::insert(&store, &alice).await.unwrap();
-    let project =
-        Project::new(format!("Requirements project {}", suffix()), None, "git@example.com:test/repo.git", alice.id).unwrap();
+    let project = Project::new(
+        format!("Requirements project {}", suffix()),
+        None,
+        "git@example.com:test/repo.git",
+        alice.id,
+    )
+    .unwrap();
     ProjectRepository::insert(&store, &project).await.unwrap();
 
     let now = OffsetDateTime::now_utc();
@@ -733,7 +746,13 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
 
     let owner = account("delete-owner");
     AccountRepository::insert(&store, &owner).await.unwrap();
-    let mut project = Project::new(format!("Delete project {}", suffix()), None, "git@example.com:test/repo.git", owner.id).unwrap();
+    let mut project = Project::new(
+        format!("Delete project {}", suffix()),
+        None,
+        "git@example.com:test/repo.git",
+        owner.id,
+    )
+    .unwrap();
     let mut root = TaskDAO::new(
         project.id,
         None,
@@ -848,7 +867,13 @@ async fn anchor_document_round_trips_with_annotations() {
 
     let alice = account("anchordoc");
     AccountRepository::insert(&store, &alice).await.unwrap();
-    let project = Project::new(format!("Anchor document {}", suffix()), None, "git@example.com:test/repo.git", alice.id).unwrap();
+    let project = Project::new(
+        format!("Anchor document {}", suffix()),
+        None,
+        "git@example.com:test/repo.git",
+        alice.id,
+    )
+    .unwrap();
     ProjectRepository::insert(&store, &project).await.unwrap();
 
     let schema = foundry_domain::project_document_schema();

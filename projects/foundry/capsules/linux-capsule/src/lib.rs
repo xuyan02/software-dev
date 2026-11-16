@@ -301,6 +301,17 @@ impl LinuxCapsule {
         .await
     }
 
+    /// Headless capsule using a specific base image.
+    pub async fn headless_with_image(image: impl Into<String>) -> Result<Self> {
+        Self::create(LinuxCapsuleSpec {
+            mode: LinuxCapsuleMode::Headless,
+            image: image.into(),
+            app: Vec::new(),
+            ..LinuxCapsuleSpec::default()
+        })
+        .await
+    }
+
     /// Create a capsule and wait until it is ready.
     ///
     /// This single call:

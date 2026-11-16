@@ -55,6 +55,18 @@ impl PromptTemplate {
         Ok(Self { source, parts })
     }
 
+    /// A template with no variable substitution. Useful for prompts that
+    /// contain literal `{{` text.
+    pub fn literal(input: impl Into<String>) -> Self {
+        let source = input.into();
+        let parts = if source.is_empty() {
+            Vec::new()
+        } else {
+            vec![TemplatePart::Literal(source.clone())]
+        };
+        Self { source, parts }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.source
     }

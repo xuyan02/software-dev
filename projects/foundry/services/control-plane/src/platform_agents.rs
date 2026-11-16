@@ -1,20 +1,25 @@
 //! Platform-owned agents and templates.
 //!
-//! Agents are not user-configurable. The control plane registers its built-in
-//! PM dispatcher after the first administrator exists. The PM assigns task
-//! roles to agents; if no suitable agent exists, it creates one from a
-//! platform template.
+//! Agents are not user-configurable. Each project owns one PM dispatcher and
+//! the agents created from platform templates. The PM assigns task roles
+//! inside its own project; if no suitable agent exists, it creates one from a
+//! template.
 
 use crate::supervisor::AgentSupervisor;
 use foundry_adapter_postgres::PostgresStore;
 use foundry_agent_runtime::CLARIFY_SYSTEM_PROMPT;
-use foundry_app::{AccountFilter, AccountRepository, hash_password, new_session_token};
+use foundry_app::{
+    AccountFilter, AccountRepository, ProjectFilter, ProjectRepository, hash_password,
+    new_session_token,
+};
 use foundry_domain::{Account, AccountKind, AccountRole, CreateAgentDefinition};
 use std::sync::Arc;
 use std::time::Duration;
+use uuid::Uuid;
 
 pub const DISPATCH_SYSTEM_PROMPT: &str = r#"You are Foundry's work dispatcher.
 You do not perform the task. Your job is to assign agents to Ready tasks and start them.
+You only see and dispatch tasks in your own project; tasks_ready_list is already scoped to it.
 
 On every wake:
 1. Call tasks_ready_list exactly once.
@@ -25,8 +30,8 @@ On every wake:
    in later stages. Bind them all now; do not wait for a later stage.
    a. For every role:
       - Skip it when agent is set and enabled.
-      - Otherwise call agents_list. If an enabled agent has role == task_role,
-        choose it.
+      - Otherwise call agents_list. It only returns this project's agents; choose
+        an enabled agent whose role == task_role.
       - If no agent fits, call agent_templates_list for that role, choose one template,
         and call agent_create_for_role with task_id, role = task_role and template_id.
       - Call task_assign_agent with task_id, role = task_role and the chosen
@@ -47,6 +52,7 @@ pub struct PlatformTemplate {
     pub description: &'static str,
     pub system_prompt: &'static str,
     pub tools: &'static [&'static str],
+    pub shell: bool,
     pub skills: &'static [&'static str],
 }
 
@@ -57,7 +63,7 @@ const CLARIFIER_TOOLS: &[&str] = &[
     "task_get",
     "task_allowed_operations",
     "task_operation",
-    "project_get",
+    "project",
     "issue_get",
     "issue_comment",
     "document",
@@ -71,7 +77,7 @@ const PROJECT_DOCUMENT_WRITER_PROMPT: &str = r#"你是 Foundry 的项目文档�
 
 const WRITER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_links_list",
     "issue_get",
     "task_get",
@@ -127,7 +133,7 @@ const REQUIREMENTS_ANALYST_PROMPT: &str = r#"你是 Foundry 的需求分析智�
 
 const ANALYST_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_links_list",
     "issue_get",
     "issue_comment",
@@ -183,7 +189,7 @@ const STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的需求文档文风审�
 
 const REVIEWER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_get",
     "task_links_list",
     "issue_get",
@@ -237,7 +243,7 @@ const ARCHITECT_PROMPT: &str = r#"你是 Foundry 的架构设计智能体。
 
 const ARCHITECT_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_links_list",
     "issue_get",
     "issue_comment",
@@ -254,7 +260,7 @@ const ARCHITECTURE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的架构设计评�
 
 const ARCHITECTURE_REVIEWER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_get",
     "task_links_list",
     "issue_get",
@@ -282,7 +288,7 @@ const IMPLEMENTER_PROMPT: &str = r#"你是 Foundry 的实现智能体。
 
 const IMPLEMENTER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_links_list",
     "issue_get",
     "issue_comment",
@@ -300,7 +306,7 @@ const IMPLEMENTER_TOOLS: &[&str] = &[
 
 const DEVELOPMENT_REVIEWER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_get",
     "task_links_list",
     "issue_get",
@@ -338,7 +344,7 @@ const TEST_EXECUTOR_PROMPT: &str = r#"你是 Foundry 的测试执行智能体。
 
 const TEST_EXECUTOR_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_links_list",
     "issue_get",
     "issue_comment",
@@ -359,7 +365,7 @@ const TEST_REPORT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的测试报告评�
 
 const TEST_REPORT_REVIEWER_TOOLS: &[&str] = &[
     "document",
-    "project_get",
+    "project",
     "task_get",
     "task_links_list",
     "issue_get",
@@ -378,6 +384,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: CLARIFIER_ROLE,
         description: "Clarification interview: asks the creator one question at a time",
         system_prompt: CLARIFY_SYSTEM_PROMPT,
+        shell: false,
         tools: CLARIFIER_TOOLS,
         skills: &["document", "project-clarification"],
     },
@@ -387,6 +394,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: WRITER_ROLE,
         description: "Writes the project document from the clarification record",
         system_prompt: PROJECT_DOCUMENT_WRITER_PROMPT,
+        shell: false,
         tools: WRITER_TOOLS,
         skills: &[
             "document",
@@ -400,6 +408,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: BRIEF_STYLE_REVIEWER_ROLE,
         description: "Language-only review: readability, clarity, terminology and grammar",
         system_prompt: BRIEF_STYLE_REVIEWER_PROMPT,
+        shell: false,
         tools: BRIEF_REVIEWER_TOOLS,
         skills: &["document", "style-review"],
     },
@@ -409,6 +418,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: BRIEF_CONTENT_REVIEWER_ROLE,
         description: "Reviews the project layer for completeness, consistency and measurability",
         system_prompt: BRIEF_CONTENT_REVIEWER_PROMPT,
+        shell: false,
         tools: BRIEF_REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -422,6 +432,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: ANALYST_ROLE,
         description: "Builds the requirements document from the project layer",
         system_prompt: REQUIREMENTS_ANALYST_PROMPT,
+        shell: false,
         tools: ANALYST_TOOLS,
         skills: &[
             "document",
@@ -435,6 +446,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: ARCHITECT_ROLE,
         description: "Writes the architecture design from project and requirements documents",
         system_prompt: ARCHITECT_PROMPT,
+        shell: false,
         tools: ARCHITECT_TOOLS,
         skills: &[
             "document",
@@ -448,6 +460,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: ARCHITECTURE_REVIEWER_ROLE,
         description: "Reviews architecture completeness, consistency and feasibility",
         system_prompt: ARCHITECTURE_REVIEWER_PROMPT,
+        shell: false,
         tools: ARCHITECTURE_REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -461,6 +474,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: DETAILED_DESIGNER_ROLE,
         description: "Writes module-level detailed design from requirements and architecture",
         system_prompt: DETAILED_DESIGNER_PROMPT,
+        shell: false,
         tools: ANALYST_TOOLS,
         skills: &[
             "document",
@@ -474,6 +488,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: DESIGN_REVIEWER_ROLE,
         description: "Reviews detailed design completeness, consistency and testability",
         system_prompt: DESIGN_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &["document", "design-document-writing-guide", "design-review"],
     },
@@ -483,6 +498,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: IMPLEMENTER_ROLE,
         description: "Implements code in the project workspace and records change evidence",
         system_prompt: IMPLEMENTER_PROMPT,
+        shell: false,
         tools: IMPLEMENTER_TOOLS,
         skills: &["document", "development-record"],
     },
@@ -492,6 +508,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: DEVELOPMENT_REVIEWER_ROLE,
         description: "Reviews the workspace diff, build and test results independently",
         system_prompt: DEVELOPMENT_REVIEWER_PROMPT,
+        shell: false,
         tools: DEVELOPMENT_REVIEWER_TOOLS,
         skills: &["document", "development-review"],
     },
@@ -501,6 +518,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: TEST_PLANNER_ROLE,
         description: "Writes the test plan from requirements, architecture and design",
         system_prompt: TEST_PLANNER_PROMPT,
+        shell: false,
         tools: ANALYST_TOOLS,
         skills: &["document", "test-plan-writing-guide", "test-planning"],
     },
@@ -510,6 +528,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: TEST_PLAN_REVIEWER_ROLE,
         description: "Reviews test plan coverage, executability and evidence requirements",
         system_prompt: TEST_PLAN_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &["document", "test-plan-writing-guide", "test-plan-review"],
     },
@@ -519,6 +538,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: TEST_EXECUTOR_ROLE,
         description: "Runs tests in the project workspace and records real results",
         system_prompt: TEST_EXECUTOR_PROMPT,
+        shell: false,
         tools: TEST_EXECUTOR_TOOLS,
         skills: &["document", "test-plan-writing-guide", "test-execution"],
     },
@@ -528,6 +548,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: TEST_REPORT_REVIEWER_ROLE,
         description: "Reviews test evidence and report for coverage and gate conclusions",
         system_prompt: TEST_REPORT_REVIEWER_PROMPT,
+        shell: false,
         tools: TEST_REPORT_REVIEWER_TOOLS,
         skills: &["document", "test-plan-writing-guide", "test-report-review"],
     },
@@ -537,6 +558,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: REQUIREMENTS_REVIEWER_ROLE,
         description: "Reviews completeness, consistency and testability",
         system_prompt: REQUIREMENTS_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -550,6 +572,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: FEASIBILITY_REVIEWER_ROLE,
         description: "Reviews technical feasibility, dependencies, cost and risk",
         system_prompt: FEASIBILITY_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -564,6 +587,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: STYLE_REVIEWER_ROLE,
         description: "Reviews clarity, ambiguity and terminology consistency",
         system_prompt: STYLE_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -577,6 +601,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: INTERACTION_DESIGNER_ROLE,
         description: "Writes the top-level interaction design section of the requirements document",
         system_prompt: INTERACTION_DESIGNER_PROMPT,
+        shell: false,
         tools: DESIGNER_TOOLS,
         skills: &[
             "document",
@@ -590,6 +615,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: INTERACTION_STYLE_REVIEWER_ROLE,
         description: "Language-only review of interaction design",
         system_prompt: INTERACTION_STYLE_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -603,6 +629,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: INTERACTION_REVIEWER_ROLE,
         description: "Reviews interaction completeness, usability and consistency",
         system_prompt: INTERACTION_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -616,6 +643,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: UI_DESIGNER_ROLE,
         description: "Writes the top-level UI design section of the requirements document",
         system_prompt: UI_DESIGNER_PROMPT,
+        shell: false,
         tools: DESIGNER_TOOLS,
         skills: &[
             "document",
@@ -629,6 +657,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: UI_STYLE_REVIEWER_ROLE,
         description: "Language-only review of UI design",
         system_prompt: UI_STYLE_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -642,6 +671,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         role: UI_REVIEWER_ROLE,
         description: "Reviews UI design completeness and consistency with interaction design",
         system_prompt: UI_REVIEWER_PROMPT,
+        shell: false,
         tools: REVIEWER_TOOLS,
         skills: &[
             "document",
@@ -649,7 +679,25 @@ const TEMPLATES: &[PlatformTemplate] = &[
             "ui-design-review",
         ],
     },
+    PlatformTemplate {
+        id: "code-summary",
+        name: "CodeSummary",
+        role: CODE_SUMMARY_ROLE,
+        description: "Summarizes source code into design-space objects",
+        system_prompt: CODE_SUMMARY_PROMPT,
+        tools: CODE_SUMMARY_TOOLS,
+        shell: true,
+        skills: &[],
+    },
 ];
+
+const CODE_SUMMARY_ROLE: &str = "code_summary:summarizer";
+
+const CODE_SUMMARY_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体。
+你读取源码，创建和更新 design-space 对象、设计文档和关系，然后由 review 和 verify 决定是否提交。
+你只能通过 shell 执行 git/ds 命令，通过 project 工具读取项目信息。"#;
+
+const CODE_SUMMARY_TOOLS: &[&str] = &["project", "shell"];
 
 pub fn templates() -> &'static [PlatformTemplate] {
     TEMPLATES
@@ -659,7 +707,7 @@ pub fn template(id: &str) -> Option<&'static PlatformTemplate> {
     TEMPLATES.iter().find(|template| template.id == id)
 }
 
-pub async fn ensure_platform_agent(
+pub async fn ensure_project_agents(
     store: Arc<PostgresStore>,
     supervisor: Arc<AgentSupervisor>,
     base_url: Option<String>,
@@ -677,19 +725,115 @@ pub async fn ensure_platform_agent(
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
-    let account = match ensure_agent_account(store.as_ref()).await {
-        Ok(account) => account,
-        Err(error) => {
-            tracing::warn!(error = %error, "cannot provision PM agent account");
-            return;
+    let base_url = base_url.unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string());
+    let model = model.unwrap_or_else(|| "qwen2.5-coder".to_string());
+    match ProjectRepository::list(store.as_ref(), ProjectFilter::default()).await {
+        Ok(projects) => {
+            for project in projects {
+                if let Err(error) = ensure_project_pm(
+                    store.as_ref(),
+                    &supervisor,
+                    project.id,
+                    &base_url,
+                    &model,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        project = %project.name,
+                        %error,
+                        "cannot provision project PM agent"
+                    );
+                }
+            }
         }
-    };
-    let command = CreateAgentDefinition {
-        name: "PM Agent".to_string(),
-        account_handle: account.handle.clone(),
+        Err(error) => tracing::warn!(error = %error, "cannot list projects for PM provisioning"),
+    }
+
+    reconcile_platform_agent_definitions(store.as_ref(), &supervisor).await;
+
+    if !has_api_key {
+        tracing::warn!(
+            "model API key is not set in the Foundry config file; \
+             PM agents are registered but stopped"
+        );
+        return;
+    }
+    supervisor.auto_start().await;
+}
+
+/// Ensure the project has one dispatcher definition and keep it aligned with
+/// the code-owned prompt and tool list.
+pub async fn ensure_project_pm(
+    store: &PostgresStore,
+    supervisor: &Arc<AgentSupervisor>,
+    project_id: Uuid,
+    base_url: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let existing = store
+        .list_project_agent_definitions(project_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|definition| definition.role == "dispatcher");
+    if let Some(definition) = existing {
+        let command = pm_command(
+            project_id,
+            definition.name.clone(),
+            definition.account_handle.clone(),
+            base_url,
+            model_name,
+        );
+        store
+            .update_agent_definition(definition.id, &command)
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = supervisor.start(definition.id).await {
+            tracing::warn!(agent = %definition.name, %error, "cannot start project PM agent");
+        }
+        return Ok(());
+    }
+
+    let suffix = Uuid::now_v7().simple().to_string();
+    let name = format!("PM Agent {}", &suffix[suffix.len() - 8..]);
+    let account = ensure_agent_account(store, &name).await?;
+    let command = pm_command(
+        project_id,
+        name.clone(),
+        account.handle.clone(),
+        base_url,
+        model_name,
+    );
+    let definition = store
+        .insert_agent_definition(&command, account.id, &name)
+        .await
+        .map_err(|error| error.to_string())?;
+    tracing::info!(
+        agent = %definition.name,
+        project_id = %project_id,
+        "registered project PM dispatcher"
+    );
+    if let Err(error) = supervisor.start(definition.id).await {
+        tracing::warn!(agent = %definition.name, %error, "cannot start project PM agent");
+    }
+    Ok(())
+}
+
+fn pm_command(
+    project_id: Uuid,
+    name: String,
+    account_handle: String,
+    base_url: &str,
+    model_name: &str,
+) -> CreateAgentDefinition {
+    CreateAgentDefinition {
+        name,
+        account_handle,
         role: "dispatcher".to_string(),
-        model_base_url: base_url.unwrap_or_else(|| "http://127.0.0.1:11434/v1".to_string()),
-        model_name: model.unwrap_or_else(|| "qwen2.5-coder".to_string()),
+        project_id,
+        model_base_url: base_url.to_string(),
+        model_name: model_name.to_string(),
         api_key_env: "OPENAI_API_KEY".to_string(),
         system_prompt: DISPATCH_SYSTEM_PROMPT.to_string(),
         tools: vec![
@@ -708,50 +852,10 @@ pub async fn ensure_platform_agent(
             "agent_templates_list".to_string(),
             "agent_create_for_role".to_string(),
         ],
+        shell: false,
         skills: Vec::new(),
         enabled: true,
-    };
-
-    let existing = match store.list_agent_definitions().await {
-        Ok(definitions) => definitions
-            .into_iter()
-            .find(|definition| definition.name == "PM Agent"),
-        Err(error) => {
-            tracing::warn!(error = %error, "cannot list agent definitions");
-            return;
-        }
-    };
-    if let Some(definition) = existing {
-        if let Err(error) = store.update_agent_definition(definition.id, &command).await {
-            tracing::warn!(error = %error, "cannot reconcile platform PM agent");
-            return;
-        }
-        tracing::info!("reconciled platform PM dispatcher");
-    } else {
-        match store
-            .insert_agent_definition(&command, account.id, "PM Agent")
-            .await
-        {
-            Ok(definition) => {
-                tracing::info!(agent = %definition.name, "registered platform PM dispatcher")
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "cannot register PM agent");
-                return;
-            }
-        }
     }
-
-    reconcile_platform_agent_definitions(store.as_ref(), &supervisor).await;
-
-    if !has_api_key {
-        tracing::warn!(
-            "model API key is not set in the Foundry config file or environment; \
-             PM Agent is registered but stopped"
-        );
-        return;
-    }
-    supervisor.auto_start().await;
 }
 
 /// Keep agents created from platform templates in sync with the code-owned
@@ -788,18 +892,25 @@ async fn reconcile_platform_agent_definitions(
             .iter()
             .map(String::as_str)
             .eq(template.skills.iter().copied());
-        if definition.system_prompt == template.system_prompt && tools_match && skills_match {
+        let shell_match = definition.shell == template.shell;
+        if definition.system_prompt == template.system_prompt
+            && tools_match
+            && skills_match
+            && shell_match
+        {
             continue;
         }
         let command = CreateAgentDefinition {
             name: definition.name.clone(),
             account_handle: definition.account_handle.clone(),
             role: definition.role.clone(),
+            project_id: definition.project_id,
             model_base_url: definition.model_base_url.clone(),
             model_name: definition.model_name.clone(),
             api_key_env: definition.api_key_env.clone(),
             system_prompt: template.system_prompt.to_string(),
             tools: template.tools.iter().map(|tool| tool.to_string()).collect(),
+            shell: template.shell,
             skills: template
                 .skills
                 .iter()
@@ -833,29 +944,17 @@ async fn reconcile_platform_agent_definitions(
     }
 }
 
-async fn ensure_agent_account(store: &PostgresStore) -> Result<Account, String> {
-    let handle = "pm-agent";
-    if let Some(mut account) = AccountRepository::get_by_handle(store, handle)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        if account.kind != AccountKind::Agent {
-            return Err(format!("{handle} exists but is not an agent account"));
-        }
-        if account.role != AccountRole::Admin {
-            let version = account.version;
-            account.role = AccountRole::Admin;
-            AccountRepository::save(store, &account, version)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        return Ok(account);
-    }
+async fn ensure_agent_account(
+    store: &PostgresStore,
+    display_name: &str,
+) -> Result<Account, String> {
+    let suffix = Uuid::now_v7().simple().to_string();
+    let handle = format!("pm-agent-{}", &suffix[suffix.len() - 8..]);
     let password = new_session_token();
     let hash = hash_password(&password).map_err(|error| error.to_string())?;
     let account = Account::new(
         handle,
-        "PM Agent",
+        display_name,
         AccountKind::Agent,
         AccountRole::Admin,
         None,

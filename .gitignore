@@ -6,8 +6,12 @@ target/
 .DS_Store
 .idea/
 .vscode/
+.cargo/
 *.sqlite
 *.sqlite3
 data/
 dist/
 node_modules/
+
+# Shell image build artifact (rebuild from target/debug/ds)
+projects/foundry/deploy/shell/ds

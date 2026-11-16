@@ -1,8 +1,7 @@
 //! Human-in-the-loop questions.
 //!
-//! The agent asks one structured question at a time and waits for the human.
-//! The tool call is recorded in the trajectory, so the question and answer are
-//! part of the audit trail.
+//! The agent asks one structured question at a time. The question and the
+//! human's answer are part of the conversation the model sees.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

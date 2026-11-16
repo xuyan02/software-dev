@@ -31,7 +31,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod agent_admin;
+mod agent_credentials;
 mod design_space;
+mod github_app;
 mod platform_agents;
 mod supervisor;
 
@@ -39,7 +41,7 @@ mod supervisor;
 async fn main() -> anyhow::Result<()> {
     foundry_shared::init_tracing("foundry=info,tower_http=info");
 
-    let config = Config::from_env()?;
+    let config = Config::from_file()?;
     match &config.config_file {
         Some(path) => tracing::info!(path = %path.display(), "loaded config file"),
         None => match foundry_shared::default_config_path() {
@@ -65,23 +67,52 @@ async fn main() -> anyhow::Result<()> {
 
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
-    let (local_design_space, design_space_base, design_space_root) = match &config.design_space_url
-    {
-        Some(url) => (None, url.clone(), None),
+    let (
+        local_design_space,
+        design_space_base,
+        design_space_agent_base,
+        design_space_root,
+        design_space_token,
+    ) = match &config.design_space_url {
+        Some(url) => {
+            let agent_base = config
+                .design_space_agent_url
+                .clone()
+                .unwrap_or_else(|| url.clone());
+            let token = design_space::read_token(&config.design_space_token_file);
+            (None, url.clone(), agent_base, None, token)
+        }
         None => {
-            let (child, base, root) = design_space::start_local()
-                .await
-                .map_err(|error| anyhow::anyhow!(error))?;
-            tracing::info!(url = %base, "started local ds-server");
-            (Some(child), base, Some(root))
+            let (child, base, port, token) = design_space::start_local(
+                config.design_space_root.clone(),
+                config.design_space_listen.clone(),
+                config.design_space_token_file.clone(),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error))?;
+            let agent_base = config
+                .design_space_agent_url
+                .clone()
+                .unwrap_or_else(|| format!("http://{}:{port}", design_space::host_ip()));
+            tracing::info!(url = %base, agent_url = %agent_base, "started local ds-server");
+            (
+                Some(child),
+                base,
+                agent_base,
+                Some(config.design_space_root.clone()),
+                Some(token),
+            )
         }
     };
     // Keep the child alive until the control plane exits. Dropping it kills
     // ds-server (`kill_on_drop`).
     let _local_design_space = local_design_space;
-    let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> = Arc::new(
-        design_space::HttpDesignSpaceProvisioner::new(&design_space_base),
-    );
+    let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> =
+        Arc::new(design_space::HttpDesignSpaceProvisioner::new(
+            &design_space_base,
+            &design_space_agent_base,
+            design_space_token.clone(),
+        ));
     let projects = Arc::new(ProjectService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -125,6 +156,13 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&store),
         config.session_ttl_hours,
     ));
+    let credential_auth = Arc::clone(&auth);
+    let github =
+        github_app::GitHubApp::from_config(&config).map_err(|error| anyhow::anyhow!(error))?;
+    let github = github.map(Arc::new);
+    if github.is_some() {
+        tracing::info!("GitHub App credential broker enabled");
+    }
 
     let setup_required = accounts.setup_required().await?;
     if setup_required {
@@ -176,6 +214,7 @@ async fn main() -> anyhow::Result<()> {
         format!("http://{host}:{}", config.addr.port()),
         config.session_ttl_hours,
         config.openai_api_key.clone().unwrap_or_default(),
+        config.shell_image.clone(),
         Arc::clone(&agent_logs),
     );
     let agents: Arc<dyn AgentAdminUseCases> = Arc::new(agent_admin::PostgresAgentAdmin::new(
@@ -210,7 +249,13 @@ async fn main() -> anyhow::Result<()> {
         ))),
         design_space: design_space_access,
     };
-    let app = foundry_api_http::router(state);
+    let credentials = agent_credentials::CredentialState {
+        auth: credential_auth,
+        store: Arc::clone(&store),
+        github,
+        ds_token: design_space_token,
+    };
+    let app = foundry_api_http::router(state).merge(agent_credentials::router(credentials));
     tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
@@ -224,7 +269,7 @@ async fn main() -> anyhow::Result<()> {
     let platform_model = config.openai_model.clone();
     let platform_has_key = config.openai_api_key.is_some();
     tokio::spawn(async move {
-        platform_agents::ensure_platform_agent(
+        platform_agents::ensure_project_agents(
             platform_store,
             platform_supervisor,
             platform_base,

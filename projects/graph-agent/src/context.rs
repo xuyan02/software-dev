@@ -1,4 +1,6 @@
 use crate::NodeId;
+use crate::message::{LlmMessage, LlmToolCall};
+use crate::tool::{ToolContext, ToolRegistry};
 use crate::variable::{
     Variable, VariableError, VariablePath, VariableSource, VariableType, is_identifier, traverse,
 };
@@ -8,6 +10,61 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static HISTORY_TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Shared conversation history for one agent run.
+///
+/// Nodes decide what to append. The system prompt and the per-node fixed user
+/// prompt are not stored here.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct History {
+    #[serde(default)]
+    messages: Vec<LlmMessage>,
+}
+
+impl History {
+    pub fn messages(&self) -> &[LlmMessage] {
+        &self.messages
+    }
+
+    pub fn push(&mut self, message: LlmMessage) {
+        self.messages.push(message);
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Replace the messages before `keep_from` with one summary message.
+    pub fn replace_with_summary(&mut self, keep_from: usize, summary: String) {
+        let tail = self.messages.split_off(keep_from);
+        self.messages.clear();
+        self.messages.push(LlmMessage::user(format!(
+            "[earlier conversation summary]\n{summary}"
+        )));
+        self.messages.extend(tail);
+    }
+
+    /// Record a fixed node's tool call as an assistant tool-call message
+    /// followed by its tool result.
+    pub fn record_tool_call(&mut self, name: &str, arguments: Value, result: &str) {
+        let id = format!(
+            "fixed-{}",
+            HISTORY_TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        self.messages.push(LlmMessage::assistant(
+            "",
+            vec![LlmToolCall {
+                id: id.clone(),
+                name: name.to_owned(),
+                arguments,
+            }],
+        ));
+        self.messages.push(LlmMessage::tool(id, result));
+    }
+}
 
 /// State shared by all nodes in one graph run.
 ///
@@ -26,6 +83,12 @@ pub struct Context {
     #[serde(skip)]
     llm_runtime: Option<Arc<LlmRuntime>>,
     #[serde(skip)]
+    tool_registry: Option<Arc<ToolRegistry>>,
+    #[serde(skip)]
+    tool_context: ToolContext,
+    #[serde(default)]
+    history: History,
+    #[serde(skip)]
     sources: Vec<Arc<dyn VariableSource>>,
     #[serde(skip)]
     current_node: Option<NodeId>,
@@ -38,6 +101,8 @@ impl fmt::Debug for Context {
             .field("outputs", &self.outputs)
             .field("llm_configs", &self.llm_configs)
             .field("llm_runtime", &self.llm_runtime.is_some())
+            .field("tool_registry", &self.tool_registry.is_some())
+            .field("tool_context", &self.tool_context)
             .field("sources", &self.sources.len())
             .field("current_node", &self.current_node)
             .finish()
@@ -120,6 +185,33 @@ impl Context {
         self.llm_runtime
             .as_ref()
             .ok_or(ContextError::MissingLlmRuntime)
+    }
+
+    /// Install the tool registry used by LLM and deterministic nodes.
+    pub fn set_tool_registry(&mut self, registry: Arc<ToolRegistry>) {
+        self.tool_registry = Some(registry);
+    }
+
+    pub fn tool_registry(&self) -> Result<&Arc<ToolRegistry>, ContextError> {
+        self.tool_registry
+            .as_ref()
+            .ok_or(ContextError::MissingToolRegistry)
+    }
+
+    pub fn set_tool_context(&mut self, context: ToolContext) {
+        self.tool_context = context;
+    }
+
+    pub fn tool_context(&self) -> &ToolContext {
+        &self.tool_context
+    }
+
+    pub fn history(&self) -> &History {
+        &self.history
+    }
+
+    pub fn history_mut(&mut self) -> &mut History {
+        &mut self.history
     }
 
     /// LLM settings for the node currently being executed.
@@ -243,6 +335,9 @@ pub enum ContextError {
 
     #[error("LLM runtime is not installed in the context")]
     MissingLlmRuntime,
+
+    #[error("tool registry is not installed in the context")]
+    MissingToolRegistry,
 
     #[error("no current node is set")]
     NoCurrentNode,

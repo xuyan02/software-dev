@@ -1,9 +1,9 @@
-//! Read-only access to a local design space for the console.
+//! Read-only access to a local design-space repository for the console.
 //!
-//! Foundry starts its own `ds-server` in local mode and therefore also owns the
-//! repository root. The console reads that repository directly: object nodes
-//! give the element tree and design text, and a small bare-clone cache of the
-//! project's git repository gives source snippets. No source code is executed.
+//! Foundry owns the `ds-server` repository root. Each project is one
+//! repository under that root. The console reads commits, Views, objects and
+//! design documents directly from the repository; a bare clone of the project's
+//! Git repository supplies source snippets. No source code is executed.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,10 +11,11 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use design_space as ds;
-use ds::hash::{from_hex, is_zero, to_commit_hex, to_hex};
-use ds::node::Node;
+use ds::catalog::Catalog;
+use ds::model::{
+    CommitHash, DesignObject, DocHash, GitOid, Hash32, Kind, ObjectPayload, ViewPayload,
+};
 use ds::store::Store;
-use ds::types::{T_FILE, type_name};
 use foundry_domain::Project;
 use foundry_web::{
     DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine, DesignSpaceOverview, DesignSpaceSource,
@@ -24,7 +25,7 @@ use sha2::{Digest, Sha256};
 const SOURCE_CONTEXT: u32 = 18;
 const SOURCE_MAX_LINES: u32 = 600;
 
-/// Local design-space root plus the source-clone cache.
+/// Repository collection root plus the source-clone cache.
 #[derive(Clone)]
 pub struct DesignSpaceAccess {
     root: PathBuf,
@@ -34,14 +35,8 @@ pub struct DesignSpaceAccess {
 
 impl DesignSpaceAccess {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        let cache_root = std::env::var_os("FOUNDRY_SOURCE_CACHE")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .filter(|value| !value.is_empty())
-                    .map(|home| PathBuf::from(home).join(".foundry").join("source-cache"))
-            });
+        let cache_root = foundry_shared::default_config_path()
+            .and_then(|path| path.parent().map(|dir| dir.join("source-cache")));
         Self {
             root: root.into(),
             cache_root,
@@ -80,61 +75,34 @@ impl DesignSpaceAccess {
     }
 
     fn overview_blocking(&self, project: &Project) -> Result<DesignSpaceOverview, String> {
-        let project = self.local_project(project)?;
-        let store = Store::new(&project.dir);
-        let (branch, version) = current_version(&project.dir)?;
+        let branch = branch_of(project);
         let mut overview = DesignSpaceOverview {
-            branch,
-            version: version.as_ref().map(|version| to_hex(version)),
+            branch: branch.clone(),
+            version: None,
             source_commit: String::new(),
             file_count: 0,
             element_count: 0,
             designed_count: 0,
             elements: Vec::new(),
         };
-        let Some(version) = version else {
+        let Some(loaded) = self.load_branch(project, &branch)? else {
             return Ok(overview);
         };
-        let version_node = ds::space::load_version(&store, &version).map_err(display)?;
-        overview.source_commit = to_commit_hex(&version_node.source_commit);
+        overview.version = Some(loaded.commit_hash.to_hex());
+        overview.source_commit = git_oid_hex(loaded.view_payload.source_commit);
 
-        let Some(view) = ds::space::view_root(&store, &version_node, b"files").map_err(display)?
-        else {
-            return Ok(overview);
-        };
-        let mut entries = Vec::new();
-        ds::space::collect_view(&store, &view, &mut entries).map_err(display)?;
-        let mut paths = std::collections::BTreeSet::new();
-
-        for (_, object_hash) in entries {
-            let Node::Object(object) = store.get(&object_hash).map_err(display)? else {
-                continue;
-            };
-            let (lang, kind) = type_labels(object.ty);
-            let is_file = object.ty == T_FILE;
-            let has_design = !is_zero(&object.design_hash);
-            if !object.path.is_empty() {
-                paths.insert(object.path.clone());
-            }
-            if !is_file {
+        for (qname, object) in loaded.catalog.iter() {
+            let element = element_info(&loaded.store, qname, object)?;
+            if element.is_file {
+                overview.file_count += 1;
+            } else {
                 overview.element_count += 1;
-                if has_design {
+                if element.has_design {
                     overview.designed_count += 1;
                 }
             }
-            overview.elements.push(DesignSpaceElement {
-                hash: to_hex(&object_hash),
-                name: object.name,
-                path: object.path,
-                lang,
-                kind,
-                start_line: object.start_line,
-                end_line: object.end_line,
-                has_design,
-                is_file,
-            });
+            overview.elements.push(element);
         }
-        overview.file_count = paths.len();
         overview.elements.sort_by(|left, right| {
             left.path
                 .cmp(&right.path)
@@ -145,63 +113,75 @@ impl DesignSpaceAccess {
     }
 
     fn element_blocking(&self, project: &Project, hash: &str) -> Result<DesignSpaceDetail, String> {
-        let project = self.local_project(project)?;
-        let store = Store::new(&project.dir);
-        let address = from_hex(hash).map_err(|error| format!("invalid element hash: {error}"))?;
-        let Node::Object(object) = store.get(&address).map_err(display)? else {
-            return Err("该哈希不是语言元素".to_string());
-        };
-        let design = if is_zero(&object.design_hash) {
-            None
-        } else {
-            match store.get(&object.design_hash).map_err(display)? {
-                Node::Design(design) => Some(design.text),
-                _ => None,
-            }
-        };
-        let (lang, kind) = type_labels(object.ty);
+        let branch = branch_of(project);
+        let loaded = self
+            .load_branch(project, &branch)?
+            .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
+        let (qname, object) = find_object(&loaded.catalog, hash)?;
+        let info = element_info(&loaded.store, qname, object)?;
+        let design = design_doc(object)
+            .filter(|hash| !hash.is_zero())
+            .map(|hash| loaded.store.get_doc(hash).map_err(display))
+            .transpose()?;
         Ok(DesignSpaceDetail {
-            hash: to_hex(&address),
-            name: object.name,
-            lang,
-            kind,
-            path: object.path,
-            start_line: object.start_line,
-            end_line: object.end_line,
+            hash: info.hash,
+            name: info.name,
+            lang: info.lang,
+            kind: info.kind,
+            path: info.path,
+            start_line: info.start_line,
+            end_line: info.end_line,
             design,
         })
     }
 
     fn source_blocking(&self, project: &Project, hash: &str) -> Result<DesignSpaceSource, String> {
-        let local = self.local_project(project)?;
-        let store = Store::new(&local.dir);
-        let address = from_hex(hash).map_err(|error| format!("invalid element hash: {error}"))?;
-        let Node::Object(object) = store.get(&address).map_err(display)? else {
-            return Err("该哈希不是语言元素".to_string());
+        let branch = branch_of(project);
+        let loaded = self
+            .load_branch(project, &branch)?
+            .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
+        let (_, object) = find_object(&loaded.catalog, hash)?;
+        let commit = git_oid_hex(loaded.view_payload.source_commit);
+        if commit.is_empty() {
+            return Err("该设计空间还没有绑定源码提交".to_string());
+        }
+        let Some(path) = source_path(&loaded.store, object)? else {
+            return Err("该对象没有源码锚点".to_string());
         };
-        let commit = to_commit_hex(&object.commit);
+        let (start_line, end_line) = source_span(object);
         let repo = self.ensure_source(project, &commit)?;
-        let text = read_blob(&repo, &commit, &object.path)?;
-        source_lines(
-            &text,
-            &commit,
-            &object.path,
-            object.start_line,
-            object.end_line,
-        )
+        let text = read_blob(&repo, &commit, &path)?;
+        source_lines(&text, &commit, &path, start_line, end_line)
     }
 
-    fn local_project(&self, project: &Project) -> Result<ds::project::Project, String> {
-        let key = design_space_key(&project.design_space_url)
+    fn repo_path(&self, project: &Project) -> Result<PathBuf, String> {
+        let name = repo_name(&project.design_space_url)
             .ok_or_else(|| "项目还没有分配设计空间".to_string())?;
-        if key.contains('/') {
-            // A pre-id address recorded an absolute repository path; only the
-            // final directory name is meaningful here.
-            let slug = percent_decode(key.rsplit('/').next().unwrap_or(&key));
-            ds::project::open(&self.root, &slug).map_err(display)
-        } else {
-            ds::project::find_by_id(&self.root, &key).map_err(display)
+        let path = self.root.join(&name);
+        if !path.is_dir() {
+            return Err(format!("设计空间仓库不存在: {name}"));
         }
+        Ok(path)
+    }
+
+    fn load_branch(&self, project: &Project, branch: &str) -> Result<Option<Loaded>, String> {
+        let path = self.repo_path(project)?;
+        let Some(commit_hash) = read_branch_commit(&path, branch)? else {
+            return Ok(None);
+        };
+        let store = Store::open(&path).map_err(display)?;
+        let commit = store.get_commit(commit_hash).map_err(display)?;
+        let view_object = store.get_object(commit.view).map_err(display)?;
+        let ObjectPayload::View(view_payload) = view_object.payload else {
+            return Err("提交的 View 不是 view 对象".to_string());
+        };
+        let catalog = Catalog::load(&store, commit.view).map_err(display)?;
+        Ok(Some(Loaded {
+            store,
+            commit_hash,
+            view_payload,
+            catalog,
+        }))
     }
 
     fn ensure_source(&self, project: &Project, commit: &str) -> Result<PathBuf, String> {
@@ -260,37 +240,237 @@ impl DesignSpaceAccess {
     }
 }
 
-fn current_version(dir: &Path) -> Result<(String, Option<ds::hash::Hash>), String> {
-    let current = ds::branch::current(dir).map_err(display)?;
-    if let Some(version) = ds::space::read_ref_optional(dir, &current).map_err(display)? {
-        return Ok((current, Some(version)));
+struct Loaded {
+    store: Store,
+    commit_hash: CommitHash,
+    view_payload: ViewPayload,
+    catalog: Catalog,
+}
+
+fn branch_of(project: &Project) -> String {
+    let branch = project.design_space_branch.trim();
+    if branch.is_empty() {
+        "main".to_owned()
+    } else {
+        branch.to_owned()
     }
-    for name in ds::branch::list(dir).map_err(display)? {
-        if let Some(version) = ds::space::read_ref_optional(dir, &name).map_err(display)? {
-            return Ok((name, Some(version)));
+}
+
+fn read_branch_commit(path: &Path, branch: &str) -> Result<Option<CommitHash>, String> {
+    if branch.is_empty()
+        || branch
+            .split('/')
+            .any(|part| part == ".." || part.is_empty())
+    {
+        return Err(format!("invalid branch: {branch}"));
+    }
+    let file = path.join("refs/heads").join(branch);
+    let text = match fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let hash =
+        Hash32::from_hex(text.trim()).ok_or_else(|| format!("invalid ref for branch {branch}"))?;
+    if hash.is_zero() {
+        return Err(format!("zero ref for branch {branch}"));
+    }
+    Ok(Some(CommitHash(hash)))
+}
+
+fn find_object<'a>(
+    catalog: &'a Catalog,
+    hash: &str,
+) -> Result<(ds::model::SymbolHash, &'a DesignObject), String> {
+    let expected = Hash32::from_hex(hash).ok_or_else(|| "invalid element hash".to_string())?;
+    for (qname, object) in catalog.iter() {
+        if ds::format::object_hash(object).map_err(display)?.0 == expected {
+            return Ok((qname, object));
         }
     }
-    Ok((current, None))
+    Err("design-space object not found".to_string())
 }
 
-fn type_labels(ty: u32) -> (String, String) {
-    let full = type_name(ty).unwrap_or("unknown");
-    match full.split_once(':') {
-        Some((lang, kind)) => (lang.to_owned(), kind.to_owned()),
-        None => (String::new(), full.to_owned()),
+fn element_info(
+    store: &Store,
+    qname: ds::model::SymbolHash,
+    object: &DesignObject,
+) -> Result<DesignSpaceElement, String> {
+    let qname_text = store.get_symbol(qname).map_err(display)?;
+    let path = source_path(store, object)?.unwrap_or_else(|| qname_text.clone());
+    let (start_line, end_line) = source_span(object);
+    Ok(DesignSpaceElement {
+        hash: ds::format::object_hash(object).map_err(display)?.to_hex(),
+        name: local_name(&qname_text),
+        lang: language_for_path(&path),
+        kind: kind_label(object.kind).to_owned(),
+        path,
+        start_line,
+        end_line,
+        has_design: design_doc(object).is_some_and(|doc| !doc.is_zero()),
+        is_file: object.kind == Kind::File,
+    })
+}
+
+fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, String> {
+    let path = match &object.payload {
+        ObjectPayload::Directory(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::File(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Namespace(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Class(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Interface(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Method(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Function(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Part(p) => Some(store.get_symbol(p.source.path)),
+        ObjectPayload::Mixin(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::View(_) => None,
+    };
+    path.transpose().map_err(display)
+}
+
+fn source_span(object: &DesignObject) -> (u32, u32) {
+    let span = match &object.payload {
+        ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Class(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Interface(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Part(p) => Some(p.source.span),
+        ObjectPayload::Mixin(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Directory(_) | ObjectPayload::File(_) | ObjectPayload::View(_) => None,
+    };
+    span.map(|span| (span.start_line, span.end_line))
+        .unwrap_or((0, 0))
+}
+
+fn design_doc(object: &DesignObject) -> Option<DocHash> {
+    match &object.payload {
+        ObjectPayload::View(_) => None,
+        ObjectPayload::Directory(p) => Some(p.design_doc),
+        ObjectPayload::File(p) => Some(p.design_doc),
+        ObjectPayload::Namespace(p) => Some(p.design_doc),
+        ObjectPayload::Class(p) => Some(p.design_doc),
+        ObjectPayload::Interface(p) => Some(p.design_doc),
+        ObjectPayload::Method(p) => Some(p.design_doc),
+        ObjectPayload::Function(p) => Some(p.design_doc),
+        ObjectPayload::Part(p) => Some(p.design_doc),
+        ObjectPayload::Mixin(p) => Some(p.design_doc),
     }
 }
 
-/// Project id from `ds://[user@]host[:port]/<id>`; legacy addresses keep their
-/// path, which the caller handles separately.
-fn design_space_key(url: &str) -> Option<String> {
-    let rest = url.trim().strip_prefix("ds://")?;
-    let (_, path) = rest.split_once('/')?;
-    let path = path.trim_matches('/');
-    if path.is_empty() {
-        None
+fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::View => "view",
+        Kind::Directory => "directory",
+        Kind::File => "file",
+        Kind::Namespace => "namespace",
+        Kind::Class => "class",
+        Kind::Interface => "interface",
+        Kind::Method => "method",
+        Kind::Function => "function",
+        Kind::Part => "part",
+        Kind::Mixin => "mixin",
+    }
+}
+
+fn local_name(qname: &str) -> String {
+    qname.rsplit('/').next().unwrap_or(qname).to_owned()
+}
+
+fn language_for_path(path: &str) -> String {
+    let extension = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, extension)| extension)
+        .unwrap_or_default();
+    match extension {
+        "rs" => "rust",
+        "c" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "h" => "c",
+        "py" => "python",
+        "ts" => "typescript",
+        "tsx" => "tsx",
+        "js" => "javascript",
+        "jsx" => "jsx",
+        "go" => "go",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "rb" => "ruby",
+        "cs" => "csharp",
+        "php" => "php",
+        "swift" => "swift",
+        "scala" => "scala",
+        "m" | "mm" => "objc",
+        _ => "",
+    }
+    .to_owned()
+}
+
+fn repo_name(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let path = if let Some(rest) = url.strip_prefix("ds://") {
+        rest.split_once('/').map(|(_, path)| path)?
+    } else if let Some(index) = url.find("://") {
+        let rest = &url[index + 3..];
+        rest.split_once('/').map(|(_, path)| path)?
     } else {
-        Some(path.to_owned())
+        url.trim_end_matches('/')
+    };
+    if path.split('/').any(|part| part == ".." || part == ".") {
+        return None;
+    }
+    let last = path.trim_end_matches('/').rsplit('/').next()?;
+    let name = percent_decode(last);
+    valid_repo_name(&name).then_some(name)
+}
+
+fn valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && !name.contains("..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn git_oid_hex(oid: GitOid) -> String {
+    if oid.is_zero() {
+        return String::new();
+    }
+    let full = oid.to_hex();
+    if oid.0[20..].iter().all(|byte| *byte == 0) {
+        full[..40].to_owned()
+    } else {
+        full
     }
 }
 
@@ -444,268 +624,105 @@ fn short(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use design_space::model::{DirectoryPayload, NamespacePayload, ParentRef};
+    use design_space::{Catalog, Commit, DesignObject, ObjectPayload};
+    use tempfile::tempdir;
 
     #[test]
-    fn reads_ids_and_legacy_paths_from_addresses() {
+    fn reads_repository_names_from_addresses() {
         assert_eq!(
-            design_space_key("ds://xuyan@localhost/f5acb3bbde1a05e1").as_deref(),
+            repo_name("ds://xuyan@localhost/f5acb3bbde1a05e1").as_deref(),
             Some("f5acb3bbde1a05e1")
         );
         assert_eq!(
-            design_space_key("ds://host/home/x/%E8%BD%AF%E4%BB%B6").as_deref(),
-            Some("home/x/%E8%BD%AF%E4%BB%B6")
+            repo_name("http://127.0.0.1:7700/alpha").as_deref(),
+            Some("alpha")
         );
-        assert_eq!(design_space_key("ds://host/"), None);
+        assert_eq!(repo_name("http://host/").as_deref(), None);
+        assert_eq!(repo_name("../escape").as_deref(), None);
         assert_eq!(percent_decode("%E8%BD%AF%E4%BB%B6"), "软件");
     }
 
     #[test]
-    fn splits_type_labels() {
-        assert_eq!(
-            type_labels(ds::types::RUST_FUNCTION),
-            ("rust".to_string(), "function".to_string())
-        );
-        assert_eq!(type_labels(T_FILE), (String::new(), "file".to_string()));
-        assert_eq!(
-            type_labels(ds::types::T_CONCEPT),
-            (String::new(), "concept".to_string())
-        );
+    fn labels_languages_and_kinds() {
+        assert_eq!(language_for_path("src/lib.rs"), "rust");
+        assert_eq!(language_for_path("src/main.cpp"), "cpp");
+        assert_eq!(language_for_path("README"), "");
+        assert_eq!(kind_label(Kind::Function), "function");
+        assert_eq!(kind_label(Kind::File), "file");
+        assert_eq!(local_name("namespaces/app/Auth"), "Auth");
+        assert_eq!(git_oid_hex(GitOid::ZERO), "");
     }
 
-    #[test]
-    fn reads_overview_and_element_from_a_local_project() {
-        let root = std::env::temp_dir().join(format!("foundry-ds-{}", uuid::Uuid::now_v7()));
-        let _ = std::fs::remove_dir_all(&root);
-        let local = ds::project::create(
-            &root,
-            "Demo",
-            Some("git@example.com:demo.git"),
-            "localhost",
-            Some("u"),
-            None,
-        )
-        .unwrap();
-        let store = Store::new(&local.dir);
-        let elements = vec![ds::element::Element {
-            name: "crate::main".to_string(),
-            ty: ds::types::RUST_FUNCTION,
-            path: "src/main.rs".to_string(),
-            commit: "00".repeat(20),
-            start_byte: 0,
-            end_byte: 12,
-            start_line: 1,
-            end_line: 3,
-            own_text: "fn main() {}".to_string(),
-            parent: None,
-            children: Vec::new(),
-            design: Some("程序入口。".to_string()),
-            content_hash: None,
-        }];
-        ds::space::commit(
-            &store,
-            &local.dir,
-            &elements,
-            &ds::space::CommitOptions {
-                message: "test".to_string(),
-                author: "test".to_string(),
-                source_commit: [0u8; 32],
-                pipeline: "test".to_string(),
-                ref_name: "main".to_string(),
-            },
-        )
-        .unwrap();
-
-        let mut project = Project::new(
-            "Demo",
-            None,
-            "git@example.com:demo.git",
-            uuid::Uuid::now_v7(),
-        )
-        .unwrap();
-        project.design_space_url = local.meta.design_space.clone();
-
-        let access = DesignSpaceAccess::new(&root);
-        let overview = access.overview_blocking(&project).unwrap();
-        assert_eq!(overview.branch, "main");
-        assert_eq!(overview.file_count, 1);
-        assert_eq!(overview.element_count, 1);
-        assert_eq!(overview.designed_count, 1);
-        assert_eq!(overview.elements[0].name, "crate::main");
-        assert_eq!(overview.elements[0].lang, "rust");
-        assert_eq!(overview.elements[0].kind, "function");
-
-        let detail = access
-            .element_blocking(&project, &overview.elements[0].hash)
+    #[tokio::test]
+    async fn reads_overview_from_a_created_repository() {
+        let dir = tempdir().unwrap();
+        let repo = dir.path().join("repos/alpha");
+        let store = Store::open(&repo).unwrap();
+        let files = store.put_symbol("files").unwrap();
+        let namespaces = store.put_symbol("namespaces").unwrap();
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        catalog
+            .insert(
+                files,
+                DesignObject::new(
+                    Kind::Directory,
+                    ObjectPayload::Directory(DirectoryPayload {
+                        qualified_name: files,
+                        parent: ParentRef::View,
+                        source: None,
+                        design_doc: DocHash::ZERO,
+                        children: vec![],
+                    }),
+                ),
+            )
             .unwrap();
-        assert_eq!(detail.design.as_deref(), Some("程序入口。"));
-        assert_eq!(detail.path, "src/main.rs");
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn reads_conceptual_elements_without_source_anchors() {
-        let root =
-            std::env::temp_dir().join(format!("foundry-ds-concept-{}", uuid::Uuid::now_v7()));
-        let _ = std::fs::remove_dir_all(&root);
-        let local = ds::project::create(
-            &root,
-            "Demo",
-            Some("git@example.com:demo.git"),
-            "localhost",
-            Some("u"),
-            None,
-        )
-        .unwrap();
-        let store = Store::new(&local.dir);
-        let elements = vec![ds::element::Element {
-            name: "Auth::Login".to_string(),
-            ty: ds::types::T_CONCEPT,
-            path: String::new(),
-            commit: "00".repeat(20),
-            start_byte: 0,
-            end_byte: 0,
-            start_line: 0,
-            end_line: 0,
-            own_text: String::new(),
-            parent: None,
-            children: Vec::new(),
-            design: Some("登录流程".to_string()),
-            content_hash: None,
-        }];
-        ds::space::commit(
-            &store,
-            &local.dir,
-            &elements,
-            &ds::space::CommitOptions {
-                message: "create Auth::Login".to_string(),
-                author: "agent".to_string(),
-                source_commit: [0u8; 32],
-                pipeline: "agent/v1".to_string(),
-                ref_name: "main".to_string(),
-            },
-        )
-        .unwrap();
-        let mut project = Project::new(
-            "Demo",
-            None,
-            "git@example.com:demo.git",
-            uuid::Uuid::now_v7(),
-        )
-        .unwrap();
-        project.design_space_url = local.meta.design_space.clone();
-        let access = DesignSpaceAccess::new(&root);
-        let overview = access.overview_blocking(&project).unwrap();
-        assert_eq!(overview.file_count, 0);
-        assert_eq!(overview.element_count, 1);
-        assert_eq!(overview.elements[0].kind, "concept");
-        assert!(overview.elements[0].path.is_empty());
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn reads_source_from_a_local_git_repository() {
-        let root = std::env::temp_dir().join(format!("foundry-ds-src-{}", uuid::Uuid::now_v7()));
-        let _ = std::fs::remove_dir_all(&root);
-        let source = root.join("source");
-        std::fs::create_dir_all(&source).unwrap();
-        let run = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&source)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        catalog
+            .insert(
+                namespaces,
+                DesignObject::new(
+                    Kind::Namespace,
+                    ObjectPayload::Namespace(NamespacePayload {
+                        qualified_name: namespaces,
+                        parent: ParentRef::View,
+                        source: None,
+                        content_hash: Hash32::ZERO,
+                        design_doc: DocHash::ZERO,
+                        children: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let view = catalog.rebuild(&store).unwrap();
+        let commit = Commit {
+            view,
+            parent: CommitHash::ZERO,
+            message: "initialize".to_owned(),
+            author: "test".to_owned(),
+            timestamp: 1,
         };
-        run(&["init", "-q", "-b", "main"]);
-        run(&["config", "user.email", "test@example.com"]);
-        run(&["config", "user.name", "test"]);
+        let commit_hash = store.put_commit(&commit).unwrap();
+        std::fs::create_dir_all(repo.join("refs/heads")).unwrap();
         std::fs::write(
-            source.join("main.rs"),
-            "fn main() {\n    println!(\"hi\");\n}\n",
-        )
-        .unwrap();
-        run(&["add", "main.rs"]);
-        run(&["commit", "-q", "-m", "init"]);
-        let commit = run(&["rev-parse", "HEAD"]);
-
-        let spaces = root.join("spaces");
-        let local = ds::project::create(
-            &spaces,
-            "Demo",
-            Some(&source.to_string_lossy()),
-            "localhost",
-            Some("u"),
-            None,
-        )
-        .unwrap();
-        let store = Store::new(&local.dir);
-        let elements = vec![ds::element::Element {
-            name: "crate::main".to_string(),
-            ty: ds::types::RUST_FUNCTION,
-            path: "main.rs".to_string(),
-            commit: commit.clone(),
-            start_byte: 0,
-            end_byte: 13,
-            start_line: 1,
-            end_line: 1,
-            own_text: "fn main()".to_string(),
-            parent: None,
-            children: Vec::new(),
-            design: None,
-            content_hash: None,
-        }];
-        ds::space::commit(
-            &store,
-            &local.dir,
-            &elements,
-            &ds::space::CommitOptions {
-                message: "test".to_string(),
-                author: "test".to_string(),
-                source_commit: [0u8; 32],
-                pipeline: "test".to_string(),
-                ref_name: "main".to_string(),
-            },
+            repo.join("refs/heads/main"),
+            format!("{}\n", commit_hash.to_hex()),
         )
         .unwrap();
 
+        let owner = uuid::Uuid::now_v7();
         let mut project =
-            Project::new("Demo", None, source.to_string_lossy(), uuid::Uuid::now_v7()).unwrap();
-        project.design_space_url = local.meta.design_space.clone();
-        let access = DesignSpaceAccess::new(&spaces);
-        let overview = access.overview_blocking(&project).unwrap();
-        let source_view = access
-            .source_blocking(&project, &overview.elements[0].hash)
-            .unwrap();
-        assert_eq!(source_view.path, "main.rs");
-        assert!(
-            source_view
-                .lines
-                .iter()
-                .any(|line| line.text.contains("fn main()"))
+            Project::new("Alpha", None, "git@example.com:test/repo.git", owner).unwrap();
+        project.design_space_url = "http://127.0.0.1:7700/alpha".to_owned();
+        project.design_space_branch = "main".to_owned();
+
+        let access = DesignSpaceAccess::new(dir.path().join("repos"));
+        let overview = access.overview(&project).await.unwrap();
+        assert_eq!(overview.branch, "main");
+        assert_eq!(
+            overview.version.as_deref(),
+            Some(commit_hash.to_hex().as_str())
         );
-        assert!(source_view.lines.iter().any(|line| line.in_element));
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn extracts_a_line_window() {
-        let text = (1..=100)
-            .map(|n| format!("line {n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let source = source_lines(&text, "abc", "src/a.rs", 50, 52).unwrap();
-        assert_eq!(source.first_line, 32);
-        assert_eq!(source.last_line, 70);
-        assert_eq!(source.start_line, 50);
-        assert!(source.lines.iter().filter(|line| line.in_element).count() == 3);
+        assert_eq!(overview.element_count, 2);
+        assert_eq!(overview.elements.len(), 2);
     }
 }

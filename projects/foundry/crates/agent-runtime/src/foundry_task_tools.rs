@@ -36,11 +36,17 @@ impl Tool for TasksReadyListTool {
     async fn call(
         &self,
         _arguments: Value,
-        _context: &ToolContext,
+        context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
+        let project_id = context
+            .project_id
+            .as_deref()
+            .ok_or_else(|| ToolError::Failed("tasks_ready_list requires a project".to_string()))?
+            .parse::<Uuid>()
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
         let tasks = self
             .client
-            .ready_tasks()
+            .ready_tasks(Some(project_id))
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         tracing::info!(

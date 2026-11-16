@@ -48,7 +48,7 @@ ds log
 - workspace config, refs, HEAD, index and worktree state;
 - catalog loading and full View graph rebuilding, including multi-parent
   children and cycle/orphan detection;
-- CLI: `init`, `create`, `edit`, `dep`, `source`, `add`, `reset`,
+- CLI: `init`, `clone`, `create`, `edit`, `dep`, `source`, `add`, `reset`,
   `diff`, `rm`, `checkout`, `ls`, `status`, `commit`, `show`, `log`, `gc`,
   `repack`;
 - automatic qualified-name migration when renaming or reparenting;
@@ -65,19 +65,30 @@ ds log
 ## Remote
 
 ```bash
-# On the remote host:
-printf 'secret-token\n' > /srv/design.token
-ds-server --root /srv/design --listen 127.0.0.1:7700 \
+# On the remote host: one server manages a collection of repositories.
+# Foundry creates repositories with POST /repos.
+mkdir -p /srv/design-spaces
+ds-server --root /srv/design-spaces --listen 127.0.0.1:7700 \
   --token-file /srv/design.token
 
+# Create a repository (name + optional branch, default main):
+curl -X POST http://127.0.0.1:7700/repos \
+  -H 'Authorization: Bearer <token>' \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"design"}'
+
 # In the workspace:
-ds remote add http://127.0.0.1:7700 --token-file /srv/design.token
+ds remote add http://127.0.0.1:7700/design --token-file /srv/design.token
 ds push
 ds fetch
 ds pull
 
-# SSH: ds-server must be on the remote PATH.
-ds remote add ssh://user@host/srv/design
+# Clone:
+DS_TOKEN_FILE=/srv/design.token \
+  ds clone http://127.0.0.1:7700/design --source <git-url> --branch main
+
+# SSH: ds-server must be on the remote PATH; the path is one repository.
+ds remote add ssh://user@host/srv/design-spaces/design
 ds push
 ```
 

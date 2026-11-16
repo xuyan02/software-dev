@@ -1,32 +1,31 @@
-//! A deterministic model for tests and the Phase 0 CLI.
+//! Deterministic model for tests and local demos.
 
+use crate::{LlmRequest, LlmResponse, ModelError, ModelGateway};
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use crate::{ModelError, ModelGateway, ModelRequest, ModelResponse};
-
 pub struct ScriptedModel {
-    responses: Mutex<VecDeque<ModelResponse>>,
-    requests: Mutex<Vec<ModelRequest>>,
+    responses: Mutex<VecDeque<LlmResponse>>,
+    requests: Mutex<Vec<LlmRequest>>,
 }
 
 impl ScriptedModel {
-    pub fn new(responses: Vec<ModelResponse>) -> Self {
+    pub fn new(responses: Vec<LlmResponse>) -> Self {
         Self {
             responses: Mutex::new(responses.into()),
             requests: Mutex::new(Vec::new()),
         }
     }
 
-    pub fn requests(&self) -> Vec<ModelRequest> {
+    pub fn requests(&self) -> Vec<LlmRequest> {
         self.requests.lock().expect("lock poisoned").clone()
     }
 }
 
 #[async_trait]
 impl ModelGateway for ScriptedModel {
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ModelError> {
         self.requests.lock().expect("lock poisoned").push(request);
         self.responses
             .lock()

@@ -25,7 +25,7 @@ session_ttl_hours = 168
 editor_dir = "web/workflow-editor/dist"
 ```
 
-也可以继续用 `DATABASE_URL` 环境变量。环境变量优先于配置文件；配置文件优先于内置默认值。默认配置文件是 `~/.foundry/foundry.toml`，不存在时跳过；`FOUNDRY_CONFIG` 可指定其他路径（此时文件必须存在）。配置文件可能含密码，建议放在权限为 700 的目录中并 `chmod 600`。未知键会导致启动失败。旧版本的 `project` / `project_name` 键会被接受但忽略，启动时打印警告，可以删除。
+Foundry 只从 `~/.foundry/foundry.toml` 读取配置，不读环境变量；文件不存在时使用内置默认值。部署到其他位置时把配置文件挂载到这个路径。配置文件可能含密码，建议放在权限为 700 的目录中并 `chmod 600`。未知键会导致启动失败。旧版本的 `project` / `project_name` 键会被接受但忽略，启动时打印警告，可以删除。
 
 默认监听 `127.0.0.1:8080`。启动时自动执行 `migrations/`。
 
@@ -100,7 +100,7 @@ cargo xtask check
 
 ### 任务派发
 
-PM Agent 每次扫描：
+每个项目有自己的 PM Agent；它每次扫描只看本项目的任务：
 
 1. `tasks_ready_list`：每个任务一行，携带 workflow 中**所有** agent 角色（不只当前阶段）和已分配的 agent；
 2. 对没有 enabled agent 的 agent 角色，分配已有 Agent 或按模板创建后再分配；
@@ -346,7 +346,7 @@ docker compose -f projects/foundry/deploy/compose/docker-compose.yml up
 
 | 症状 | 检查 |
 |---|---|
-| 启动报 `DATABASE_URL must be set` | 在环境变量或 `~/.foundry/foundry.toml` 中设置 `database_url`，格式 `postgres://用户:密码@主机:5432/库名` |
+| 启动报 `DATABASE_URL must be set` | 在 `~/.foundry/foundry.toml` 中设置 `database_url`，格式 `postgres://用户:密码@主机:5432/库名` |
 | 启动报连接失败 / `Connection refused` | Postgres 是否已启动、端口和库名是否正确；容器部署检查 `depends_on` |
 | 启动报迁移失败 | 看 `_sqlx_migrations` 和数据库权限；迁移需要建表权限 |
 | 启动报 `Address already in use` | 改 `FOUNDRY_ADDR` 或结束占用端口的进程 |

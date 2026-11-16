@@ -26,9 +26,8 @@ struct TestDesignSpaces;
 
 #[async_trait::async_trait]
 impl foundry_app::ports::DesignSpaceProvisioner for TestDesignSpaces {
-    async fn create_design_space(&self, name: &str, _source: &str) -> Result<String, String> {
-        let slug = name.trim().to_lowercase().replace(' ', "-");
-        Ok(format!("ds://test/{slug}"))
+    async fn create_design_space(&self, repo: &str, _branch: &str) -> Result<String, String> {
+        Ok(format!("http://test/{repo}"))
     }
 }
 
@@ -115,6 +114,8 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
                 name: "Primary".to_string(),
                 description: None,
                 git_repository: "git@example.com:test/repo.git".to_string(),
+                git_branch: None,
+                design_space_branch: None,
                 root_workflow_id: WorkflowId::new("project"),
             },
         )
@@ -434,8 +435,15 @@ async fn only_owners_manage_projects_and_archived_projects_can_be_restored() {
         ),
     )
     .await;
-    assert_eq!(project["design_space_url"], "ds://test/payments");
+    assert!(
+        project["design_space_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("http://test/")
+    );
     assert_eq!(project["git_repository"], "git@example.com:test/repo.git");
+    assert_eq!(project["git_branch"], "main");
+    assert_eq!(project["design_space_branch"], "main");
     let project_id = project["id"].as_str().unwrap().to_string();
 
     body_json(
@@ -1247,7 +1255,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        15
+        16
     );
 
     let created = body_json(
@@ -2032,7 +2040,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 15);
+    assert_eq!(platform.len(), 16);
     assert!(
         platform
             .iter()
@@ -2200,7 +2208,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 16);
+    assert_eq!(own.as_array().unwrap().len(), 17);
 }
 
 #[tokio::test]

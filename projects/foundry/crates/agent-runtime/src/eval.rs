@@ -1,11 +1,8 @@
 //! Minimal evaluation harness for agent runs.
-//!
-//! A case checks the final answer and stop reason. Later stages add holdout
-//! tasks, rubrics and scoring; the runtime contract stays the same.
 
 use serde::Serialize;
 
-use crate::{AgentRunRequest, AgentRuntime, StopReason, Usage};
+use crate::{AgentRunRequest, AgentRuntime};
 
 #[derive(Debug, Clone)]
 pub struct EvaluationCase {
@@ -42,40 +39,29 @@ pub struct EvaluationReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<StopReason>,
-    pub steps: u32,
-    pub usage: Usage,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 pub async fn evaluate_case(runtime: &AgentRuntime, case: &EvaluationCase) -> EvaluationReport {
-    let result = runtime
-        .run_to_completion(AgentRunRequest::new(
+    match runtime
+        .run(AgentRunRequest::new(
             "evaluation",
             &case.id,
             &case.system_prompt,
             &case.user_message,
         ))
-        .await;
-    match result {
+        .await
+    {
         Ok(result) => {
             let final_message = result.final_message.unwrap_or_default();
-            let passed = result.stop_reason == StopReason::Completed
-                && case
-                    .expected_contains
-                    .iter()
-                    .all(|expected| final_message.contains(expected));
+            let passed = case
+                .expected_contains
+                .iter()
+                .all(|expected| final_message.contains(expected));
             EvaluationReport {
                 case_id: case.id.clone(),
                 passed,
                 final_message: Some(final_message),
-                stop_reason: Some(result.stop_reason),
-                steps: result.steps,
-                usage: result.usage,
-                cost_usd: result.cost_usd,
                 error: None,
             }
         }
@@ -83,10 +69,6 @@ pub async fn evaluate_case(runtime: &AgentRuntime, case: &EvaluationCase) -> Eva
             case_id: case.id.clone(),
             passed: false,
             final_message: None,
-            stop_reason: None,
-            steps: 0,
-            usage: Usage::default(),
-            cost_usd: None,
             error: Some(error.to_string()),
         },
     }
@@ -108,38 +90,30 @@ pub async fn evaluate_suite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Budget, InMemoryTrajectory, ModelResponse, ScriptedModel, ToolRegistry};
+    use crate::ToolRegistry;
+    use graph_agent::{LlmResponse, ScriptedModel};
     use std::sync::Arc;
 
-    fn runtime(responses: Vec<ModelResponse>) -> AgentRuntime {
+    fn runtime(responses: Vec<LlmResponse>) -> AgentRuntime {
         AgentRuntime::new(
             Arc::new(ScriptedModel::new(responses)),
             Arc::new(ToolRegistry::new()),
-            Arc::new(InMemoryTrajectory::new()),
-            Budget::default(),
         )
     }
 
     #[tokio::test]
     async fn passes_when_the_final_answer_contains_the_expected_text() {
         let case = EvaluationCase::new("case-1", "system", "do it").expect("done");
-        let report = evaluate_case(
-            &runtime(vec![ModelResponse::final_answer("all done")]),
-            &case,
-        )
-        .await;
+        let report =
+            evaluate_case(&runtime(vec![LlmResponse::final_answer("all done")]), &case).await;
         assert!(report.passed);
-        assert_eq!(report.stop_reason, Some(StopReason::Completed));
     }
 
     #[tokio::test]
     async fn fails_when_the_answer_is_wrong() {
         let case = EvaluationCase::new("case-2", "system", "do it").expect("done");
-        let report = evaluate_case(
-            &runtime(vec![ModelResponse::final_answer("not yet")]),
-            &case,
-        )
-        .await;
+        let report =
+            evaluate_case(&runtime(vec![LlmResponse::final_answer("not yet")]), &case).await;
         assert!(!report.passed);
     }
 

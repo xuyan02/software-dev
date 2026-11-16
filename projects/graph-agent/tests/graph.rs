@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use graph_agent::{Context, Graph, GraphBuilder, GraphError, Node, NodeError, TransitionIndex};
+use serde_json::{Value, json};
 
 struct FixedNode {
     count: usize,
@@ -9,9 +10,9 @@ struct FixedNode {
 
 #[async_trait]
 impl Node for FixedNode {
-    async fn run(&self, ctx: &mut Context) -> Result<(), NodeError> {
+    async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         ctx.set_output(self.output)?;
-        Ok(())
+        Ok(Value::String(self.output.to_owned()))
     }
 
     fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -27,8 +28,8 @@ struct BranchNode;
 
 #[async_trait]
 impl Node for BranchNode {
-    async fn run(&self, _ctx: &mut Context) -> Result<(), NodeError> {
-        Ok(())
+    async fn run(&self, input: Value, _ctx: &mut Context) -> Result<Value, NodeError> {
+        Ok(input)
     }
 
     fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -71,9 +72,10 @@ async fn builds_and_runs_complete_graph() {
     let graph = simple_graph();
     let mut ctx = Context::new();
 
-    let exit = graph.run(&mut ctx).await.expect("run");
+    let output = graph.run(&mut ctx, json!(null)).await.expect("run");
 
-    assert_eq!(exit.as_str(), "done");
+    assert_eq!(output.exit.as_str(), "done");
+    assert_eq!(output.output, json!("loaded"));
     assert_eq!(ctx.node_output::<String>("load").unwrap(), "loaded");
 }
 
@@ -91,11 +93,27 @@ async fn follows_the_selected_transition_index() {
 
     let mut ctx = Context::new();
     ctx.set_var("go", true).unwrap();
-    assert_eq!(graph.run(&mut ctx).await.unwrap().as_str(), "left");
+    assert_eq!(
+        graph
+            .run(&mut ctx, json!(null))
+            .await
+            .unwrap()
+            .exit
+            .as_str(),
+        "left"
+    );
 
     let mut ctx = Context::new();
     ctx.set_var("go", false).unwrap();
-    assert_eq!(graph.run(&mut ctx).await.unwrap().as_str(), "right");
+    assert_eq!(
+        graph
+            .run(&mut ctx, json!(null))
+            .await
+            .unwrap()
+            .exit
+            .as_str(),
+        "right"
+    );
 }
 
 #[test]

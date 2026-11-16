@@ -38,6 +38,17 @@ enum Command {
         #[arg(long, value_enum, default_value_t = FormatArg::Sha1)]
         format: FormatArg,
     },
+    /// Clone one branch from a design-space remote.
+    Clone {
+        /// Design-space remote URL.
+        remote: String,
+        /// Source git URL recorded in .ds/config.
+        #[arg(long)]
+        source: String,
+        /// Remote branch to clone.
+        #[arg(long, default_value = "main")]
+        branch: String,
+    },
     /// Create one design object.
     Create(CreateArgs),
     /// Edit one design object.
@@ -92,7 +103,12 @@ enum Command {
         staged: bool,
     },
     /// Remove one worktree object.
-    Rm { name: String },
+    Rm {
+        name: String,
+        /// Remove incoming relations and dependencies before deleting.
+        #[arg(long)]
+        force: bool,
+    },
     /// Switch to an existing branch.
     Checkout {
         branch: String,
@@ -114,9 +130,14 @@ enum Command {
         /// List objects that have a design document.
         #[arg(long, conflicts_with_all = ["files", "namespaces"])]
         design: bool,
+        /// Read the index instead of the worktree.
+        #[arg(long)]
+        staged: bool,
     },
-    /// Show HEAD, index, and worktree roots.
+    /// Show HEAD, index, and worktree roots plus changed objects.
     Status,
+    /// Verify the worktree object graph.
+    Verify,
     /// Commit the index.
     Commit {
         #[arg(short = 'm', long)]
@@ -133,6 +154,9 @@ enum Command {
         /// Print the design document too.
         #[arg(long)]
         source: bool,
+        /// Read the index instead of the worktree.
+        #[arg(long)]
+        staged: bool,
     },
     /// Walk the commit chain.
     Log {
@@ -347,12 +371,23 @@ enum SourceCommand {
         #[arg(short = 'n', long, default_value_t = 20)]
         limit: usize,
     },
+    /// Compare the source recorded in the latest design commit with the current source HEAD.
+    Changes {
+        /// Compare from this git ref instead of the latest design commit.
+        #[arg(long)]
+        base: Option<String>,
+    },
 }
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init { source, format } => init(cli.dir, &source, format.into()),
+        Command::Clone {
+            remote,
+            source,
+            branch,
+        } => clone(cli.dir, &remote, &source, &branch),
         Command::Create(args) => create(cli.dir, args),
         Command::Edit(args) => edit(cli.dir, args),
         Command::Dep { command } => dep(cli.dir, command),
@@ -364,7 +399,7 @@ pub fn run() -> Result<()> {
         Command::Add { names, all } => add(cli.dir, names, all),
         Command::Reset { names, hard } => reset(cli.dir, names, hard),
         Command::Diff { staged } => diff(cli.dir, staged),
-        Command::Rm { name } => rm(cli.dir, &name),
+        Command::Rm { name, force } => rm(cli.dir, &name, force),
         Command::Checkout {
             branch,
             create,
@@ -374,14 +409,20 @@ pub fn run() -> Result<()> {
             files,
             namespaces,
             design,
-        } => ls(cli.dir, files, namespaces, design),
+            staged,
+        } => ls(cli.dir, files, namespaces, design, staged),
         Command::Status => status(cli.dir),
+        Command::Verify => verify(cli.dir),
         Command::Commit {
             message,
             author,
             allow_empty,
         } => commit(cli.dir, &message, &author, allow_empty),
-        Command::Show { name, source } => show(cli.dir, &name, source),
+        Command::Show {
+            name,
+            source,
+            staged,
+        } => show(cli.dir, &name, source, staged),
         Command::Log { limit } => log(cli.dir, limit),
         Command::Gc => gc(cli.dir),
         Command::Repack => repack(cli.dir),
@@ -434,6 +475,38 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
     ws.write_worktree(state)?;
     ws.write_index(state)?;
     println!("Initialized design workspace at {}", meta.display());
+    Ok(())
+}
+
+fn clone(dir: Option<PathBuf>, remote_url: &str, source: &str, branch: &str) -> Result<()> {
+    let root = dir.unwrap_or(std::env::current_dir()?);
+    let meta = root.join(".ds");
+    if meta.join("config").exists() {
+        bail!("{} already exists", meta.display());
+    }
+    let ws = Workspace::init(&meta, source, ObjectFormat::Sha1)?;
+    let token_file = std::env::var_os("DS_TOKEN_FILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let remote = Remote::open(remote_url, token_file.as_deref())?;
+    remote.fetch(&ws)?;
+    let commit_hash = ws
+        .read_remote_ref(branch)?
+        .with_context(|| format!("remote branch not found: {branch}"))?;
+    let commit = ws.get_commit(commit_hash)?;
+    ws.write_ref(branch, commit_hash)?;
+    ws.write_head(&format!("ref: refs/heads/{branch}"))?;
+    let state = State {
+        base_commit: commit_hash,
+        root_view: commit.view,
+    };
+    ws.write_index(state)?;
+    ws.write_worktree(state)?;
+    println!(
+        "Cloned {branch} from {} at {}",
+        remote.display(),
+        commit_hash.to_hex()
+    );
     Ok(())
 }
 
@@ -621,8 +694,57 @@ fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
                 println!();
             }
         }
+        SourceCommand::Changes { base } => {
+            if !repo.exists() {
+                bail!("source repository is missing; run `ds source fetch`");
+            }
+            let head = repo.resolve_current()?;
+            let base = match base {
+                Some(base) => Some(repo.resolve_source(&base)?),
+                None => latest_design_source_commit(&ws, &repo)?,
+            };
+            let Some(base) = base else {
+                for entry in repo.list_blobs(&head)? {
+                    println!("A\t{}", entry.path);
+                }
+                return Ok(());
+            };
+            if !repo.is_ancestor(&base, &head)? {
+                for entry in repo.list_blobs(&head)? {
+                    println!("A\t{}", entry.path);
+                }
+                return Ok(());
+            }
+            for change in repo.changes(&base, &head)? {
+                match change.status {
+                    'R' => println!(
+                        "R\t{}\t{}",
+                        change.old_path.as_deref().unwrap_or_default(),
+                        change.path
+                    ),
+                    status => println!("{status}\t{}", change.path),
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn latest_design_source_commit(ws: &Workspace, repo: &SourceRepo) -> Result<Option<String>> {
+    let branch = current_branch(ws)?;
+    let Some(commit_hash) = ws.read_ref(&branch)? else {
+        return Ok(None);
+    };
+    let commit = ws.get_commit(commit_hash)?;
+    let view = ws.get_object(commit.view)?;
+    let ObjectPayload::View(payload) = &view.payload else {
+        return Ok(None);
+    };
+    if payload.source_commit.is_zero() {
+        Ok(None)
+    } else {
+        Ok(Some(repo.oid_hex(payload.source_commit)))
+    }
 }
 
 fn sync_source_commit(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
@@ -662,30 +784,30 @@ fn edit(dir: Option<PathBuf>, args: EditArgs) -> Result<()> {
         let symbol = if target.is_empty() {
             SymbolHash::ZERO
         } else {
-            optional_symbol(&ws, &catalog, Some(target), "class")?
+            relation_symbol(&ws, Some(target))?
         };
         set_superclass(&mut object, symbol)?;
     }
     if !args.interface_add.is_empty() || !args.interface_rm.is_empty() {
-        let add = symbols(&ws, &catalog, &args.interface_add, "interface")?;
-        let rm = symbols(&ws, &catalog, &args.interface_rm, "interface")?;
+        let add = relation_symbols(&ws, &args.interface_add)?;
+        let rm = relation_symbols(&ws, &args.interface_rm)?;
         edit_symbol_list(&mut object, &add, &rm, SymbolList::Interfaces)?;
     }
     if !args.mixin_add.is_empty() || !args.mixin_rm.is_empty() {
-        let add = ordered_symbols(&ws, &catalog, &args.mixin_add, "mixin")?;
-        let rm = symbols(&ws, &catalog, &args.mixin_rm, "mixin")?;
+        let add = ordered_relation_symbols(&ws, &args.mixin_add)?;
+        let rm = relation_symbols(&ws, &args.mixin_rm)?;
         edit_symbol_list(&mut object, &add, &rm, SymbolList::Mixins)?;
     }
     if !args.on_add.is_empty() || !args.on_rm.is_empty() {
-        let add = symbols(&ws, &catalog, &args.on_add, "class_or_mixin")?;
-        let rm = symbols(&ws, &catalog, &args.on_rm, "class_or_mixin")?;
+        let add = relation_symbols(&ws, &args.on_add)?;
+        let rm = relation_symbols(&ws, &args.on_rm)?;
         edit_symbol_list(&mut object, &add, &rm, SymbolList::On)?;
     }
     if let Some(target) = args.extends.as_deref() {
         let symbol = if target.is_empty() {
             SymbolHash::ZERO
         } else {
-            optional_symbol(&ws, &catalog, Some(target), "interface")?
+            relation_symbol(&ws, Some(target))?
         };
         set_extends(&mut object, symbol)?;
     }
@@ -693,7 +815,7 @@ fn edit(dir: Option<PathBuf>, args: EditArgs) -> Result<()> {
         let symbol = if target.is_empty() {
             SymbolHash::ZERO
         } else {
-            optional_symbol(&ws, &catalog, Some(target), "method")?
+            relation_symbol(&ws, Some(target))?
         };
         set_overrides(&mut object, symbol)?;
     }
@@ -1045,9 +1167,6 @@ fn dep(dir: Option<PathBuf>, command: DepCommand) -> Result<()> {
             if catalog.get(src_qname).is_none() {
                 bail!("source not found: {src}");
             }
-            if catalog.get(dst_qname).is_none() {
-                bail!("target not found: {dst}");
-            }
             let structural = structural_dependencies(
                 catalog
                     .get(src_qname)
@@ -1162,8 +1281,8 @@ fn set_design_doc(object: &mut DesignObject, doc: DocHash) -> Result<()> {
 fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result<()> {
     match &mut object.payload {
         ObjectPayload::Directory(p) => {
-            let source = read_source(ws, Some(spec), false)?.context("source missing")?;
-            p.source = Some(PathSource { path: source.path });
+            let path = read_source_path(ws, Some(spec))?.context("source missing")?;
+            p.source = Some(PathSource { path });
         }
         ObjectPayload::File(p) => {
             let source = read_source(ws, Some(spec), false)?.context("source missing")?;
@@ -1338,6 +1457,71 @@ fn select_dependency_list<'a>(
     }
 }
 
+fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
+    let mut changed = false;
+    match &mut object.payload {
+        ObjectPayload::Class(p) => {
+            if p.superclass == target {
+                p.superclass = SymbolHash::ZERO;
+                changed = true;
+            }
+            changed |= remove_symbol(&mut p.interfaces, target);
+            changed |= remove_symbol(&mut p.mixins, target);
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Interface(p) => {
+            if p.extends == target {
+                p.extends = SymbolHash::ZERO;
+                changed = true;
+            }
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Method(p) => {
+            if p.overrides == target {
+                p.overrides = SymbolHash::ZERO;
+                changed = true;
+            }
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Function(p) => {
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Part(p) => {
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Mixin(p) => {
+            changed |= remove_symbol(&mut p.on, target);
+            if p.superclass == target {
+                p.superclass = SymbolHash::ZERO;
+                changed = true;
+            }
+            changed |= remove_symbol(&mut p.interfaces, target);
+            changed |= remove_symbol(&mut p.mixins, target);
+            changed |= remove_dependencies(&mut p.explicit_dependencies, target);
+            changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn remove_symbol(list: &mut Vec<SymbolHash>, target: SymbolHash) -> bool {
+    let before = list.len();
+    list.retain(|symbol| *symbol != target);
+    list.len() != before
+}
+
+fn remove_dependencies(list: &mut Vec<Dependency>, target: SymbolHash) -> bool {
+    let before = list.len();
+    list.retain(|dependency| dependency.target != target);
+    list.len() != before
+}
+
 fn remove_dependency(object: &mut DesignObject, target: SymbolHash, explicit: bool) -> Result<()> {
     match &mut object.payload {
         ObjectPayload::Class(p) => remove_from(
@@ -1416,20 +1600,6 @@ fn dependency_lists(object: &DesignObject) -> Result<(&[Dependency], &[Dependenc
 
 fn dependency_label(ws: &Workspace, target: SymbolHash) -> Result<String> {
     Ok(ws.get_symbol(target)?)
-}
-
-fn ordered_symbols(
-    ws: &Workspace,
-    catalog: &Catalog,
-    names: &[String],
-    expected: &str,
-) -> Result<Vec<SymbolHash>> {
-    let mut out = Vec::with_capacity(names.len());
-    for name in names {
-        out.push(optional_symbol(ws, catalog, Some(name), expected)?);
-    }
-    out.dedup();
-    Ok(out)
 }
 
 fn add(dir: Option<PathBuf>, names: Vec<String>, all: bool) -> Result<()> {
@@ -1574,6 +1744,84 @@ fn status(dir: Option<PathBuf>) -> Result<()> {
         Some(state) => println!("Worktree view     {}", state.root_view.to_hex()),
         None => println!("Worktree view     (none)"),
     }
+
+    let head_catalog = load_catalog(
+        ws.store(),
+        head.map(|hash| ws.get_commit(hash))
+            .transpose()?
+            .map(|commit| commit.view),
+    )?;
+    let index_catalog = match index {
+        Some(state) => Some(Catalog::load(ws.store(), state.root_view)?),
+        None => None,
+    };
+    let worktree_catalog = match worktree {
+        Some(state) => Some(Catalog::load(ws.store(), state.root_view)?),
+        None => None,
+    };
+
+    let mut staged = Vec::new();
+    if let Some(index_catalog) = &index_catalog {
+        staged = changed_objects(&ws, &head_catalog, index_catalog)?;
+    }
+    let mut unstaged = Vec::new();
+    if let (Some(index_catalog), Some(worktree_catalog)) = (&index_catalog, &worktree_catalog) {
+        unstaged = changed_objects(&ws, index_catalog, worktree_catalog)?;
+    }
+
+    let clean = staged.is_empty() && unstaged.is_empty();
+    if !staged.is_empty() {
+        println!();
+        println!("Changes to be committed:");
+        for (status, name) in &staged {
+            println!("  {status} {name}");
+        }
+    }
+    if !unstaged.is_empty() {
+        println!();
+        println!("Changes not staged for commit:");
+        for (status, name) in &unstaged {
+            println!("  {status} {name}");
+        }
+    }
+    if clean {
+        println!();
+        println!("working tree clean");
+    }
+    Ok(())
+}
+
+fn changed_objects(ws: &Workspace, left: &Catalog, right: &Catalog) -> Result<Vec<(char, String)>> {
+    let mut names = BTreeSet::new();
+    names.extend(left.iter().map(|(name, _)| name));
+    names.extend(right.iter().map(|(name, _)| name));
+    let mut changes = Vec::new();
+    for qname in names {
+        let name = symbol_text(ws, qname);
+        match (left.get(qname), right.get(qname)) {
+            (None, Some(_)) => changes.push(('A', name)),
+            (Some(_), None) => changes.push(('D', name)),
+            (Some(left_object), Some(right_object)) => {
+                let left_fields = object_fields(ws, left_object)?;
+                let right_fields = object_fields(ws, right_object)?;
+                if left_fields != right_fields {
+                    changes.push(('M', name));
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    Ok(changes)
+}
+
+fn verify(dir: Option<PathBuf>) -> Result<()> {
+    let ws = open_workspace(dir)?;
+    let state = ws
+        .read_worktree()?
+        .context("worktree is not initialized; run `ds init`")?;
+    let catalog = Catalog::load(ws.store(), state.root_view)?;
+    catalog.verify(ws.store())?;
+    println!("ok");
     Ok(())
 }
 
@@ -1583,6 +1831,10 @@ fn commit(dir: Option<PathBuf>, message: &str, author: &str, allow_empty: bool) 
     let index = ws
         .read_index()?
         .context("index is not initialized; run `ds init`")?;
+    let catalog = Catalog::load(ws.store(), index.root_view)?;
+    catalog
+        .verify(ws.store())
+        .context("design-space verification failed")?;
     let parent = ws.read_ref(&branch)?.unwrap_or(CommitHash::ZERO);
     if !allow_empty && !parent.is_zero() {
         let parent_view = ws.get_commit(parent)?.view;
@@ -1981,7 +2233,7 @@ fn dependencies_text(ws: &Workspace, dependencies: &[Dependency]) -> Result<Stri
     Ok(out.join("; "))
 }
 
-fn rm(dir: Option<PathBuf>, name: &str) -> Result<()> {
+fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let state = ws
         .read_worktree()?
@@ -2005,12 +2257,26 @@ fn rm(dir: Option<PathBuf>, name: &str) -> Result<()> {
     }
     let references = catalog.references_to(qname);
     if !references.is_empty() {
-        let names = references
-            .iter()
-            .map(|reference| symbol_text(&ws, *reference))
-            .collect::<Vec<_>>()
-            .join(", ");
-        bail!("object is referenced by: {names}");
+        if !force {
+            let names = references
+                .iter()
+                .map(|reference| symbol_text(&ws, *reference))
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("object is referenced by: {names}");
+        }
+        let mut changed = Vec::new();
+        for reference in references {
+            if let Some(object) = catalog.get_mut(reference)
+                && remove_references_to(object, qname)
+            {
+                changed.push(symbol_text(&ws, reference));
+            }
+        }
+        changed.sort();
+        for name in changed {
+            println!("Unreferenced from {name}");
+        }
     }
     catalog.remove(qname);
     let view = catalog.rebuild(ws.store())?;
@@ -2069,11 +2335,21 @@ fn checkout(dir: Option<PathBuf>, branch: &str, create: bool, force: bool) -> Re
     Ok(())
 }
 
-fn ls(dir: Option<PathBuf>, files: bool, namespaces: bool, design: bool) -> Result<()> {
+fn ls(
+    dir: Option<PathBuf>,
+    files: bool,
+    namespaces: bool,
+    design: bool,
+    staged: bool,
+) -> Result<()> {
     let ws = open_workspace(dir)?;
-    let state = ws
-        .read_worktree()?
-        .context("worktree is not initialized; run `ds init`")?;
+    let state = if staged {
+        ws.read_index()?
+            .context("index is not initialized; run `ds init`")?
+    } else {
+        ws.read_worktree()?
+            .context("worktree is not initialized; run `ds init`")?
+    };
     let catalog = Catalog::load(ws.store(), state.root_view)?;
     let mut rows = Vec::new();
     for (qname, object) in catalog.iter() {
@@ -2116,11 +2392,15 @@ fn design_doc_of(object: &DesignObject) -> Option<DocHash> {
     }
 }
 
-fn show(dir: Option<PathBuf>, name: &str, source: bool) -> Result<()> {
+fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
-    let state = ws
-        .read_worktree()?
-        .context("worktree is not initialized; run `ds init`")?;
+    let state = if staged {
+        ws.read_index()?
+            .context("index is not initialized; run `ds init`")?
+    } else {
+        ws.read_worktree()?
+            .context("worktree is not initialized; run `ds init`")?
+    };
     let catalog = Catalog::load(ws.store(), state.root_view)?;
     let qname = ws.put_symbol(name)?;
     let object = catalog
@@ -2191,6 +2471,15 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool) -> Result<()> {
             print_symbol_list("mixins", &p.mixins, &ws)?;
             print_design(&ws, p.design_doc)?;
         }
+    }
+    let children = catalog.children(qname);
+    if !children.is_empty() {
+        let names = children
+            .iter()
+            .map(|child| symbol_text(&ws, *child))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("children: {names}");
     }
     if source {
         print_source_content(&ws, &catalog, object)?;
@@ -2661,8 +2950,8 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
         KindArg::Directory => {
             let parent = required_parent(ws, catalog, args.parent.as_deref())?;
             let qname = child_qname(ws, parent, &args.name)?;
-            let source = read_source(ws, args.source.as_deref(), false)?;
-            let path_source = source.as_ref().map(|s| PathSource { path: s.path });
+            let source = read_source_path(ws, args.source.as_deref())?;
+            let path_source = source.map(|path| PathSource { path });
             DesignObject::new(
                 Kind::Directory,
                 ObjectPayload::Directory(DirectoryPayload {
@@ -2729,9 +3018,9 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
                     design_doc,
-                    superclass: optional_symbol(ws, catalog, args.superclass.as_deref(), "class")?,
-                    interfaces: symbols(ws, catalog, &args.interfaces, "interface")?,
-                    mixins: symbols(ws, catalog, &args.mixins, "mixin")?,
+                    superclass: relation_symbol(ws, args.superclass.as_deref())?,
+                    interfaces: relation_symbols(ws, &args.interfaces)?,
+                    mixins: relation_symbols(ws, &args.mixins)?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                     children: vec![],
@@ -2753,7 +3042,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
                     design_doc,
-                    extends: optional_symbol(ws, catalog, args.extends.as_deref(), "interface")?,
+                    extends: relation_symbol(ws, args.extends.as_deref())?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                     children: vec![],
@@ -2786,7 +3075,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
                     design_doc,
-                    overrides: optional_symbol(ws, catalog, args.overrides.as_deref(), "method")?,
+                    overrides: relation_symbol(ws, args.overrides.as_deref())?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                 }),
@@ -2858,10 +3147,10 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
                     design_doc,
-                    on: symbols(ws, catalog, &args.on, "class")?,
-                    superclass: optional_symbol(ws, catalog, args.superclass.as_deref(), "class")?,
-                    interfaces: symbols(ws, catalog, &args.interfaces, "interface")?,
-                    mixins: symbols(ws, catalog, &args.mixins, "mixin")?,
+                    on: relation_symbols(ws, &args.on)?,
+                    superclass: relation_symbol(ws, args.superclass.as_deref())?,
+                    interfaces: relation_symbols(ws, &args.interfaces)?,
+                    mixins: relation_symbols(ws, &args.mixins)?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                     children: vec![],
@@ -2935,44 +3224,32 @@ fn optional_ref(ws: &Workspace, text: Option<&str>) -> Result<SymbolHash> {
     }
 }
 
-fn optional_symbol(
-    ws: &Workspace,
-    catalog: &Catalog,
-    text: Option<&str>,
-    expected: &str,
-) -> Result<SymbolHash> {
-    let Some(text) = text else {
-        return Ok(SymbolHash::ZERO);
-    };
-    let symbol = ws.put_symbol(text)?;
-    let object = catalog
-        .get(symbol)
-        .with_context(|| format!("target not found: {text}"))?;
-    let ok = match expected {
-        "class" => object.kind == Kind::Class,
-        "class_or_mixin" => matches!(object.kind, Kind::Class | Kind::Mixin),
-        "interface" => object.kind == Kind::Interface,
-        "mixin" => matches!(object.kind, Kind::Class | Kind::Mixin),
-        "method" => object.kind == Kind::Method,
-        _ => true,
-    };
-    if !ok {
-        bail!("{text} is not a {expected}");
+fn relation_symbol(ws: &Workspace, text: Option<&str>) -> Result<SymbolHash> {
+    match text {
+        Some(text) if !text.trim().is_empty() => Ok(ws.put_symbol(text)?),
+        _ => Ok(SymbolHash::ZERO),
     }
-    Ok(symbol)
 }
 
-fn symbols(
-    ws: &Workspace,
-    catalog: &Catalog,
-    names: &[String],
-    expected: &str,
-) -> Result<Vec<SymbolHash>> {
+fn relation_symbols(ws: &Workspace, names: &[String]) -> Result<Vec<SymbolHash>> {
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        out.push(optional_symbol(ws, catalog, Some(name), expected)?);
+        if !name.trim().is_empty() {
+            out.push(ws.put_symbol(name)?);
+        }
     }
     out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn ordered_relation_symbols(ws: &Workspace, names: &[String]) -> Result<Vec<SymbolHash>> {
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        if !name.trim().is_empty() {
+            out.push(ws.put_symbol(name)?);
+        }
+    }
     out.dedup();
     Ok(out)
 }
@@ -3061,6 +3338,15 @@ fn read_source(ws: &Workspace, spec: Option<&str>, span: bool) -> Result<Option<
         end_line,
         has_range,
     }))
+}
+
+/// Directory sources only record the path; a directory has no blob to read.
+fn read_source_path(ws: &Workspace, spec: Option<&str>) -> Result<Option<SymbolHash>> {
+    let Some(spec) = spec else {
+        return Ok(None);
+    };
+    let (path, _) = split_source(spec);
+    Ok(Some(ws.put_symbol(path)?))
 }
 
 fn split_source(spec: &str) -> (&str, Option<(usize, usize)>) {

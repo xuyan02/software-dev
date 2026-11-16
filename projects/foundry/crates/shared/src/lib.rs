@@ -7,12 +7,10 @@ use std::io::{Read, Seek, SeekFrom};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-/// Overrides the config file path. When unset, Foundry reads
-/// `~/.foundry/foundry.toml` if it exists.
-pub const CONFIG_FILE_ENV: &str = "FOUNDRY_CONFIG";
 pub const CONFIG_DIR: &str = ".foundry";
 pub const DEFAULT_CONFIG_FILE: &str = "foundry.toml";
 pub const DEFAULT_ADDR: &str = "127.0.0.1:8080";
+pub const DEFAULT_SHELL_IMAGE: &str = "localhost/openergasterion-shell:1";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -41,16 +39,34 @@ pub struct Config {
     /// Base URL of the `ds-server` used to provision project design spaces.
     /// Project creation fails when this is not configured.
     pub design_space_url: Option<String>,
+    /// Local ds-server repository collection root.
+    pub design_space_root: PathBuf,
+    /// Local ds-server listen address. It must be reachable from agent shells.
+    pub design_space_listen: String,
+    /// Bearer token file for the ds-server.
+    pub design_space_token_file: PathBuf,
+    /// URL project fields should use so agent shells can reach ds-server.
+    /// Defaults to the detected host IP on the local ds-server port.
+    pub design_space_agent_url: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is
     /// missing.
     pub editor_dir: PathBuf,
-    /// The file that was loaded, if any. `None` means environment + defaults.
+    /// GitHub App used to mint short-lived source repository tokens.
+    pub github_app_id: Option<u64>,
+    /// Path to the GitHub App private key. The key itself is never copied into
+    /// the database or exposed to agents.
+    pub github_app_private_key_file: Option<PathBuf>,
+    /// GitHub API base; GitHub Enterprise uses `https://host/api/v3`.
+    pub github_api_base: String,
+    /// Container image used for an agent's persistent shell.
+    pub shell_image: String,
+    /// The file that was loaded, if any. `None` means defaults only.
     pub config_file: Option<PathBuf>,
 }
 
 /// Flat TOML file. Every key is optional so the file can set only what it
-/// needs; environment variables take precedence over file values.
+/// needs; missing keys fall back to the built-in defaults.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ConfigFile {
@@ -71,7 +87,32 @@ struct ConfigFile {
     openai_base_url: Option<String>,
     openai_model: Option<String>,
     design_space_url: Option<String>,
+    design_space_root: Option<String>,
+    design_space_listen: Option<String>,
+    design_space_token_file: Option<String>,
+    design_space_agent_url: Option<String>,
     editor_dir: Option<String>,
+    github_app_id: Option<GithubAppId>,
+    github_app_private_key_file: Option<String>,
+    github_api_base: Option<String>,
+    shell_image: Option<String>,
+}
+
+/// TOML authors often quote the App ID even though GitHub shows a number.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum GithubAppId {
+    Integer(u64),
+    String(String),
+}
+
+impl GithubAppId {
+    fn into_text(self) -> String {
+        match self {
+            Self::Integer(value) => value.to_string(),
+            Self::String(value) => value,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -81,7 +122,7 @@ pub enum ConfigError {
     #[error("invalid {name}: {value}")]
     InvalidNumber { name: &'static str, value: String },
     #[error(
-        "DATABASE_URL must be set in the environment or the Foundry config file (for example postgres://foundry:foundry@localhost:5432/foundry)"
+        "database_url must be set in ~/.foundry/foundry.toml (for example postgres://foundry:foundry@localhost:5432/foundry)"
     )]
     MissingDatabaseUrl,
     #[error("failed to read config file {path}: {source}")]
@@ -96,16 +137,24 @@ pub enum ConfigError {
         #[source]
         source: toml::de::Error,
     },
+    #[error("invalid github_app_id: {0}")]
+    InvalidGithubAppId(String),
+    #[error("cannot read GitHub App private key {path}: {source}")]
+    GithubPrivateKey {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }
 
 impl Config {
-    /// Load configuration with this precedence:
+    /// Load configuration from `~/.foundry/foundry.toml`.
     ///
-    /// 1. environment variables,
-    /// 2. `FOUNDRY_CONFIG`, or `~/.foundry/foundry.toml` when present,
-    /// 3. built-in defaults.
-    pub fn from_env() -> Result<Self, ConfigError> {
-        let path = config_path();
+    /// Foundry does not read configuration from environment variables. A
+    /// deployment that needs a different file must mount it at the default
+    /// location.
+    pub fn from_file() -> Result<Self, ConfigError> {
+        let path = default_config_path().filter(|path| path.is_file());
         let file = match &path {
             Some(path) => load_config_file(path)?,
             None => ConfigFile::default(),
@@ -116,75 +165,107 @@ impl Config {
                  projects are created explicitly after first-run setup"
             );
         }
-        Self::resolve(|name| std::env::var(name).ok(), file, path)
+        Self::resolve(file, path)
     }
 
-    fn resolve(
-        env: impl Fn(&str) -> Option<String>,
-        file: ConfigFile,
-        config_file: Option<PathBuf>,
-    ) -> Result<Self, ConfigError> {
-        let pick = |name: &str, file_value: Option<String>| {
-            env(name).filter(|value| !value.is_empty()).or(file_value)
-        };
-        let addr_text = pick("FOUNDRY_ADDR", file.addr).unwrap_or_else(|| DEFAULT_ADDR.to_string());
+    fn resolve(file: ConfigFile, config_file: Option<PathBuf>) -> Result<Self, ConfigError> {
+        let addr_text = file.addr.unwrap_or_else(|| DEFAULT_ADDR.to_string());
         let addr = addr_text
             .trim()
             .parse()
             .map_err(|_| ConfigError::InvalidAddr(addr_text))?;
-        let ttl_text = pick(
-            "FOUNDRY_SESSION_TTL_HOURS",
-            file.session_ttl_hours.map(|value| value.to_string()),
-        );
-        let session_ttl_hours = match ttl_text {
-            Some(value) => value
-                .trim()
-                .parse()
-                .map_err(|_| ConfigError::InvalidNumber {
-                    name: "FOUNDRY_SESSION_TTL_HOURS",
-                    value,
-                })?,
-            None => 168,
-        };
-        let database_url = pick("DATABASE_URL", file.database_url)
+        let session_ttl_hours = file.session_ttl_hours.unwrap_or(168);
+        let database_url = file
+            .database_url
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .ok_or(ConfigError::MissingDatabaseUrl)?;
+        let github_app_id = file
+            .github_app_id
+            .map(GithubAppId::into_text)
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<u64>()
+                    .map_err(|_| ConfigError::InvalidGithubAppId(value))
+            })
+            .transpose()?;
+        let github_app_private_key_file = file
+            .github_app_private_key_file
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty());
+        if let Some(path) = &github_app_private_key_file {
+            std::fs::read(path).map_err(|source| ConfigError::GithubPrivateKey {
+                path: path.display().to_string(),
+                source,
+            })?;
+        }
+        let github_api_base = file
+            .github_api_base
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "https://api.github.com".to_string());
+        let shell_image = file
+            .shell_image
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| DEFAULT_SHELL_IMAGE.to_string());
+        let foundry_dir = default_config_path()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from(".foundry"));
+        let design_space_root = file
+            .design_space_root
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| foundry_dir.join("design-spaces"));
+        let design_space_listen = file
+            .design_space_listen
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "0.0.0.0:7700".to_string());
+        let design_space_token_file = file
+            .design_space_token_file
+            .map(|value| PathBuf::from(value.trim()))
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| foundry_dir.join("design-space-token"));
+        let design_space_agent_url = file
+            .design_space_agent_url
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty());
         Ok(Self {
             addr,
             database_url,
-            bootstrap_handle: pick("FOUNDRY_BOOTSTRAP_HANDLE", file.bootstrap_handle)
-                .unwrap_or_else(|| "admin".to_string()),
-            bootstrap_name: pick("FOUNDRY_BOOTSTRAP_NAME", file.bootstrap_name)
+            bootstrap_handle: file.bootstrap_handle.unwrap_or_else(|| "admin".to_string()),
+            bootstrap_name: file
+                .bootstrap_name
                 .unwrap_or_else(|| "Administrator".to_string()),
             // The initial password is compared verbatim, so do not trim it:
             // leading and trailing spaces are part of the secret if the
             // operator put them there.
-            bootstrap_password: pick("FOUNDRY_BOOTSTRAP_PASSWORD", file.bootstrap_password)
-                .filter(|value| !value.is_empty()),
+            bootstrap_password: file.bootstrap_password.filter(|value| !value.is_empty()),
             session_ttl_hours,
-            openai_api_key: pick("OPENAI_API_KEY", file.openai_api_key)
-                .filter(|value| !value.is_empty()),
-            openai_base_url: pick("OPENAI_BASE_URL", file.openai_base_url)
-                .filter(|value| !value.is_empty()),
-            openai_model: pick("OPENAI_MODEL", file.openai_model).filter(|value| !value.is_empty()),
-            design_space_url: pick("DESIGN_SPACE_URL", file.design_space_url)
+            openai_api_key: file.openai_api_key.filter(|value| !value.is_empty()),
+            openai_base_url: file.openai_base_url.filter(|value| !value.is_empty()),
+            openai_model: file.openai_model.filter(|value| !value.is_empty()),
+            design_space_url: file
+                .design_space_url
                 .map(|value| value.trim().trim_end_matches('/').to_string())
                 .filter(|value| !value.is_empty()),
+            design_space_root,
+            design_space_listen,
+            design_space_token_file,
+            design_space_agent_url,
             editor_dir: PathBuf::from(
-                pick("FOUNDRY_EDITOR_DIR", file.editor_dir)
+                file.editor_dir
                     .unwrap_or_else(|| "web/workflow-editor/dist".to_string()),
             ),
+            github_app_id,
+            github_app_private_key_file,
+            github_api_base,
+            shell_image,
             config_file,
         })
     }
-}
-
-fn config_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os(CONFIG_FILE_ENV).filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(path));
-    }
-    default_config_path().filter(|path| path.is_file())
 }
 
 /// The user config file path: `~/.foundry/foundry.toml`. Returns `None` when
@@ -291,33 +372,25 @@ pub fn init_tracing(default_filter: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     fn file(text: &str) -> ConfigFile {
         toml::from_str(text).expect("valid config file")
     }
 
-    fn resolve(env: &[(&str, &str)], config: ConfigFile) -> Result<Config, ConfigError> {
-        let env: HashMap<String, String> = env
-            .iter()
-            .map(|(key, value)| (key.to_string(), value.to_string()))
-            .collect();
-        Config::resolve(|name| env.get(name).cloned(), config, None)
+    fn resolve(config: ConfigFile) -> Result<Config, ConfigError> {
+        Config::resolve(config, None)
     }
 
     #[test]
     fn file_values_are_used_and_defaults_fill_the_rest() {
-        let config = resolve(
-            &[],
-            file(
-                r#"
+        let config = resolve(file(
+            r#"
                 addr = "0.0.0.0:9000"
                 database_url = "postgres://foundry@db/foundry"
                 session_ttl_hours = 24
                 bootstrap_password = "file-setup-pass"
                 "#,
-            ),
-        )
+        ))
         .unwrap();
         assert_eq!(config.addr.to_string(), "0.0.0.0:9000");
         assert_eq!(config.database_url, "postgres://foundry@db/foundry");
@@ -332,20 +405,64 @@ mod tests {
     }
 
     #[test]
-    fn model_settings_come_from_the_file_and_env_wins() {
+    fn shell_image_has_a_default_and_can_be_overridden() {
+        let config = resolve(file("database_url = \"postgres://foundry@db/foundry\"")).unwrap();
+        assert_eq!(config.shell_image, DEFAULT_SHELL_IMAGE);
+
         let config = resolve(
-            &[("OPENAI_API_KEY", "env-key")],
             file(
-                r#"
+                "database_url = \"postgres://foundry@db/foundry\"\nshell_image = \"ghcr.io/acme/shell:1\"",
+            ),
+        )
+        .unwrap();
+        assert_eq!(config.shell_image, "ghcr.io/acme/shell:1");
+    }
+
+    #[test]
+    fn github_app_settings_are_loaded_and_the_key_path_is_checked() {
+        let key = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let config = resolve(file(&format!(
+            r#"
+                database_url = "postgres://foundry@db/foundry"
+                github_app_id = 123456
+                github_app_private_key_file = "{}"
+                github_api_base = "https://git.example.com/api/v3/"
+                "#,
+            key.display()
+        )))
+        .unwrap();
+        assert_eq!(config.github_app_id, Some(123456));
+        assert_eq!(
+            config.github_app_private_key_file.as_deref(),
+            Some(key.as_path())
+        );
+        assert_eq!(config.github_api_base, "https://git.example.com/api/v3");
+    }
+
+    #[test]
+    fn missing_github_app_private_key_is_rejected() {
+        let error = resolve(file(
+            r#"
+                database_url = "postgres://foundry@db/foundry"
+                github_app_private_key_file = "/definitely/missing/github-app.pem"
+                "#,
+        ))
+        .unwrap_err();
+        assert!(matches!(error, ConfigError::GithubPrivateKey { .. }));
+    }
+
+    #[test]
+    fn model_settings_come_from_the_file() {
+        let config = resolve(file(
+            r#"
                 database_url = "postgres://foundry@db/foundry"
                 openai_api_key = "file-key"
                 openai_base_url = "https://api.deepseek.com/v1"
                 openai_model = "deepseek-chat"
                 "#,
-            ),
-        )
+        ))
         .unwrap();
-        assert_eq!(config.openai_api_key.as_deref(), Some("env-key"));
+        assert_eq!(config.openai_api_key.as_deref(), Some("file-key"));
         assert_eq!(
             config.openai_base_url.as_deref(),
             Some("https://api.deepseek.com/v1")
@@ -354,59 +471,26 @@ mod tests {
     }
 
     #[test]
-    fn environment_overrides_the_file() {
-        let config = resolve(
-            &[
-                ("FOUNDRY_ADDR", "127.0.0.1:7000"),
-                ("DATABASE_URL", "postgres://env@db/foundry"),
-                ("FOUNDRY_BOOTSTRAP_HANDLE", "from-env"),
-                ("FOUNDRY_BOOTSTRAP_PASSWORD", "env-setup-pass"),
-                ("FOUNDRY_SESSION_TTL_HOURS", "1"),
-                ("FOUNDRY_EDITOR_DIR", "/srv/foundry-editor"),
-            ],
-            file(
-                r#"
-                addr = "0.0.0.0:9000"
-                database_url = "postgres://file@db/foundry"
-                bootstrap_handle = "from-file"
-                bootstrap_password = "file-setup-pass"
-                session_ttl_hours = 24
-                "#,
-            ),
-        )
-        .unwrap();
-        assert_eq!(config.addr.to_string(), "127.0.0.1:7000");
-        assert_eq!(config.database_url, "postgres://env@db/foundry");
-        assert_eq!(config.bootstrap_handle, "from-env");
-        assert_eq!(config.bootstrap_password.as_deref(), Some("env-setup-pass"));
-        assert_eq!(config.session_ttl_hours, 1);
-        assert_eq!(config.editor_dir, PathBuf::from("/srv/foundry-editor"));
-    }
-
-    #[test]
     fn database_url_is_required() {
         assert!(matches!(
-            resolve(&[], ConfigFile::default()),
+            resolve(ConfigFile::default()),
             Err(ConfigError::MissingDatabaseUrl)
         ));
         assert!(matches!(
-            resolve(&[("DATABASE_URL", "")], ConfigFile::default()),
+            resolve(file("database_url = \"\"")),
             Err(ConfigError::MissingDatabaseUrl)
         ));
     }
 
     #[test]
     fn obsolete_project_seed_keys_are_accepted_but_ignored() {
-        let config = resolve(
-            &[],
-            file(
-                r#"
+        let config = resolve(file(
+            r#"
                 database_url = "postgres://foundry@db/foundry"
                 project = "default"
                 project_name = "Default"
                 "#,
-            ),
-        )
+        ))
         .unwrap();
         assert_eq!(config.database_url, "postgres://foundry@db/foundry");
     }

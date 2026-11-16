@@ -1,0 +1,23 @@
+FROM docker.m.daocloud.io/library/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+      'deb http://mirrors.aliyun.com/debian bookworm main' \
+      'deb http://mirrors.aliyun.com/debian bookworm-updates main' \
+      'deb http://mirrors.aliyun.com/debian-security bookworm-security main' \
+      > /etc/apt/sources.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        coreutils \
+        curl \
+        git \
+        openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ds /usr/local/bin/ds
+RUN chmod +x /usr/local/bin/ds
+
+WORKDIR /work

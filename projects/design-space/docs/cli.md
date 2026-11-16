@@ -8,6 +8,7 @@
 
 ```text
 init
+clone
 create（所有 kind）
 edit（design、source、parent/namespace/file/module/name、继承/接口/mixin/override 关系）
 dep add/rm/list（结构关系自动计入显式依赖）
@@ -28,14 +29,17 @@ show
 log
 ```
 
-网络传输由 `ds-server` 提供：
+网络传输由 `ds-server` 提供。一个 HTTP `ds-server` 管理一个仓库集合，类似 Git 服务器：
 
 ```bash
-ds-server --root <remote-dir>                     # HTTP, 默认 127.0.0.1:7700
-ds-server --root <remote-dir> --listen 0.0.0.0:7700
-ds-server --root <remote-dir> --token-file <token-file>   # 启用 Bearer 认证
-ds-server --stdio --root <remote-dir>             # SSH 传输协议
+ds-server --root <repos-root>                     # HTTP, 默认 127.0.0.1:7700
+ds-server --root <repos-root> --listen 0.0.0.0:7700
+ds-server --root <repos-root> --token-file <token-file>   # 启用 Bearer 认证
+ds-server --stdio --root <repo-dir>               # SSH 传输协议（单个仓库）
 ```
+
+`<repos-root>` 下的每个子目录是一个独立 ds 仓库。HTTP remote URL 形如
+`http://host:port/<repo>`。
 
 ## 1. 基本约定
 
@@ -51,6 +55,7 @@ ds-server --stdio --root <remote-dir>             # SSH 传输协议
 
 ```bash
 ds init --source <git-url> [--dir <root>]
+ds clone <remote> --source <git-url> [--branch main]
 
 ds source fetch
 ds source checkout <ref>
@@ -58,10 +63,11 @@ ds source status
 ds source ls [<path>]
 ds source cat <path>
 ds source log [<ref>]
+ds source changes [--base <git-ref>]
 
 ds create <kind> <name> [options]
 ds edit <qname> [--name <local>] [options]
-ds rm <qname>
+ds rm <qname> [--force]
 
 ds dep add <src> <dst> --explicit [--evidence path:lines]
 ds dep add <src> <dst> --implicit [--rationale-file file]
@@ -69,6 +75,7 @@ ds dep rm <src> <dst> --explicit|--implicit
 ds dep list <name>
 
 ds status
+ds verify
 ds diff
 ds diff --staged
 ds add <name>...
@@ -80,14 +87,32 @@ ds commit -m "..." [--allow-empty]
 ds checkout <branch> [--force]
 ds checkout -b <branch>
 
-ds show <name> [--source]
+ds show <name> [--source] [--staged]
 ds log [--limit N]
-ds ls [--files|--namespaces|--design]
+ds ls [--files|--namespaces|--design] [--staged]
 ds gc
 ds repack
 ```
 
-## 2. qualified name 生成
+## 2. clone
+
+```bash
+ds clone <remote> --source <git-url> [--branch main] [--dir <root>]
+```
+
+- `remote` 可以是本地路径、`file://`、HTTP(S) 或 SSH；
+- `--source` 写入 workspace config，后续 `source` 命令使用；
+- `--branch` 默认 `main`；
+- clone 会初始化 workspace、fetch remote、创建本地分支、设置 HEAD、index 和 worktree；
+- 不接受 `--format`，source format 使用默认 SHA-1；
+- 不接受 `--token-file`。HTTP remote 如果启用了认证，用环境变量
+  `DS_TOKEN_FILE` 指向 token 文件；SSH remote 使用 SSH 认证。
+
+Git 没有统一的 token 文件机制；它使用 credential helper、`.netrc`、
+URL userinfo、SSH key 或 `http.extraHeader`。ds 的 HTTP 认证目前用
+Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
+
+## 3. qualified name 生成
 
 | kind | qualified name |
 |---|---|
@@ -99,7 +124,7 @@ ds repack
 
 根对象 `files`、`namespaces` 由 `init` 创建，不能通过 `create` 创建。
 
-## 3. source 语法
+## 4. source 语法
 
 ```text
 --source path            整个文件
@@ -113,7 +138,7 @@ ds repack
 - 无 source 时 content_hash 为零；
 - 有 source 时 content_hash 必须非零。
 
-## 4. create 矩阵
+## 5. create 矩阵
 
 | kind | 必填 | 可选 | 禁止 / 派生 |
 |---|---|---|---|
@@ -137,7 +162,7 @@ ds repack
 - `--on` 可重复；
 - `--superclass`、`--extends`、`--overrides` 最多一个。
 
-## 5. edit 矩阵
+## 6. edit 矩阵
 
 ```bash
 ds edit <qname> [options]
@@ -168,7 +193,7 @@ ds edit <qname> [options]
 - content_hash；
 - structural relation 不得重复加入 dependencies。
 
-## 6. 校验
+## 7. 校验
 
 1. qname 在同一 parent 下唯一；part 显示名允许重复；
 2. parent 类型必须符合 kind；
@@ -191,7 +216,7 @@ ds edit <qname> [options]
 19. source span 必须合法；
 20. 所有引用 symbol/doc 必须存在，或提交时能解析。
 
-## 7. 暂存语义
+## 8. 暂存语义
 
 与 Git 对齐：
 
@@ -237,13 +262,39 @@ D namespaces/app/Old
 ### 7.3 rm
 
 ```bash
-ds rm <qname>
+ds rm <qname> [--force]
 ```
 
 - 根对象不能删除；
 - 有子对象时拒绝，先删除子对象；
-- 被关系或依赖引用时拒绝；
+- 被关系或依赖引用时，默认拒绝；`--force` 先移除其他对象对它的关系/依赖，
+  再删除，并输出被修改的引用方；
 - 只修改 worktree，不自动暂存。
+
+### 7.3.1 source changes
+
+```bash
+ds source changes [--base <git-ref>]
+```
+
+- 默认 base 是当前 ds 分支 HEAD 提交的 `View.source_commit`；
+- 对比当前 `ds source` HEAD，输出 `A/M/D/R` 行：`A<TAB>path`、
+  `M<TAB>path`、`D<TAB>path`、`R<TAB>old<TAB>new`；
+- base 为零、找不到、或不是当前 HEAD 的祖先时，全部文件按 `A` 输出；
+- 需要先执行 `ds source fetch`。
+
+### 7.3.2 status / verify
+
+```bash
+ds status
+ds verify
+```
+
+- `status` 打印 HEAD/index/worktree，并列出 `Changes to be committed` 和
+  `Changes not staged for commit` 的对象 qname；
+- `verify` 严格检查 worktree 对象图：关系/依赖目标、kind、关系环、
+  overrides、依赖、parent 结构；失败时返回非零；
+- `ds commit` 在提交前执行同样的校验。
 
 ### 7.4 reset
 
@@ -271,7 +322,25 @@ ds checkout <branch> --force
 `ds edit <qname> --name <local>` 修改对象在父容器下的本地名。修改 parent、
 namespace 或本地名时，所有子孙对象的 qualified name、引用和依赖目标会一起迁移。
 
-### 7.7 gc / repack
+### 7.7 show / ls
+
+```bash
+ds show <name> [--source] [--staged]
+ds ls [--files|--namespaces|--design] [--staged]
+```
+
+- `show` 输出对象字段、设计文档和 `children:` 列表；
+- `--staged` 从 index 读取，默认从 worktree 读取；
+- `ls --staged` 同理。
+
+### 7.8 前向引用
+
+`create` / `edit` / `dep add` 写 `superclass`、`interfaces`、`mixins`、`on`、
+`extends`、`overrides` 和依赖时，目标对象可以暂时不存在。`ds add` 不校验目标
+存在；`ds verify` 和 `ds commit` 负责解析。容器类引用（parent、namespace、
+file、module）仍然必须存在。
+
+### 7.9 gc / repack
 
 ```bash
 ds gc                        # 展开 pack，删除不可达对象/提交/文档/符号
@@ -280,7 +349,7 @@ ds repack                    # 把所有 loose records 收进一个 pack
 
 store 读取时优先 loose file，找不到时回退到 pack。
 
-## 8. 第一版范围
+## 9. 第一版范围
 
 已实现命令见文首。
 
@@ -289,29 +358,34 @@ store 读取时优先 loose file，找不到时回退到 pack。
 - 字段级暂存；
 - 多设计空间共享对象。
 
-## 9. 远程
+## 10. 远程
 
 remote URL：
 
 | URL | 传输 |
 |---|---|
-| `/path` 或 `file:///path` | 本地目录 |
-| `http://host:port[/prefix]` | `ds-server` HTTP API |
-| `https://host[:port][/prefix]` | 同上，TLS |
+| `/path` 或 `file:///path` | 本地仓库目录 |
+| `http://host:port/<repo>` | `ds-server` HTTP API |
+| `https://host[:port]/<repo>` | 同上，TLS |
 | `ssh://[user@]host[:port]/absolute/path` | SSH 上运行 `ds-server --stdio --root <path>` |
 
-`ds-server` 的存储根与工作区 `.ds` 使用相同的 `objects/`、`commits/`、
+`ds-server` 的每个仓库与工作区 `.ds` 使用相同的 `objects/`、`commits/`、
 `docs/`、`symbols/`、`packs/` 和 `refs/heads/` 布局。
 
 HTTP API：
 
 ```text
-GET  /v1/refs                 -> "<branch>\t<commit>\n" ...
-PUT  /v1/refs                 <- "<branch>\t<commit>\n" ...
-GET  /v1/files                -> "<relative-path>\n" ...
-GET  /v1/files/<relative>     -> file bytes
-PUT  /v1/files/<relative>     <- file bytes
+GET  /repos                       -> "<repo>\n" ...
+POST /repos                       <- {"name":"<repo>","branch":"main"}
+GET  /<repo>/refs                 -> "<branch>\t<commit>\n" ...
+PUT  /<repo>/refs                 <- "<branch>\t<commit>\n" ...
+GET  /<repo>/files                -> "<relative-path>\n" ...
+GET  /<repo>/files/<relative>     -> file bytes
+PUT  /<repo>/files/<relative>     <- file bytes
 ```
+
+`POST /repos` 创建一个空设计空间仓库，并在 `<branch>`（默认 `main`）上
+创建初始 View/commit。已经存在时返回 409。
 
 规则：
 
@@ -320,7 +394,8 @@ PUT  /v1/files/<relative>     <- file bytes
 - pull 先 fetch，再 fast-forward；index 或 worktree 有修改时拒绝；
 - 服务端校验路径必须是 canonical 的 `<kind>/<aa>/<bb>/<hash>`，并校验上传内容与
   hash 一致；refs 只能指向已上传的 commit；
-- HTTP 未配置 `--token-file` 时不认证；配置后所有 `/v1/*` 请求都必须带
+- 仓库必须已存在于 `<repos-root>/<repo>`；服务端不会自动创建仓库；
+- HTTP 未配置 `--token-file` 时不认证；配置后所有请求都必须带
   `Authorization: Bearer <token>`，否则返回 401；
 - token 文件只包含一个 token，首尾空白会被忽略，token 内不能有空白或控制字符；
 - 客户端用 `ds remote add <url> --token-file <path>` 配置 token 文件路径，

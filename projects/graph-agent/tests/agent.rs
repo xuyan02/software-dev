@@ -1,18 +1,18 @@
 use async_trait::async_trait;
 use graph_agent::{
     Agent, Context, Graph, LlmRequest, LlmResponse, LlmRuntime, ModelError, ModelGateway, Node,
-    NodeError, SkillError, SkillRegistry, ToolError, ToolRef, ToolRegistry, ToolSpec,
-    TransitionIndex,
+    NodeError, SkillError, SkillRegistry, ToolRegistry, TransitionIndex,
 };
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 struct LoadNode;
 
 #[async_trait]
 impl Node for LoadNode {
-    async fn run(&self, ctx: &mut Context) -> Result<(), NodeError> {
+    async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         ctx.set_output("loaded")?;
-        Ok(())
+        Ok(Value::String("loaded".to_owned()))
     }
 
     fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -29,15 +29,7 @@ struct NoopModel;
 #[async_trait]
 impl ModelGateway for NoopModel {
     async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, ModelError> {
-        Err(ModelError::Failed("not used".into()))
-    }
-}
-
-struct NoopTools;
-
-impl ToolRegistry for NoopTools {
-    fn spec(&self, tool: &ToolRef) -> Result<ToolSpec, ToolError> {
-        Err(ToolError::UnknownTool(tool.as_str().to_owned()))
+        Err(ModelError::Backend("not used".into()))
     }
 }
 
@@ -52,7 +44,7 @@ impl SkillRegistry for NoopSkills {
 fn runtime() -> Arc<LlmRuntime> {
     Arc::new(LlmRuntime::new(
         Arc::new(NoopModel),
-        Arc::new(NoopTools),
+        Arc::new(ToolRegistry::new()),
         Arc::new(NoopSkills),
     ))
 }
@@ -82,7 +74,7 @@ async fn agent_run_returns_final_context() {
     let agent = Agent::new("tester", graph(), runtime());
     let context = Context::new();
 
-    let output = agent.run(context).await.expect("run");
+    let output = agent.run(context, json!(null)).await.expect("run");
     assert_eq!(output.exit().as_str(), "done");
     assert_eq!(
         output.context.node_output::<String>("load").unwrap(),
@@ -95,7 +87,7 @@ async fn agent_run_mut_uses_callers_context() {
     let agent = Agent::new("tester", graph(), runtime());
     let mut context = Context::new();
 
-    let exit = agent.run_mut(&mut context).await.expect("run");
-    assert_eq!(exit.as_str(), "done");
+    let output = agent.run_mut(&mut context, json!(null)).await.expect("run");
+    assert_eq!(output.exit.as_str(), "done");
     assert_eq!(context.node_output::<String>("load").unwrap(), "loaded");
 }

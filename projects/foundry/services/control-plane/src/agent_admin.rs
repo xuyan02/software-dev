@@ -1,6 +1,6 @@
 //! Admin service for managed agents.
 //!
-//! Agents are platform-defined. The PM dispatcher uses this surface to list
+//! Agents are code-defined and project-owned. The PM dispatcher uses this surface to list
 //! agents/templates and to create/assign agents for unassigned task roles.
 //! Human users do not configure agents.
 
@@ -109,23 +109,82 @@ impl PostgresAgentAdmin {
 
 #[async_trait::async_trait]
 impl AgentAdminUseCases for PostgresAgentAdmin {
-    async fn overview(&self, actor: Actor) -> Result<AgentOverview, ServiceError> {
+    async fn overview(
+        &self,
+        actor: Actor,
+        project_id: Option<Uuid>,
+    ) -> Result<AgentOverview, ServiceError> {
         self.require_admin(&actor).await?;
+        let definitions = self.store.list_agent_definitions().await?;
+        let Some(project_id) = project_id else {
+            return Ok(AgentOverview {
+                definitions,
+                bindings: self.store.list_agent_bindings().await?,
+                processes: self.store.list_agent_processes().await?,
+            });
+        };
+        // Every agent belongs to exactly one project.
+        let definitions: Vec<_> = definitions
+            .into_iter()
+            .filter(|definition| definition.project_id == project_id)
+            .collect();
+        let definition_ids: std::collections::HashSet<_> =
+            definitions.iter().map(|definition| definition.id).collect();
         Ok(AgentOverview {
-            definitions: self.store.list_agent_definitions().await?,
-            bindings: self.store.list_agent_bindings().await?,
-            processes: self.store.list_agent_processes().await?,
+            definitions,
+            bindings: self
+                .store
+                .list_agent_bindings()
+                .await?
+                .into_iter()
+                .filter(|binding| binding.project_id == project_id)
+                .collect(),
+            processes: self
+                .store
+                .list_agent_processes()
+                .await?
+                .into_iter()
+                .filter(|process| definition_ids.contains(&process.agent_definition_id))
+                .collect(),
         })
     }
 
-    async fn agents(&self, actor: Actor) -> Result<Vec<AgentDefinition>, ServiceError> {
+    async fn agents(
+        &self,
+        actor: Actor,
+        project_id: Option<Uuid>,
+    ) -> Result<Vec<AgentDefinition>, ServiceError> {
         self.require_admin(&actor).await?;
-        Ok(self.store.list_agent_definitions().await?)
+        match project_id {
+            Some(project_id) => Ok(self
+                .store
+                .list_project_agent_definitions(project_id)
+                .await?),
+            None => Ok(self.store.list_agent_definitions().await?),
+        }
     }
 
-    async fn ready_tasks(&self, actor: Actor) -> Result<Vec<ReadyTaskView>, ServiceError> {
+    async fn ready_tasks(
+        &self,
+        actor: Actor,
+        project_id: Option<Uuid>,
+    ) -> Result<Vec<ReadyTaskView>, ServiceError> {
         self.require_admin(&actor).await?;
-        Ok(self.store.list_ready_tasks().await?)
+        Ok(self.store.list_ready_tasks(project_id).await?)
+    }
+
+    async fn ensure_project_pm(&self, project_id: Uuid) {
+        if let Err(error) = platform_agents::ensure_project_pm(
+            self.store.as_ref(),
+            &self.supervisor,
+            project_id,
+            &self.model_base_url,
+            &self.model_name,
+        )
+        .await
+        {
+            tracing::warn!(project_id = %project_id, %error, "cannot provision project PM agent");
+        }
     }
 
     async fn templates(
@@ -164,6 +223,15 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
                 template.id, template.role, command.role
             )));
         }
+        if let Some(existing) = self
+            .store
+            .list_project_agent_definitions(project_id)
+            .await?
+            .into_iter()
+            .find(|definition| definition.role == command.role && definition.enabled)
+        {
+            return Ok(existing);
+        }
 
         let short = agent_handle_suffix();
         let handle = format!("agent-{short}");
@@ -191,11 +259,13 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
                     name: name.clone(),
                     account_handle: handle,
                     role: command.role.clone(),
+                    project_id,
                     model_base_url: self.model_base_url.clone(),
                     model_name: self.model_name.clone(),
                     api_key_env: "OPENAI_API_KEY".to_string(),
                     system_prompt: template.system_prompt.to_string(),
                     tools: template.tools.iter().map(|tool| tool.to_string()).collect(),
+                    shell: template.shell,
                     skills: template
                         .skills
                         .iter()
@@ -243,6 +313,12 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
             return Err(ServiceError::Validation(format!(
                 "agent {} fills {}, not {}",
                 definition.name, definition.role, command.role
+            )));
+        }
+        if definition.project_id != project_id {
+            return Err(ServiceError::Validation(format!(
+                "agent {} belongs to another project",
+                definition.name
             )));
         }
         self.store

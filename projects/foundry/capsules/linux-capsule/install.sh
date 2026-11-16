@@ -210,6 +210,15 @@ else
     podman network create "$NETWORK"
 fi
 
+# Podman 3.4.4 writes cniVersion 1.0.0, but the CNI firewall plugin shipped
+# with it only accepts 0.4.0. Without this the first container fails with
+# `CNI network "$NETWORK" not found`.
+NETWORK_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cni/net.d/${NETWORK}.conflist"
+if [[ -f "$NETWORK_FILE" ]] && grep -q '"cniVersion": "1.0.0"' "$NETWORK_FILE"; then
+    sed -i 's/"cniVersion": "1.0.0"/"cniVersion": "0.4.0"/' "$NETWORK_FILE"
+    echo "==> downgraded $NETWORK CNI config to 0.4.0 for the installed firewall plugin"
+fi
+
 # ---------------------------------------------------------------------------
 # Image
 # ---------------------------------------------------------------------------

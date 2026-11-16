@@ -10,7 +10,7 @@
 
 1. `task_links_list` 找到当前任务的 Issue。
 2. `issue_get` 读取 Issue 正文和全部评论。
-3. `project_get` 读取项目名称和描述。
+3. `project` 读取项目名称和描述。
 4. `document`，`action = "content"`，`kind = "project"` 读取项目文档。
 5. `document`，`action = "content"`，`kind = "requirements"` 读取需求文档。
 6. `document`，`action = "content"`，`kind = "architecture"` 读取架构设计。

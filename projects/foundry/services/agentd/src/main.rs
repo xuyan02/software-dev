@@ -6,62 +6,67 @@
 //! definition, and records process heartbeat / current run in
 //! `agent_processes`.
 
+use async_trait::async_trait;
+use clap::Parser;
 use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
 use foundry_agent_runtime::{
-    AgentAssignTool, AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool,
-    AgentsListTool, Budget, DocumentTool, EchoTool, FoundryClient, FoundryRequirementsApplyTool,
-    FoundryRequirementsDraftTool, FoundryRequirementsGetTool, FoundryRequirementsValidateTool,
-    InMemoryTrajectory, IssueCommentTool, IssueGetTool, LocalSandbox, OpenAiCompatibleConfig,
-    OpenAiCompatibleModel, ProjectGetTool, ProjectWorkspace, RequirementsAnnotateTool,
-    RequirementsAnnotationsListTool, RequirementsResolveAnnotationTool, RunOutcome,
-    TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskCommentTool, TaskGetTool,
-    TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool, TaskStartTool,
-    TasksListTool, TasksReadyListTool, ToolRegistry, WorkspaceDiffTool, WorkspaceListTool,
-    WorkspaceReadTool, WorkspaceRunTool, WorkspaceWriteTool, compose_system_prompt,
+    AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
+    FoundryClient, ProjectTool, Shell, ShellOutput, ShellTool, TaskAssignAgentTool, TaskStartTool,
+    TasksReadyListTool, ToolError, ToolRegistry, compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
-use serde_json::json;
+use graph_agent::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
+use linux_capsule::LinuxCapsule;
+use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+
+#[derive(Debug, Parser)]
+struct Cli {
+    #[arg(long)]
+    database_url: String,
+    #[arg(long)]
+    foundry_url: String,
+    #[arg(long)]
+    foundry_token: String,
+    #[arg(long)]
+    agent_id: Uuid,
+    #[arg(long)]
+    shell_image: String,
+    #[arg(long)]
+    api_key: String,
+}
 
 struct Config {
     database_url: String,
     foundry_url: String,
     foundry_token: String,
     agent_id: Uuid,
-    sandbox_root: Option<String>,
+    shell_image: String,
+    api_key: String,
 }
 
 impl Config {
-    fn from_env() -> anyhow::Result<Self> {
-        let sandbox_root = std::env::var("FOUNDRY_SANDBOX_ROOT").unwrap_or_else(|_| {
-            foundry_shared::default_config_path()
-                .and_then(|path| {
-                    path.parent()
-                        .map(|dir| dir.join("workspaces").display().to_string())
-                })
-                .unwrap_or_else(|| "workspaces".to_string())
-        });
-        Ok(Self {
-            database_url: required("DATABASE_URL")?,
-            foundry_url: required("FOUNDRY_URL")?,
-            foundry_token: required("FOUNDRY_TOKEN")?,
-            agent_id: required("FOUNDRY_AGENT_ID")?.parse()?,
-            sandbox_root: Some(sandbox_root),
-        })
+    fn from_args() -> Self {
+        let cli = Cli::parse();
+        Self {
+            database_url: cli.database_url,
+            foundry_url: cli.foundry_url,
+            foundry_token: cli.foundry_token,
+            agent_id: cli.agent_id,
+            shell_image: cli.shell_image,
+            api_key: cli.api_key,
+        }
     }
-}
-
-fn required(key: &str) -> anyhow::Result<String> {
-    std::env::var(key).map_err(|_| anyhow::anyhow!("{key} is required"))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     foundry_shared::init_tracing("foundry_agentd=info,foundry_agent_runtime=info");
-    let config = Config::from_env()?;
+    let config = Config::from_args();
     let store = Arc::new(PostgresStore::connect(&config.database_url).await?);
 
     let definition = store
@@ -71,11 +76,9 @@ async fn main() -> anyhow::Result<()> {
     if !definition.enabled {
         anyhow::bail!("agent definition {} is disabled", definition.name);
     }
-    let api_key = std::env::var(&definition.api_key_env)
-        .map_err(|_| anyhow::anyhow!("{} is not set", definition.api_key_env))?;
     let model = Arc::new(OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
         definition.model_base_url.clone(),
-        api_key,
+        config.api_key.clone(),
         definition.model_name.clone(),
     ))?);
     let _ = store.agent_process_idle(config.agent_id).await;
@@ -93,16 +96,56 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         agent = %definition.name,
         role = %definition.role,
+        shell = definition.shell,
         "agentd started"
     );
 
+    let shell = if definition.shell {
+        Some(create_shell(&config).await?)
+    } else {
+        None
+    };
+
     if definition.role == "dispatcher" {
-        run_dispatcher_watcher(Arc::clone(&store), &config, &definition, model).await?;
+        run_dispatcher_watcher(Arc::clone(&store), &config, &definition, model, shell).await?;
         return Ok(());
     }
 
-    run_agent_watcher(Arc::clone(&store), &config, &definition, model).await?;
+    run_agent_watcher(Arc::clone(&store), &config, &definition, model, shell).await?;
     Ok(())
+}
+
+async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
+    let capsule = LinuxCapsule::headless_with_image(config.shell_image.clone()).await?;
+    Ok(Arc::new(CapsuleShell { capsule }))
+}
+
+struct CapsuleShell {
+    capsule: LinuxCapsule,
+}
+
+#[async_trait]
+impl Shell for CapsuleShell {
+    async fn upload(&self, local: &Path, container_path: &str) -> Result<(), ToolError> {
+        self.capsule
+            .upload(local, container_path)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))
+    }
+
+    async fn exec(&self, command: &str) -> Result<ShellOutput, ToolError> {
+        let command = format!("export DS_TOKEN_FILE=/run/foundry/ds-token; {command}");
+        let output = self
+            .capsule
+            .exec(&command)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        Ok(ShellOutput {
+            exit_code: output.status,
+            stdout: output.stdout_string(),
+            stderr: output.stderr_string(),
+        })
+    }
 }
 
 /// Agent mode: no durable queue. On startup, reconnect and every transient
@@ -113,6 +156,7 @@ async fn run_agent_watcher(
     config: &Config,
     definition: &AgentDefinition,
     model: Arc<OpenAiCompatibleModel>,
+    shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<()> {
     let mut handled: HashMap<Uuid, TaskFingerprint> = HashMap::new();
     loop {
@@ -130,6 +174,7 @@ async fn run_agent_watcher(
                 config,
                 definition,
                 Arc::clone(&model),
+                shell.clone(),
                 &mut handled,
             )
             .await;
@@ -161,6 +206,7 @@ async fn scan_assigned_tasks(
     config: &Config,
     definition: &AgentDefinition,
     model: Arc<OpenAiCompatibleModel>,
+    shell: Option<Arc<dyn Shell>>,
     handled: &mut HashMap<Uuid, TaskFingerprint>,
 ) {
     let tasks = match store.assigned_active_tasks(definition.id).await {
@@ -182,7 +228,9 @@ async fn scan_assigned_tasks(
         }
         handled.insert(task.task_id, fingerprint);
         let _ = store.agent_process_busy(config.agent_id).await;
-        if let Err(error) = execute_task(config, definition, Arc::clone(&model), &task).await {
+        if let Err(error) =
+            execute_task(config, definition, Arc::clone(&model), shell.clone(), &task).await
+        {
             tracing::warn!(task_id = %task.task_id, error = %error, "agent task execution failed");
         }
         let _ = store.agent_process_idle(config.agent_id).await;
@@ -199,15 +247,15 @@ async fn run_dispatcher_watcher(
     config: &Config,
     definition: &AgentDefinition,
     model: Arc<OpenAiCompatibleModel>,
+    shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<()> {
     let client = Arc::new(FoundryClient::new(
         &config.foundry_url,
         &config.foundry_token,
         "",
     ));
-    let tools = build_tools(definition, &client, config.sandbox_root.as_deref())?;
-    let trajectory = Arc::new(InMemoryTrajectory::new());
-    let runtime = AgentRuntime::new(model, Arc::new(tools), trajectory, Budget::default());
+    let tools = build_tools(definition, &client, shell.clone())?;
+    let runtime = build_runtime(definition, model, tools, shell)?;
 
     loop {
         let mut notifications = match listen_task_changes(&config.database_url).await {
@@ -234,20 +282,16 @@ async fn run_dispatcher_watcher(
                 system_prompt,
                 "Inspect the task pool now: call tasks_ready_list, assign every agent role \
                  that has no enabled agent, then call task_start for every task.",
-            );
+            )
+            .with_project_id(definition.project_id.to_string());
             tracing::info!("dispatcher sweep started");
             match runtime.run(request).await {
-                Ok(RunOutcome::Finished(result)) => {
+                Ok(result) => {
                     let final_message = result.final_message.as_deref().unwrap_or("");
                     tracing::info!(
-                        stop = ?result.stop_reason,
-                        steps = result.steps,
                         final = %truncate(final_message, 500),
                         "dispatcher sweep finished"
                     )
-                }
-                Ok(RunOutcome::WaitingForIssueComment { .. }) => {
-                    tracing::warn!("dispatcher sweep unexpectedly paused")
                 }
                 Err(error) => tracing::warn!(error = %error, "dispatcher sweep failed"),
             }
@@ -312,6 +356,7 @@ async fn execute_task(
     config: &Config,
     definition: &AgentDefinition,
     model: Arc<OpenAiCompatibleModel>,
+    shell: Option<Arc<dyn Shell>>,
     task: &AssignedTask,
 ) -> anyhow::Result<()> {
     tracing::info!(
@@ -326,13 +371,40 @@ async fn execute_task(
         &config.foundry_token,
         task.project_id.to_string(),
     ));
-    let tools = build_tools(definition, &client, config.sandbox_root.as_deref())?;
-    let runtime = AgentRuntime::new(
-        model,
-        Arc::new(tools),
-        Arc::new(InMemoryTrajectory::new()),
-        Budget::default(),
-    );
+    let tools = build_tools(definition, &client, shell.clone())?;
+    let runtime = build_runtime(definition, model, tools, shell.clone())?;
+
+    let is_codesummary = definition.role.starts_with("code_summary");
+    if is_codesummary {
+        let Some(shell) = shell.as_ref() else {
+            finish_codesummary(&client, task, false).await;
+            anyhow::bail!("CodeSummary agent has no shell");
+        };
+        match client.agent_credentials(task.task_id).await {
+            Ok(credentials) => {
+                if let Err(error) =
+                    inject_task_credentials(shell, task.project_id, &credentials).await
+                {
+                    tracing::warn!(
+                        task_id = %task.task_id,
+                        error = %error,
+                        "cannot inject task credentials"
+                    );
+                    finish_codesummary(&client, task, false).await;
+                    return Err(error);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    task_id = %task.task_id,
+                    error = %error,
+                    "cannot fetch task credentials"
+                );
+                finish_codesummary(&client, task, false).await;
+                return Err(anyhow::anyhow!("cannot fetch task credentials: {error}"));
+            }
+        }
+    }
 
     let task_id = task.task_id.to_string();
     let system_prompt = system_prompt_for(definition).map_err(|error| anyhow::anyhow!(error))?;
@@ -352,26 +424,165 @@ async fn execute_task(
         request.context.push("task", task_id.clone(), details);
     }
 
-    match runtime.run(request).await {
-        Ok(RunOutcome::Finished(result)) => {
+    let succeeded = match runtime.run(request).await {
+        Ok(result) => {
             tracing::info!(
                 task_id = %task.task_id,
-                stop_reason = ?result.stop_reason,
-                steps = result.steps,
-                input_tokens = result.usage.input_tokens,
-                output_tokens = result.usage.output_tokens,
                 final = %truncate(result.final_message.as_deref().unwrap_or(""), 1000),
                 "agent task completed"
             );
-        }
-        Ok(RunOutcome::WaitingForIssueComment { .. }) => {
-            tracing::warn!(task_id = %task.task_id, "agent asked to wait; no durable wait queue");
+            true
         }
         Err(error) => {
             tracing::warn!(task_id = %task.task_id, error = %error, "agent task failed");
+            false
         }
+    };
+
+    if is_codesummary {
+        clear_task_credentials(shell.as_ref(), task.project_id).await;
+        finish_codesummary(&client, task, succeeded).await;
     }
     Ok(())
+}
+
+async fn finish_codesummary(client: &FoundryClient, task: &AssignedTask, succeeded: bool) {
+    if task.workflow != "code_summary" {
+        return;
+    }
+    let stage = task.stage.as_deref().unwrap_or("summary");
+    let operation = if succeeded { "completed" } else { "failed" };
+    let key = Uuid::now_v7().to_string();
+    match client
+        .send_task_operation(task.task_id, &format!("{stage}:{operation}"), &key)
+        .await
+    {
+        Ok(_) => tracing::info!(
+            task_id = %task.task_id,
+            operation = %format!("{stage}:{operation}"),
+            "code summary task finished"
+        ),
+        Err(error) => tracing::warn!(
+            task_id = %task.task_id,
+            error = %error,
+            "cannot finish code summary task"
+        ),
+    }
+}
+
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+async fn run_shell(shell: &Arc<dyn Shell>, command: String) -> Result<ShellOutput, ToolError> {
+    shell.exec(&command).await
+}
+
+async fn shell_ok(shell: &Arc<dyn Shell>, command: String) -> Result<(), ToolError> {
+    let output = run_shell(shell, command).await?;
+    if output.exit_code != Some(0) {
+        return Err(ToolError::Failed(output.stderr));
+    }
+    Ok(())
+}
+
+async fn upload_text(
+    shell: &Arc<dyn Shell>,
+    container_path: &str,
+    text: &str,
+) -> Result<(), ToolError> {
+    let local = std::env::temp_dir().join(format!("foundry-cred-{}", Uuid::now_v7()));
+    tokio::fs::write(&local, text.as_bytes())
+        .await
+        .map_err(|error| ToolError::Failed(error.to_string()))?;
+    let result = shell.upload(&local, container_path).await;
+    let _ = tokio::fs::remove_file(&local).await;
+    result
+}
+
+async fn inject_task_credentials(
+    shell: &Arc<dyn Shell>,
+    project_id: Uuid,
+    credentials: &Value,
+) -> anyhow::Result<()> {
+    let root = format!("/work/{project_id}/.credentials");
+    let git_dir = format!("{root}/git");
+    shell_ok(shell, format!("mkdir -p {}", shell_quote(&git_dir))).await?;
+
+    if let Some(git) = credentials.get("git").filter(|value| !value.is_null()) {
+        let url = git.get("url").and_then(Value::as_str).unwrap_or_default();
+        let username = git
+            .get("username")
+            .and_then(Value::as_str)
+            .unwrap_or("x-access-token");
+        let token = git.get("token").and_then(Value::as_str).unwrap_or_default();
+        if url.is_empty() || token.is_empty() {
+            anyhow::bail!("git credential is missing url or token");
+        }
+        let host = url
+            .strip_prefix("https://")
+            .and_then(|rest| rest.split('/').next())
+            .filter(|host| !host.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("unsupported git URL: {url}"))?;
+        upload_text(
+            shell,
+            &format!("{git_dir}/.git-credentials"),
+            &format!("https://{username}:{token}@{host}\n"),
+        )
+        .await?;
+        upload_text(
+            shell,
+            &format!("{git_dir}/gitconfig"),
+            "[credential]\n\thelper = store\n",
+        )
+        .await?;
+        upload_text(shell, &format!("{git_dir}/url"), url).await?;
+    }
+
+    if let Some(ds) = credentials
+        .get("design_space")
+        .filter(|value| !value.is_null())
+    {
+        if let Some(url) = ds.get("url").and_then(Value::as_str)
+            && !url.is_empty()
+        {
+            upload_text(shell, &format!("{root}/ds-url"), url).await?;
+        }
+        if let Some(token) = ds.get("token").and_then(Value::as_str)
+            && !token.is_empty()
+        {
+            shell_ok(
+                shell,
+                "mkdir -p /run/foundry && chmod 700 /run/foundry".to_string(),
+            )
+            .await?;
+            upload_text(shell, "/run/foundry/ds-token", &format!("{token}\n")).await?;
+            shell_ok(shell, "chmod 600 /run/foundry/ds-token".to_owned()).await?;
+            upload_text(shell, &format!("{root}/ds-token"), &format!("{token}\n")).await?;
+        }
+    }
+
+    shell_ok(
+        shell,
+        format!(
+            "chmod 700 {} && chmod 600 {}/* 2>/dev/null || true",
+            shell_quote(&root),
+            shell_quote(&git_dir)
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn clear_task_credentials(shell: Option<&Arc<dyn Shell>>, project_id: Uuid) {
+    if let Some(shell) = shell {
+        let _ = shell
+            .exec(&format!(
+                "rm -rf {} /run/foundry/ds-token",
+                shell_quote(&format!("/work/{project_id}/.credentials"))
+            ))
+            .await;
+    }
 }
 
 fn system_prompt_for(definition: &AgentDefinition) -> Result<String, String> {
@@ -396,142 +607,48 @@ fn truncate(text: &str, limit: usize) -> String {
     truncated
 }
 
+fn build_runtime(
+    definition: &AgentDefinition,
+    model: Arc<OpenAiCompatibleModel>,
+    tools: ToolRegistry,
+    shell: Option<Arc<dyn Shell>>,
+) -> anyhow::Result<AgentRuntime> {
+    if definition.role.starts_with("code_summary") {
+        let shell = shell.ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent {} is a CodeSummary agent but has no shell",
+                definition.name
+            )
+        })?;
+        Ok(AgentRuntime::new_codesummary(model, Arc::new(tools), shell))
+    } else {
+        Ok(AgentRuntime::new(model, Arc::new(tools)))
+    }
+}
+
 fn build_tools(
     definition: &AgentDefinition,
     client: &Arc<FoundryClient>,
-    sandbox_root: Option<&str>,
+    shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<ToolRegistry> {
-    let all = definition.tools.is_empty();
-    let wants = |name: &str| all || definition.tools.iter().any(|tool| tool == name);
     let mut tools = ToolRegistry::new();
-    if wants("echo") {
-        tools.register(Arc::new(EchoTool));
-    }
-    if wants("task_links_list") {
-        tools.register(Arc::new(TaskLinksListTool::new(Arc::clone(client))));
-    }
-    if wants("project_get") {
-        tools.register(Arc::new(ProjectGetTool::new(Arc::clone(client))));
-    }
-    if wants("issue_get") {
-        tools.register(Arc::new(IssueGetTool::new(Arc::clone(client))));
-    }
-    if wants("issue_comment") {
-        tools.register(Arc::new(IssueCommentTool::new(Arc::clone(client))));
-    }
-    if wants("document") {
-        tools.register(Arc::new(DocumentTool::new(Arc::clone(client))));
-    }
-    if wants("requirements_get") {
-        tools.register(Arc::new(FoundryRequirementsGetTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("requirements_draft") {
-        tools.register(Arc::new(FoundryRequirementsDraftTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("requirements_apply_operations") {
-        tools.register(Arc::new(FoundryRequirementsApplyTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("requirements_validate") {
-        tools.register(Arc::new(FoundryRequirementsValidateTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("requirements_annotations_list") {
-        tools.register(Arc::new(RequirementsAnnotationsListTool::new(Arc::clone(
-            client,
-        ))));
-    }
-    if wants("requirements_annotate") {
-        tools.register(Arc::new(RequirementsAnnotateTool::new(Arc::clone(client))));
-    }
-    if wants("requirements_resolve_annotation") {
-        tools.register(Arc::new(RequirementsResolveAnnotationTool::new(
-            Arc::clone(client),
-        )));
-    }
-    if wants("sandbox_run_command")
-        && let Some(root) = sandbox_root
-    {
-        tools.register(Arc::new(LocalSandbox::new(root)?));
-    }
-    if let Some(root) = sandbox_root
-        && [
-            "workspace_list",
-            "workspace_read",
-            "workspace_write",
-            "workspace_run",
-            "workspace_diff",
-        ]
-        .iter()
-        .any(|name| wants(name))
-    {
-        let workspace = Arc::new(ProjectWorkspace::new(root)?);
-        if wants("workspace_list") {
-            tools.register(Arc::new(WorkspaceListTool::new(Arc::clone(&workspace))));
-        }
-        if wants("workspace_read") {
-            tools.register(Arc::new(WorkspaceReadTool::new(Arc::clone(&workspace))));
-        }
-        if wants("workspace_write") {
-            tools.register(Arc::new(WorkspaceWriteTool::new(Arc::clone(&workspace))));
-        }
-        if wants("workspace_run") {
-            tools.register(Arc::new(WorkspaceRunTool::new(Arc::clone(&workspace))));
-        }
-        if wants("workspace_diff") {
-            tools.register(Arc::new(WorkspaceDiffTool::new(workspace)));
-        }
-    }
-    if wants("agents_list") {
-        tools.register(Arc::new(AgentsListTool::new(Arc::clone(client))));
-    }
-    if wants("agent_templates_list") {
-        tools.register(Arc::new(AgentTemplatesListTool::new(Arc::clone(client))));
-    }
-    if wants("agent_create_for_role") {
-        tools.register(Arc::new(AgentCreateForRoleTool::new(Arc::clone(client))));
-    }
-    if wants("agent_assign") {
-        tools.register(Arc::new(AgentAssignTool::new(Arc::clone(client))));
-    }
-    if wants("tasks_ready_list") {
+    tools.register(Arc::new(ProjectTool::new(Arc::clone(client))));
+    if definition.role == "dispatcher" {
         tools.register(Arc::new(TasksReadyListTool::new(Arc::clone(client))));
-    }
-    if wants("task_start") {
+        tools.register(Arc::new(AgentsListTool::new(Arc::clone(client))));
+        tools.register(Arc::new(AgentTemplatesListTool::new(Arc::clone(client))));
+        tools.register(Arc::new(AgentCreateForRoleTool::new(Arc::clone(client))));
+        tools.register(Arc::new(TaskAssignAgentTool::new(Arc::clone(client))));
         tools.register(Arc::new(TaskStartTool::new(Arc::clone(client))));
     }
-    if wants("tasks_list") {
-        tools.register(Arc::new(TasksListTool::new(Arc::clone(client))));
-    }
-    if wants("task_get") {
-        tools.register(Arc::new(TaskGetTool::new(Arc::clone(client))));
-    }
-    if wants("task_allowed_operations") {
-        tools.register(Arc::new(TaskAllowedOperationsTool::new(Arc::clone(client))));
-    }
-    if wants("task_operation") {
-        tools.register(Arc::new(TaskOperationTool::new(Arc::clone(client))));
-    }
-    if wants("task_comment") {
-        tools.register(Arc::new(TaskCommentTool::new(Arc::clone(client))));
-    }
-    if wants("task_history") {
-        tools.register(Arc::new(TaskHistoryTool::new(Arc::clone(client))));
-    }
-    if wants("task_add_link") {
-        tools.register(Arc::new(TaskAddLinkTool::new(Arc::clone(client))));
-    }
-    if wants("task_remove_link") {
-        tools.register(Arc::new(TaskRemoveLinkTool::new(Arc::clone(client))));
-    }
-    if wants("task_assign_agent") {
-        tools.register(Arc::new(TaskAssignAgentTool::new(Arc::clone(client))));
+    if definition.shell {
+        let shell = shell.ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent {} requires a shell but agentd did not create one",
+                definition.name
+            )
+        })?;
+        tools.register(Arc::new(ShellTool::new(shell)));
     }
     Ok(tools)
 }

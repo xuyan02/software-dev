@@ -170,18 +170,18 @@ impl HttpRemote {
             .with_context(|| format!("branch {branch} has no commit"))?;
         for (relative, path) in store_files(workspace.store().root())? {
             let bytes = fs::read(&path)?;
-            self.put_bytes(&format!("/v1/files/{relative}"), &bytes)?;
+            self.put_bytes(&format!("/files/{relative}"), &bytes)?;
         }
         self.put_bytes(
-            "/v1/refs",
+            "/refs",
             format!("{branch}\t{}\n", commit.to_hex()).as_bytes(),
         )?;
         Ok(commit)
     }
 
     fn fetch(&self, workspace: &Workspace) -> Result<Vec<(String, CommitHash)>> {
-        let refs = parse_refs(&self.get_text("/v1/refs")?)?;
-        let files = self.get_text("/v1/files")?;
+        let refs = parse_refs(&self.get_text("/refs")?)?;
+        let files = self.get_text("/files")?;
         let root = workspace.store().root();
         for relative in files.lines().filter(|line| !line.is_empty()) {
             if !valid_relative(Path::new(relative)) {
@@ -191,7 +191,7 @@ impl HttpRemote {
             if target.is_file() {
                 continue;
             }
-            let bytes = self.get_bytes(&format!("/v1/files/{relative}"))?;
+            let bytes = self.get_bytes(&format!("/files/{relative}"))?;
             publish(root, relative, &bytes)?;
         }
         write_remote_refs(workspace, &refs)?;
@@ -673,7 +673,9 @@ pub(crate) fn valid_branch(branch: &str) -> bool {
     !branch.is_empty()
         && !branch.starts_with('-')
         && !branch.contains('\\')
-        && !branch.bytes().any(|byte| byte.is_ascii_control())
+        && !branch
+            .bytes()
+            .any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
         && branch
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")

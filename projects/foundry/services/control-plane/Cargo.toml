@@ -24,5 +24,6 @@ tokio.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+jsonwebtoken.workspace = true
 tracing.workspace = true
 uuid.workspace = true

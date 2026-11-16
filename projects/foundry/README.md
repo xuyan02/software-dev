@@ -21,7 +21,7 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 - **账户与登录会话**：人类账户、智能体账户、全局 Admin/Member 角色、Argon2 密码哈希、可撤销会话、Web Cookie 与 REST/MCP Bearer Token。
 - **项目与隔离**：项目成员及 Viewer / Member / Maintainer / Owner 角色；Issue、项目文档和需求文档全部按项目隔离，跨项目读取返回 404。
 - 人类控制台：登录、侧边导航、**工作台**、议题收件箱、**任务**、**项目文档**、**需求文档**、**架构设计**、**详细设计**、**开发记录**、**测试计划**、**测试报告**、项目切换、项目成员管理、账户管理（Admin）、**智能体管理（Admin）**。
-- **智能体管理**：每个智能体一个常驻 `foundry-agentd` 进程；控制平面 supervisor 负责启动/停止/重启、心跳和进程状态；PM Agent 作为调度者把 Ready 任务纳入派发：按 role 分配 Agent，没有合适的就从平台模板创建，然后调用 `task_start` 把任务置为 `in_progress`；用户不配置智能体。
+- **智能体管理**：每个智能体一个常驻 `foundry-agentd` 进程；控制平面 supervisor 负责启动/停止/重启、心跳和进程状态；每个项目有一个 PM Agent 作为调度者，只处理本项目的 Ready 任务：按 role 分配 Agent，没有合适的就从平台模板创建，然后调用 `task_start` 把任务置为 `in_progress`；所有智能体都属于项目，用户不配置智能体。
 - **通用锚点文档引擎**：描述文件定义章节树；文档、章节和列表项都是锚点，每个锚点有稳定键和 SHA-256 内容 ID；共享草案、不可变版本、操作日志、审批、按项标注和乐观并发。
 - 项目文档（承诺空间）：使用 `kind = project` 的锚点文档，包含定位（是什么、不是什么）、背景（现状、问题）、目标、非目标、分期计划、约束、风险和术语表。
 - 需求文档：每个项目一份锚点需求文档，包含领域模型、用户肖像、故事、子系统（含功能集和功能）、交互设计、UI设计；交互设计按子系统 → 功能集 → 功能组织并包含信息架构和页面清单，UI 设计按子系统 → 页面组织并包含设计稿图片；与项目文档分开审批和发布。
@@ -71,10 +71,8 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 # 启动本地 Postgres（首次会初始化数据卷）
 docker compose -f projects/foundry/deploy/compose/docker-compose.yml up -d postgres
 
-export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
-
-# 或者：把仓库根目录的 foundry.toml.example 复制到
-# ~/.foundry/foundry.toml 并修改（环境变量仍然优先）
+# 把仓库根目录的 foundry.toml.example 复制到 ~/.foundry/foundry.toml 并修改。
+# Foundry 只从这个文件读取配置，不读环境变量。
 
 # 在 software-dev/ 根目录
 # 控制平面会启动同目录下的 foundry-agentd 子进程；修改代码后两者要一起重建
@@ -86,13 +84,7 @@ cargo run -p foundry-control-plane
 
 ### 配置文件
 
-启动时按以下优先级读取配置：
-
-1. 环境变量（最高）
-2. 配置文件
-3. 内置默认值
-
-配置文件默认位于 `~/.foundry/foundry.toml`；不存在时跳过。用 `FOUNDRY_CONFIG=/path/to/foundry.toml` 可以指定其他路径（此时文件必须存在，否则启动失败）。未知键会被拒绝，避免拼写错误被静默忽略。旧版本的 `project` / `project_name` 键仍会被接受但忽略，启动时打印警告，可以删除。参考仓库根目录的 `foundry.toml.example`。配置文件可能含数据库密码、模型 API key 和初始化密码，建议放在权限为 700 的目录中并 `chmod 600`。
+配置只来自 `~/.foundry/foundry.toml`，不存在时使用内置默认值；Foundry 不读环境变量。部署到其他位置时把配置文件挂载到这个路径。未知键会被拒绝，避免拼写错误被静默忽略。旧版本的 `project` / `project_name` 键仍会被接受但忽略，启动时打印警告，可以删除。参考仓库根目录的 `foundry.toml.example`。配置文件可能含数据库密码、模型 API key 和初始化密码，建议放在权限为 700 的目录中并 `chmod 600`。
 
 ```toml
 addr = "127.0.0.1:8080"
@@ -106,30 +98,35 @@ bootstrap_name = "Administrator"
 bootstrap_password = "change-this-initialization-passphrase"
 session_ttl_hours = 168
 
-# 平台智能体使用的模型。环境变量 OPENAI_* 优先；API key 不会写入数据库。
+# 平台智能体使用的模型。API key 不会写入数据库。
 openai_api_key = "sk-..."
 openai_base_url = "https://api.deepseek.com/v1"
 openai_model = "deepseek-chat"
 ```
 
-首次启动时账户库为空，浏览器打开 `/setup`。第一步用配置中的 `bootstrap_handle` 和 `bootstrap_password` 登录初始化流程，确认操作者持有配置文件；这一步不会创建账户。第二步由操作者设置首个管理员的账号和密码，创建成功后自动登录并进入项目页。初始账号/密码只是授权身份，不会成为管理员账户或管理员密码，不写入数据库，也不用于后续登录；`bootstrap_name` 只是新建管理员表单的显示名预填值。首个项目不是自动生成的：管理员在项目页创建，创建者成为 Owner。下表列出环境变量；同名的配置文件键（小写，如 `database_url`）作用相同，环境变量优先：
+首次启动时账户库为空，浏览器打开 `/setup`。第一步用配置中的 `bootstrap_handle` 和 `bootstrap_password` 登录初始化流程，确认操作者持有配置文件；这一步不会创建账户。第二步由操作者设置首个管理员的账号和密码，创建成功后自动登录并进入项目页。初始账号/密码只是授权身份，不会成为管理员账户或管理员密码，不写入数据库，也不用于后续登录；`bootstrap_name` 只是新建管理员表单的显示名预填值。首个项目不是自动生成的：管理员在项目页创建，创建者成为 Owner。下表列出配置键：
 
-| 环境变量 | 默认值 | 说明 |
+| 键 | 默认值 | 说明 |
 |---|---|---|
-| `FOUNDRY_CONFIG` | `~/.foundry/foundry.toml`（存在时） | 配置文件路径 |
-| `DATABASE_URL` | 无（必填） | Postgres 连接串，如 `postgres://foundry:foundry@localhost:5432/foundry` |
-| `FOUNDRY_ADDR` | `127.0.0.1:8080` | 监听地址 |
-| `FOUNDRY_BOOTSTRAP_HANDLE` | `admin` | 初始化登录的初始账号；不是系统账户 |
-| `FOUNDRY_BOOTSTRAP_NAME` | `Administrator` | 新建管理员表单预填的显示名 |
-| `FOUNDRY_BOOTSTRAP_PASSWORD` | 无 | 与初始账号配对的初始密码；账户表为空时必填，用于登录 `/setup`；不是管理员密码，账户表非空后忽略 |
-| `FOUNDRY_SESSION_TTL_HOURS` | `168` | 登录会话有效期 |
-| `OPENAI_API_KEY` | 无 | 平台智能体模型 key；也可写 `openai_api_key`。不落库 |
-| `OPENAI_BASE_URL` | 平台默认 `http://127.0.0.1:11434/v1` | 平台智能体模型 base URL；也可写 `openai_base_url` |
-| `OPENAI_MODEL` | 平台默认 `qwen2.5-coder` | 平台智能体模型名；也可写 `openai_model` |
-| `DESIGN_SPACE_URL` | 无 | 外部 `ds-server` 的 HTTP 地址；不配置时控制平面启动本地 `ds-server`；也可写 `design_space_url` |
-| `DESIGN_SPACE_ROOT` | `~/.foundry/design-spaces` | 本地 `ds-server` 的项目仓库目录 |
-| `DESIGN_SPACE_HOST` | `localhost` | 生成 `ds://` 地址用的主机名 |
-| `DESIGN_SPACE_USER` | `$USER` | 生成 `ds://` 地址用的 SSH 用户 |
+| `addr` | `127.0.0.1:8080` | 监听地址 |
+| `database_url` | 无（必填） | Postgres 连接串，如 `postgres://foundry:foundry@localhost:5432/foundry` |
+| `bootstrap_handle` | `admin` | 初始化登录的初始账号；不是系统账户 |
+| `bootstrap_name` | `Administrator` | 新建管理员表单预填的显示名 |
+| `bootstrap_password` | 无 | 与初始账号配对的初始密码；账户表为空时必填，用于登录 `/setup`；不是管理员密码，账户表非空后忽略 |
+| `session_ttl_hours` | `168` | 登录会话有效期 |
+| `openai_api_key` | 无 | 平台智能体模型 key；不落库 |
+| `openai_base_url` | 平台默认 `http://127.0.0.1:11434/v1` | 平台智能体模型 base URL |
+| `openai_model` | 平台默认 `qwen2.5-coder` | 平台智能体模型名 |
+| `design_space_url` | 无 | 外部 `ds-server` 的 HTTP 地址；不配置时控制平面启动本地 `ds-server` |
+| `design_space_root` | `~/.foundry/design-spaces` | 本地 `ds-server` 的仓库集合根目录；每个项目一个子仓库 |
+| `design_space_listen` | `0.0.0.0:7700` | 本地 `ds-server` 的监听地址；必须能被 agent 容器访问 |
+| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 Bearer token 文件；不存在时自动生成 |
+| `design_space_agent_url` | 自动检测的宿主 IP + 端口 | 写入项目 `design_space_url` 的 agent 侧地址 |
+| `editor_dir` | `web/workflow-editor/dist` | 流程编辑器的构建产物目录 |
+| `github_app_id` | 无 | GitHub App ID；用于签发短期仓库 token |
+| `github_app_private_key_file` | 无 | GitHub App 私钥路径；私钥不会写入数据库或交给 agent |
+| `github_api_base` | `https://api.github.com` | GitHub API 地址；GitHub Enterprise 用 `https://host/api/v3` |
+| `shell_image` | `localhost/openergasterion-shell:1` | agent 常驻 shell 使用的容器镜像 |
 
 引导规则：
 
@@ -290,7 +287,7 @@ services/* → 组合根
 - `crates/adapters/*`：内存、Postgres、Git、策略、对象存储。
 - `crates/api-*`：入站适配器（HTTP、MCP）。
 - `crates/web`：服务端渲染的人类控制台。
-- `crates/agent-runtime`：Foundry 自己的 Agent 运行时（模型/工具/轨迹/预算/循环）；Phase 0 骨架。
+- `crates/agent-runtime`：Foundry 的 Agent 定义、提示词、工具和业务集成；图执行、模型协议、Provider 和工具循环由 `graph-agent` 提供。
 - `web/workflow-editor`：独立的流程编辑器 SPA（Vite + React + React Flow）；构建产物部署到 `/workflows/editor/`。
 - `services/*`：可执行程序。
 - `migrations/`：Postgres schema（`accounts`、`sessions`、`projects`、`project_members`、`issues`、`events`、`decisions`、`links`、`tasks`、`workflow_definitions`、`workflow_versions`、`workflow_drafts`、`workflow_layouts`）。

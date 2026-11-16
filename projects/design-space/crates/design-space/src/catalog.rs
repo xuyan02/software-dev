@@ -208,6 +208,15 @@ impl Catalog {
         Ok(catalog)
     }
 
+    /// Strictly verify the object graph.
+    ///
+    /// Containment is always checked while rebuilding; this additionally
+    /// resolves relations, dependencies, overrides and cycles. Forward
+    /// references are allowed while authoring and must resolve before commit.
+    pub fn verify(&self, store: &Store) -> Result<()> {
+        validate_semantics(store, &self.entries)
+    }
+
     /// Rebuild all object hashes and the View root.
     ///
     /// The catalog is used as the source of truth. Parent/child containers are
@@ -283,8 +292,6 @@ impl Catalog {
                 return Err(CatalogError::Orphan(normalize_name(*qname)));
             }
         }
-
-        validate_semantics(store, &self.entries)?;
 
         let mut memo = BTreeMap::new();
         let mut visiting = BTreeSet::new();
@@ -1365,7 +1372,7 @@ mod tests {
         catalog.insert(sym("namespaces/B"), b).unwrap();
         assert!(matches!(
             catalog.rebuild(&store),
-            Err(CatalogError::InvalidRelationKind { .. })
+            Err(CatalogError::Cycle(_))
         ));
     }
 
@@ -1379,8 +1386,9 @@ mod tests {
             unreachable!()
         };
         p.superclass = sym("namespaces/app/Auth");
+        catalog.rebuild(&store).unwrap();
         assert!(matches!(
-            catalog.rebuild(&store),
+            catalog.verify(&store),
             Err(CatalogError::RelationCycle(_))
         ));
     }

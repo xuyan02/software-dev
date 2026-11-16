@@ -8,9 +8,9 @@ use uuid::Uuid;
 /// Allocates a server-side design space for a new project.
 #[async_trait::async_trait]
 pub trait DesignSpaceProvisioner: Send + Sync {
-    /// `source` is the project's git repository, stored so `ds clone` can
-    /// clone it without an extra argument. Returns the `ds://` address.
-    async fn create_design_space(&self, name: &str, source: &str) -> Result<String, String>;
+    /// Create a repository named `repo` with an initial branch.
+    /// Returns the concrete remote URL (for local servers usually HTTP).
+    async fn create_design_space(&self, repo: &str, branch: &str) -> Result<String, String>;
 }
 
 /// Storage for issues. Same optimistic concurrency contract as requirements.

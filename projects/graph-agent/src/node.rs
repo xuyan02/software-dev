@@ -1,14 +1,15 @@
 use crate::{Context, ContextError, TemplateError, TransitionIndex};
 use async_trait::async_trait;
+use serde_json::Value;
 
 /// One executable step in a [`crate::Graph`].
 ///
 /// A node does not know its own graph name or the names of its targets. It
-/// writes its output through [`Context::set_output`] and returns the local
-/// transition index that the graph should follow.
+/// receives the previous node's output as its input, writes its own output
+/// through the return value, and selects a local transition index.
 #[async_trait]
 pub trait Node: Send + Sync {
-    async fn run(&self, ctx: &mut Context) -> Result<(), NodeError>;
+    async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError>;
 
     /// Select one of this node's local transition targets.
     fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError>;

@@ -15,7 +15,7 @@
    - `issue_get` 读取标题、正文和全部评论。
 
 2. **项目信息**
-   - `project_get` 读取项目名称和描述。
+   - `project` 读取项目名称和描述。
 
 3. **项目文档当前状态**
    - `document`，`action = "content"`，`kind = "project"`，不传 `anchor`，读取全文。

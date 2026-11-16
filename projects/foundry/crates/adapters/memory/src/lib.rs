@@ -117,17 +117,31 @@ pub struct MemoryAgentAdmin;
 
 #[async_trait::async_trait]
 impl AgentAdminUseCases for MemoryAgentAdmin {
-    async fn overview(&self, _actor: Actor) -> Result<AgentOverview, ServiceError> {
+    async fn overview(
+        &self,
+        _actor: Actor,
+        _project_id: Option<Uuid>,
+    ) -> Result<AgentOverview, ServiceError> {
         Ok(AgentOverview::default())
     }
 
-    async fn agents(&self, _actor: Actor) -> Result<Vec<AgentDefinition>, ServiceError> {
+    async fn agents(
+        &self,
+        _actor: Actor,
+        _project_id: Option<Uuid>,
+    ) -> Result<Vec<AgentDefinition>, ServiceError> {
         Ok(Vec::new())
     }
 
-    async fn ready_tasks(&self, _actor: Actor) -> Result<Vec<ReadyTaskView>, ServiceError> {
+    async fn ready_tasks(
+        &self,
+        _actor: Actor,
+        _project_id: Option<Uuid>,
+    ) -> Result<Vec<ReadyTaskView>, ServiceError> {
         Ok(Vec::new())
     }
+
+    async fn ensure_project_pm(&self, _project_id: Uuid) {}
 
     async fn templates(
         &self,
@@ -579,7 +593,8 @@ mod tests {
             Err(RepoError::Duplicate(_))
         ));
 
-        let project = Project::new("Foundry", None, "git@example.com:test/repo.git", first.id).unwrap();
+        let project =
+            Project::new("Foundry", None, "git@example.com:test/repo.git", first.id).unwrap();
         ProjectRepository::insert(&store, &project).await.unwrap();
         let duplicate_project = project.clone();
         assert!(matches!(
@@ -600,7 +615,8 @@ mod tests {
             Some("hash".to_string()),
         )
         .unwrap();
-        let project = Project::new("Foundry", None, "git@example.com:test/repo.git", owner.id).unwrap();
+        let project =
+            Project::new("Foundry", None, "git@example.com:test/repo.git", owner.id).unwrap();
         ProjectRepository::insert(&store, &project).await.unwrap();
         let loaded = ProjectRepository::get(&store, project.id)
             .await

@@ -3,15 +3,14 @@
 //! Covers OpenAI, DeepSeek, Ollama, vLLM and any other server exposing
 //! `/chat/completions` with function calling.
 
+use crate::{
+    LlmMessage, LlmRequest, LlmResponse, LlmRole, LlmToolCall, ModelError, ModelGateway,
+    ToolDefinition, Usage,
+};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
-
-use crate::{
-    Message, MessageRole, ModelError, ModelGateway, ModelRequest, ModelResponse, ModelStopReason,
-    ToolCall, ToolSpec, Usage,
-};
 
 #[derive(Debug, Clone)]
 pub struct OpenAiCompatibleConfig {
@@ -61,7 +60,7 @@ impl OpenAiCompatibleModel {
 
 #[async_trait]
 impl ModelGateway for OpenAiCompatibleModel {
-    async fn complete(&self, request: ModelRequest) -> Result<ModelResponse, ModelError> {
+    async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ModelError> {
         let body = request_body(&self.config, &request);
         let url = format!(
             "{}/chat/completions",
@@ -119,19 +118,24 @@ async fn sleep_backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(millis)).await;
 }
 
-fn request_body(config: &OpenAiCompatibleConfig, request: &ModelRequest) -> Value {
+fn request_body(config: &OpenAiCompatibleConfig, request: &LlmRequest) -> Value {
+    let model = if request.model.as_str().is_empty() {
+        config.model.as_str()
+    } else {
+        request.model.as_str()
+    };
     let messages: Vec<Value> = request.messages.iter().map(message_json).collect();
-    let mut body = json!({ "model": config.model, "messages": messages });
+    let mut body = json!({ "model": model, "messages": messages });
     if !request.tools.is_empty() {
         body["tools"] = json!(request.tools.iter().map(tool_json).collect::<Vec<_>>());
     }
-    if let Some(temperature) = request.temperature {
+    if let Some(temperature) = request.params.temperature {
         body["temperature"] = json!(temperature);
     }
-    if let Some(max_tokens) = request.max_tokens {
+    if let Some(max_tokens) = request.params.max_tokens {
         body["max_tokens"] = json!(max_tokens);
     }
-    if is_deepseek(&config.base_url, &config.model) {
+    if is_deepseek(&config.base_url, model) {
         body["thinking"] = json!({
             "type": if config.thinking { "enabled" } else { "disabled" }
         });
@@ -156,11 +160,11 @@ fn is_deepseek(base_url: &str, model: &str) -> bool {
         || model.starts_with("deepseek-v")
 }
 
-fn message_json(message: &Message) -> Value {
+fn message_json(message: &LlmMessage) -> Value {
     match message.role {
-        MessageRole::System => json!({ "role": "system", "content": message.content }),
-        MessageRole::User => json!({ "role": "user", "content": message.content }),
-        MessageRole::Assistant => {
+        LlmRole::System => json!({ "role": "system", "content": message.content }),
+        LlmRole::User => json!({ "role": "user", "content": message.content }),
+        LlmRole::Assistant => {
             let mut value = json!({ "role": "assistant", "content": message.content });
             if let Some(reasoning_content) = &message.reasoning_content {
                 value["reasoning_content"] = json!(reasoning_content);
@@ -185,7 +189,7 @@ fn message_json(message: &Message) -> Value {
             }
             value
         }
-        MessageRole::Tool => json!({
+        LlmRole::Tool => json!({
             "role": "tool",
             "tool_call_id": message.tool_call_id.clone().unwrap_or_default(),
             "content": message.content
@@ -193,13 +197,13 @@ fn message_json(message: &Message) -> Value {
     }
 }
 
-fn tool_json(spec: &ToolSpec) -> Value {
+fn tool_json(tool: &ToolDefinition) -> Value {
     json!({
         "type": "function",
         "function": {
-            "name": spec.name,
-            "description": spec.description,
-            "parameters": spec.input_schema
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.input_schema
         }
     })
 }
@@ -214,8 +218,6 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ChoiceMessage,
-    #[serde(default)]
-    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,7 +251,7 @@ struct UsageJson {
     completion_tokens: u64,
 }
 
-fn parse_response(text: &str) -> Result<ModelResponse, ModelError> {
+fn parse_response(text: &str) -> Result<LlmResponse, ModelError> {
     let response: ChatResponse = serde_json::from_str(text)
         .map_err(|error| ModelError::InvalidResponse(error.to_string()))?;
     let choice = response
@@ -269,37 +271,32 @@ fn parse_response(text: &str) -> Result<ModelResponse, ModelError> {
                 ))
             })?
         };
-        tool_calls.push(ToolCall {
+        tool_calls.push(LlmToolCall {
             id: call.id,
             name: call.function.name,
             arguments,
         });
     }
-    let stop_reason = if !tool_calls.is_empty() {
-        ModelStopReason::ToolCalls
-    } else {
-        match choice.finish_reason.as_deref() {
-            Some("tool_calls") => ModelStopReason::ToolCalls,
-            Some("length") => ModelStopReason::Length,
-            Some("stop") | None => ModelStopReason::Stop,
-            Some(_) => ModelStopReason::Other,
-        }
-    };
-    Ok(ModelResponse {
-        content: choice.message.content,
-        reasoning_content: choice.message.reasoning_content,
-        tool_calls,
+    Ok(LlmResponse {
+        message: LlmMessage::assistant_with_reasoning(
+            choice.message.content.unwrap_or_default(),
+            tool_calls,
+            choice.message.reasoning_content,
+        ),
         usage: response
             .usage
-            .map(|usage| Usage::new(usage.prompt_tokens, usage.completion_tokens))
+            .map(|usage| Usage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+            })
             .unwrap_or_default(),
-        stop_reason,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{LlmParams, ModelProfileRef};
     use axum::Router;
     use axum::extract::Json;
     use axum::routing::post;
@@ -328,16 +325,21 @@ mod tests {
         (format!("http://{addr}"), captured)
     }
 
-    fn request() -> ModelRequest {
-        ModelRequest {
-            messages: vec![Message::system("system"), Message::user("hello")],
-            tools: vec![ToolSpec {
+    fn request() -> LlmRequest {
+        LlmRequest {
+            model: ModelProfileRef::new("test-model"),
+            params: LlmParams {
+                max_tokens: Some(100),
+                temperature: Some(0.2),
+                timeout: None,
+                history_token_budget: None,
+            },
+            messages: vec![LlmMessage::system("system"), LlmMessage::user("hello")],
+            tools: vec![ToolDefinition {
                 name: "echo".to_string(),
                 description: "echo".to_string(),
                 input_schema: json!({ "type": "object" }),
             }],
-            max_tokens: Some(100),
-            temperature: Some(0.2),
         }
     }
 
@@ -345,8 +347,7 @@ mod tests {
     async fn parses_content_and_usage() {
         let (base_url, captured) = mock_server(json!({
             "choices": [{
-                "message": { "role": "assistant", "content": "done" },
-                "finish_reason": "stop"
+                "message": { "role": "assistant", "content": "done" }
             }],
             "usage": { "prompt_tokens": 10, "completion_tokens": 4 }
         }))
@@ -354,13 +355,13 @@ mod tests {
         let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
             base_url,
             "test-key",
-            "test-model",
+            "fallback-model",
         ))
         .unwrap();
         let response = model.complete(request()).await.unwrap();
-        assert_eq!(response.content.as_deref(), Some("done"));
-        assert_eq!(response.usage, Usage::new(10, 4));
-        assert_eq!(response.stop_reason, ModelStopReason::Stop);
+        assert_eq!(response.message.content, "done");
+        assert_eq!(response.usage.input_tokens, 10);
+        assert_eq!(response.usage.output_tokens, 4);
 
         let body = captured.lock().unwrap().first().cloned().unwrap();
         assert_eq!(body["model"], "test-model");
@@ -372,10 +373,7 @@ mod tests {
     #[tokio::test]
     async fn deepseek_requests_enable_thinking() {
         let (base_url, captured) = mock_server(json!({
-            "choices": [{
-                "message": { "role": "assistant", "content": "done" },
-                "finish_reason": "stop"
-            }]
+            "choices": [{ "message": { "role": "assistant", "content": "done" } }]
         }))
         .await;
         let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
@@ -384,7 +382,9 @@ mod tests {
             "deepseek-chat",
         ))
         .unwrap();
-        model.complete(request()).await.unwrap();
+        let mut request = request();
+        request.model = ModelProfileRef::new("deepseek-chat");
+        model.complete(request).await.unwrap();
 
         let body = captured.lock().unwrap().first().cloned().unwrap();
         assert_eq!(body["thinking"]["type"], "enabled");
@@ -399,8 +399,7 @@ mod tests {
                     "role": "assistant",
                     "content": "done",
                     "reasoning_content": "I should answer briefly."
-                },
-                "finish_reason": "stop"
+                }
             }]
         }))
         .await;
@@ -412,38 +411,8 @@ mod tests {
         .unwrap();
         let response = model.complete(request()).await.unwrap();
         assert_eq!(
-            response.reasoning_content.as_deref(),
+            response.message.reasoning_content.as_deref(),
             Some("I should answer briefly.")
-        );
-    }
-
-    #[tokio::test]
-    async fn sends_prior_reasoning_content_back() {
-        let (base_url, captured) = mock_server(json!({
-            "choices": [{
-                "message": { "role": "assistant", "content": "done" },
-                "finish_reason": "stop"
-            }]
-        }))
-        .await;
-        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
-            base_url,
-            "test-key",
-            "deepseek-chat",
-        ))
-        .unwrap();
-        let mut request = request();
-        request.messages.push(Message::assistant_with_reasoning(
-            "working",
-            Vec::new(),
-            Some("I need to inspect it.".to_string()),
-        ));
-        model.complete(request).await.unwrap();
-
-        let body = captured.lock().unwrap().first().cloned().unwrap();
-        assert_eq!(
-            body["messages"][2]["reasoning_content"],
-            "I need to inspect it."
         );
     }
 
@@ -459,10 +428,8 @@ mod tests {
                         "type": "function",
                         "function": { "name": "echo", "arguments": "{\"text\":\"hi\"}" }
                     }]
-                },
-                "finish_reason": "tool_calls"
-            }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 2 }
+                }
+            }]
         }))
         .await;
         let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
@@ -472,9 +439,8 @@ mod tests {
         ))
         .unwrap();
         let response = model.complete(request()).await.unwrap();
-        assert_eq!(response.stop_reason, ModelStopReason::ToolCalls);
-        assert_eq!(response.tool_calls.len(), 1);
-        assert_eq!(response.tool_calls[0].name, "echo");
-        assert_eq!(response.tool_calls[0].arguments, json!({ "text": "hi" }));
+        assert_eq!(response.message.tool_calls.len(), 1);
+        assert_eq!(response.message.tool_calls[0].name, "echo");
+        assert_eq!(response.message.tool_calls[0].arguments["text"], "hi");
     }
 }

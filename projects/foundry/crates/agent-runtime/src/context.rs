@@ -1,8 +1,7 @@
 //! Explicit context assembly for a run.
 //!
-//! Phase 0 keeps this deliberately small: a bundle is an ordered list of
-//! cited items that renders into the user message. Later stages add token
-//! budgeting, permission filtering and retrieval.
+//! A bundle is an ordered list of cited items that renders into the user
+//! message.
 
 use serde::Serialize;
 

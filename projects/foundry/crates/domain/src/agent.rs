@@ -18,6 +18,8 @@ pub struct AgentDefinition {
     /// Workflow role this agent can fill, as `workflow_id:role`; `dispatcher`
     /// for the platform PM agent.
     pub role: String,
+    /// Project that owns this agent.
+    pub project_id: Uuid,
     pub model_base_url: String,
     pub model_name: String,
     /// Name of the environment variable holding the model API key. The key
@@ -26,6 +28,9 @@ pub struct AgentDefinition {
     pub system_prompt: String,
     /// Tool names the process may register. Empty means the default set.
     pub tools: Vec<String>,
+    /// Whether the agent process keeps a persistent shell for its lifetime.
+    #[serde(default)]
+    pub shell: bool,
     /// Skill IDs appended to the system prompt at runtime.
     #[serde(default)]
     pub skills: Vec<String>,
@@ -76,11 +81,13 @@ pub struct CreateAgentDefinition {
     pub name: String,
     pub account_handle: String,
     pub role: String,
+    pub project_id: Uuid,
     pub model_base_url: String,
     pub model_name: String,
     pub api_key_env: String,
     pub system_prompt: String,
     pub tools: Vec<String>,
+    pub shell: bool,
     pub skills: Vec<String>,
     pub enabled: bool,
 }

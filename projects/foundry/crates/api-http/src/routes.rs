@@ -2,7 +2,7 @@ use crate::ApiError;
 use crate::auth::{self, ApiSession, WebAccountSession, WebSession};
 use crate::dto::{
     AccountUpdateForm, AddAnchorAnnotationRequest, AddMemberForm, AddMemberRequest,
-    AddTaskLinkRequest, AgentTemplateQuery, AnchorAnnotationForm, AnchorAnnotationQuery,
+    AddTaskLinkRequest, AgentListQuery, AgentTemplateQuery, AnchorAnnotationForm, AnchorAnnotationQuery,
     AnchorQuery, AnnotateRequirementsForm, AnnotateRequirementsRequest,
     ApplyAnchorOperationsRequest, ApplyRequirementsOperationsRequest, ApproveDocumentForm,
     ApproveRequirementsForm, AssignAgentRequest, CommentIssueForm, CommentIssueRequest,
@@ -534,17 +534,23 @@ pub async fn api_me(
 pub async fn dispatch_agents(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<AgentListQuery>,
 ) -> Result<Json<Vec<foundry_domain::AgentDefinition>>, ApiError> {
     let account = auth::api_account(&state, &headers).await?;
-    Ok(Json(state.agents.agents(account.actor()).await?))
+    Ok(Json(
+        state.agents.agents(account.actor(), query.project_id).await?,
+    ))
 }
 
 pub async fn dispatch_ready_tasks(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Query(query): Query<AgentListQuery>,
 ) -> Result<Json<Vec<foundry_domain::ReadyTaskView>>, ApiError> {
     let account = auth::api_account(&state, &headers).await?;
-    Ok(Json(state.agents.ready_tasks(account.actor()).await?))
+    Ok(Json(
+        state.agents.ready_tasks(account.actor(), query.project_id).await?,
+    ))
 }
 
 pub async fn dispatch_templates(
@@ -596,6 +602,16 @@ pub async fn agents_index(State(state): State<AppState>, headers: HeaderMap) -> 
     agents_response(&state, &session, None).await
 }
 
+/// Agents belong to the console's current project. Platform agents have no
+/// project and are visible in every project.
+fn agents_scope(session: &WebAccountSession) -> Option<Uuid> {
+    session
+        .context
+        .current
+        .as_ref()
+        .and_then(|project| project.id.parse::<Uuid>().ok())
+}
+
 pub async fn agent_logs_page(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -608,8 +624,13 @@ pub async fn agent_logs_page(
     if session.account.role != AccountRole::Admin {
         return auth::web_forbidden("仅管理员可以查看智能体日志。");
     }
-    let definition = match state.agents.agents(session.account.actor()).await {
-        Ok(definitions) => definitions
+    let definition = match state
+        .agents
+        .overview(session.account.actor(), agents_scope(&session))
+        .await
+    {
+        Ok(overview) => overview
+            .definitions
             .into_iter()
             .find(|definition| definition.id == id),
         Err(error) => return auth::web_error(error),
@@ -671,6 +692,11 @@ async fn agent_action(
         return auth::web_forbidden("仅管理员可以管理智能体。");
     }
     let actor = session.account.actor();
+    match state.agents.overview(actor.clone(), agents_scope(&session)).await {
+        Ok(overview) if overview.definitions.iter().any(|definition| definition.id == id) => {}
+        Ok(_) => return auth::web_error(ServiceError::not_found("agent", id)),
+        Err(error) => return auth::web_error(error),
+    }
     let result = match action {
         AgentAction::Start => state.agents.start(actor, id).await,
         AgentAction::Stop => state.agents.stop(actor, id).await,
@@ -687,7 +713,8 @@ async fn agents_response(
     session: &WebAccountSession,
     error: Option<String>,
 ) -> Response {
-    match state.agents.overview(session.account.actor()).await {
+    let project_id = agents_scope(session);
+    match state.agents.overview(session.account.actor(), project_id).await {
         Ok(overview) => Html(foundry_web::agents_page(
             &session.context,
             &overview,
@@ -920,7 +947,10 @@ pub async fn create_project_form(
         .create(session.account.actor(), form.into_command())
         .await
     {
-        Ok(project) => Redirect::to(&format!("/projects/{}", project.id)).into_response(),
+        Ok(project) => {
+            state.agents.ensure_project_pm(project.id).await;
+            Redirect::to(&format!("/projects/{}", project.id)).into_response()
+        }
         Err(error) => project_form_error(&state, &session, error).await,
     }
 }
@@ -2255,6 +2285,7 @@ pub async fn create_project(
         .projects
         .create(session.actor(), body.into_command())
         .await?;
+    state.agents.ensure_project_pm(project.id).await;
     Ok((StatusCode::CREATED, Json(project)))
 }
 
@@ -2750,7 +2781,7 @@ pub async fn task_state(
 }
 
 fn no_store(body: String) -> Response {
-    let mut response = body.into_response();
+    let mut response = Html(body).into_response();
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -2983,7 +3014,10 @@ pub async fn start_task(
             ));
         }
     }
-    let ready = state.agents.ready_tasks(session.account.actor()).await?;
+    let ready = state
+        .agents
+        .ready_tasks(session.account.actor(), Some(session.project.id))
+        .await?;
     let Some(view) = ready.iter().find(|view| view.task_id == id) else {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,

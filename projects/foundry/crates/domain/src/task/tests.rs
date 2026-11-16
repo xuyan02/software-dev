@@ -138,6 +138,17 @@ fn child_changed(
 }
 
 #[test]
+fn workflow_roles_allow_exactly_one_actor() {
+    let workflow = builtin("code_summary");
+    let body = workflow.body().expect("definition body");
+    assert_eq!(body.roles.len(), 1);
+    for role in &body.roles {
+        assert_eq!(role.min_actors, 1);
+        assert_eq!(role.max_actors, Some(1));
+    }
+}
+
+#[test]
 fn builtin_definitions_parse_validate_and_round_trip() {
     let workflows = builtin_workflows();
     let mut ids: Vec<&str> = workflows.iter().map(|workflow| workflow.id()).collect();
@@ -146,6 +157,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         ids,
         vec![
             "architecture_design",
+            "code_summary",
             "detailed_design",
             "empty",
             "goal_clarification",

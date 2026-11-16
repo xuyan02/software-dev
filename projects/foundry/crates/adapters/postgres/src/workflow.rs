@@ -122,7 +122,7 @@ impl WorkflowCatalog for PostgresWorkflowCatalog {
             "select d.id, d.title, d.owner_account_id, a.display_name \
              from workflow_definitions d \
              left join accounts a on a.id = d.owner_account_id \
-             where (d.owner_account_id is null or d.owner_account_id = $1) \
+             where d.id = 'code_summary' \
                and exists ( \
                    select 1 from workflow_versions v where v.workflow_id = d.id \
                ) \

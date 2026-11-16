@@ -336,12 +336,18 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn dispatch_agents(&self) -> Result<Value, FoundryError> {
-        self.get(&format!(
+    pub async fn dispatch_agents(
+        &self,
+        project_id: Option<Uuid>,
+    ) -> Result<Value, FoundryError> {
+        let mut url = format!(
             "{}/api/v1/agent-dispatch/agents",
             self.base_url.trim_end_matches('/')
-        ))
-        .await
+        );
+        if let Some(project_id) = project_id {
+            url.push_str(&format!("?project_id={project_id}"));
+        }
+        self.get(&url).await
     }
 
     pub async fn dispatch_templates(&self, role: &str) -> Result<Value, FoundryError> {
@@ -394,12 +400,18 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn ready_tasks(&self) -> Result<Value, FoundryError> {
-        self.get(&format!(
+    pub async fn ready_tasks(
+        &self,
+        project_id: Option<Uuid>,
+    ) -> Result<Value, FoundryError> {
+        let mut url = format!(
             "{}/api/v1/agent-dispatch/tasks",
             self.base_url.trim_end_matches('/')
-        ))
-        .await
+        );
+        if let Some(project_id) = project_id {
+            url.push_str(&format!("?project_id={project_id}"));
+        }
+        self.get(&url).await
     }
 
     pub async fn start_task(&self, task_id: Uuid) -> Result<Value, FoundryError> {
@@ -445,6 +457,19 @@ impl FoundryClient {
                 "{}/api/v1/tasks/{task_id}/allowed-operations",
                 self.base_url.trim_end_matches('/')
             ),
+            None,
+        )
+        .await
+    }
+
+    pub async fn agent_credentials(&self, task_id: Uuid) -> Result<Value, FoundryError> {
+        self.post_scoped(
+            &format!(
+                "{}/api/v1/agent/credentials",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({ "task_id": task_id }),
+            None,
             None,
         )
         .await

@@ -29,6 +29,7 @@ pub struct AgentSupervisor {
     session_ttl_hours: i64,
     /// Platform model API key from config/env. Never persisted.
     api_key: String,
+    shell_image: String,
     agent_logs: Arc<AgentLogFiles>,
     running: Mutex<HashSet<Uuid>>,
     stopping: Mutex<HashSet<Uuid>>,
@@ -41,6 +42,7 @@ impl AgentSupervisor {
         foundry_url: String,
         session_ttl_hours: i64,
         api_key: String,
+        shell_image: String,
         agent_logs: Arc<AgentLogFiles>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -49,6 +51,7 @@ impl AgentSupervisor {
             foundry_url,
             session_ttl_hours,
             api_key,
+            shell_image,
             agent_logs,
             running: Mutex::new(HashSet::new()),
             stopping: Mutex::new(HashSet::new()),
@@ -132,12 +135,18 @@ impl AgentSupervisor {
         let binary = agentd_binary();
         let mut command = tokio::process::Command::new(&binary);
         command
-            .env("DATABASE_URL", &self.database_url)
-            .env("FOUNDRY_URL", &self.foundry_url)
-            .env("FOUNDRY_TOKEN", &token)
-            .env("FOUNDRY_AGENT_ID", id.to_string())
-            .env("FOUNDRY_AGENT_WORKER_ID", format!("agentd-{id}"))
-            .env(&definition.api_key_env, &self.api_key)
+            .arg("--database-url")
+            .arg(&self.database_url)
+            .arg("--foundry-url")
+            .arg(&self.foundry_url)
+            .arg("--foundry-token")
+            .arg(&token)
+            .arg("--agent-id")
+            .arg(id.to_string())
+            .arg("--shell-image")
+            .arg(&self.shell_image)
+            .arg("--api-key")
+            .arg(&self.api_key)
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -227,9 +236,6 @@ impl AgentSupervisor {
 }
 
 fn agentd_binary() -> PathBuf {
-    if let Ok(value) = std::env::var("FOUNDRY_AGENTD_BIN") {
-        return PathBuf::from(value);
-    }
     let current =
         std::env::current_exe().unwrap_or_else(|_| PathBuf::from("foundry-control-plane"));
     current

@@ -17,6 +17,7 @@ const ROADMAP: &str = include_str!("../definitions/roadmap.json");
 const ITERATION: &str = include_str!("../definitions/iteration.json");
 const RELEASE: &str = include_str!("../definitions/release.json");
 const PROJECT_REVIEW: &str = include_str!("../definitions/project_review.json");
+const CODE_SUMMARY: &str = include_str!("../definitions/code_summary.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("empty", "Empty (no-op)", EMPTY),
@@ -50,7 +51,15 @@ const SOURCES: &[(&str, &str, &str)] = &[
     ("iteration", "Iteration", ITERATION),
     ("release", "Release", RELEASE),
     ("project_review", "Project review", PROJECT_REVIEW),
+    ("code_summary", "Code summary", CODE_SUMMARY),
 ];
+
+/// Builtin workflows currently offered as project root tasks.
+pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &["code_summary"];
+
+pub fn is_enabled_root_workflow(id: &str) -> bool {
+    ENABLED_ROOT_WORKFLOWS.contains(&id)
+}
 
 pub fn builtin_title(id: &str) -> Option<&'static str> {
     SOURCES
