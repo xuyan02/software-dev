@@ -65,7 +65,9 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    foundry_shared::init_tracing("foundry_agentd=info,foundry_agent_runtime=info");
+    foundry_shared::init_tracing(
+        "foundry_agentd=info,foundry_agent_runtime=info,graph_agent=info",
+    );
     let config = Config::from_args();
     let store = Arc::new(PostgresStore::connect(&config.database_url).await?);
 

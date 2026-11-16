@@ -51,6 +51,8 @@ impl Graph {
                 .ok_or_else(|| GraphError::NodeNotFound(current.clone()))?;
 
             ctx.set_current_node(Some(current.clone()));
+            let started = std::time::Instant::now();
+            tracing::info!(graph = %self.id, node = %current, "node started");
             input = node.run(input, ctx).await?;
 
             let index = node.to(ctx)?;
@@ -60,6 +62,13 @@ impl Graph {
                     index,
                 }
             })?;
+            tracing::info!(
+                graph = %self.id,
+                node = %current,
+                next = %next,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "node finished"
+            );
 
             if self.exits.contains(next) {
                 let text = render_output(&input);
