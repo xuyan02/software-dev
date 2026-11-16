@@ -30,17 +30,18 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - 只给本仓库设计空间内的对象写关系；外部库/标准库类型不建模。
 - 设计文档是纯文本，写“这里放什么、不放什么”的规则，不要枚举子对象清单。
 - ds 命令：ds show <qname>、ds ls --namespaces、ds source cat <path>、ds create/edit/rm、ds dep add/rm、ds status、ds diff。
+- File/Directory 对象的 qname 是 files/<源路径>；其他对象挂在它下面。
 - 关系目标可以暂时不存在，最后 ds verify 会解析。
 
 文件总结工作项：
 1. 用 ds source cat <path> 读源码。
-2. 用 ds show <path> 看 File 对象、文档和 children。
+2. 用 ds show files/<path> 看 File 对象、文档和 children。
 3. 更新/删除该文件下已有的 namespace、class、interface、method、function、part、mixin。
 4. 创建缺失的元素，写 source span、设计文档、superclass/interfaces/mixins/overrides 和依赖。
 5. 返回该 File 的设计文档纯文本。
 
 目录总结工作项：
-1. 用 ds show <path> 看目录规则。
+1. 用 ds show files/<path> 看目录规则。
 2. 根据直属子项写目录规则，不枚举子项细节。
 3. 返回规则纯文本。
 
@@ -442,6 +443,11 @@ fn base_name(path: &str) -> &str {
     path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path)
 }
 
+/// Design-space qname for a File or Directory at a source path.
+fn object_name(path: &str) -> String {
+    format!("files/{path}")
+}
+
 fn expected_dirs(paths: &[String]) -> Vec<String> {
     let mut dirs = std::collections::BTreeSet::new();
     for path in paths {
@@ -725,26 +731,30 @@ impl Node for PrepareNode {
 
         let mut cascade_files = std::collections::BTreeSet::new();
         for path in &pending_deletes {
-            delete_tree(&self.shell, &ds_workspace, path, &mut cascade_files).await?;
+            let name = object_name(path);
+            delete_tree(&self.shell, &ds_workspace, &name, &mut cascade_files).await?;
         }
         delete_stale_namespaces(&self.shell, &ds_workspace, &all_files).await?;
         delete_stale_dirs(&self.shell, &ds_workspace, &dirs).await?;
 
         let mut new_dirs = std::collections::BTreeSet::new();
         for dir in &dirs {
-            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(dir))).await?;
+            let name = object_name(dir);
+            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(&name))).await?;
             if shown.exit_code == Some(0) {
                 continue;
             }
-            let parent = parent_dir(dir).unwrap_or("files");
-            let name = base_name(dir);
+            let parent = parent_dir(dir)
+                .map(object_name)
+                .unwrap_or_else(|| "files".to_string());
+            let local = base_name(dir);
             ds_ok(
                 &self.shell,
                 &ds_workspace,
                 format!(
                     "create directory {} --parent {} --source {}",
-                    q(name),
-                    q(parent),
+                    q(local),
+                    q(&parent),
                     q(dir)
                 ),
             )
@@ -753,24 +763,27 @@ impl Node for PrepareNode {
         }
 
         for path in pending_files.clone() {
-            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(&path))).await?;
+            let name = object_name(&path);
+            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(&name))).await?;
             if shown.exit_code == Some(0) {
                 ds_ok(
                     &self.shell,
                     &ds_workspace,
-                    format!("edit {} --source {}", q(&path), q(&path)),
+                    format!("edit {} --source {}", q(&name), q(&path)),
                 )
                 .await?;
             } else {
-                let parent = parent_dir(&path).unwrap_or("files");
-                let name = base_name(&path);
+                let parent = parent_dir(&path)
+                    .map(object_name)
+                    .unwrap_or_else(|| "files".to_string());
+                let local = base_name(&path);
                 ds_ok(
                     &self.shell,
                     &ds_workspace,
                     format!(
                         "create file {} --parent {} --source {}",
-                        q(name),
-                        q(parent),
+                        q(local),
+                        q(&parent),
                         q(&path)
                     ),
                 )
@@ -986,7 +999,7 @@ async fn delete_stale_dirs(
 ) -> Result<(), NodeError> {
     let expected = expected
         .iter()
-        .cloned()
+        .map(|path| object_name(path))
         .collect::<std::collections::BTreeSet<_>>();
     let list = ds_ok(shell, workspace, "ls --files".to_owned()).await?;
     let mut stale = Vec::new();
@@ -1406,7 +1419,8 @@ impl Node for VerifyNode {
         }
         let changed_files = ctx.var::<Vec<String>>("changed_files").unwrap_or_default();
         for path in &changed_files {
-            let shown = ds(&self.shell, &workspace, format!("show {}", q(path))).await?;
+            let name = object_name(path);
+            let shown = ds(&self.shell, &workspace, format!("show {}", q(&name))).await?;
             if shown.exit_code != Some(0) {
                 errors.push(format!("missing File object for source path: {path}"));
             }
@@ -1523,7 +1537,7 @@ impl Node for VerifyNode {
 async fn write_doc(
     shell: &Arc<dyn Shell>,
     workspace: &str,
-    qname: &str,
+    path: &str,
     doc: &str,
 ) -> Result<(), NodeError> {
     let marker = format!(
@@ -1533,16 +1547,20 @@ async fn write_doc(
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     );
-    let path = format!("/tmp/{marker}.md");
-    let script = format!("cat > {} <<'{marker}'\n{}\n{marker}\n", q(&path), doc);
+    let tmp = format!("/tmp/{marker}.md");
+    let script = format!("cat > {} <<'{marker}'\n{}\n{marker}\n", q(&tmp), doc);
     exec(shell, script).await?;
     ds_ok(
         shell,
         workspace,
-        format!("edit {} --design-file {}", q(qname), q(&path)),
+        format!(
+            "edit {} --design-file {}",
+            q(&object_name(path)),
+            q(&tmp)
+        ),
     )
     .await?;
-    let _ = exec(shell, format!("rm -f {}", q(&path))).await;
+    let _ = exec(shell, format!("rm -f {}", q(&tmp))).await;
     Ok(())
 }
 
