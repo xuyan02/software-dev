@@ -17,6 +17,10 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/document.md"),
     },
     Skill {
+        id: "design-space",
+        prompt: include_str!("../skills/design-space.md"),
+    },
+    Skill {
         id: "project-document-writing-guide",
         prompt: include_str!("../../../docs/design/project-document-writing-guide.md"),
     },
@@ -297,4 +301,24 @@ mod tests {
         let error = compose_system_prompt("base", &["missing".to_string()]).unwrap_err();
         assert_eq!(error.0, "missing");
     }
+    #[test]
+    fn design_space_skill_covers_object_kinds_and_documents() {
+        let skill = skill("design-space").expect("design-space skill");
+        for kind in [
+            "Directory",
+            "File",
+            "Namespace",
+            "Class",
+            "Interface",
+            "Method",
+            "Function",
+            "Part",
+            "Mixin",
+        ] {
+            assert!(skill.prompt.contains(kind), "missing {kind}");
+        }
+        assert!(skill.prompt.contains("设计文档"));
+        assert!(skill.prompt.contains("ds source sync"));
+    }
+
 }

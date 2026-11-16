@@ -687,7 +687,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: CODE_SUMMARY_PROMPT,
         tools: CODE_SUMMARY_TOOLS,
         shell: true,
-        skills: &[],
+        skills: &["design-space"],
     },
 ];
 
@@ -970,6 +970,13 @@ async fn ensure_agent_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_summary_loads_the_design_space_skill() {
+        let code_summary = template("code-summary").expect("code summary template");
+        assert_eq!(code_summary.skills, &["design-space"]);
+        assert!(code_summary.shell);
+    }
 
     #[test]
     fn writer_template_loads_the_writing_guide() {
