@@ -1016,6 +1016,7 @@ enum Section {
     TestReport,
     Tasks,
     Projects,
+    DesignSpace,
     Workflows,
     Accounts,
     Agents,
@@ -1090,6 +1091,19 @@ fn layout_page(
 </form>"#
         )
     };
+
+    let design_space_nav = ctx
+        .current
+        .as_ref()
+        .map(|project| {
+            nav_item(
+                active,
+                Section::DesignSpace,
+                &format!("/projects/{}/design-space", project.id),
+                "设计空间",
+            )
+        })
+        .unwrap_or_default();
 
     let project_document_nav = ctx
         .current
@@ -1196,6 +1210,7 @@ fn layout_page(
   </div>
   <div class="nav-group">
     <p class="nav-heading">承诺空间</p>
+    {design_space_nav}
     {project_document_nav}
     {requirements_nav}
     {architecture_nav}
@@ -1253,6 +1268,7 @@ fn layout_page(
         } else {
             String::new()
         },
+        design_space_nav = design_space_nav,
         project_document_nav = project_document_nav,
         requirements_nav = requirements_nav,
         display_name = escape(&ctx.viewer.display_name),
@@ -3583,7 +3599,7 @@ pub fn design_space_page(
         tree_url = escape(&tree_url),
         element_url = escape(&element_url),
     );
-    let mut html = layout_wide(ctx, Section::Projects, &project.name, &body);
+    let mut html = layout_wide(ctx, Section::DesignSpace, &project.name, &body);
     html = html.replace("</body>", &format!("{DESIGN_SPACE_SCRIPT}</body>"));
     html
 }
@@ -3609,7 +3625,7 @@ pub fn design_space_unavailable_page(
         name = escape(&project.name),
         message = escape(message),
     );
-    layout_wide(ctx, Section::Projects, &project.name, &body)
+    layout_wide(ctx, Section::DesignSpace, &project.name, &body)
 }
 
 /// One element's detail fragment: design tab plus a lazily loaded source tab.
