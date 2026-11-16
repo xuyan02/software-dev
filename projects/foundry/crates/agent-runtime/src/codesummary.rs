@@ -737,11 +737,19 @@ impl Node for PrepareNode {
         delete_stale_namespaces(&self.shell, &ds_workspace, &all_files).await?;
         delete_stale_dirs(&self.shell, &ds_workspace, &dirs).await?;
 
+        // One listing instead of a `show` probe per object; a missing object
+        // would otherwise print an error for every file in the source tree.
+        let mut existing = ds_ok(&self.shell, &ds_workspace, "ls --files".to_owned())
+            .await?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+
         let mut new_dirs = std::collections::BTreeSet::new();
         for dir in &dirs {
-            let name = object_name(dir);
-            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(&name))).await?;
-            if shown.exit_code == Some(0) {
+            let qname = object_name(dir);
+            if existing.contains(&qname) {
                 continue;
             }
             let parent = parent_dir(dir)
@@ -759,17 +767,17 @@ impl Node for PrepareNode {
                 ),
             )
             .await?;
+            existing.insert(qname);
             new_dirs.insert(dir.clone());
         }
 
         for path in pending_files.clone() {
-            let name = object_name(&path);
-            let shown = ds(&self.shell, &ds_workspace, format!("show {}", q(&name))).await?;
-            if shown.exit_code == Some(0) {
+            let qname = object_name(&path);
+            if existing.contains(&qname) {
                 ds_ok(
                     &self.shell,
                     &ds_workspace,
-                    format!("edit {} --source {}", q(&name), q(&path)),
+                    format!("edit {} --source {}", q(&qname), q(&path)),
                 )
                 .await?;
             } else {
@@ -788,6 +796,7 @@ impl Node for PrepareNode {
                     ),
                 )
                 .await?;
+                existing.insert(qname);
             }
         }
 
