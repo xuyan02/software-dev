@@ -92,6 +92,10 @@ impl DesignSpaceAccess {
         overview.source_commit = git_oid_hex(loaded.view_payload.source_commit);
 
         for (qname, object) in loaded.catalog.iter() {
+            let qname_text = loaded.store.get_symbol(qname).map_err(display)?;
+            if qname_text == "files" || qname_text == "namespaces" {
+                continue;
+            }
             let element = element_info(&loaded.store, qname, object)?;
             if element.is_file {
                 overview.file_count += 1;
@@ -301,6 +305,7 @@ fn element_info(
     let (start_line, end_line) = source_span(object);
     Ok(DesignSpaceElement {
         hash: ds::format::object_hash(object).map_err(display)?.to_hex(),
+        qname: qname_text.clone(),
         name: local_name(&qname_text),
         lang: language_for_path(&path),
         kind: kind_label(object.kind).to_owned(),
@@ -722,7 +727,8 @@ mod tests {
             overview.version.as_deref(),
             Some(commit_hash.to_hex().as_str())
         );
-        assert_eq!(overview.element_count, 2);
-        assert_eq!(overview.elements.len(), 2);
+        // `files` and `namespaces` are structural roots, not elements.
+        assert_eq!(overview.element_count, 0);
+        assert!(overview.elements.is_empty());
     }
 }

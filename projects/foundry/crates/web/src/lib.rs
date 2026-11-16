@@ -20,6 +20,7 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct DesignSpaceElement {
     pub hash: String,
+    pub qname: String,
     pub name: String,
     pub path: String,
     /// Language prefix from the type tag (`rust`, `cpp`, ...), empty for files.
@@ -3615,6 +3616,8 @@ pub fn design_space_unavailable_page(
 pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> String {
     let chip = if detail.kind == "file" {
         r#"<span class="ds-chip file">FILE</span>"#.to_string()
+    } else if detail.kind == "directory" {
+        r#"<span class="ds-chip">目录</span>"#.to_string()
     } else if detail.lang.is_empty() {
         r#"<span class="ds-chip">概念</span>"#.to_string()
     } else {
@@ -3623,7 +3626,9 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
             escape(language_chip(&detail.lang))
         )
     };
-    let lines_label = if detail.path.is_empty() {
+    let lines_label = if detail.kind == "directory" {
+        "目录规则".to_string()
+    } else if detail.path.is_empty() {
         "无源码锚点".to_string()
     } else if detail.start_line == 0 {
         "整个文件".to_string()
@@ -3635,12 +3640,13 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
     } else {
         format!("{} · {}", escape(&detail.path), lines_label)
     };
-    let source_tabs = if detail.path.is_empty() {
-        String::new()
-    } else {
+    let has_source = !detail.path.is_empty() && detail.kind != "directory";
+    let source_tabs = if has_source {
         r#"<button type="button" data-ds-tab="source">源码</button>"#.to_string()
+    } else {
+        String::new()
     };
-    let source_panel = if detail.path.is_empty() {
+    let source_panel = if !has_source {
         String::new()
     } else {
         format!(
@@ -3793,7 +3799,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   const fileIcon = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3 1.5h6.2L13 5.3v9.2H3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M9.2 1.5v3.8H13" fill="none" stroke="currentColor"/></svg>';
   const rootIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor"/><path d="M2 6h12M6 6v8" fill="none" stroke="currentColor"/></svg>';
   const langLabel = (lang) => glyphs[lang] || (lang ? lang.slice(0, 4).toUpperCase() : '');
-  const shortName = (name) => { const parts = String(name).split('::'); return parts[parts.length - 1] || String(name); };
+  const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
   const baseName = (path) => { const parts = String(path).split('/'); return parts[parts.length - 1] || String(path); };
   let expanded = new Set(['root', 'view:namespaces']);
   try {
@@ -3819,8 +3825,10 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   function buildNamespaces(elements) {
     const root = { name: '命名空间', path: '', children: new Map(), element: null, count: 0 };
     for (const item of elements) {
-      if (item.isFile) continue;
-      const parts = String(item.name).split('::').filter(Boolean);
+      if (item.isFile || item.kind === 'directory') continue;
+      const qname = String(item.qname || item.name);
+      if (!qname.startsWith('namespaces/')) continue;
+      const parts = qname.slice('namespaces/'.length).split(/::|\//).filter(Boolean);
       if (!parts.length) continue;
       let node = root;
       const acc = [];
@@ -3829,7 +3837,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
         acc.push(segment);
         let next = node.children.get(segment);
         if (!next) {
-          next = { name: segment, path: acc.join('::'), children: new Map(), element: null, count: 0 };
+          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
           node.children.set(segment, next);
         }
         node = next;
@@ -3849,8 +3857,13 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   // Inside a file, strip the module prefix shared by every element so the
   // remaining tree starts at the top-level entity and keeps parent/child
   // relationships (class -> method, enum -> variant, ...).
-  function relativeElementTree(items) {
-    const partsList = items.map((item) => String(item.name).split('::').filter(Boolean));
+  function relativeElementTree(items, filePath) {
+    const prefix = 'files/' + filePath + '/';
+    const partsList = items.map((item) => {
+      const qname = String(item.qname || item.name);
+      const relative = qname.startsWith(prefix) ? qname.slice(prefix.length) : String(item.name);
+      return relative.split(/::|\//).filter(Boolean);
+    });
     const minLength = Math.min(...partsList.map((parts) => parts.length));
     let common = minLength;
     for (let index = 0; index < common; index += 1) {
@@ -3872,7 +3885,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
         acc.push(segment);
         let next = node.children.get(segment);
         if (!next) {
-          next = { name: segment, path: acc.join('::'), children: new Map(), element: null, count: 0 };
+          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
           node.children.set(segment, next);
         }
         node = next;
@@ -3898,7 +3911,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       for (const segment of segments) {
         acc = acc ? acc + '/' + segment : segment;
         if (!node.dirs.has(segment)) {
-          node.dirs.set(segment, { name: segment, path: acc, dirs: new Map(), files: new Map(), fileCount: 0 });
+          node.dirs.set(segment, { name: segment, path: acc, dirs: new Map(), files: new Map(), fileCount: 0, item: null });
         }
         node = node.dirs.get(segment);
       }
@@ -3922,16 +3935,34 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     for (const item of elements) {
       if (item.isFile) addFile(item.path, item);
     }
+    // Directories carry their own rule document; attach them to the directory
+    // row built from file paths.
+    for (const item of elements) {
+      if (item.kind !== 'directory') continue;
+      const qname = String(item.qname || '');
+      if (!qname.startsWith('files/')) continue;
+      const path = qname.slice('files/'.length);
+      if (!path) continue;
+      const segments = path.split('/');
+      const name = segments.pop();
+      const parent = dirFor(segments);
+      if (!parent.dirs.has(name)) {
+        parent.dirs.set(name, { name, path, dirs: new Map(), files: new Map(), fileCount: 0, item: null });
+      }
+      parent.dirs.get(name).item = item;
+    }
     // An element path always has a blob, but a tree row keeps source browsing
     // available even if the file object is missing.
     for (const item of elements) {
-      if (item.isFile || !item.path) continue;
+      if (item.isFile || item.kind === 'directory' || !item.path) continue;
+      const qname = String(item.qname || '');
+      if (qname && !qname.startsWith('files/')) continue;
       const file = addFile(item.path, null);
       file.elements.push(item);
     }
     for (const file of filesByPath.values()) {
       file.elements.sort((a, b) => a.startLine - b.startLine || byName(a, b));
-      if (file.elements.length) file.tree = relativeElementTree(file.elements);
+      if (file.elements.length) file.tree = relativeElementTree(file.elements, file.path);
     }
     const annotate = (node) => {
       let count = node.fileCount;
@@ -4038,6 +4069,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     const key = 'fd:' + node.path;
     const open = expanded.has(key);
     const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (node.item && selected === node.item.hash) row.classList.add('active');
+    if (node.item) row.dataset.hash = node.item.hash;
     row.appendChild(caret(true, key));
     const glyph = el('span', 'ds-folder');
     glyph.innerHTML = folderIcon;
@@ -4046,6 +4079,18 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     name.title = node.path;
     row.appendChild(name);
     row.appendChild(el('span', 'ds-count', countLabel(node.fileCount, '文件')));
+    if (node.item) {
+      const right = el('span', 'ds-right');
+      const rules = el('button', 'ds-action', '规则');
+      rules.type = 'button';
+      rules.title = '查看目录规则';
+      rules.addEventListener('click', (event) => {
+        event.stopPropagation();
+        select(node.item);
+      });
+      right.appendChild(rules);
+      row.appendChild(right);
+    }
     row.addEventListener('click', () => toggle(key));
     wrap.appendChild(row);
     if (open) {
@@ -4120,7 +4165,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
 
   function renderSearch() {
     const matches = data.elements.filter((item) =>
-      (item.name + ' ' + item.path).toLowerCase().includes(query));
+      (item.name + ' ' + (item.qname || '') + ' ' + item.path).toLowerCase().includes(query));
     if (!matches.length) {
       treeEl.replaceChildren(el('div', 'ds-empty', '没有匹配的元素'));
       return;
@@ -5258,6 +5303,7 @@ mod tests {
             designed_count: 3,
             elements: vec![DesignSpaceElement {
                 hash: "ef".repeat(32),
+                qname: "files/src/main.rs/fn".to_string(),
                 name: "Fn <script>".to_string(),
                 path: "src/<main>.rs".to_string(),
                 lang: "rust".to_string(),
