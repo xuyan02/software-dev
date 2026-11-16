@@ -377,6 +377,9 @@ enum SourceCommand {
         #[arg(long)]
         base: Option<String>,
     },
+    /// Add, update, delete and rename File/Directory objects to match the
+    /// current source tree in one pass.
+    Sync,
 }
 
 pub fn run() -> Result<()> {
@@ -618,6 +621,337 @@ fn pull(dir: Option<PathBuf>, branch: Option<String>) -> Result<()> {
     Ok(())
 }
 
+
+fn object_qname_text(path: &str) -> String {
+    format!("files/{path}")
+}
+
+fn parent_path(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+fn parent_qname(ws: &Workspace, path: &str) -> Result<SymbolHash> {
+    match parent_path(path) {
+        Some(parent) => Ok(ws.put_symbol(&object_qname_text(parent))?),
+        None => Ok(ws.put_symbol("files")?),
+    }
+}
+
+fn object_source_path(ws: &Workspace, object: &DesignObject) -> Result<Option<String>> {
+    let symbol = match &object.payload {
+        ObjectPayload::Directory(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::File(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Class(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Interface(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Part(p) => Some(p.source.path),
+        ObjectPayload::Mixin(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::View(_) => None,
+    };
+    match symbol {
+        Some(symbol) => Ok(Some(ws.get_symbol(symbol)?)),
+        None => Ok(None),
+    }
+}
+
+fn set_object_source(ws: &Workspace, object: &mut DesignObject, path: &str) -> Result<()> {
+    let symbol = ws.put_symbol(path)?;
+    match &mut object.payload {
+        ObjectPayload::Directory(p) => p.source = Some(PathSource { path: symbol }),
+        ObjectPayload::File(p) => p.source = Some(PathSource { path: symbol }),
+        ObjectPayload::Namespace(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Class(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Interface(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Method(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Function(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Part(p) => p.source.path = symbol,
+        ObjectPayload::Mixin(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::View(_) => bail!("view objects have no source"),
+    }
+    Ok(())
+}
+
+fn set_object_parent(object: &mut DesignObject, parent: SymbolHash) -> Result<()> {
+    match &mut object.payload {
+        ObjectPayload::Directory(p) => p.parent = ParentRef::Object(parent),
+        ObjectPayload::File(p) => p.parent = parent,
+        _ => bail!("rename source is not a File or Directory"),
+    }
+    Ok(())
+}
+
+fn remove_source_subtree(catalog: &mut Catalog, qname: SymbolHash) -> usize {
+    let mut subtree = BTreeSet::new();
+    let mut queue = vec![qname];
+    while let Some(current) = queue.pop() {
+        if subtree.insert(current) {
+            queue.extend(catalog.children(current));
+        }
+    }
+    let mut external = BTreeSet::new();
+    for target in &subtree {
+        for referrer in catalog.references_to(*target) {
+            if !subtree.contains(&referrer) {
+                external.insert((*target, referrer));
+            }
+        }
+    }
+    for (target, referrer) in external {
+        if let Some(object) = catalog.get_mut(referrer) {
+            remove_references_to(object, target);
+        }
+    }
+    let count = subtree.len();
+    for qname in subtree {
+        catalog.remove(qname);
+    }
+    count
+}
+
+fn ensure_directory(ws: &Workspace, catalog: &mut Catalog, path: &str) -> Result<bool> {
+    let qname = ws.put_symbol(&object_qname_text(path))?;
+    let parent = parent_qname(ws, path)?;
+    let source = ws.put_symbol(path)?;
+    match catalog.get(qname).map(|object| object.kind) {
+        Some(Kind::Directory) => {
+            if let Some(object) = catalog.get_mut(qname)
+                && let ObjectPayload::Directory(p) = &mut object.payload
+            {
+                p.parent = ParentRef::Object(parent);
+                p.source = Some(PathSource { path: source });
+            }
+            Ok(false)
+        }
+        Some(_) => {
+            remove_source_subtree(catalog, qname);
+            create_directory(catalog, qname, parent, source)?;
+            Ok(true)
+        }
+        None => {
+            create_directory(catalog, qname, parent, source)?;
+            Ok(true)
+        }
+    }
+}
+
+fn create_directory(
+    catalog: &mut Catalog,
+    qname: SymbolHash,
+    parent: SymbolHash,
+    source: SymbolHash,
+) -> Result<()> {
+    catalog.insert(
+        qname,
+        DesignObject::new(
+            Kind::Directory,
+            ObjectPayload::Directory(DirectoryPayload {
+                qualified_name: qname,
+                parent: ParentRef::Object(parent),
+                source: Some(PathSource { path: source }),
+                design_doc: DocHash::ZERO,
+                children: vec![],
+            }),
+        ),
+    )?;
+    Ok(())
+}
+
+fn retarget_source_paths(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    old_path: &str,
+    new_path: &str,
+) -> Result<()> {
+    let mut targets = Vec::new();
+    for (qname, object) in catalog.iter() {
+        if object_source_path(ws, object)?.as_deref() == Some(old_path) {
+            targets.push(qname);
+        }
+    }
+    for qname in targets {
+        if let Some(object) = catalog.get_mut(qname) {
+            set_object_source(ws, object, new_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn rename_file(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    old_path: &str,
+    new_path: &str,
+) -> Result<bool> {
+    let old_qname = ws.put_symbol(&object_qname_text(old_path))?;
+    let Some(object) = catalog.get(old_qname) else {
+        return Ok(false);
+    };
+    if object.kind != Kind::File {
+        return Ok(false);
+    }
+    let new_qname = ws.put_symbol(&object_qname_text(new_path))?;
+    if catalog.get(new_qname).is_some() {
+        return Ok(false);
+    }
+    let mapping = rename_mapping(ws, catalog, old_qname, new_qname)?;
+    for target in mapping.values() {
+        if *target != new_qname && catalog.get(*target).is_some() && !mapping.contains_key(target) {
+            bail!("rename target already exists: {}", ws.get_symbol(*target)?);
+        }
+    }
+    let parent = parent_qname(ws, new_path)?;
+    if let Some(object) = catalog.get_mut(old_qname) {
+        set_object_parent(object, parent)?;
+    }
+    catalog.rename_symbols(&mapping)?;
+    retarget_source_paths(ws, catalog, old_path, new_path)?;
+    Ok(true)
+}
+
+fn sync_source(ws: &Workspace, repo: &SourceRepo) -> Result<()> {
+    let state = ws
+        .read_worktree()?
+        .context("worktree is not initialized; run `ds init`")?;
+    let mut catalog = Catalog::load(ws.store(), state.root_view)?;
+    let head = repo.resolve_current()?;
+    let head_oid = repo.current_git_oid()?;
+    let base = catalog.source_commit();
+    let changes = if base.is_zero() {
+        Vec::new()
+    } else {
+        repo.changes(&repo.oid_hex(base), &head)?
+    };
+    let blobs = repo.list_blobs(&head)?;
+
+    let mut file_paths = BTreeSet::new();
+    let mut dir_paths = BTreeSet::new();
+    for blob in &blobs {
+        file_paths.insert(blob.path.clone());
+        let mut parent = parent_path(&blob.path);
+        while let Some(dir) = parent {
+            dir_paths.insert(dir.to_owned());
+            parent = parent_path(dir);
+        }
+    }
+
+    let mut dirs = dir_paths.iter().cloned().collect::<Vec<_>>();
+    dirs.sort_by_key(|path| path.matches('/').count());
+    let mut created_dirs = 0usize;
+    for dir in &dirs {
+        if ensure_directory(ws, &mut catalog, dir)? {
+            created_dirs += 1;
+        }
+    }
+
+    let mut renamed = 0usize;
+    for change in changes.iter().filter(|change| change.status == 'R') {
+        let Some(old_path) = change.old_path.as_deref() else {
+            continue;
+        };
+        if rename_file(ws, &mut catalog, old_path, &change.path)? {
+            renamed += 1;
+        }
+    }
+
+    let mut stale = BTreeSet::new();
+    for (qname, object) in catalog.iter() {
+        let Some(path) = object_source_path(ws, object)? else {
+            continue;
+        };
+        let keep = match object.kind {
+            Kind::File => file_paths.contains(&path),
+            Kind::Directory => dir_paths.contains(&path),
+            _ => true,
+        };
+        if !keep {
+            stale.insert(qname);
+        }
+    }
+    let mut removed = 0usize;
+    for qname in stale {
+        removed += remove_source_subtree(&mut catalog, qname);
+    }
+
+    let mut created_files = 0usize;
+    let mut updated_files = 0usize;
+    for blob in &blobs {
+        let qname = ws.put_symbol(&object_qname_text(&blob.path))?;
+        let parent = parent_qname(ws, &blob.path)?;
+        let source = ws.put_symbol(&blob.path)?;
+        let hash = content_hash(&repo.read_path(&head, &blob.path)?);
+        match catalog.get(qname).map(|object| object.kind) {
+            Some(Kind::File) => {
+                if let Some(object) = catalog.get_mut(qname)
+                    && let ObjectPayload::File(p) = &mut object.payload
+                {
+                    p.parent = parent;
+                    p.source = Some(PathSource { path: source });
+                    p.content_hash = hash;
+                }
+                updated_files += 1;
+            }
+            _ => {
+                if catalog.get(qname).is_some() {
+                    removed += remove_source_subtree(&mut catalog, qname);
+                }
+                catalog.insert(
+                    qname,
+                    DesignObject::new(
+                        Kind::File,
+                        ObjectPayload::File(FilePayload {
+                            qualified_name: qname,
+                            parent,
+                            source: Some(PathSource { path: source }),
+                            content_hash: hash,
+                            design_doc: DocHash::ZERO,
+                            children: vec![],
+                        }),
+                    ),
+                )?;
+                created_files += 1;
+            }
+        }
+    }
+
+    catalog.set_source_commit(head_oid);
+    let view = catalog.rebuild(ws.store())?;
+    ws.write_worktree(State {
+        base_commit: state.base_commit,
+        root_view: view,
+    })?;
+    println!(
+        "Synced files/directories: {created_files} added, {updated_files} updated, \
+         {created_dirs} directories added, {removed} objects removed, {renamed} renamed"
+    );
+    Ok(())
+}
+
 fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
     let ws = open_workspace(dir)?;
     let repo = SourceRepo::open(ws.meta_root(), ws.source_url(), ws.object_format())?;
@@ -693,6 +1027,12 @@ fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
                 println!("    {}", fields[3]);
                 println!();
             }
+        }
+        SourceCommand::Sync => {
+            if !repo.exists() {
+                bail!("source repository is missing; run `ds source fetch`");
+            }
+            sync_source(&ws, &repo)?;
         }
         SourceCommand::Changes { base } => {
             if !repo.exists() {

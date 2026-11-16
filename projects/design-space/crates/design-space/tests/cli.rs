@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 use tempfile::tempdir;
@@ -291,4 +292,64 @@ fn rejects_invalid_relations_and_unsafe_removals() {
     let output = ds(root, &["rm", "namespaces/app/A"]);
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("children"));
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn syncs_files_and_directories_with_the_source_tree() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source");
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::create_dir_all(source.join("docs")).unwrap();
+    fs::write(source.join("src/a.rs"), "fn a() {}\n").unwrap();
+    fs::write(source.join("docs/x.md"), "x\n").unwrap();
+    git(&source, &["init", "-q"]);
+    git(&source, &["config", "user.email", "test@example.com"]);
+    git(&source, &["config", "user.name", "test"]);
+    git(&source, &["add", "-A"]);
+    git(&source, &["commit", "-qm", "initial"]);
+    git(&source, &["branch", "-M", "master"]);
+
+    let url = format!("file://{}", source.display());
+    ok(&ws, &["init", "--source", &url]);
+    ok(&ws, &["source", "fetch"]);
+    ok(&ws, &["source", "checkout", "master"]);
+    ok(&ws, &["source", "sync"]);
+
+    let files = ok(&ws, &["ls", "--files"]);
+    assert!(files.contains("files/src/a.rs"));
+    assert!(files.contains("files/docs"));
+    assert!(files.contains("files/docs/x.md"));
+
+    ok(&ws, &["edit", "files/src/a.rs", "--design", "a rules"]);
+
+    git(&source, &["mv", "src/a.rs", "src/b.rs"]);
+    fs::write(source.join("src/c.rs"), "fn c() {}\n").unwrap();
+    fs::remove_file(source.join("docs/x.md")).unwrap();
+    git(&source, &["add", "-A"]);
+    git(&source, &["commit", "-qm", "change"]);
+
+    ok(&ws, &["source", "fetch"]);
+    ok(&ws, &["source", "sync"]);
+
+    let files = ok(&ws, &["ls", "--files"]);
+    assert!(files.contains("files/src/b.rs"));
+    assert!(!files.contains("files/src/a.rs"));
+    assert!(files.contains("files/src/c.rs"));
+    assert!(!files.contains("files/docs/x.md"));
+    assert!(ok(&ws, &["show", "files/src/b.rs"]).contains("a rules"));
+    assert!(!ds(&ws, &["show", "files/src/a.rs"]).status.success());
 }

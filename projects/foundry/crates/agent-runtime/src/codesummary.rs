@@ -453,10 +453,6 @@ fn parent_dir(path: &str) -> Option<&str> {
     path.rsplit_once('/').map(|(parent, _)| parent)
 }
 
-fn base_name(path: &str) -> &str {
-    path.rsplit_once('/').map(|(_, name)| name).unwrap_or(path)
-}
-
 /// Design-space qname for a File or Directory at a source path.
 fn object_name(path: &str) -> String {
     format!("files/{path}")
@@ -691,9 +687,19 @@ impl Node for PrepareNode {
             ),
         );
 
+        // Align every File/Directory object with the source tree in one ds
+        // invocation. Capture the previous qname set first so new directories
+        // can still be queued for design-doc review.
+        let before = ds_ok(&self.shell, &ds_workspace, "ls --files".to_owned())
+            .await?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        ds_ok(&self.shell, &ds_workspace, "source sync".to_owned()).await?;
+
         let changes =
             parse_changes(&ds_source(&self.shell, &ds_workspace, "changes".to_owned()).await?);
-
         let all_files = ds_source(&self.shell, &ds_workspace, "ls".to_owned())
             .await?
             .lines()
@@ -701,25 +707,23 @@ impl Node for PrepareNode {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         let dirs = expected_dirs(&all_files);
+        delete_stale_namespaces(&self.shell, &ds_workspace, &all_files).await?;
 
         let mut pending_files = std::collections::BTreeSet::new();
         let mut raw_source_files = std::collections::BTreeSet::new();
         let mut changed_dirs = std::collections::BTreeSet::new();
-        let mut pending_deletes = Vec::new();
         for change in &changes {
             match change.status {
                 'D' => {
-                    pending_deletes.push(change.path.clone());
                     if let Some(parent) = parent_dir(&change.path) {
                         changed_dirs.insert(parent.to_owned());
                     }
                 }
                 'R' => {
-                    if let Some(old) = &change.old_path {
-                        pending_deletes.push(old.clone());
-                        if let Some(parent) = parent_dir(old) {
-                            changed_dirs.insert(parent.to_owned());
-                        }
+                    if let Some(old) = &change.old_path
+                        && let Some(parent) = parent_dir(old)
+                    {
+                        changed_dirs.insert(parent.to_owned());
                     }
                     pending_files.insert(change.path.clone());
                     if is_source(&change.path) {
@@ -743,76 +747,11 @@ impl Node for PrepareNode {
             }
         }
 
-        let mut cascade_files = std::collections::BTreeSet::new();
-        for path in &pending_deletes {
-            let name = object_name(path);
-            delete_tree(&self.shell, &ds_workspace, &name, &mut cascade_files).await?;
-        }
-        delete_stale_namespaces(&self.shell, &ds_workspace, &all_files).await?;
-        delete_stale_dirs(&self.shell, &ds_workspace, &dirs).await?;
-
-        // One listing instead of a `show` probe per object; a missing object
-        // would otherwise print an error for every file in the source tree.
-        let mut existing = ds_ok(&self.shell, &ds_workspace, "ls --files".to_owned())
-            .await?
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
+        let new_dirs = dirs
+            .iter()
+            .filter(|dir| !before.contains(&object_name(dir)))
+            .cloned()
             .collect::<std::collections::BTreeSet<_>>();
-
-        let mut new_dirs = std::collections::BTreeSet::new();
-        for dir in &dirs {
-            let qname = object_name(dir);
-            if existing.contains(&qname) {
-                continue;
-            }
-            let parent = parent_dir(dir)
-                .map(object_name)
-                .unwrap_or_else(|| "files".to_string());
-            let local = base_name(dir);
-            ds_ok(
-                &self.shell,
-                &ds_workspace,
-                format!(
-                    "create directory {} --parent {} --source {}",
-                    q(local),
-                    q(&parent),
-                    q(dir)
-                ),
-            )
-            .await?;
-            existing.insert(qname);
-            new_dirs.insert(dir.clone());
-        }
-
-        for path in pending_files.clone() {
-            let qname = object_name(&path);
-            if existing.contains(&qname) {
-                ds_ok(
-                    &self.shell,
-                    &ds_workspace,
-                    format!("edit {} --source {}", q(&qname), q(&path)),
-                )
-                .await?;
-            } else {
-                let parent = parent_dir(&path)
-                    .map(object_name)
-                    .unwrap_or_else(|| "files".to_string());
-                let local = base_name(&path);
-                ds_ok(
-                    &self.shell,
-                    &ds_workspace,
-                    format!(
-                        "create file {} --parent {} --source {}",
-                        q(local),
-                        q(&parent),
-                        q(&path)
-                    ),
-                )
-                .await?;
-                existing.insert(qname);
-            }
-        }
 
         let mut dir_queue = dirs
             .iter()
@@ -822,12 +761,6 @@ impl Node for PrepareNode {
         dir_queue.sort();
         dir_queue.dedup();
 
-        for path in cascade_files {
-            if is_source(&path) {
-                raw_source_files.insert(path.clone());
-            }
-            pending_files.insert(path);
-        }
         let file_queue = raw_source_files.into_iter().collect::<Vec<_>>();
 
         let file_items = file_queue
@@ -951,38 +884,6 @@ async fn project_info(ctx: &mut Context) -> Result<ProjectInfo, NodeError> {
     Ok(project)
 }
 
-async fn delete_tree(
-    shell: &Arc<dyn Shell>,
-    workspace: &str,
-    name: &str,
-    changed_files: &mut std::collections::BTreeSet<String>,
-) -> Result<bool, NodeError> {
-    let shown = ds(shell, workspace, format!("show {}", q(name))).await?;
-    if shown.exit_code != Some(0) {
-        return Ok(false);
-    }
-    for child in parse_children(&shown.stdout) {
-        Box::pin(delete_tree(shell, workspace, &child, changed_files)).await?;
-    }
-    let output = ds(shell, workspace, format!("rm --force {}", q(name))).await?;
-    if output.exit_code != Some(0) {
-        return Err(NodeError::failed(format!(
-            "ds rm --force {name} failed:\n{}",
-            output.stderr
-        )));
-    }
-    for line in output.stdout.lines() {
-        if let Some(referrer) = line.strip_prefix("Unreferenced from ")
-            && let Ok(shown) = ds(shell, workspace, format!("show {}", q(referrer))).await
-            && shown.exit_code == Some(0)
-            && let Some(path) = shell_path(&shown.stdout)
-        {
-            changed_files.insert(path);
-        }
-    }
-    Ok(true)
-}
-
 async fn delete_stale_namespaces(
     shell: &Arc<dyn Shell>,
     workspace: &str,
@@ -1011,38 +912,6 @@ async fn delete_stale_namespaces(
             continue;
         }
         let _ = ds(shell, workspace, format!("rm --force {}", q(name))).await?;
-    }
-    Ok(())
-}
-
-async fn delete_stale_dirs(
-    shell: &Arc<dyn Shell>,
-    workspace: &str,
-    expected: &[String],
-) -> Result<(), NodeError> {
-    let expected = expected
-        .iter()
-        .map(|path| object_name(path))
-        .collect::<std::collections::BTreeSet<_>>();
-    let list = ds_ok(shell, workspace, "ls --files".to_owned()).await?;
-    let mut stale = Vec::new();
-    for name in list.lines().filter(|line| !line.is_empty()) {
-        if name == "files" || expected.contains(name) {
-            continue;
-        }
-        let shown = ds(shell, workspace, format!("show {}", q(name))).await?;
-        if shown.exit_code == Some(0) && parse_kind(&shown.stdout).as_deref() == Some("Directory") {
-            stale.push(name.to_owned());
-        }
-    }
-    stale.sort_by_key(|name| std::cmp::Reverse(name.matches('/').count()));
-    for name in stale {
-        let output = ds(shell, workspace, format!("rm --force {}", q(&name))).await?;
-        if output.exit_code != Some(0) {
-            // A stale directory may still contain a stale object. Leave it for
-            // verify to report instead of aborting preparation.
-            continue;
-        }
     }
     Ok(())
 }

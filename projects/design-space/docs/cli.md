@@ -12,7 +12,7 @@ clone
 create（所有 kind）
 edit（design、source、parent/namespace/file/module/name、继承/接口/mixin/override 关系）
 dep add/rm/list（结构关系自动计入显式依赖）
-source fetch/checkout/status/ls/cat/log
+source fetch/checkout/status/ls/cat/log/sync
 remote add/show/set-url/set-token
 push/fetch/pull（本地目录、HTTP、SSH；HTTP 支持 Bearer token）
 gc
@@ -63,6 +63,7 @@ ds source status
 ds source ls [<path>]
 ds source cat <path>
 ds source log [<ref>]
+ds source sync
 ds source changes [--base <git-ref>]
 
 ds create <kind> <name> [options]
@@ -271,7 +272,19 @@ ds rm <qname> [--force]
   再删除，并输出被修改的引用方；
 - 只修改 worktree，不自动暂存。
 
-### 7.3.1 source changes
+### 7.3.1 source sync
+
+```bash
+ds source sync
+```
+
+- 一次把 `files/` 下的 File/Directory 对象与当前 source HEAD 对齐，不逐个对象调用命令；
+- 新增、删除按源码路径处理；用 `git diff -M` 识别重命名时，移动原对象及其子孙，保留设计文档、关系和依赖，并把 source 路径改到新路径；
+- 目录对象按源码树中的目录生成；源码中已不存在的 File/Directory 连同子孙删除；
+- 只修改 worktree，不自动暂存；需要时再 `ds add -A` / `ds commit`；
+- 需要先执行 `ds source fetch`。
+
+### 7.3.2 source changes
 
 ```bash
 ds source changes [--base <git-ref>]
@@ -283,7 +296,7 @@ ds source changes [--base <git-ref>]
 - base 为零、找不到、或不是当前 HEAD 的祖先时，全部文件按 `A` 输出；
 - 需要先执行 `ds source fetch`。
 
-### 7.3.2 status / verify
+### 7.3.3 status / verify
 
 ```bash
 ds status
