@@ -50,6 +50,18 @@ Review 工作项：
 - 整体 review：用 ds status 的已暂存部分、ds diff --staged、ds show --staged、ds ls --staged 核对；返回 JSON：{"passed":true|false,"files":[{"path":"...","feedback":"..."}],"directories":[...]}。
 只返回 JSON，不要加说明。"#;
 
+const REVIEW_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 审查员。
+你只检查设计空间的改动，不创建、不修改、不删除任何对象，也不写设计文档。
+用 shell 执行 ds status、ds diff、ds show 等命令核对改动与源码是否一致。
+
+单文件/单目录 review 只返回：
+{"passed":true|false,"feedback":"..."}
+
+整体 review 只返回：
+{"passed":true|false,"files":[{"path":"...","feedback":"..."}],"directories":[{"path":"...","feedback":"..."}]}
+
+不要返回设计文档、总结或解释。"#;
+
 const SUMMARY_FILE_PROMPT: &str =
     "总结工作项中的文件。按系统规则更新设计空间，最后返回该 File 的设计文档纯文本。";
 const REVIEW_FILE_PROMPT: &str =
@@ -141,20 +153,22 @@ pub async fn run(
     let agent = Agent::new("codesummary", graph, llm);
 
     let mut context = Context::new();
-    let shared_system = PromptTemplate::parse(SUMMARY_SYSTEM_PROMPT)
+    let summary_system = PromptTemplate::parse(SUMMARY_SYSTEM_PROMPT)
         .map_err(|error| RunError::Graph(error.to_string()))?;
-    for node in [
-        "summarize_file",
-        "review_file",
-        "summarize_dir",
-        "review_dir",
-        "review_all",
+    let review_system = PromptTemplate::parse(REVIEW_SYSTEM_PROMPT)
+        .map_err(|error| RunError::Graph(error.to_string()))?;
+    for (node, system) in [
+        ("summarize_file", &summary_system),
+        ("summarize_dir", &summary_system),
+        ("review_file", &review_system),
+        ("review_dir", &review_system),
+        ("review_all", &review_system),
     ] {
         context.set_llm_config(
             node,
             LlmConfig {
                 model: ModelProfileRef::new(""),
-                shared_system: shared_system.clone(),
+                shared_system: system.clone(),
                 tools: vec!["project".to_owned(), "shell".to_owned()],
                 params: LlmParams {
                     history_token_budget: Some(60_000),
@@ -1115,6 +1129,12 @@ impl Node for ApplyFileNode {
         let shell = Arc::clone(&self.shell);
         let item = current_item(ctx, "file_queue", "file_cursor")?
             .ok_or_else(|| NodeError::failed("no current file"))?;
+        tracing::info!(
+            file = %item.path,
+            passed = verdict.passed,
+            feedback = %verdict.feedback,
+            "file review finished"
+        );
         history_assistant(ctx, input.as_str().unwrap_or_default().to_owned());
 
         if verdict.passed {
@@ -1255,6 +1275,12 @@ impl Node for ApplyDirNode {
         let shell = Arc::clone(&self.shell);
         let item = current_item(ctx, "dir_queue", "dir_cursor")?
             .ok_or_else(|| NodeError::failed("no current directory"))?;
+        tracing::info!(
+            directory = %item.path,
+            passed = verdict.passed,
+            feedback = %verdict.feedback,
+            "directory review finished"
+        );
         history_assistant(ctx, input.as_str().unwrap_or_default().to_owned());
 
         if verdict.passed {
