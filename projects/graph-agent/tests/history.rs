@@ -46,7 +46,7 @@ impl LlmNode for TestLlm {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -63,7 +63,7 @@ impl Node for MarkerNode {
         Ok(Value::String("marker".to_owned()))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 

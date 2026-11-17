@@ -6,7 +6,8 @@ use serde_json::Value;
 ///
 /// Input and output are JSON values. A node does not know its own graph name or
 /// the names of its targets. It receives the previous node's output as its
-/// input, returns its own JSON output, and selects a local transition index.
+/// input, returns its own JSON output, and receives that output as a parameter
+/// when selecting a local transition index.
 ///
 /// Fixed nodes do not write [`crate::History`]. Only the LLM node adapter
 /// records the user message, tool calls, tool results and final reply.
@@ -15,7 +16,7 @@ pub trait Node: Send + Sync {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError>;
 
     /// Select one of this node's local transition targets.
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError>;
+    fn to(&self, output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError>;
 
     /// Number of outgoing transition targets this node can select.
     fn transition_count(&self) -> usize;

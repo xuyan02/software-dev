@@ -4,7 +4,7 @@ use graph_agent::{
     LlmRequest, LlmResponse, LlmRole, LlmRuntime, ModelError, ModelGateway, ModelProfileRef,
     NodeError, PromptTemplate, SkillError, SkillRegistry, ToolRegistry, TransitionIndex, Usage,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 struct TestModel;
@@ -64,7 +64,7 @@ impl LlmNode for TestLlm {
         &self.skills
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 

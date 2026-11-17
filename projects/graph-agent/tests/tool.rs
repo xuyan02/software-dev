@@ -136,7 +136,7 @@ impl Node for CallTool {
         Ok(serde_json::Value::Null)
     }
 
-    fn to(&self, _context: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _context: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 

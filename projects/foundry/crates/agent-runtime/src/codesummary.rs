@@ -770,7 +770,7 @@ impl Node for PrepareNode {
         Ok(json!({"phase":"review_all"}))
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         if !get_items(ctx, "file_queue")?.is_empty() {
             Ok(TransitionIndex(0))
         } else if !get_items(ctx, "dir_queue")?.is_empty() {
@@ -907,7 +907,7 @@ impl LlmNode for SummaryFileNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(SUMMARY_FILE_PROMPT))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -936,7 +936,7 @@ impl Node for RecordFileNode {
         json_result(&item)
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -958,7 +958,7 @@ impl LlmNode for ReviewFileNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_FILE_PROMPT))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -1026,7 +1026,7 @@ impl Node for ApplyFileNode {
         json_result(&failed_item)
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("apply_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "retry" => 0,
@@ -1055,7 +1055,7 @@ impl LlmNode for SummaryDirNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(SUMMARY_DIR_PROMPT))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -1084,7 +1084,7 @@ impl Node for RecordDirNode {
         json_result(&item)
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -1106,7 +1106,7 @@ impl LlmNode for ReviewDirNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_DIR_PROMPT))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -1167,7 +1167,7 @@ impl Node for ApplyDirNode {
         json_result(&failed_item)
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("apply_dir_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "retry" => 0,
@@ -1195,7 +1195,7 @@ impl LlmNode for ReviewAllNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_ALL_PROMPT))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 
@@ -1268,7 +1268,7 @@ impl Node for ApplyAllNode {
         Ok(input)
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("apply_all_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "verify" => 0,
@@ -1401,7 +1401,7 @@ impl Node for VerifyNode {
         Ok(Value::String(error_text))
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("verify_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "done" => 0,

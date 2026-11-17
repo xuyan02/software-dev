@@ -188,7 +188,7 @@ impl LlmNode for FoundryLlmNode {
         &self.user
     }
 
-    fn to(&self, _context: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _context: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 

@@ -99,7 +99,7 @@ impl LlmNode for SummarizeNode {
         &self.user
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(0))
     }
 

@@ -36,10 +36,8 @@ impl Graph {
     /// Execute until an exit is reached.
     ///
     /// Exits are virtual: they are not executable nodes, and reaching one ends
-    /// the run. Each node's return value becomes the next node's input. It is
-    /// also stored as that node's output unless the node stored an explicit
-    /// output, so `to` and later nodes can read it through
-    /// `current_output` / `nodes.<id>.output`.
+    /// the run. Each node's return value becomes the next node's input and is
+    /// passed to `to` as that node's output.
     pub async fn run(&self, ctx: &mut Context, input: Value) -> Result<GraphOutput, GraphError> {
         let mut current = self.entry.clone();
         let mut input = input;
@@ -54,11 +52,7 @@ impl Graph {
             let started = std::time::Instant::now();
             tracing::info!(graph = %self.id, node = %current, "node started");
             input = node.run(input, ctx).await?;
-            if !ctx.has_current_output() {
-                ctx.set_output(input.clone()).map_err(NodeError::from)?;
-            }
-
-            let index = node.to(ctx)?;
+            let index = node.to(&input, ctx)?;
             let next = self.edges.get(&(current.clone(), index)).ok_or_else(|| {
                 GraphError::MissingEdge {
                     node: current.clone(),

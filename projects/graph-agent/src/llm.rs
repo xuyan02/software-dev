@@ -26,7 +26,7 @@ pub trait LlmNode: Send + Sync {
         &[]
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError>;
+    fn to(&self, output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError>;
     fn transition_count(&self) -> usize;
 }
 
@@ -258,8 +258,8 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
         }
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        self.inner.to(ctx)
+    fn to(&self, output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        self.inner.to(output, ctx)
     }
 
     fn transition_count(&self) -> usize {
@@ -505,7 +505,7 @@ mod tests {
             TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
         }
 
-        fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
             Ok(TransitionIndex(0))
         }
 

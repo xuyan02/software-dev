@@ -15,7 +15,7 @@ impl Node for FixedNode {
         Ok(Value::String(self.output.to_owned()))
     }
 
-    fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(self.next)
     }
 
@@ -32,7 +32,7 @@ impl Node for BranchNode {
         Ok(input)
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         if ctx.var::<bool>("go")? {
             Ok(TransitionIndex(0))
         } else {
@@ -313,10 +313,7 @@ impl Node for OutputBranch {
         Ok(json!({ "go": true }))
     }
 
-    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        let output: Value = ctx
-            .current_output()
-            .map_err(|error| NodeError::failed(error.to_string()))?;
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
         Ok(TransitionIndex(if output["go"] == true { 0 } else { 1 }))
     }
 
@@ -326,7 +323,7 @@ impl Node for OutputBranch {
 }
 
 #[tokio::test]
-async fn stores_node_output_before_the_transition() {
+async fn transition_receives_the_node_output() {
     let graph = Graph::builder("output-branch")
         .entry("branch")
         .exit("left")
@@ -340,6 +337,4 @@ async fn stores_node_output_before_the_transition() {
 
     let output = graph.run(&mut ctx, json!(null)).await.expect("run");
     assert_eq!(output.exit.as_str(), "left");
-    assert_eq!(ctx.node_output::<Value>("branch").unwrap(), json!({ "go": true }));
-    assert!(ctx.resolve::<bool>("nodes.branch.output.go").unwrap());
 }
