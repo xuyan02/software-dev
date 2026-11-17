@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use graph_agent::{
-    Agent, Context, Graph, LlmConfig, LlmMessage, LlmNode, LlmParams, LlmResponse, LlmRole,
+    Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmResponse, LlmRole,
     LlmRuntime, ModelProfileRef, Node, NodeError, PromptTemplate, ScriptedModel, SkillError,
     SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, ToolRegistry,
     TransitionIndex,
@@ -85,10 +85,10 @@ fn runtime(model: Arc<ScriptedModel>, tools: ToolRegistry) -> Arc<LlmRuntime> {
 }
 
 #[tokio::test]
-async fn llm_records_input_and_tool_calls_but_not_its_output() {
+async fn llm_records_user_tool_calls_and_final_reply() {
     let model = Arc::new(ScriptedModel::new(vec![
         LlmResponse::tool_call("echo", json!({ "text": "hi" })),
-        LlmResponse::final_answer("done"),
+        LlmResponse::final_answer(json!({ "summary": "done" }).to_string()),
     ]));
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool)).unwrap();
@@ -120,95 +120,13 @@ async fn llm_records_input_and_tool_calls_but_not_its_output() {
 
     let messages = output.context.history().messages();
     assert_eq!(messages[0].role, LlmRole::User);
-    assert_eq!(messages[0].content, "hello");
+    assert!(messages[0].content.contains("Input (JSON):"));
+    assert!(messages[0].content.contains("\"hello\""));
     assert_eq!(messages[1].role, LlmRole::Assistant);
     assert_eq!(messages[1].tool_calls[0].name, "echo");
     assert_eq!(messages[2].role, LlmRole::Tool);
     assert_eq!(messages[2].content, "hi");
-    assert_eq!(messages.last().unwrap().role, LlmRole::Assistant);
-    assert_eq!(messages.last().unwrap().content, "marker");
-    assert!(!messages.iter().any(|message| message.content == "done"));
-}
-
-#[tokio::test]
-async fn fixed_nodes_can_record_tool_calls() {
-    let mut context = Context::new();
-    context
-        .history_mut()
-        .record_tool_call("echo", json!({ "text": "fixed" }), "fixed result");
-    let messages = context.history().messages();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, LlmRole::Assistant);
-    assert_eq!(messages[0].tool_calls[0].name, "echo");
-    assert_eq!(messages[1].role, LlmRole::Tool);
-    assert_eq!(messages[1].content, "fixed result");
-}
-
-#[tokio::test]
-async fn history_is_compressed_before_the_request() {
-    let model = Arc::new(ScriptedModel::new(vec![
-        LlmResponse::final_answer("SUMMARY"),
-        LlmResponse::final_answer("done"),
-    ]));
-    let graph = Graph::builder("compress")
-        .entry("agent")
-        .exit("done")
-        .llm_node("agent", TestLlm)
-        .edge("agent", 0, "done")
-        .build()
-        .unwrap();
-    let agent = Agent::new(
-        "compress",
-        graph,
-        runtime(Arc::clone(&model), ToolRegistry::new()),
-    );
-
-    let mut context = Context::new();
-    for index in 0..20 {
-        context.history_mut().push(LlmMessage::user(format!(
-            "old message {index} with enough text to count"
-        )));
-    }
-    context.set_llm_config(
-        "agent",
-        LlmConfig {
-            model: ModelProfileRef::new("test"),
-            shared_system: PromptTemplate::literal(""),
-            tools: Vec::new(),
-            params: LlmParams {
-                history_token_budget: Some(40),
-                ..LlmParams::default()
-            },
-        },
-    );
-
-    let output = agent.run(context, json!("new")).await.unwrap();
-    let messages = output.context.history().messages();
-    assert!(
-        messages[0]
-            .content
-            .starts_with("[earlier conversation summary]")
-    );
-    assert!(messages[0].content.contains("SUMMARY"));
-    assert!(
-        !messages
-            .iter()
-            .any(|message| message.content.starts_with("old message 0 "))
-    );
-    assert_eq!(messages.last().unwrap().content, "done");
-
-    let requests = model.requests();
-    assert_eq!(requests.len(), 2);
-    assert!(requests[0].messages[1].content.contains("old message 0"));
-    assert!(requests[1].messages.iter().any(|message| {
-        message
-            .content
-            .starts_with("[earlier conversation summary]")
-    }));
-    assert!(
-        !requests[1]
-            .messages
-            .iter()
-            .any(|message| message.content.starts_with("old message 0 "))
-    );
+    assert_eq!(messages[3].role, LlmRole::Assistant);
+    assert_eq!(messages[3].content, json!({ "summary": "done" }).to_string());
+    assert_eq!(messages.len(), 4);
 }

@@ -12,9 +12,11 @@ static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// An LLM-backed node.
 ///
-/// The node only provides its own system/user templates and transition logic.
-/// Model, shared system prompt, tools and parameters come from
-/// [`Context::current_llm_config`].
+/// The node provides its system prompt, its user prompt (which must describe
+/// the node's JSON output format) and transition logic. The user prompt and the
+/// input JSON form one user message that is recorded in History. The adapter appends the
+/// input JSON to the user message, records the full conversation in History,
+/// parses the final reply as JSON and returns it as the node output.
 pub trait LlmNode: Send + Sync {
     fn system(&self) -> &PromptTemplate;
     fn user(&self) -> &PromptTemplate;
@@ -196,34 +198,18 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
 
-        let input_text = render_input(&input);
-        let fixed_tokens = estimate_tokens(&system) + estimate_tokens(&fixed_user);
-        compress_history(
-            &runtime,
-            &model,
-            &params,
-            fixed_tokens,
-            estimate_tokens(&input_text),
-            ctx,
-        )
-        .await?;
-        let input_already = !input_text.is_empty()
-            && ctx.history().messages().last().is_some_and(|message| {
-                message.role == LlmRole::User && message.content == input_text
-            });
-        let mut input_recorded = input_text.is_empty() || input_already;
+        // The node's user prompt states its output format; the input is always
+        // the previous node's JSON value. Both form one user message.
+        let user_text = build_user_message(&fixed_user, &input);
+        let fixed_tokens = estimate_tokens(&system) + estimate_tokens(&user_text);
+        compress_history(&runtime, &model, &params, fixed_tokens, 0, ctx).await?;
 
+        ctx.history_mut().push(LlmMessage::user(user_text));
         let mut messages = Vec::new();
         if !system.is_empty() {
             messages.push(LlmMessage::system(system));
         }
-        if !fixed_user.is_empty() {
-            messages.push(LlmMessage::user(fixed_user));
-        }
         messages.extend(ctx.history().messages().iter().cloned());
-        if !input_recorded {
-            messages.push(LlmMessage::user(input_text.clone()));
-        }
 
         loop {
             let response = runtime
@@ -237,18 +223,13 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
                 .await
                 .map_err(|error| NodeError::failed(error.to_string()))?;
             let message = response.message;
-            if message.tool_calls.is_empty() {
-                // The node does not write its output to History. The next node
-                // or the graph framework decides what to record.
-                return Ok(Value::String(message.content));
-            }
-
-            if !input_recorded {
-                ctx.history_mut().push(LlmMessage::user(input_text.clone()));
-                input_recorded = true;
-            }
+            let final_answer = message.tool_calls.is_empty();
             ctx.history_mut().push(message.clone());
             messages.push(message.clone());
+            if final_answer {
+                return parse_node_output(&message.content);
+            }
+
             let registry = ctx.tool_registry()?.clone();
             let tool_context = ctx.tool_context().clone();
             for call in message.tool_calls {
@@ -284,6 +265,56 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
     fn transition_count(&self) -> usize {
         self.inner.transition_count()
     }
+}
+
+/// Build the single user message for an LLM node. The fixed prompt owns the
+/// output-format description; the input is rendered as JSON.
+fn build_user_message(prompt: &str, input: &Value) -> String {
+    let input = serde_json::to_string_pretty(input).unwrap_or_else(|_| "null".to_owned());
+    let mut text = String::new();
+    if !prompt.trim().is_empty() {
+        text.push_str(prompt.trim());
+        text.push_str("\n\n");
+    }
+    text.push_str("Input (JSON):\n");
+    text.push_str(&input);
+    text.push_str(
+        "\n\nReturn exactly one JSON value as this node's output. \
+         Do not wrap it in Markdown fences and do not add prose outside the JSON.",
+    );
+    text
+}
+
+fn parse_node_output(content: &str) -> Result<Value, NodeError> {
+    let text = strip_json_fence(content.trim());
+    if text.is_empty() {
+        return Err(NodeError::failed("LLM node returned an empty response"));
+    }
+    serde_json::from_str(text).map_err(|error| {
+        NodeError::failed(format!(
+            "LLM node returned invalid JSON: {error}; response: {}",
+            truncate_for_error(text)
+        ))
+    })
+}
+
+fn strip_json_fence(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("```") else {
+        return text;
+    };
+    let rest = rest.strip_prefix("json").unwrap_or(rest);
+    let rest = rest.strip_prefix('\n').unwrap_or(rest);
+    rest.strip_suffix("```").map(str::trim_end).unwrap_or(text)
+}
+
+fn truncate_for_error(text: &str) -> String {
+    const MAX_CHARS: usize = 500;
+    if text.chars().count() <= MAX_CHARS {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(MAX_CHARS).collect();
+    out.push('…');
+    out
 }
 
 async fn compress_history(
@@ -398,16 +429,6 @@ fn render_transcript(messages: &[LlmMessage]) -> String {
     out
 }
 
-fn render_input(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(text) => text.clone(),
-        Value::Bool(boolean) => boolean.to_string(),
-        Value::Number(number) => number.to_string(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
-}
-
 fn tool_error_json(tool: &str, code: u32, message: &str) -> String {
     serde_json::json!({
         "tool": tool,
@@ -463,4 +484,114 @@ fn append_skills(
     }
 
     Ok(system)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Agent, Graph, LlmConfig, LlmParams, PromptTemplate, ScriptedModel, ToolRegistry};
+    use std::sync::Arc;
+
+    struct TestLlm;
+
+    impl LlmNode for TestLlm {
+        fn system(&self) -> &PromptTemplate {
+            static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
+            TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
+        }
+
+        fn user(&self) -> &PromptTemplate {
+            static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
+            TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
+        }
+
+        fn to(&self, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+            Ok(TransitionIndex(0))
+        }
+
+        fn transition_count(&self) -> usize {
+            1
+        }
+    }
+
+    struct NoSkills;
+
+    impl SkillRegistry for NoSkills {
+        fn prompt(&self, _id: &str) -> Result<Option<String>, SkillError> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn history_is_compressed_before_the_request() {
+        let model = Arc::new(ScriptedModel::new(vec![
+            LlmResponse::final_answer("SUMMARY"),
+            LlmResponse::final_answer(serde_json::json!({ "ok": true }).to_string()),
+        ]));
+        let llm = Arc::new(LlmRuntime::new(
+            model.clone(),
+            Arc::new(ToolRegistry::new()),
+            Arc::new(NoSkills),
+        ));
+        let graph = Graph::builder("compress")
+            .entry("agent")
+            .exit("done")
+            .llm_node("agent", TestLlm)
+            .edge("agent", 0, "done")
+            .build()
+            .unwrap();
+        let agent = Agent::new("compress", graph, llm);
+
+        let mut context = Context::new();
+        for index in 0..20 {
+            context.history_mut().push(LlmMessage::user(format!(
+                "old message {index} with enough text to count"
+            )));
+        }
+        context.set_llm_config(
+            "agent",
+            LlmConfig {
+                model: ModelProfileRef::new("test"),
+                shared_system: PromptTemplate::literal(""),
+                tools: Vec::new(),
+                params: LlmParams {
+                    history_token_budget: Some(40),
+                    ..LlmParams::default()
+                },
+            },
+        );
+
+        let output = agent.run(context, serde_json::json!("new")).await.unwrap();
+        let messages = output.context.history().messages();
+        assert!(
+            messages[0]
+                .content
+                .starts_with("[earlier conversation summary]")
+        );
+        assert!(messages[0].content.contains("SUMMARY"));
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.content.starts_with("old message 0 "))
+        );
+        assert_eq!(
+            messages.last().unwrap().content,
+            serde_json::json!({ "ok": true }).to_string()
+        );
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].messages[1].content.contains("old message 0"));
+        assert!(requests[1].messages.iter().any(|message| {
+            message
+                .content
+                .starts_with("[earlier conversation summary]")
+        }));
+        assert!(
+            !requests[1]
+                .messages
+                .iter()
+                .any(|message| message.content.starts_with("old message 0 "))
+        );
+    }
 }

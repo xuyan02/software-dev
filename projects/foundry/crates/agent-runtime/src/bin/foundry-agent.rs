@@ -102,7 +102,10 @@ async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     let model = Arc::new(ScriptedModel::new(vec![
         LlmResponse::tool_call("requirements_get", json!({})),
         LlmResponse::final_answer(
-            "The requirements document is currently empty; start with a user model.",
+            serde_json::json!({
+                "message": "The requirements document is currently empty; start with a user model."
+            })
+            .to_string(),
         ),
     ]));
     let runtime = AgentRuntime::new(model, Arc::new(tools));

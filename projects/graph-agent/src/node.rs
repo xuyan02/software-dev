@@ -4,9 +4,12 @@ use serde_json::Value;
 
 /// One executable step in a [`crate::Graph`].
 ///
-/// A node does not know its own graph name or the names of its targets. It
-/// receives the previous node's output as its input, writes its own output
-/// through the return value, and selects a local transition index.
+/// Input and output are JSON values. A node does not know its own graph name or
+/// the names of its targets. It receives the previous node's output as its
+/// input, returns its own JSON output, and selects a local transition index.
+///
+/// Fixed nodes do not write [`crate::History`]. Only the LLM node adapter
+/// records the user message, tool calls, tool results and final reply.
 #[async_trait]
 pub trait Node: Send + Sync {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError>;

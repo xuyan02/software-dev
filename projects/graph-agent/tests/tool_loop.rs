@@ -171,13 +171,13 @@ async fn executes_tool_calls_until_the_model_stops() {
                 "",
                 vec![call("call-1", "echo", json!({"text": "hello"}))],
             )),
-            LlmResponse::new(LlmMessage::assistant("done", vec![])),
+            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
         ],
         tools,
     );
 
     let output = agent.run(context(), json!(null)).await.unwrap();
-    assert_eq!(output.output, json!("done"));
+    assert_eq!(output.output, json!({"ok": true}));
 
     let requests = model.requests();
     assert_eq!(requests.len(), 2);
@@ -208,7 +208,7 @@ async fn tool_errors_are_returned_to_the_model() {
                 "",
                 vec![call("call-1", "fail", json!({}))],
             )),
-            LlmResponse::new(LlmMessage::assistant("recovered", vec![])),
+            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
         ],
         tools,
     );
@@ -246,7 +246,7 @@ async fn tools_not_enabled_for_the_node_are_denied() {
                 "",
                 vec![call("call-1", "fail", json!({}))],
             )),
-            LlmResponse::new(LlmMessage::assistant("done", vec![])),
+            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
         ],
         tools,
     );

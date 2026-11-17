@@ -40,7 +40,7 @@ async fn tool_call_then_final_answer() {
     let (runtime, model) = runtime(
         vec![
             LlmResponse::tool_call("echo", json!({ "text": "hello" })),
-            LlmResponse::final_answer("done"),
+            LlmResponse::final_answer(json!({"message": "done"}).to_string()),
         ],
         tools,
     );
@@ -63,7 +63,7 @@ async fn tool_call_then_final_answer() {
 
 #[tokio::test]
 async fn context_is_rendered_into_the_user_message() {
-    let (runtime, model) = runtime(vec![LlmResponse::final_answer("ok")], ToolRegistry::new());
+    let (runtime, model) = runtime(vec![LlmResponse::final_answer(json!({"message": "ok"}).to_string())], ToolRegistry::new());
     let mut request = AgentRunRequest::new("agent", "task", "system", "user request");
     request
         .context
@@ -76,7 +76,7 @@ async fn context_is_rendered_into_the_user_message() {
     assert_eq!(requests[0].messages[0].content, "system");
     let user = &requests[0].messages[1].content;
     assert!(user.contains("[requirement] req-1"));
-    assert!(user.ends_with("user request"));
+    assert!(user.contains("user request"));
 }
 
 #[tokio::test]
@@ -86,7 +86,7 @@ async fn tool_errors_are_fed_back_to_the_model() {
     let (runtime, model) = runtime(
         vec![
             LlmResponse::tool_call("fail", json!({})),
-            LlmResponse::final_answer("recovered"),
+            LlmResponse::final_answer(json!({"message": "recovered"}).to_string()),
         ],
         tools,
     );

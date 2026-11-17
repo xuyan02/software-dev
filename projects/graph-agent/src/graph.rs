@@ -1,4 +1,3 @@
-use crate::message::LlmMessage;
 use crate::{Context, LlmNode, LlmNodeAdapter, Node, NodeError, NodeId, TransitionIndex};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -71,11 +70,6 @@ impl Graph {
             );
 
             if self.exits.contains(next) {
-                let text = render_output(&input);
-                if !text.is_empty() {
-                    ctx.history_mut()
-                        .push(LlmMessage::assistant(text, Vec::new()));
-                }
                 return Ok(GraphOutput {
                     exit: next.clone(),
                     output: input,
@@ -91,16 +85,6 @@ impl Graph {
 pub struct GraphOutput {
     pub exit: NodeId,
     pub output: Value,
-}
-
-fn render_output(value: &Value) -> String {
-    match value {
-        Value::Null => String::new(),
-        Value::String(text) => text.clone(),
-        Value::Bool(boolean) => boolean.to_string(),
-        Value::Number(number) => number.to_string(),
-        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
-    }
 }
 
 pub struct GraphBuilder {

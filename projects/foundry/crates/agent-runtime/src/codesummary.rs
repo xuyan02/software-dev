@@ -7,7 +7,7 @@
 use crate::{AgentRunRequest, RunError, RunResult, Shell, ShellOutput};
 use async_trait::async_trait;
 use graph_agent::{
-    Agent, Context, Graph, LlmConfig, LlmMessage, LlmNode, LlmParams, LlmRuntime, ModelGateway,
+    Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmRuntime, ModelGateway,
     ModelProfileRef, Node, NodeError, PromptTemplate, SkillError, SkillRegistry, ToolOutput,
     ToolRegistry, TransitionIndex,
 };
@@ -38,12 +38,12 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 2. 用 ds show files/<path> 看 File 对象、文档和 children。
 3. 更新/删除该文件下已有的 namespace、class、interface、method、function、part、mixin。
 4. 创建缺失的元素，写 source span、设计文档、superclass/interfaces/mixins/overrides 和依赖。
-5. 返回该 File 的设计文档纯文本。
+5. 按用户消息要求的 JSON 格式返回该 File 的设计文档。
 
 目录总结工作项：
 1. 用 ds show files/<path> 看目录规则。
 2. 根据直属子项写目录规则，不枚举子项细节。
-3. 返回规则纯文本。
+3. 按用户消息要求的 JSON 格式返回目录规则。
 
 Review 工作项：
 - 单文件/单目录 review：用 ds status 看未暂存改动，ds diff、ds show 核对；返回 JSON：{"passed":true|false,"feedback":"..."}。
@@ -62,14 +62,21 @@ const REVIEW_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 审查员�
 
 不要返回设计文档、总结或解释。"#;
 
-const SUMMARY_FILE_PROMPT: &str =
-    "总结工作项中的文件。按系统规则更新设计空间，最后返回该 File 的设计文档纯文本。";
-const REVIEW_FILE_PROMPT: &str =
-    "检查工作项中文件的本次总结。返回 JSON verdict，不要修改任何对象。";
-const SUMMARY_DIR_PROMPT: &str =
-    "总结工作项中的目录。按系统规则更新目录设计文档，最后返回规则纯文本。";
-const REVIEW_DIR_PROMPT: &str = "检查工作项中目录的本次总结。返回 JSON verdict，不要修改任何对象。";
-const REVIEW_ALL_PROMPT: &str = "检查全部已暂存改动。返回 JSON verdict，不要修改任何对象。";
+const SUMMARY_FILE_PROMPT: &str = r#"总结工作项中的文件。按系统规则更新设计空间。
+输出 JSON：{"design":"该 File 的设计文档纯文本"}
+只返回这个 JSON 对象。"#;
+const REVIEW_FILE_PROMPT: &str = r#"检查工作项中文件的本次总结，不要修改任何对象。
+输出 JSON：{"passed":true|false,"feedback":"..."}
+只返回这个 JSON 对象。"#;
+const SUMMARY_DIR_PROMPT: &str = r#"总结工作项中的目录。按系统规则更新目录设计文档。
+输出 JSON：{"design":"目录规则纯文本"}
+只返回这个 JSON 对象。"#;
+const REVIEW_DIR_PROMPT: &str = r#"检查工作项中目录的本次总结，不要修改任何对象。
+输出 JSON：{"passed":true|false,"feedback":"..."}
+只返回这个 JSON 对象。"#;
+const REVIEW_ALL_PROMPT: &str = r#"检查全部已暂存改动，不要修改任何对象。
+输出 JSON：{"passed":true|false,"files":[{"path":"...","feedback":"..."}],"directories":[{"path":"...","feedback":"..."}]}
+只返回这个 JSON 对象。"#;
 
 const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm", "java", "kt", "kts",
@@ -126,7 +133,6 @@ struct Verdict {
 #[derive(Debug, Clone)]
 struct ProjectInfo {
     id: String,
-    name: String,
     git_repository: String,
     git_branch: String,
     design_space_url: String,
@@ -528,28 +534,13 @@ fn json_result<T: Serialize>(value: &T) -> Result<Value, NodeError> {
     serde_json::to_value(value).map_err(|error| NodeError::failed(error.to_string()))
 }
 
-fn parse_verdict(text: &str) -> Verdict {
-    let trimmed = text.trim();
-    let trimmed = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .unwrap_or(trimmed);
-    let trimmed = trimmed.strip_suffix("```").unwrap_or(trimmed).trim();
-    serde_json::from_str(trimmed).unwrap_or_else(|_| Verdict {
+fn parse_verdict(value: &Value) -> Verdict {
+    serde_json::from_value(value.clone()).unwrap_or_else(|_| Verdict {
         passed: false,
-        feedback: text.to_owned(),
+        feedback: value.to_string(),
         files: Vec::new(),
         directories: Vec::new(),
     })
-}
-
-fn history_user(ctx: &mut Context, text: String) {
-    ctx.history_mut().push(LlmMessage::user(text));
-}
-
-fn history_assistant(ctx: &mut Context, text: String) {
-    ctx.history_mut()
-        .push(LlmMessage::assistant(text, Vec::new()));
 }
 
 fn get_items(ctx: &Context, name: &str) -> Result<Vec<WorkItem>, NodeError> {
@@ -674,18 +665,6 @@ impl Node for PrepareNode {
         ctx.set_var("git_repository", project.git_repository.clone())?;
         ctx.set_var("design_space_url", project.design_space_url.clone())?;
         ctx.set_var("seen", Vec::<String>::new())?;
-        history_user(
-            ctx,
-            format!(
-                "Project: {}\nGit: {} (branch {})\nDesign space: {} (branch {})\nWorkspace: {}",
-                project.name,
-                project.git_repository,
-                project.git_branch,
-                project.design_space_url,
-                project.design_space_branch,
-                ds_workspace
-            ),
-        );
 
         // Align every File/Directory object with the source tree in one ds
         // invocation. Capture the previous qname set first so new directories
@@ -864,7 +843,6 @@ async fn project_info(ctx: &mut Context) -> Result<ProjectInfo, NodeError> {
     };
     let project = ProjectInfo {
         id: field("id"),
-        name: field("name"),
         git_repository: field("git_repository"),
         git_branch: field("git_branch"),
         design_space_url: field("design_space_url"),
@@ -947,11 +925,14 @@ impl Node for RecordFileNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let item = current_item(ctx, "file_queue", "file_cursor")?
             .ok_or_else(|| NodeError::failed("no current file"))?;
-        let doc = input.as_str().unwrap_or_default().to_owned();
+        let doc = input
+            .get("design")
+            .and_then(Value::as_str)
+            .ok_or_else(|| NodeError::failed("summarize_file output is missing design"))?
+            .to_owned();
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
         write_doc(&shell, &workspace, &item.path, &doc).await?;
-        history_assistant(ctx, doc);
         json_result(&item)
     }
 
@@ -993,7 +974,7 @@ struct ApplyFileNode {
 #[async_trait]
 impl Node for ApplyFileNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let verdict = parse_verdict(input.as_str().unwrap_or_default());
+        let verdict = parse_verdict(&input);
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
         let item = current_item(ctx, "file_queue", "file_cursor")?
@@ -1004,7 +985,6 @@ impl Node for ApplyFileNode {
             feedback = %verdict.feedback,
             "file review finished"
         );
-        history_assistant(ctx, input.as_str().unwrap_or_default().to_owned());
 
         if verdict.passed {
             ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
@@ -1028,7 +1008,7 @@ impl Node for ApplyFileNode {
 
         let mut failed_item = item;
         failed_item.feedback = if verdict.feedback.is_empty() {
-            input.as_str().unwrap_or_default().to_owned()
+            input.to_string()
         } else {
             verdict.feedback.clone()
         };
@@ -1093,11 +1073,14 @@ impl Node for RecordDirNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let item = current_item(ctx, "dir_queue", "dir_cursor")?
             .ok_or_else(|| NodeError::failed("no current directory"))?;
-        let doc = input.as_str().unwrap_or_default().to_owned();
+        let doc = input
+            .get("design")
+            .and_then(Value::as_str)
+            .ok_or_else(|| NodeError::failed("summarize_file output is missing design"))?
+            .to_owned();
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
         write_doc(&shell, &workspace, &item.path, &doc).await?;
-        history_assistant(ctx, doc);
         json_result(&item)
     }
 
@@ -1139,7 +1122,7 @@ struct ApplyDirNode {
 #[async_trait]
 impl Node for ApplyDirNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let verdict = parse_verdict(input.as_str().unwrap_or_default());
+        let verdict = parse_verdict(&input);
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
         let item = current_item(ctx, "dir_queue", "dir_cursor")?
@@ -1150,7 +1133,6 @@ impl Node for ApplyDirNode {
             feedback = %verdict.feedback,
             "directory review finished"
         );
-        history_assistant(ctx, input.as_str().unwrap_or_default().to_owned());
 
         if verdict.passed {
             ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
@@ -1167,7 +1149,7 @@ impl Node for ApplyDirNode {
 
         let mut failed_item = item;
         failed_item.feedback = if verdict.feedback.is_empty() {
-            input.as_str().unwrap_or_default().to_owned()
+            input.to_string()
         } else {
             verdict.feedback.clone()
         };
@@ -1229,8 +1211,7 @@ struct ApplyAllNode {
 #[async_trait]
 impl Node for ApplyAllNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let verdict = parse_verdict(input.as_str().unwrap_or_default());
-        history_assistant(ctx, input.as_str().unwrap_or_default().to_owned());
+        let verdict = parse_verdict(&input);
         if verdict.passed {
             ctx.set_var("apply_all_phase", "verify")?;
             return Ok(json!({"phase":"verify"}));
@@ -1244,7 +1225,7 @@ impl Node for ApplyAllNode {
         };
         let signature = format!(
             "all:{}:{}:{}",
-            input.as_str().unwrap_or_default(),
+            input,
             verdict.feedback,
             status
         );
@@ -1532,10 +1513,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_verdict_json_with_markdown_fence() {
-        let verdict = parse_verdict(
-            "```json\n{\"passed\":false,\"feedback\":\"bad\",\"files\":[{\"path\":\"src/a.rs\",\"feedback\":\"fix\"}]}\n```",
-        );
+    fn parses_verdict_json() {
+        let verdict = parse_verdict(&json!({
+            "passed": false,
+            "feedback": "bad",
+            "files": [{"path": "src/a.rs", "feedback": "fix"}]
+        }));
         assert!(!verdict.passed);
         assert_eq!(verdict.feedback, "bad");
         assert_eq!(verdict.files[0].path, "src/a.rs");

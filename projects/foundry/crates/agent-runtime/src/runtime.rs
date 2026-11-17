@@ -115,7 +115,10 @@ impl AgentRuntime {
         };
         let node = FoundryLlmNode {
             system: PromptTemplate::literal(request.system_prompt),
-            user: PromptTemplate::literal(""),
+            user: PromptTemplate::literal(
+                "Return exactly one JSON object with the key \"message\" whose value is \
+                 your complete final reply to the user. Do not add prose outside the JSON.",
+            ),
         };
         let graph = Graph::builder("foundry-agent")
             .entry("agent")
@@ -153,11 +156,13 @@ impl AgentRuntime {
             .run(context, Value::String(user))
             .await
             .map_err(|error| RunError::Graph(error.to_string()))?;
-        let final_message = match output.output {
-            Value::String(text) => text,
-            Value::Null => String::new(),
-            value => value.to_string(),
-        };
+        let final_message = output
+            .output
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| output.output.as_str().map(str::to_owned))
+            .unwrap_or_else(|| output.output.to_string());
         Ok(RunResult {
             final_message: Some(final_message),
         })

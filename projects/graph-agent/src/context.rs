@@ -1,5 +1,5 @@
 use crate::NodeId;
-use crate::message::{LlmMessage, LlmToolCall};
+use crate::message::LlmMessage;
 use crate::tool::{ToolContext, ToolRegistry};
 use crate::variable::{
     Variable, VariableError, VariablePath, VariableSource, VariableType, is_identifier, traverse,
@@ -10,14 +10,12 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static HISTORY_TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Shared conversation history for one agent run.
 ///
-/// Nodes decide what to append. The system prompt and the per-node fixed user
-/// prompt are not stored here.
+/// Only LLM nodes append to this history: the user message built from their
+/// input and output format, assistant tool calls, tool results and the final
+/// assistant reply. Fixed nodes never append tool traces.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct History {
     #[serde(default)]
@@ -47,23 +45,6 @@ impl History {
         self.messages.extend(tail);
     }
 
-    /// Record a fixed node's tool call as an assistant tool-call message
-    /// followed by its tool result.
-    pub fn record_tool_call(&mut self, name: &str, arguments: Value, result: &str) {
-        let id = format!(
-            "fixed-{}",
-            HISTORY_TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        self.messages.push(LlmMessage::assistant(
-            "",
-            vec![LlmToolCall {
-                id: id.clone(),
-                name: name.to_owned(),
-                arguments,
-            }],
-        ));
-        self.messages.push(LlmMessage::tool(id, result));
-    }
 }
 
 /// State shared by all nodes in one graph run.
@@ -210,7 +191,7 @@ impl Context {
         &self.history
     }
 
-    pub fn history_mut(&mut self) -> &mut History {
+    pub(crate) fn history_mut(&mut self) -> &mut History {
         &mut self.history
     }
 

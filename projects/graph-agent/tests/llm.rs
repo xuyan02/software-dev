@@ -4,7 +4,7 @@ use graph_agent::{
     LlmRequest, LlmResponse, LlmRole, LlmRuntime, ModelError, ModelGateway, ModelProfileRef,
     NodeError, PromptTemplate, SkillError, SkillRegistry, ToolRegistry, TransitionIndex, Usage,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::Arc;
 
 struct TestModel;
@@ -121,13 +121,14 @@ async fn agent_installs_runtime_for_llm_nodes() {
     let output = agent.run(ctx, json!(null)).await.expect("run");
     assert_eq!(output.exit().as_str(), "done");
 
-    let result: Value =
-        serde_json::from_str(output.output.as_str().expect("string output")).unwrap();
     assert_eq!(
-        result["system"],
+        output.output["system"],
         "共享系统\n\n节点系统\n\n## Skills\n\n### document\n\nDocument skill body\n"
     );
-    assert_eq!(result["user"], "任务：login");
+    let user = output.output["user"].as_str().expect("user message");
+    assert!(user.contains("任务：login"));
+    assert!(user.contains("Input (JSON):"));
+    assert!(user.contains("Input (JSON):\nnull"));
 }
 
 #[tokio::test]
@@ -144,4 +145,28 @@ async fn graph_llm_node_requires_context_runtime() {
         error,
         GraphError::Node(NodeError::Context(ContextError::MissingLlmRuntime))
     ));
+}
+
+struct PlainModel;
+
+#[async_trait]
+impl ModelGateway for PlainModel {
+    async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, ModelError> {
+        Ok(LlmResponse::final_answer("plain text"))
+    }
+}
+
+#[tokio::test]
+async fn rejects_a_non_json_final_reply() {
+    let mut ctx = Context::new();
+    configure_context(&mut ctx);
+    let graph = llm_graph();
+    let llm = Arc::new(LlmRuntime::new(
+        Arc::new(PlainModel),
+        Arc::new(ToolRegistry::new()),
+        Arc::new(TestSkills),
+    ));
+    let agent = Agent::new("llm-agent", graph, llm);
+    let error = agent.run(ctx, json!(null)).await.expect_err("must reject");
+    assert!(error.to_string().contains("invalid JSON"));
 }

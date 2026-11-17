@@ -12,6 +12,12 @@
 //! or out-of-range edges, missing targets, unreachable nodes/exits, and exits
 //! with outgoing edges.
 //!
+//! Node input and output are JSON values. Fixed nodes stay deterministic and do
+//! not write [`History`]. The LLM node adapter owns the conversation history:
+//! it builds the node's user message from the input and the node's declared
+//! output format, records assistant tool calls and tool results, records the
+//! final reply, and parses that reply as JSON to produce the node output.
+//!
 //! Variables are addressed as `<name>` / `<name>.<field>` or
 //! `nodes.<id>.output.<field>`. Local variables and external
 //! [`VariableSource`] implementations are all resolved through [`Context`].
