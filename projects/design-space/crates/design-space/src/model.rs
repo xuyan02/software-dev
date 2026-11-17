@@ -128,6 +128,8 @@ pub enum Kind {
     Function = 0x08,
     Part = 0x09,
     Mixin = 0x0A,
+    InnerClass = 0x0C,
+    InnerInterface = 0x0D,
 }
 
 impl Kind {
@@ -143,6 +145,8 @@ impl Kind {
             0x08 => Self::Function,
             0x09 => Self::Part,
             0x0A => Self::Mixin,
+            0x0C => Self::InnerClass,
+            0x0D => Self::InnerInterface,
             _ => return None,
         })
     }
@@ -340,7 +344,9 @@ pub enum ObjectPayload {
     File(FilePayload),
     Namespace(NamespacePayload),
     Class(ClassPayload),
+    InnerClass(ClassPayload),
     Interface(InterfacePayload),
+    InnerInterface(InterfacePayload),
     Method(MethodPayload),
     Function(FunctionPayload),
     Part(PartPayload),
@@ -365,7 +371,9 @@ impl DesignObject {
             ObjectPayload::File(_) => Kind::File,
             ObjectPayload::Namespace(_) => Kind::Namespace,
             ObjectPayload::Class(_) => Kind::Class,
+            ObjectPayload::InnerClass(_) => Kind::InnerClass,
             ObjectPayload::Interface(_) => Kind::Interface,
+            ObjectPayload::InnerInterface(_) => Kind::InnerInterface,
             ObjectPayload::Method(_) => Kind::Method,
             ObjectPayload::Function(_) => Kind::Function,
             ObjectPayload::Part(_) => Kind::Part,

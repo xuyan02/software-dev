@@ -398,6 +398,8 @@ SHA-256(...) == 文件名中的 hash
 0x08  function
 0x09  part
 0x0A  mixin
+0x0C  inner-class
+0x0D  inner-interface
 ```
 
 `0x0B` 保留给 design 视图。module 的 kind 以后再分配。

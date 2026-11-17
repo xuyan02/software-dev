@@ -389,8 +389,8 @@ fn object_name(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::Directory(p) => Some(p.qualified_name),
         ObjectPayload::File(p) => Some(p.qualified_name),
         ObjectPayload::Namespace(p) => Some(p.qualified_name),
-        ObjectPayload::Class(p) => Some(p.qualified_name),
-        ObjectPayload::Interface(p) => Some(p.qualified_name),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.qualified_name),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.qualified_name),
         ObjectPayload::Method(p) => Some(p.qualified_name),
         ObjectPayload::Function(p) => Some(p.qualified_name),
         ObjectPayload::Part(p) => Some(p.qualified_name),
@@ -403,8 +403,8 @@ fn children_of(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::Directory(p) => &p.children,
         ObjectPayload::File(p) => &p.children,
         ObjectPayload::Namespace(p) => &p.children,
-        ObjectPayload::Class(p) => &p.children,
-        ObjectPayload::Interface(p) => &p.children,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => &p.children,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => &p.children,
         ObjectPayload::Part(p) => &p.children,
         ObjectPayload::Mixin(p) => &p.children,
         ObjectPayload::View(_) | ObjectPayload::Method(_) | ObjectPayload::Function(_) => &[],
@@ -425,8 +425,8 @@ fn parents_of(object: &DesignObject) -> Vec<SymbolHash> {
                 out.push(parent);
             }
         }
-        ObjectPayload::Class(p) => push_class_parents(&p.parent, &mut out),
-        ObjectPayload::Interface(p) => push_class_parents(&p.parent, &mut out),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => push_class_parents(&p.parent, &mut out),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => push_class_parents(&p.parent, &mut out),
         ObjectPayload::Method(p) => out.push(p.parent),
         ObjectPayload::Function(p) => {
             push_nonzero(p.file, &mut out);
@@ -479,7 +479,9 @@ fn can_contain(object: &DesignObject) -> bool {
             | Kind::File
             | Kind::Namespace
             | Kind::Class
+            | Kind::InnerClass
             | Kind::Interface
+            | Kind::InnerInterface
             | Kind::Part
             | Kind::Mixin
     )
@@ -490,8 +492,8 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::Directory(p) => p.children = children,
         ObjectPayload::File(p) => p.children = children,
         ObjectPayload::Namespace(p) => p.children = children,
-        ObjectPayload::Class(p) => p.children = children,
-        ObjectPayload::Interface(p) => p.children = children,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.children = children,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.children = children,
         ObjectPayload::Part(p) => p.children = children,
         ObjectPayload::Mixin(p) => p.children = children,
         ObjectPayload::View(_) => return Err(CatalogError::NotAContainer(Kind::View)),
@@ -537,7 +539,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
                 p.parent = ParentRef::Object(map(parent));
             }
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             p.qualified_name = map(p.qualified_name);
             rewrite_class_parent(&mut p.parent, mapping);
             p.superclass = map(p.superclass);
@@ -546,7 +548,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
             rewrite_dependencies(&mut p.explicit_dependencies, mapping);
             rewrite_dependencies(&mut p.implicit_dependencies, mapping);
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             p.qualified_name = map(p.qualified_name);
             rewrite_class_parent(&mut p.parent, mapping);
             p.extends = map(p.extends);
@@ -728,10 +730,10 @@ fn validate_parents(
                 )?;
             }
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             validate_type_parents(store, entries, qname, &p.parent)?;
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             validate_type_parents(store, entries, qname, &p.parent)?;
         }
         ObjectPayload::Mixin(p) => {
@@ -743,8 +745,15 @@ fn validate_parents(
                 store,
                 qname,
                 p.parent,
-                &[Kind::Class, Kind::Interface, Kind::Part],
-                "a class, interface, or part",
+                &[
+                    Kind::Class,
+                    Kind::InnerClass,
+                    Kind::Interface,
+                    Kind::InnerInterface,
+                    Kind::Mixin,
+                    Kind::Part,
+                ],
+                "a class, interface, mixin, or part",
             )?;
         }
         ObjectPayload::Function(p) => {
@@ -765,7 +774,7 @@ fn validate_parents(
                 store,
                 qname,
                 p.parent,
-                &[Kind::Class, Kind::Interface],
+                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface],
                 "a class or interface",
             )?;
         }
@@ -787,7 +796,7 @@ fn validate_type_parents(
                 store,
                 qname,
                 *parent,
-                &[Kind::Class, Kind::Interface],
+                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface],
                 "a class or interface",
             )?;
         }
@@ -824,13 +833,13 @@ fn validate_relation_kinds(
     object: &DesignObject,
 ) -> Result<()> {
     match &object.payload {
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             require_optional_target(
                 entries,
                 store,
                 qname,
                 p.superclass,
-                &[Kind::Class],
+                &[Kind::Class, Kind::InnerClass],
                 "a class",
             )?;
             for target in &p.interfaces {
@@ -839,7 +848,7 @@ fn validate_relation_kinds(
                     store,
                     qname,
                     *target,
-                    &[Kind::Interface],
+                    &[Kind::Interface, Kind::InnerInterface],
                     "an interface",
                 )?;
             }
@@ -849,18 +858,18 @@ fn validate_relation_kinds(
                     store,
                     qname,
                     *target,
-                    &[Kind::Class, Kind::Mixin],
+                    &[Kind::Class, Kind::InnerClass, Kind::Mixin],
                     "a class or mixin",
                 )?;
             }
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             require_optional_target(
                 entries,
                 store,
                 qname,
                 p.extends,
-                &[Kind::Interface],
+                &[Kind::Interface, Kind::InnerInterface],
                 "an interface",
             )?;
         }
@@ -871,7 +880,7 @@ fn validate_relation_kinds(
                     store,
                     qname,
                     *target,
-                    &[Kind::Class, Kind::Mixin],
+                    &[Kind::Class, Kind::InnerClass, Kind::Mixin],
                     "a class or mixin",
                 )?;
             }
@@ -880,7 +889,7 @@ fn validate_relation_kinds(
                 store,
                 qname,
                 p.superclass,
-                &[Kind::Class],
+                &[Kind::Class, Kind::InnerClass],
                 "a class",
             )?;
             for target in &p.interfaces {
@@ -889,7 +898,7 @@ fn validate_relation_kinds(
                     store,
                     qname,
                     *target,
-                    &[Kind::Interface],
+                    &[Kind::Interface, Kind::InnerInterface],
                     "an interface",
                 )?;
             }
@@ -899,7 +908,7 @@ fn validate_relation_kinds(
                     store,
                     qname,
                     *target,
-                    &[Kind::Class, Kind::Mixin],
+                    &[Kind::Class, Kind::InnerClass, Kind::Mixin],
                     "a class or mixin",
                 )?;
             }
@@ -971,12 +980,12 @@ fn validate_dependency_target(
 fn relation_targets(object: &DesignObject) -> Vec<SymbolHash> {
     let mut targets = Vec::new();
     match &object.payload {
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             targets.push(p.superclass);
             targets.extend(p.interfaces.iter().copied());
             targets.extend(p.mixins.iter().copied());
         }
-        ObjectPayload::Interface(p) => targets.push(p.extends),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => targets.push(p.extends),
         ObjectPayload::Mixin(p) => {
             targets.extend(p.on.iter().copied());
             targets.push(p.superclass);
@@ -1003,8 +1012,8 @@ pub fn structural_dependencies(object: &DesignObject) -> Vec<SymbolHash> {
 
 fn dependency_lists(object: &DesignObject) -> Option<(&[Dependency], &[Dependency])> {
     match &object.payload {
-        ObjectPayload::Class(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
-        ObjectPayload::Interface(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Method(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Function(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Part(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),

@@ -146,10 +146,10 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 | directory | `--parent` | `--source path`、`--design` | content_hash、dependencies、children |
 | file | `--parent` | `--source path`、`--design` | dependencies、children |
 | namespace | `--parent` | `--source path[:lines]`、`--design` | dependencies、children |
-| class 顶层 | `--namespace` | `--file`、`--module`、`--source`、`--design`、`--superclass`、`--interface`、`--mixin` | — |
-| class 内部 | `--parent` | `--source`、`--design`、`--superclass`、`--interface`、`--mixin` | namespace、file、module |
-| interface 顶层 | `--namespace` | `--file`、`--module`、`--source`、`--design`、`--extends` | superclass、interface、mixin |
-| interface 内部 | `--parent` | `--source`、`--design`、`--extends` | namespace、file、module、superclass、mixin |
+| class | `--namespace` | `--file`、`--module`、`--source`、`--design`、`--superclass`、`--interface`、`--mixin` | `--parent` |
+| inner-class | `--parent` | `--source`、`--design`、`--superclass`、`--interface`、`--mixin` | namespace、file、module |
+| interface | `--namespace` | `--file`、`--module`、`--source`、`--design`、`--extends` | `--parent`、superclass、interface、mixin |
+| inner-interface | `--parent` | `--source`、`--design`、`--extends` | namespace、file、module、superclass、mixin |
 | method | `--parent`、`--signature` | `--source`、`--design`、`--overrides` | children、superclass、interface、mixin |
 | function | `--namespace` | `--file`、`--module`、`--source`、`--design` | parent、superclass、interface、mixin |
 | part | `--parent`、`--source path:start-end` | `--design` | signature、namespace、file、module |

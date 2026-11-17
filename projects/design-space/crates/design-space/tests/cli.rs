@@ -381,9 +381,7 @@ fn top_level_and_nested_types_use_different_parent_forms() {
         ],
     );
     assert!(!mixed.status.success());
-    assert!(
-        String::from_utf8_lossy(&mixed.stderr).contains("nested type uses --parent")
-    );
+    assert!(String::from_utf8_lossy(&mixed.stderr).contains("has no parent"));
 
     let wrong_parent = ds(root, &["create", "class", "Bad", "--parent", "files"]);
     assert!(!wrong_parent.status.success());
@@ -392,11 +390,23 @@ fn top_level_and_nested_types_use_different_parent_forms() {
         root,
         &[
             "create",
-            "class",
+            "inner-class",
             "Inner",
             "--parent",
             "namespaces/app/Base",
         ],
     );
-    assert!(ok(root, &["ls"]).contains("namespaces/app/Base/Inner"));
+    ok(
+        root,
+        &[
+            "create",
+            "inner-interface",
+            "InnerApi",
+            "--parent",
+            "namespaces/app/Base",
+        ],
+    );
+    let listed = ok(root, &["ls"]);
+    assert!(listed.contains("namespaces/app/Base/Inner"));
+    assert!(listed.contains("namespaces/app/Base/InnerApi"));
 }

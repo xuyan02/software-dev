@@ -99,28 +99,10 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
             validate_object_hashes(&p.children, "namespace children")?;
             Ok(())
         }
-        ObjectPayload::Class(p) => {
-            require_hash(p.qualified_name, "class qualified_name")?;
-            validate_class_parent(p.parent)?;
-            validate_opt_span_source(p.source)?;
-            validate_content_hash(p.content_hash, p.source.is_some(), false, "class")?;
-            validate_symbol_list(&p.interfaces, "class interfaces", true)?;
-            validate_symbol_list(&p.mixins, "class mixins", false)?;
-            validate_dependencies(&p.explicit_dependencies, "class explicit dependencies")?;
-            validate_dependencies(&p.implicit_dependencies, "class implicit dependencies")?;
-            validate_object_hashes(&p.children, "class children")?;
-            Ok(())
-        }
-        ObjectPayload::Interface(p) => {
-            require_hash(p.qualified_name, "interface qualified_name")?;
-            validate_class_parent(p.parent)?;
-            validate_opt_span_source(p.source)?;
-            validate_content_hash(p.content_hash, p.source.is_some(), false, "interface")?;
-            validate_dependencies(&p.explicit_dependencies, "interface explicit dependencies")?;
-            validate_dependencies(&p.implicit_dependencies, "interface implicit dependencies")?;
-            validate_object_hashes(&p.children, "interface children")?;
-            Ok(())
-        }
+        ObjectPayload::Class(p) => validate_class_payload(p, true),
+        ObjectPayload::InnerClass(p) => validate_class_payload(p, false),
+        ObjectPayload::Interface(p) => validate_interface_payload(p, true),
+        ObjectPayload::InnerInterface(p) => validate_interface_payload(p, false),
         ObjectPayload::Method(p) => {
             require_hash(p.qualified_name, "method qualified_name")?;
             require_hash(p.parent, "method parent")?;
@@ -176,6 +158,45 @@ fn validate_parent_ref(parent: ParentRef) -> Result<()> {
     match parent {
         ParentRef::View => Ok(()),
         ParentRef::Object(hash) => require_hash(hash, "parent"),
+    }
+}
+
+fn validate_class_payload(p: &ClassPayload, top_level: bool) -> Result<()> {
+    require_hash(p.qualified_name, "class qualified_name")?;
+    validate_type_parent_form(p.parent, top_level, "class")?;
+    validate_opt_span_source(p.source)?;
+    validate_content_hash(p.content_hash, p.source.is_some(), false, "class")?;
+    validate_symbol_list(&p.interfaces, "class interfaces", true)?;
+    validate_symbol_list(&p.mixins, "class mixins", false)?;
+    validate_dependencies(&p.explicit_dependencies, "class explicit dependencies")?;
+    validate_dependencies(&p.implicit_dependencies, "class implicit dependencies")?;
+    validate_object_hashes(&p.children, "class children")?;
+    Ok(())
+}
+
+fn validate_interface_payload(p: &InterfacePayload, top_level: bool) -> Result<()> {
+    require_hash(p.qualified_name, "interface qualified_name")?;
+    validate_type_parent_form(p.parent, top_level, "interface")?;
+    validate_opt_span_source(p.source)?;
+    validate_content_hash(p.content_hash, p.source.is_some(), false, "interface")?;
+    validate_dependencies(&p.explicit_dependencies, "interface explicit dependencies")?;
+    validate_dependencies(&p.implicit_dependencies, "interface implicit dependencies")?;
+    validate_object_hashes(&p.children, "interface children")?;
+    Ok(())
+}
+
+fn validate_type_parent_form(parent: ClassParent, top_level: bool, _what: &'static str) -> Result<()> {
+    match (top_level, parent) {
+        (true, ClassParent::TopLevel { namespace, .. }) => {
+            require_hash(namespace, "top-level namespace parent")
+        }
+        (false, ClassParent::Nested { parent }) => require_hash(parent, "nested parent"),
+        (true, ClassParent::Nested { .. }) => Err(FormatError::InvalidValue(
+            "top-level type has a nested parent",
+        )),
+        (false, ClassParent::TopLevel { .. }) => Err(FormatError::InvalidValue(
+            "inner type has a top-level parent",
+        )),
     }
 }
 
@@ -402,8 +423,8 @@ fn encode_payload(object: &DesignObject) -> Result<Vec<u8>> {
         ObjectPayload::Directory(p) => encode_directory(p, &mut out),
         ObjectPayload::File(p) => encode_file(p, &mut out),
         ObjectPayload::Namespace(p) => encode_namespace(p, &mut out),
-        ObjectPayload::Class(p) => encode_class(p, &mut out),
-        ObjectPayload::Interface(p) => encode_interface(p, &mut out),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => encode_class(p, &mut out),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => encode_interface(p, &mut out),
         ObjectPayload::Method(p) => encode_method(p, &mut out),
         ObjectPayload::Function(p) => encode_function(p, &mut out),
         ObjectPayload::Part(p) => encode_part(p, &mut out),
@@ -419,7 +440,9 @@ fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> 
         Kind::File => ObjectPayload::File(decode_file(reader)?),
         Kind::Namespace => ObjectPayload::Namespace(decode_namespace(reader)?),
         Kind::Class => ObjectPayload::Class(decode_class(reader)?),
+        Kind::InnerClass => ObjectPayload::InnerClass(decode_class(reader)?),
         Kind::Interface => ObjectPayload::Interface(decode_interface(reader)?),
+        Kind::InnerInterface => ObjectPayload::InnerInterface(decode_interface(reader)?),
         Kind::Method => ObjectPayload::Method(decode_method(reader)?),
         Kind::Function => ObjectPayload::Function(decode_function(reader)?),
         Kind::Part => ObjectPayload::Part(decode_part(reader)?),
@@ -1112,10 +1135,30 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_inner_class() {
+        roundtrip(DesignObject::new(
+            Kind::InnerClass,
+            ObjectPayload::InnerClass(ClassPayload {
+                qualified_name: s(1),
+                parent: ClassParent::Nested { parent: s(2) },
+                source: None,
+                content_hash: Hash32::ZERO,
+                design_doc: DocHash::ZERO,
+                superclass: s(3),
+                interfaces: vec![s(4)],
+                mixins: vec![s(5)],
+                explicit_dependencies: vec![],
+                implicit_dependencies: vec![],
+                children: vec![o(6)],
+            }),
+        ));
+    }
+
+    #[test]
     fn roundtrips_interface_extends() {
         roundtrip(DesignObject::new(
-            Kind::Interface,
-            ObjectPayload::Interface(InterfacePayload {
+            Kind::InnerInterface,
+            ObjectPayload::InnerInterface(InterfacePayload {
                 qualified_name: s(1),
                 parent: ClassParent::Nested { parent: s(2) },
                 source: None,

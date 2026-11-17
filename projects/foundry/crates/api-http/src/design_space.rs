@@ -331,11 +331,11 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
             .source
             .as_ref()
             .map(|source| store.get_symbol(source.path)),
-        ObjectPayload::Class(p) => p
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p
             .source
             .as_ref()
             .map(|source| store.get_symbol(source.path)),
-        ObjectPayload::Interface(p) => p
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p
             .source
             .as_ref()
             .map(|source| store.get_symbol(source.path)),
@@ -360,8 +360,8 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
 fn source_span(object: &DesignObject) -> (u32, u32) {
     let span = match &object.payload {
         ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.span),
-        ObjectPayload::Class(p) => p.source.as_ref().map(|source| source.span),
-        ObjectPayload::Interface(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.source.as_ref().map(|source| source.span),
         ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.span),
         ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.span),
         ObjectPayload::Part(p) => Some(p.source.span),
@@ -378,8 +378,8 @@ fn design_doc(object: &DesignObject) -> Option<DocHash> {
         ObjectPayload::Directory(p) => Some(p.design_doc),
         ObjectPayload::File(p) => Some(p.design_doc),
         ObjectPayload::Namespace(p) => Some(p.design_doc),
-        ObjectPayload::Class(p) => Some(p.design_doc),
-        ObjectPayload::Interface(p) => Some(p.design_doc),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.design_doc),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.design_doc),
         ObjectPayload::Method(p) => Some(p.design_doc),
         ObjectPayload::Function(p) => Some(p.design_doc),
         ObjectPayload::Part(p) => Some(p.design_doc),
@@ -394,7 +394,9 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::File => "file",
         Kind::Namespace => "namespace",
         Kind::Class => "class",
+        Kind::InnerClass => "inner-class",
         Kind::Interface => "interface",
+        Kind::InnerInterface => "inner-interface",
         Kind::Method => "method",
         Kind::Function => "function",
         Kind::Part => "part",

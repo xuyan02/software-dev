@@ -24,8 +24,10 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 | Directory | 源码目录 | `files/<目录路径>` | 目录路径 | 子目录、File |
 | File | 源码文件 | `files/<文件路径>` | 文件路径 | 通常无；文件中的类型挂在 Namespace 下，通过 `--file` 关联 |
 | Namespace | 逻辑命名空间，不等于物理目录 | `namespaces/<...>`（父是 `namespaces` 或另一个 Namespace） | 可选的 `path:start-end` | Namespace、Class、Interface、Function、Mixin |
-| Class | 类、结构体、trait 等类型声明 | 顶层：`<namespace>/<name>`；嵌套：`<parent>/<name>` | `path:start-end` | Method、内部类型 |
-| Interface | 接口、协议、抽象契约 | 同 Class | `path:start-end` | Method |
+| Class | 顶层类、结构体、trait 等类型声明 | `<namespace>/<name>` | `path:start-end` | InnerClass、InnerInterface、Method |
+| InnerClass | 嵌套在另一个类型里的类/结构体/trait | `<parent type>/<name>` | `path:start-end` | InnerClass、InnerInterface、Method |
+| Interface | 顶层接口、协议、抽象契约 | `<namespace>/<name>` | `path:start-end` | InnerInterface、Method |
+| InnerInterface | 嵌套在类型里的接口/契约 | `<parent type>/<name>` | `path:start-end` | Method |
 | Method | 类型内部的可调用成员 | `<parent>/<name>#<签名哈希>` | `path:start-end` | 无 |
 | Function | 不属于某个类型的函数/过程 | 同 Class | `path:start-end` | 无 |
 | Part | 没有独立名字、但需要说明的代码片段（配置块、宏体、特殊常量段等） | `<parent>/part#<内容哈希>` | 必须 `path:start-end` | 无 |
@@ -74,7 +76,10 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 
 命名空间统一挂在 `namespaces/` 下；即使只被一个文件使用，也用独立 Namespace，不要把 File 当成 namespace，避免出现 `files/<path>/Class` 这种带文件前缀的类型 qname。
 
-### 2.4 Class
+### 2.4 Class / InnerClass
+
+`Class` 是顶层类型，挂在 Namespace 下，可选 `--file`/`--module` 关联源码位置。
+`InnerClass` 是嵌套类型，`--parent` 必须是另一个类型，qname 为 `<parent>/<name>`。
 
 表示类、结构体、trait、enum 等类型声明。
 
@@ -89,7 +94,10 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 
 不要写：每个方法的逐行实现、重复接口签名。
 
-### 2.5 Interface
+### 2.5 Interface / InnerInterface
+
+`Interface` 是顶层接口；`InnerInterface` 是嵌套接口，`--parent` 必须是类型。
+qname 分别走 namespace 或 parent 类型，不使用 File 前缀。
 
 表示接口、协议或抽象契约。
 
@@ -155,7 +163,8 @@ Method 和 Part 的 qname 后缀由 `ds` 计算，创建后用 `ds ls` 或 `ds s
 - Directory / File：`--parent <Directory qname>`（或 `files`）；
 - Namespace：`--parent namespaces` 或另一个 Namespace，不要把 File/Directory 当成 namespace；
 - 顶层 Class / Interface / Function / Mixin：`--namespace <namespace qname>`（必填），可选 `--file <file qname>` 和 `--module <module qname>` 记录文件/模块归属；
-- 嵌套 Class / Interface / Mixin：`--parent <class/interface/mixin qname>`，parent 不是 File；
+- 嵌套 Class/Interface 用 `inner-class`/`inner-interface`，并给 `--parent <type qname>`；parent 不是 File；
+- Mixin 仍按 `--namespace`（顶层）或 `--parent`（嵌套）选择；
 - Method：`--parent <class/interface/mixin qname>`，并给 `--signature`；
 - Part：`--parent <qname>`，并给 `--source path:start-end`。
 
@@ -214,7 +223,10 @@ ds create file <name> --parent <qname> --source <path> [--design <text>]
 ds create namespace <name> --parent <qname> [--source path:start-end] [--design <text>]
 ds create class <name> --namespace <ns> [--file <file>] [--source path:start-end] \
   [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]... [--design <text>]
+ds create inner-class <name> --parent <type qname> [--source path:start-end] \
+  [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]...
 ds create interface <name> --namespace <ns> [--extends <qname>] [--source path:start-end]
+ds create inner-interface <name> --parent <type qname> [--extends <qname>]
 ds create function <name> --namespace <ns> [--file <file>] [--source path:start-end]
 ds create method <name> --parent <type qname> --signature 'foo(x)' [--source path:start-end] \
   [--overrides <method qname>]
@@ -354,6 +366,8 @@ ds create file main.rs --parent files/src --source src/main.rs
 ds create namespace data_core --parent namespaces --source src/data_core.rs:1-80
 ds create class Value --namespace namespaces/data_core --file files/src/data_core.rs \
   --source src/data_core.rs:10-120 --design-file /tmp/value.md
+ds create inner-class Entry --parent namespaces/data_core/Value \
+  --source src/data_core.rs:40-80
 ds create method get --parent namespaces/data_core/Value --signature 'get(path)' \
   --source src/data_core.rs:40-70
 

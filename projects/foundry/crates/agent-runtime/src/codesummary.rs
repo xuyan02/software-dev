@@ -30,7 +30,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - 只给本仓库设计空间内的对象写关系；外部库/标准库类型不建模。
 - 设计文档是纯文本，写“这里放什么、不放什么”的规则，不要枚举子对象清单。
 - ds 命令：ds show <qname>、ds ls --namespaces、ds source cat <path>、ds create/edit/rm、ds dep add/rm、ds status、ds diff。
-- File/Directory 的 qname 是 files/<源路径>。类/接口/函数/mixin 的 qname 走 namespaces/ 下的命名空间，不要用 File qname 做前缀；用 --file 关联源码文件。
+- File/Directory 的 qname 是 files/<源路径>。顶层 class/interface/function/mixin 的 qname 走 namespaces/ 下的命名空间，用 --file 关联源码文件；嵌套类型用 inner-class/inner-interface 并给 --parent，不要用 File qname 做前缀。
 - 关系目标可以暂时不存在，最后 ds verify 会解析。
 
 文件总结工作项：

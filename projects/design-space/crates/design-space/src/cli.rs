@@ -190,7 +190,9 @@ enum KindArg {
     File,
     Namespace,
     Class,
+    InnerClass,
     Interface,
+    InnerInterface,
     Method,
     Function,
     Part,
@@ -645,8 +647,8 @@ fn object_source_path(ws: &Workspace, object: &DesignObject) -> Result<Option<St
         ObjectPayload::Directory(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::File(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.path),
-        ObjectPayload::Class(p) => p.source.as_ref().map(|source| source.path),
-        ObjectPayload::Interface(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Part(p) => Some(p.source.path),
@@ -669,12 +671,12 @@ fn set_object_source(ws: &Workspace, object: &mut DesignObject, path: &str) -> R
                 source.path = symbol;
             }
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             if let Some(source) = p.source.as_mut() {
                 source.path = symbol;
             }
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             if let Some(source) = p.source.as_mut() {
                 source.path = symbol;
             }
@@ -1250,6 +1252,18 @@ fn apply_structure_edit(
                 &mut p.qualified_name,
                 &local,
                 args,
+                Some(true),
+            )?;
+        }
+        ObjectPayload::InnerClass(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(false),
             )?;
         }
         ObjectPayload::Interface(p) => {
@@ -1260,6 +1274,18 @@ fn apply_structure_edit(
                 &mut p.qualified_name,
                 &local,
                 args,
+                Some(true),
+            )?;
+        }
+        ObjectPayload::InnerInterface(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(false),
             )?;
         }
         ObjectPayload::Mixin(p) => {
@@ -1270,6 +1296,7 @@ fn apply_structure_edit(
                 &mut p.qualified_name,
                 &local,
                 args,
+                None,
             )?;
         }
         ObjectPayload::Method(p) => {
@@ -1278,7 +1305,7 @@ fn apply_structure_edit(
                     ws,
                     catalog,
                     parent,
-                    &[Kind::Class, Kind::Interface, Kind::Part],
+                    &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface, Kind::Part],
                 )?;
                 let (name, sig) = local
                     .split_once('#')
@@ -1290,7 +1317,7 @@ fn apply_structure_edit(
         }
         ObjectPayload::Part(p) => {
             if let Some(parent) = args.parent.as_deref() {
-                let parent = parent_symbol(ws, catalog, parent, &[Kind::Class, Kind::Interface])?;
+                let parent = parent_symbol(ws, catalog, parent, &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface])?;
                 p.parent = parent;
                 p.qualified_name =
                     ws.put_symbol(&format!("{}/{}", ws.get_symbol(parent)?, local))?;
@@ -1364,10 +1391,10 @@ fn apply_rename(ws: &Workspace, object: &mut DesignObject, name: Option<&str>) -
             };
             p.qualified_name = rename_qname(ws, parent, name)?;
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
         }
         ObjectPayload::Mixin(p) => {
@@ -1408,9 +1435,18 @@ fn edit_class_parent(
     qname: &mut SymbolHash,
     local: &str,
     args: &EditArgs,
+    top_level: Option<bool>,
 ) -> Result<()> {
+    if top_level == Some(true) && args.parent.is_some() {
+        bail!("a top-level type cannot be moved under a parent; create an inner type");
+    }
+    if top_level == Some(false)
+        && (args.namespace.is_some() || args.file.is_some() || args.module.is_some())
+    {
+        bail!("an inner type cannot be moved to a namespace/file/module");
+    }
     if let Some(new_parent) = args.parent.as_deref() {
-        let new_parent = parent_symbol(ws, catalog, new_parent, &[Kind::Class, Kind::Interface])?;
+        let new_parent = parent_symbol(ws, catalog, new_parent, &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface])?;
         *parent = ClassParent::Nested { parent: new_parent };
         *qname = rename_qname(ws, new_parent, local)?;
         if args.file.is_some() || args.module.is_some() {
@@ -1611,8 +1647,8 @@ fn set_design_doc(object: &mut DesignObject, doc: DocHash) -> Result<()> {
         ObjectPayload::Directory(p) => p.design_doc = doc,
         ObjectPayload::File(p) => p.design_doc = doc,
         ObjectPayload::Namespace(p) => p.design_doc = doc,
-        ObjectPayload::Class(p) => p.design_doc = doc,
-        ObjectPayload::Interface(p) => p.design_doc = doc,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.design_doc = doc,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.design_doc = doc,
         ObjectPayload::Method(p) => p.design_doc = doc,
         ObjectPayload::Function(p) => p.design_doc = doc,
         ObjectPayload::Part(p) => p.design_doc = doc,
@@ -1637,12 +1673,12 @@ fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result
             p.source = Some(source.span_source());
             p.content_hash = source.content_hash;
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             let source = read_source(ws, Some(spec), true)?.context("source missing")?;
             p.source = Some(source.span_source());
             p.content_hash = source.content_hash;
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             let source = read_source(ws, Some(spec), true)?.context("source missing")?;
             p.source = Some(source.span_source());
             p.content_hash = source.content_hash;
@@ -1684,7 +1720,7 @@ fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result
 
 fn set_superclass(object: &mut DesignObject, symbol: SymbolHash) -> Result<()> {
     match &mut object.payload {
-        ObjectPayload::Class(p) => p.superclass = symbol,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.superclass = symbol,
         ObjectPayload::Mixin(p) => p.superclass = symbol,
         _ => bail!("object kind does not have superclass"),
     }
@@ -1748,12 +1784,12 @@ fn read_evidence(ws: &Workspace, spec: &str) -> Result<DependencyEvidence> {
 
 fn add_dependency(object: &mut DesignObject, dependency: Dependency, explicit: bool) -> Result<()> {
     let list = match &mut object.payload {
-        ObjectPayload::Class(p) => select_dependency_list(
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => select_dependency_list(
             p.explicit_dependencies.as_mut(),
             p.implicit_dependencies.as_mut(),
             explicit,
         )?,
-        ObjectPayload::Interface(p) => select_dependency_list(
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => select_dependency_list(
             p.explicit_dependencies.as_mut(),
             p.implicit_dependencies.as_mut(),
             explicit,
@@ -1803,7 +1839,7 @@ fn select_dependency_list<'a>(
 fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
     let mut changed = false;
     match &mut object.payload {
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             if p.superclass == target {
                 p.superclass = SymbolHash::ZERO;
                 changed = true;
@@ -1813,7 +1849,7 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_dependencies(&mut p.explicit_dependencies, target);
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             if p.extends == target {
                 p.extends = SymbolHash::ZERO;
                 changed = true;
@@ -1867,7 +1903,7 @@ fn remove_dependencies(list: &mut Vec<Dependency>, target: SymbolHash) -> bool {
 
 fn remove_dependency(object: &mut DesignObject, target: SymbolHash, explicit: bool) -> Result<()> {
     match &mut object.payload {
-        ObjectPayload::Class(p) => remove_from(
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => remove_from(
             if explicit {
                 &mut p.explicit_dependencies
             } else {
@@ -1875,7 +1911,7 @@ fn remove_dependency(object: &mut DesignObject, target: SymbolHash, explicit: bo
             },
             target,
         ),
-        ObjectPayload::Interface(p) => remove_from(
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => remove_from(
             if explicit {
                 &mut p.explicit_dependencies
             } else {
@@ -1931,8 +1967,8 @@ fn remove_from(list: &mut Vec<Dependency>, target: SymbolHash) -> Result<()> {
 
 fn dependency_lists(object: &DesignObject) -> Result<(&[Dependency], &[Dependency])> {
     match &object.payload {
-        ObjectPayload::Class(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
-        ObjectPayload::Interface(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Method(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Function(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Part(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
@@ -2342,7 +2378,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             fields.insert("content_hash", format_hash(p.content_hash));
             fields.insert("design", summarize_doc(ws, p.design_doc)?);
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             fields.insert("parent", class_parent_text(ws, &p.parent));
             fields.insert(
                 "source",
@@ -2365,7 +2401,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             );
             fields.insert("design", summarize_doc(ws, p.design_doc)?);
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             fields.insert("parent", class_parent_text(ws, &p.parent));
             fields.insert(
                 "source",
@@ -2726,8 +2762,8 @@ fn design_doc_of(object: &DesignObject) -> Option<DocHash> {
         ObjectPayload::Directory(p) => Some(p.design_doc),
         ObjectPayload::File(p) => Some(p.design_doc),
         ObjectPayload::Namespace(p) => Some(p.design_doc),
-        ObjectPayload::Class(p) => Some(p.design_doc),
-        ObjectPayload::Interface(p) => Some(p.design_doc),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.design_doc),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.design_doc),
         ObjectPayload::Method(p) => Some(p.design_doc),
         ObjectPayload::Function(p) => Some(p.design_doc),
         ObjectPayload::Part(p) => Some(p.design_doc),
@@ -2767,7 +2803,7 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_content_hash(p.content_hash);
             print_design(&ws, p.design_doc)?;
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             print_class_parent(p.parent, &ws)?;
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
@@ -2776,7 +2812,7 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_symbol_list("mixins", &p.mixins, &ws)?;
             print_design(&ws, p.design_doc)?;
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             print_class_parent(p.parent, &ws)?;
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
@@ -2850,8 +2886,8 @@ fn print_source_content(ws: &Workspace, catalog: &Catalog, object: &DesignObject
             None => bail!("object has no source anchor"),
         },
         ObjectPayload::Namespace(p) => span_anchor(p.source)?,
-        ObjectPayload::Class(p) => span_anchor(p.source)?,
-        ObjectPayload::Interface(p) => span_anchor(p.source)?,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => span_anchor(p.source)?,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => span_anchor(p.source)?,
         ObjectPayload::Method(p) => span_anchor(p.source)?,
         ObjectPayload::Function(p) => span_anchor(p.source)?,
         ObjectPayload::Part(p) => (p.source.path, Some(p.source.span)),
@@ -3057,7 +3093,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
                 out.push(source.path);
             }
         }
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             out.push(p.qualified_name);
             push_class_parent(&mut out, p.parent);
             if let Some(source) = p.source {
@@ -3069,7 +3105,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
             push_deps(&mut out, &p.explicit_dependencies);
             push_deps(&mut out, &p.implicit_dependencies);
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             out.push(p.qualified_name);
             push_class_parent(&mut out, p.parent);
             if let Some(source) = p.source {
@@ -3132,12 +3168,12 @@ fn object_docs(object: &DesignObject) -> Vec<DocHash> {
         ObjectPayload::Directory(p) => out.push(p.design_doc),
         ObjectPayload::File(p) => out.push(p.design_doc),
         ObjectPayload::Namespace(p) => out.push(p.design_doc),
-        ObjectPayload::Class(p) => {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
-        ObjectPayload::Interface(p) => {
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
@@ -3172,8 +3208,8 @@ fn object_children(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::Directory(p) => &p.children,
         ObjectPayload::File(p) => &p.children,
         ObjectPayload::Namespace(p) => &p.children,
-        ObjectPayload::Class(p) => &p.children,
-        ObjectPayload::Interface(p) => &p.children,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => &p.children,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => &p.children,
         ObjectPayload::Part(p) => &p.children,
         ObjectPayload::Mixin(p) => &p.children,
         _ => &[],
@@ -3373,6 +3409,36 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                 }),
             )
         }
+        KindArg::InnerClass => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let parent = match parent {
+                ClassParent::Nested { parent } => parent,
+                ClassParent::TopLevel { .. } => {
+                    bail!("inner class requires a nested parent")
+                }
+            };
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::InnerClass,
+                ObjectPayload::InnerClass(ClassPayload {
+                    qualified_name: qname,
+                    parent: ClassParent::Nested { parent },
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    design_doc,
+                    superclass: relation_symbol(ws, args.superclass.as_deref())?,
+                    interfaces: relation_symbols(ws, &args.interfaces)?,
+                    mixins: relation_symbols(ws, &args.mixins)?,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
         KindArg::Interface => {
             let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
             let source = read_source(ws, args.source.as_deref(), true)?;
@@ -3395,12 +3461,40 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                 }),
             )
         }
+        KindArg::InnerInterface => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let parent = match parent {
+                ClassParent::Nested { parent } => parent,
+                ClassParent::TopLevel { .. } => {
+                    bail!("inner interface requires a nested parent")
+                }
+            };
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::InnerInterface,
+                ObjectPayload::InnerInterface(InterfacePayload {
+                    qualified_name: qname,
+                    parent: ClassParent::Nested { parent },
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    design_doc,
+                    extends: relation_symbol(ws, args.extends.as_deref())?,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
         KindArg::Method => {
             let parent = required_parent_kind(
                 ws,
                 catalog,
                 args.parent.as_deref(),
-                &[Kind::Class, Kind::Interface, Kind::Mixin],
+                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface, Kind::Mixin],
             )?;
             let signature = args
                 .signature
@@ -3515,15 +3609,38 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
 
 fn validate_create_args(args: &CreateArgs) -> Result<()> {
     match args.kind {
-        KindArg::Class | KindArg::Interface | KindArg::Mixin => {
+        KindArg::Class | KindArg::Interface => {
+            if args.parent.is_some() {
+                bail!(
+                    "a top-level type has no parent; use inner-class/inner-interface \
+                     for a nested type"
+                );
+            }
+            if args.namespace.is_none() {
+                bail!("a top-level type requires --namespace");
+            }
+        }
+        KindArg::InnerClass | KindArg::InnerInterface => {
+            if args.parent.is_none() {
+                bail!("an inner type requires --parent");
+            }
+            if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
+                bail!(
+                    "an inner type uses --parent; do not also pass \
+                     --namespace/--file/--module"
+                );
+            }
+        }
+        KindArg::Mixin => {
             if args.parent.is_some() {
                 if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
                     bail!(
-                        "a nested type uses --parent; do not also pass                          --namespace/--file/--module"
+                        "a nested mixin uses --parent; do not also pass \
+                         --namespace/--file/--module"
                     );
                 }
             } else if args.namespace.is_none() {
-                bail!("a top-level type requires --namespace");
+                bail!("a top-level mixin requires --namespace");
             }
         }
         KindArg::Function => {
@@ -3564,9 +3681,9 @@ fn code_qname_and_parent(
             .with_context(|| format!("parent not found: {parent:?}"))?;
         if !matches!(
             parent_object.kind,
-            Kind::Class | Kind::Interface | Kind::Mixin
+            Kind::Class | Kind::InnerClass | Kind::Interface | Kind::InnerInterface | Kind::Mixin
         ) {
-            bail!("a nested type parent must be a class, interface, or mixin: {parent:?}");
+            bail!("a nested type parent must be a type: {parent:?}");
         }
         let qname_text = format!("{}/{}", ws.get_symbol(parent)?, args.name);
         let qname = ws.put_symbol(&qname_text)?;
@@ -3797,8 +3914,8 @@ fn object_qname(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::Directory(p) => Some(p.qualified_name),
         ObjectPayload::File(p) => Some(p.qualified_name),
         ObjectPayload::Namespace(p) => Some(p.qualified_name),
-        ObjectPayload::Class(p) => Some(p.qualified_name),
-        ObjectPayload::Interface(p) => Some(p.qualified_name),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.qualified_name),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.qualified_name),
         ObjectPayload::Method(p) => Some(p.qualified_name),
         ObjectPayload::Function(p) => Some(p.qualified_name),
         ObjectPayload::Part(p) => Some(p.qualified_name),
