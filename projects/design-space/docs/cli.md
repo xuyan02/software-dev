@@ -156,6 +156,8 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 | mixin 顶层 | `--namespace` | `--file`、`--module`、`--source`、`--design`、`--on`、`--superclass`、`--interface`、`--mixin` | — |
 | mixin 内部 | `--parent` | `--source`、`--design`、`--on`、`--superclass`、`--interface`、`--mixin` | namespace、file、module |
 
+顶层类型只用 `--namespace`（可选 `--file`、`--module`）；`--parent` 只用于内部类型，parent 必须是 class/interface/mixin。directory/file 的 parent 必须是 directory，namespace 的 parent 必须是 namespace。
+
 重复参数：
 
 - `--interface` 可重复；

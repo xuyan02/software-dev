@@ -353,3 +353,50 @@ fn syncs_files_and_directories_with_the_source_tree() {
     assert!(ok(&ws, &["show", "files/src/b.rs"]).contains("a rules"));
     assert!(!ds(&ws, &["show", "files/src/a.rs"]).status.success());
 }
+
+#[test]
+fn top_level_and_nested_types_use_different_parent_forms() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "class", "Base", "--namespace", "namespaces/app"],
+    );
+
+    let mixed = ds(
+        root,
+        &[
+            "create",
+            "class",
+            "Mixed",
+            "--parent",
+            "namespaces/app/Base",
+            "--namespace",
+            "namespaces/app",
+        ],
+    );
+    assert!(!mixed.status.success());
+    assert!(
+        String::from_utf8_lossy(&mixed.stderr).contains("nested type uses --parent")
+    );
+
+    let wrong_parent = ds(root, &["create", "class", "Bad", "--parent", "files"]);
+    assert!(!wrong_parent.status.success());
+
+    ok(
+        root,
+        &[
+            "create",
+            "class",
+            "Inner",
+            "--parent",
+            "namespaces/app/Base",
+        ],
+    );
+    assert!(ok(root, &["ls"]).contains("namespaces/app/Base/Inner"));
+}

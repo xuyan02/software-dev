@@ -203,7 +203,9 @@ struct CreateArgs {
     kind: KindArg,
     /// Local name. Qualified name is generated from the parent/namespace.
     name: String,
-    /// Parent object for directory/file/namespace/nested type/method/part.
+    /// Parent for directory/file/namespace, the enclosing type for a nested
+    /// class/interface/mixin, or the parent of a method/part. Top-level types
+    /// use --namespace (plus optional --file/--module), not --parent.
     #[arg(long)]
     parent: Option<String>,
     /// Namespace parent for a top-level class/interface/function/mixin.
@@ -514,6 +516,7 @@ fn clone(dir: Option<PathBuf>, remote_url: &str, source: &str, branch: &str) -> 
 }
 
 fn create(dir: Option<PathBuf>, args: CreateArgs) -> Result<()> {
+    validate_create_args(&args)?;
     let ws = open_workspace(dir)?;
     let state = ws
         .read_worktree()?
@@ -3288,7 +3291,8 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
     let design_doc = read_design(ws, args)?;
     let object = match args.kind {
         KindArg::Directory => {
-            let parent = required_parent(ws, catalog, args.parent.as_deref())?;
+            let parent =
+                required_parent_kind(ws, catalog, args.parent.as_deref(), &[Kind::Directory])?;
             let qname = child_qname(ws, parent, &args.name)?;
             let source = read_source_path(ws, args.source.as_deref())?;
             let path_source = source.map(|path| PathSource { path });
@@ -3304,7 +3308,8 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
             )
         }
         KindArg::File => {
-            let parent = required_parent(ws, catalog, args.parent.as_deref())?;
+            let parent =
+                required_parent_kind(ws, catalog, args.parent.as_deref(), &[Kind::Directory])?;
             let qname = child_qname(ws, parent, &args.name)?;
             let source = read_source(ws, args.source.as_deref(), false)?;
             let content = source
@@ -3324,7 +3329,8 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
             )
         }
         KindArg::Namespace => {
-            let parent = required_parent(ws, catalog, args.parent.as_deref())?;
+            let parent =
+                required_parent_kind(ws, catalog, args.parent.as_deref(), &[Kind::Namespace])?;
             let qname = child_qname(ws, parent, &args.name)?;
             let source = read_source(ws, args.source.as_deref(), true)?;
             let content = source
@@ -3390,7 +3396,12 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
             )
         }
         KindArg::Method => {
-            let parent = required_parent(ws, catalog, args.parent.as_deref())?;
+            let parent = required_parent_kind(
+                ws,
+                catalog,
+                args.parent.as_deref(),
+                &[Kind::Class, Kind::Interface, Kind::Mixin],
+            )?;
             let signature = args
                 .signature
                 .as_deref()
@@ -3502,6 +3513,45 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
     Ok(object)
 }
 
+fn validate_create_args(args: &CreateArgs) -> Result<()> {
+    match args.kind {
+        KindArg::Class | KindArg::Interface | KindArg::Mixin => {
+            if args.parent.is_some() {
+                if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
+                    bail!(
+                        "a nested type uses --parent; do not also pass                          --namespace/--file/--module"
+                    );
+                }
+            } else if args.namespace.is_none() {
+                bail!("a top-level type requires --namespace");
+            }
+        }
+        KindArg::Function => {
+            if args.parent.is_some() {
+                bail!("function does not take --parent; use --namespace");
+            }
+        }
+        KindArg::Method | KindArg::Part => {
+            if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
+                bail!("{} does not take --namespace/--file/--module", match args.kind {
+                    KindArg::Method => "method",
+                    _ => "part",
+                });
+            }
+        }
+        KindArg::Directory | KindArg::File | KindArg::Namespace => {
+            if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
+                bail!("{} does not take --namespace/--file/--module", match args.kind {
+                    KindArg::Directory => "directory",
+                    KindArg::File => "file",
+                    _ => "namespace",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn code_qname_and_parent(
     ws: &Workspace,
     catalog: &Catalog,
@@ -3509,8 +3559,14 @@ fn code_qname_and_parent(
 ) -> Result<(SymbolHash, ClassParent)> {
     if let Some(parent) = args.parent.as_deref() {
         let parent = ws.put_symbol(parent)?;
-        if catalog.get(parent).is_none() {
-            bail!("parent not found: {parent:?}");
+        let parent_object = catalog
+            .get(parent)
+            .with_context(|| format!("parent not found: {parent:?}"))?;
+        if !matches!(
+            parent_object.kind,
+            Kind::Class | Kind::Interface | Kind::Mixin
+        ) {
+            bail!("a nested type parent must be a class, interface, or mixin: {parent:?}");
         }
         let qname_text = format!("{}/{}", ws.get_symbol(parent)?, args.name);
         let qname = ws.put_symbol(&qname_text)?;
@@ -3535,6 +3591,27 @@ fn required_parent(ws: &Workspace, catalog: &Catalog, text: Option<&str>) -> Res
     let parent = ws.put_symbol(text)?;
     if catalog.get(parent).is_none() {
         bail!("parent not found: {text}");
+    }
+    Ok(parent)
+}
+
+fn required_parent_kind(
+    ws: &Workspace,
+    catalog: &Catalog,
+    text: Option<&str>,
+    allowed: &[Kind],
+) -> Result<SymbolHash> {
+    let parent = required_parent(ws, catalog, text)?;
+    let object = catalog
+        .get(parent)
+        .with_context(|| format!("parent not found: {}", text.unwrap_or_default()))?;
+    if !allowed.contains(&object.kind) {
+        bail!(
+            "parent {} has kind {:?}; expected one of {:?}",
+            text.unwrap_or_default(),
+            object.kind,
+            allowed
+        );
     }
     Ok(parent)
 }
