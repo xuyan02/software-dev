@@ -410,3 +410,63 @@ fn top_level_and_nested_types_use_different_parent_forms() {
     assert!(listed.contains("namespaces/app/Base/Inner"));
     assert!(listed.contains("namespaces/app/Base/InnerApi"));
 }
+
+#[test]
+fn stages_and_unstages_objects_associated_with_a_source_file() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source");
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::write(source.join("src/a.rs"), "// one\n// two\n// three\n// four\n// five\n").unwrap();
+    git(&source, &["init", "-q"]);
+    git(&source, &["config", "user.email", "test@example.com"]);
+    git(&source, &["config", "user.name", "test"]);
+    git(&source, &["add", "-A"]);
+    git(&source, &["commit", "-qm", "initial"]);
+    git(&source, &["branch", "-M", "master"]);
+
+    let url = format!("file://{}", source.display());
+    ok(&ws, &["init", "--source", &url]);
+    ok(&ws, &["source", "fetch"]);
+    ok(&ws, &["source", "checkout", "master"]);
+    ok(&ws, &["source", "sync"]);
+    ok(
+        &ws,
+        &[
+            "create",
+            "namespace",
+            "app",
+            "--parent",
+            "namespaces",
+            "--source",
+            "src/a.rs:1-5",
+        ],
+    );
+    ok(
+        &ws,
+        &[
+            "create",
+            "class",
+            "App",
+            "--namespace",
+            "namespaces/app",
+            "--file",
+            "files/src/a.rs",
+            "--source",
+            "src/a.rs:1-2",
+        ],
+    );
+
+    let before = ok(&ws, &["status", "--porcelain"]);
+    assert!(before.contains("namespace\tsrc/a.rs\tnamespaces/app"));
+    assert!(before.contains("class\tsrc/a.rs\tnamespaces/app/App"));
+
+    ok(&ws, &["add", "--file", "src/a.rs"]);
+    let staged = ok(&ws, &["status", "--porcelain"]);
+    assert!(!staged.contains("namespaces/app/App"));
+    assert!(!staged.contains("namespaces/app\t"));
+
+    ok(&ws, &["unstage", "--file", "src/a.rs"]);
+    let unstaged = ok(&ws, &["status", "--porcelain"]);
+    assert!(unstaged.contains("namespaces/app/App"));
+}

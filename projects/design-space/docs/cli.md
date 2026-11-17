@@ -17,7 +17,8 @@ remote add/show/set-url/set-token
 push/fetch/pull（本地目录、HTTP、SSH；HTTP 支持 Bearer token）
 gc
 repack
-add
+add（qname、-A、--file、--directory）
+unstage（--file、--directory）
 reset（全部或按名称）
 diff（worktree/index 或 --staged）
 rm
@@ -286,7 +287,35 @@ ds source sync
 - 只修改 worktree，不自动暂存；需要时再 `ds add -A` / `ds commit`；
 - 需要先执行 `ds source fetch`。
 
-### 7.3.2 source changes
+### 7.3.2 status --porcelain
+
+```bash
+ds status --porcelain
+```
+
+只输出未暂存对象，每行：
+
+```text
+status<TAB>kind<TAB>source<TAB>qname
+```
+
+`kind` 使用完整名称：`file`、`directory`、`namespace`、`class`、`inner-class`、`interface`、`inner-interface`、`method`、`function`、`part`、`mixin`、`view`。没有 source 的对象 source 为空。用于让脚本或智能体判断哪些源文件/目录还没处理。
+
+### 7.3.3 file/directory staged
+
+```bash
+ds add --file <source path>
+ds add --directory <source dir>
+ds unstage --file <source path>
+ds unstage --directory <source dir>
+```
+
+- `--file`：按 source 路径、顶层类型的 `file` 关联以及 `files/<path>/` 前缀收集对象；存在的写入 index，worktree 已删除的从 index 移除；
+- `--directory`：只处理该目录的 Directory 对象；
+- `unstage`：把该文件/目录相关对象从 index 恢复到 HEAD，worktree 不变；
+- 命令名使用 `--directory`，因为全局 `--dir` 已用于指定工作区。
+
+### 7.3.4 source changes
 
 ```bash
 ds source changes [--base <git-ref>]
@@ -298,7 +327,7 @@ ds source changes [--base <git-ref>]
 - base 为零、找不到、或不是当前 HEAD 的祖先时，全部文件按 `A` 输出；
 - 需要先执行 `ds source fetch`。
 
-### 7.3.3 status / verify
+### 7.3.5 status / verify
 
 ```bash
 ds status

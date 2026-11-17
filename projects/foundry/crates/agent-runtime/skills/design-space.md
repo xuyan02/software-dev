@@ -206,7 +206,10 @@ ds source changes [--base <ref>]
 ```bash
 ds show <qname> [--source] [--staged]
 ds ls [--files] [--namespaces] [--design] [--staged]
+ds status --porcelain
 ```
+
+`ds status --porcelain` 输出未暂存对象：状态、完整 kind 名、source、qname，每行一个。
 
 - `ds show` 显示 kind、parent、source、content hash、设计文档，以及 `children:`；
 - `ds show --source` 同时输出锚定的源码；
@@ -288,6 +291,10 @@ ds status                 # HEAD/index/worktree 以及未暂存/已暂存变化
 ds diff                   # worktree 和 index 的差异
 ds diff --staged          # index 和 HEAD 的差异
 ds add -A                 # 暂存全部 worktree 对象
+ds add --file <path>      # 只暂存某个源文件关联的对象
+ds add --directory <dir>  # 只暂存某个目录的 Directory 对象
+ds unstage --file <path>  # 把该文件关联对象退回 worktree
+ds unstage --directory <dir>
 ds verify                 # 校验 qname、parent、source、关系和依赖
 ds commit -m "..." --author <name>
 ds push --branch <branch>

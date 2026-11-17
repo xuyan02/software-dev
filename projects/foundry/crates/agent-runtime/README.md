@@ -34,16 +34,18 @@ Agent 定义新增 `shell` 字段。`shell = true` 时，agentd 为该 Agent 创
 
 ```text
 prepare
-  → summarize_file → record_file → review_file → apply_file
-  → summarize_dir  → record_dir  → review_dir  → apply_dir
-  → review_all → apply_all
+  → select_item (ds status --porcelain)
+      → summarize → review_file → apply_file
+      → review_dir → apply_dir
+      → review_all → verify
+                  ↳ 不通过 → apply_all → unstage → select_item
   → verify → commit/push
 ```
 
-- `prepare` 在常驻 shell 里 clone/fetch/checkout、执行 `ds source changes`、删除失效对象、校准 File/Directory，并生成文件和目录队列；
-- 文件/目录总结由 LLM 通过 `shell` 工具完成，设计文档由固定 `record` 节点写盘；
-- `review` 节点用 `ds status` / `ds diff` 检查 worktree，`apply` 节点通过则 `ds add -A`，不通过则带反馈回到总结节点；
-- `review_all` 用 `ds diff --staged` / `ds show --staged` 检查已暂存内容；
+- `prepare` 在常驻 shell 里 clone/fetch/checkout、执行 `ds source sync`、删除失效 namespace；待处理项由 `select_item` 从 `ds status --porcelain` 读取；
+- 文件/目录总结由同一个 LLM 节点通过 `shell` 工具完成，并直接用 `ds edit --design-file` 写入对象；
+- `review` 节点用 `ds status` / `ds diff` 检查 worktree，`apply` 节点通过则 `ds add --file` / `--directory`，不通过则带反馈回到总结节点；
+- `review_all` 用 `ds diff --staged` / `ds show --staged` 检查已暂存内容，不通过时 `apply_all` 用 `ds unstage` 退回问题文件/目录；
 - `verify` 执行 `ds verify` 和源码 File 检查，通过后 commit/push；失败按源文件回到总结节点，重复签名判定无进展后失败；
 - 关系允许前向引用，最终由 `ds verify` 解析。
 

@@ -87,6 +87,19 @@ enum Command {
         /// Stage every worktree object.
         #[arg(short = 'A', long = "all")]
         all: bool,
+        /// Stage every object associated with this source file.
+        #[arg(long, conflicts_with_all = ["all", "dir"])]
+        file: Option<String>,
+        /// Stage the Directory object for this source directory.
+        #[arg(long = "directory", conflicts_with_all = ["all", "file"])]
+        directory: Option<String>,
+    },
+    /// Unstage every object associated with a source file/directory.
+    Unstage {
+        #[arg(long, conflicts_with = "directory")]
+        file: Option<String>,
+        #[arg(long = "directory", conflicts_with = "file")]
+        directory: Option<String>,
     },
     /// Unstage everything or selected objects; --hard discards the worktree.
     Reset {
@@ -135,7 +148,12 @@ enum Command {
         staged: bool,
     },
     /// Show HEAD, index, and worktree roots plus changed objects.
-    Status,
+    Status {
+        /// Machine-readable unstaged changes only:
+        /// status, kind, source, qname per line, tab-separated.
+        #[arg(long)]
+        porcelain: bool,
+    },
     /// Verify the worktree object graph.
     Verify,
     /// Commit the index.
@@ -403,7 +421,13 @@ pub fn run() -> Result<()> {
         Command::Push { branch } => push(cli.dir, branch),
         Command::Fetch => fetch(cli.dir),
         Command::Pull { branch } => pull(cli.dir, branch),
-        Command::Add { names, all } => add(cli.dir, names, all),
+        Command::Add {
+            names,
+            all,
+            file,
+            directory,
+        } => add(cli.dir, names, all, file, directory),
+        Command::Unstage { file, directory } => unstage(cli.dir, file, directory),
         Command::Reset { names, hard } => reset(cli.dir, names, hard),
         Command::Diff { staged } => diff(cli.dir, staged),
         Command::Rm { name, force } => rm(cli.dir, &name, force),
@@ -418,7 +442,7 @@ pub fn run() -> Result<()> {
             design,
             staged,
         } => ls(cli.dir, files, namespaces, design, staged),
-        Command::Status => status(cli.dir),
+        Command::Status { porcelain } => status(cli.dir, porcelain),
         Command::Verify => verify(cli.dir),
         Command::Commit {
             message,
@@ -807,6 +831,56 @@ fn retarget_source_paths(
     Ok(())
 }
 
+fn retarget_file_associations(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    old_path: &str,
+    new_path: &str,
+) -> Result<()> {
+    let old_file = ws.put_symbol(&object_qname_text(old_path))?;
+    let new_file = ws.put_symbol(&object_qname_text(new_path))?;
+    let mut targets = Vec::new();
+    for (qname, object) in catalog.iter() {
+        if object_file_association(ws, object)? == Some(old_file) {
+            targets.push(qname);
+        }
+    }
+    for qname in targets {
+        if let Some(object) = catalog.get_mut(qname) {
+            match &mut object.payload {
+                ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+                    if let ClassParent::TopLevel { file, .. } = &mut p.parent
+                        && *file == old_file
+                    {
+                        *file = new_file;
+                    }
+                }
+                ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+                    if let ClassParent::TopLevel { file, .. } = &mut p.parent
+                        && *file == old_file
+                    {
+                        *file = new_file;
+                    }
+                }
+                ObjectPayload::Mixin(p) => {
+                    if let ClassParent::TopLevel { file, .. } = &mut p.parent
+                        && *file == old_file
+                    {
+                        *file = new_file;
+                    }
+                }
+                ObjectPayload::Function(p) => {
+                    if p.file == old_file {
+                        p.file = new_file;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 fn rename_file(
     ws: &Workspace,
     catalog: &mut Catalog,
@@ -836,6 +910,7 @@ fn rename_file(
     }
     catalog.rename_symbols(&mapping)?;
     retarget_source_paths(ws, catalog, old_path, new_path)?;
+    retarget_file_associations(ws, catalog, old_path, new_path)?;
     Ok(true)
 }
 
@@ -942,6 +1017,26 @@ fn sync_source(ws: &Workspace, repo: &SourceRepo) -> Result<()> {
                 created_files += 1;
             }
         }
+    }
+
+    // Source-backed concepts whose file no longer exists are stale too.
+    let mut stale = BTreeSet::new();
+    for (qname, object) in catalog.iter() {
+        if matches!(object.kind, Kind::File | Kind::Directory | Kind::View) {
+            continue;
+        }
+        if let Some(path) = object_source_path(ws, object)? {
+            if !file_paths.contains(&path) && !dir_paths.contains(&path) {
+                stale.insert(qname);
+            }
+        } else if let Some(file) = object_file_association(ws, object)?
+            && catalog.get(file).is_none()
+        {
+            stale.insert(qname);
+        }
+    }
+    for qname in stale {
+        removed += remove_source_subtree(&mut catalog, qname);
     }
 
     catalog.set_source_commit(head_oid);
@@ -1981,7 +2076,13 @@ fn dependency_label(ws: &Workspace, target: SymbolHash) -> Result<String> {
     Ok(ws.get_symbol(target)?)
 }
 
-fn add(dir: Option<PathBuf>, names: Vec<String>, all: bool) -> Result<()> {
+fn add(
+    dir: Option<PathBuf>,
+    names: Vec<String>,
+    all: bool,
+    file: Option<String>,
+    dir_path: Option<String>,
+) -> Result<()> {
     let ws = open_workspace(dir)?;
     let worktree = ws
         .read_worktree()?
@@ -1993,7 +2094,36 @@ fn add(dir: Option<PathBuf>, names: Vec<String>, all: bool) -> Result<()> {
     let mut index_catalog = Catalog::load(ws.store(), index.root_view)?;
 
     if all {
+        if file.is_some() || dir_path.is_some() {
+            bail!("use either --all, --file, or --dir");
+        }
         index_catalog = work_catalog.clone();
+    } else if let Some(path) = file {
+        if !names.is_empty() {
+            bail!("--file cannot be combined with qnames");
+        }
+        let targets = file_scope_qnames(&ws, &work_catalog, &index_catalog, &path)?;
+        for qname in &targets {
+            if work_catalog.get(*qname).is_some() {
+                stage_object_with_parents(&work_catalog, &mut index_catalog, *qname)?;
+            } else {
+                index_catalog.remove(*qname);
+            }
+        }
+        index_catalog.set_source_commit(work_catalog.source_commit());
+        println!("Staged {} objects for file {path}", targets.len());
+    } else if let Some(path) = dir_path {
+        if !names.is_empty() {
+            bail!("--dir cannot be combined with qnames");
+        }
+        let qname = ws.put_symbol(&object_qname_text(&path))?;
+        if work_catalog.get(qname).is_some() {
+            stage_object_with_parents(&work_catalog, &mut index_catalog, qname)?;
+        } else {
+            index_catalog.remove(qname);
+        }
+        index_catalog.set_source_commit(work_catalog.source_commit());
+        println!("Staged directory {path}");
     } else {
         for name in names {
             let qname = ws.put_symbol(&name)?;
@@ -2010,6 +2140,101 @@ fn add(dir: Option<PathBuf>, names: Vec<String>, all: bool) -> Result<()> {
         root_view: view,
     })?;
     println!("Staged index view {}", view.to_hex());
+    Ok(())
+}
+
+fn file_scope_qnames(
+    ws: &Workspace,
+    left: &Catalog,
+    right: &Catalog,
+    path: &str,
+) -> Result<BTreeSet<SymbolHash>> {
+    let file_qname = ws.put_symbol(&object_qname_text(path))?;
+    let prefix = format!("{}/", ws.get_symbol(file_qname)?);
+    let mut qnames = BTreeSet::new();
+    for catalog in [left, right] {
+        for (qname, object) in catalog.iter() {
+            let qname_text = ws.get_symbol(qname)?;
+            let belongs = qname == file_qname
+                || qname_text.starts_with(&prefix)
+                || object_source_path(ws, object)?.as_deref() == Some(path)
+                || object_file_association(ws, object)? == Some(file_qname);
+            if belongs {
+                qnames.insert(qname);
+            }
+        }
+    }
+    Ok(qnames)
+}
+
+fn object_file_association(_ws: &Workspace, object: &DesignObject) -> Result<Option<SymbolHash>> {
+    let file = match &object.payload {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => match p.parent {
+            ClassParent::TopLevel { file, .. } => Some(file),
+            ClassParent::Nested { .. } => None,
+        },
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => match p.parent {
+            ClassParent::TopLevel { file, .. } => Some(file),
+            ClassParent::Nested { .. } => None,
+        },
+        ObjectPayload::Mixin(p) => match p.parent {
+            ClassParent::TopLevel { file, .. } => Some(file),
+            ClassParent::Nested { .. } => None,
+        },
+        ObjectPayload::Function(p) => Some(p.file),
+        _ => None,
+    };
+    match file {
+        Some(file) if !file.is_zero() => Ok(Some(file)),
+        _ => Ok(None),
+    }
+}
+
+fn unstage(
+    dir: Option<PathBuf>,
+    file: Option<String>,
+    dir_path: Option<String>,
+) -> Result<()> {
+    let ws = open_workspace(dir)?;
+    let branch = current_branch(&ws)?;
+    let head = ws.read_ref(&branch)?;
+    let index = ws
+        .read_index()?
+        .context("index is not initialized; run `ds init`")?;
+    let head_catalog = load_catalog(
+        ws.store(),
+        head.map(|hash| ws.get_commit(hash))
+            .transpose()?
+            .map(|commit| commit.view),
+    )?;
+    let mut index_catalog = Catalog::load(ws.store(), index.root_view)?;
+    let targets = match (file, dir_path) {
+        (Some(path), None) => {
+            file_scope_qnames(&ws, &index_catalog, &head_catalog, &path)?
+        }
+        (None, Some(path)) => {
+            let qname = ws.put_symbol(&object_qname_text(&path))?;
+            BTreeSet::from([qname])
+        }
+        _ => bail!("use exactly one of --file or --dir"),
+    };
+    for qname in &targets {
+        if let Some(object) = head_catalog.get(*qname) {
+            if index_catalog.get(*qname).is_some() {
+                index_catalog.replace(*qname, object.clone())?;
+            } else {
+                index_catalog.insert(*qname, object.clone())?;
+            }
+        } else {
+            index_catalog.remove(*qname);
+        }
+    }
+    let view = index_catalog.rebuild(ws.store())?;
+    ws.write_index(State {
+        base_commit: index.base_commit,
+        root_view: view,
+    })?;
+    println!("Unstaged {} objects", targets.len());
     Ok(())
 }
 
@@ -2104,7 +2329,7 @@ fn remove_subtree(catalog: &mut Catalog, qname: SymbolHash) {
     }
 }
 
-fn status(dir: Option<PathBuf>) -> Result<()> {
+fn status(dir: Option<PathBuf>, porcelain: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let branch = current_branch(&ws)?;
     let head = ws.read_ref(&branch)?;
@@ -2148,6 +2373,25 @@ fn status(dir: Option<PathBuf>) -> Result<()> {
         unstaged = changed_objects(&ws, index_catalog, worktree_catalog)?;
     }
 
+    if porcelain {
+        for (status, name) in &unstaged {
+            let qname = ws.put_symbol(name)?;
+            let object = worktree_catalog
+                .as_ref()
+                .and_then(|catalog| catalog.get(qname))
+                .or_else(|| index_catalog.as_ref().and_then(|catalog| catalog.get(qname)));
+            let (kind, source) = match object {
+                Some(object) => (
+                    kind_name(object.kind),
+                    object_source_path(&ws, object)?.unwrap_or_default(),
+                ),
+                None => ("unknown", String::new()),
+            };
+            println!("{status}\t{kind}\t{source}\t{name}");
+        }
+        return Ok(());
+    }
+
     let clean = staged.is_empty() && unstaged.is_empty();
     if !staged.is_empty() {
         println!();
@@ -2168,6 +2412,23 @@ fn status(dir: Option<PathBuf>) -> Result<()> {
         println!("working tree clean");
     }
     Ok(())
+}
+
+fn kind_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::View => "view",
+        Kind::Directory => "directory",
+        Kind::File => "file",
+        Kind::Namespace => "namespace",
+        Kind::Class => "class",
+        Kind::InnerClass => "inner-class",
+        Kind::Interface => "interface",
+        Kind::InnerInterface => "inner-interface",
+        Kind::Method => "method",
+        Kind::Function => "function",
+        Kind::Part => "part",
+        Kind::Mixin => "mixin",
+    }
 }
 
 fn changed_objects(ws: &Workspace, left: &Catalog, right: &Catalog) -> Result<Vec<(char, String)>> {

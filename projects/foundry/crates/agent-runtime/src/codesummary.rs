@@ -13,7 +13,6 @@ use graph_agent::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,12 +37,12 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 2. 用 ds show files/<path> 看 File 对象和文档；类型通常不挂在 File 下。
 3. 更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；类型挂在 namespace 下，不要建在 File 下面。
 4. 创建缺失的元素，写 source span、设计文档、superclass/interfaces/mixins/overrides 和依赖。
-5. 按用户消息要求的 JSON 格式返回该 File 的设计文档。
+5. 用 ds edit files/<path> --design-file 把该 File 的设计文档写入对象；不要只返回文本。
 
 目录总结工作项：
 1. 用 ds show files/<path> 看目录规则。
 2. 根据直属子项写目录规则，不枚举子项细节。
-3. 按用户消息要求的 JSON 格式返回目录规则。
+3. 用 ds edit files/<path> --design-file 把目录规则写入对象；不要只返回文本。
 
 Review 工作项：
 - 单文件/单目录 review：用 ds status 看未暂存改动，ds diff、ds show 核对；返回 JSON：{"passed":true|false,"feedback":"..."}。
@@ -62,29 +61,23 @@ const REVIEW_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 审查员�
 
 不要返回设计文档、总结或解释。"#;
 
-const SUMMARY_FILE_PROMPT: &str = r#"总结工作项中的文件。按系统规则更新设计空间。
-输出 JSON：{"design":"该 File 的设计文档纯文本"}
+const SUMMARY_PROMPT: &str = r#"总结工作项。先看 Input (JSON) 的 kind：
+- kind = "file"：读源码，更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；创建缺失元素，写 source span、设计文档、关系；最后用 ds edit files/<path> --design-file 把 File 的设计文档写入对象。
+- kind = "directory"：根据直属子项写目录规则，不枚举子项细节；最后用 ds edit files/<path> --design-file 把目录规则写入对象。
+不要只在回复里返回设计文本，必须写入对象。
+输出 JSON：{"ok":true}
 只返回这个 JSON 对象。"#;
-const REVIEW_FILE_PROMPT: &str = r#"检查工作项中文件的本次总结，不要修改任何对象。
+const REVIEW_FILE_PROMPT: &str = r#"检查文件 {{current_item.path}} 的本次总结（上一轮反馈：{{current_item.feedback}}），不要修改任何对象。
 输出 JSON：{"passed":true|false,"feedback":"..."}
 只返回这个 JSON 对象。"#;
-const SUMMARY_DIR_PROMPT: &str = r#"总结工作项中的目录。按系统规则更新目录设计文档。
-输出 JSON：{"design":"目录规则纯文本"}
-只返回这个 JSON 对象。"#;
-const REVIEW_DIR_PROMPT: &str = r#"检查工作项中目录的本次总结，不要修改任何对象。
+const REVIEW_DIR_PROMPT: &str = r#"检查目录 {{current_item.path}} 的本次总结（上一轮反馈：{{current_item.feedback}}），不要修改任何对象。
 输出 JSON：{"passed":true|false,"feedback":"..."}
 只返回这个 JSON 对象。"#;
 const REVIEW_ALL_PROMPT: &str = r#"检查全部已暂存改动，不要修改任何对象。
 输出 JSON：{"passed":true|false,"files":[{"path":"...","feedback":"..."}],"directories":[{"path":"...","feedback":"..."}]}
 只返回这个 JSON 对象。"#;
 
-const SOURCE_EXTENSIONS: &[&str] = &[
-    "rs", "c", "h", "cc", "cpp", "cxx", "hh", "hpp", "hxx", "m", "mm", "java", "kt", "kts",
-    "scala", "groovy", "py", "pyi", "rb", "php", "cs", "fs", "fsx", "go", "swift", "dart", "js",
-    "jsx", "mjs", "cjs", "ts", "tsx", "vue", "svelte", "sh", "bash", "zsh", "fish", "ps1", "lua",
-    "pl", "pm", "r", "jl", "ex", "exs", "erl", "hrl", "hs", "lhs", "ml", "mli", "clj", "cljs",
-    "cljc", "elm", "nim", "zig", "sol", "html", "htm", "css", "scss", "sass", "less", "sql",
-];
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 struct WorkItem {
@@ -139,13 +132,6 @@ struct ProjectInfo {
     design_space_branch: String,
 }
 
-#[derive(Debug, Clone)]
-struct Change {
-    status: char,
-    old_path: Option<String>,
-    path: String,
-}
-
 pub async fn run(
     model: Arc<dyn ModelGateway>,
     tools: Arc<ToolRegistry>,
@@ -172,8 +158,7 @@ pub async fn run(
     let review_system = PromptTemplate::parse(REVIEW_SYSTEM_PROMPT)
         .map_err(|error| RunError::Graph(error.to_string()))?;
     for (node, system) in [
-        ("summarize_file", &summary_system),
-        ("summarize_dir", &summary_system),
+        ("summarize", &summary_system),
         ("review_file", &review_system),
         ("review_dir", &review_system),
         ("review_all", &review_system),
@@ -226,25 +211,17 @@ fn build_graph(shell: Arc<dyn Shell>) -> Result<Graph, RunError> {
                 shell: Arc::clone(&shell),
             },
         )
-        .node("select_item", SelectItemNode)
-        .llm_node("summarize_file", SummaryFileNode)
         .node(
-            "record_file",
-            RecordFileNode {
+            "select_item",
+            SelectItemNode {
                 shell: Arc::clone(&shell),
             },
         )
+        .llm_node("summarize", SummaryNode)
         .llm_node("review_file", ReviewFileNode)
         .node(
             "apply_file",
             ApplyFileNode {
-                shell: Arc::clone(&shell),
-            },
-        )
-        .llm_node("summarize_dir", SummaryDirNode)
-        .node(
-            "record_dir",
-            RecordDirNode {
                 shell: Arc::clone(&shell),
             },
         )
@@ -264,28 +241,24 @@ fn build_graph(shell: Arc<dyn Shell>) -> Result<Graph, RunError> {
         )
         .node("verify", VerifyNode { shell })
         .edge("prepare", 0, "select_item")
-        .edge("select_item", 0, "summarize_file")
-        .edge("select_item", 1, "summarize_dir")
-        .edge("select_item", 2, "review_all")
-        .edge("summarize_file", 0, "record_file")
-        .edge("record_file", 0, "review_file")
+        .edge("select_item", 0, "summarize")
+        .edge("select_item", 1, "review_all")
+        .edge("summarize", 0, "review_file")
+        .edge("summarize", 1, "review_dir")
         .edge("review_file", 0, "apply_file")
-        .edge("apply_file", 0, "summarize_file")
-        .edge("apply_file", 1, "select_item")
+        .edge("apply_file", 0, "select_item")
+        .edge("apply_file", 1, "summarize")
         .edge("apply_file", 2, "failed")
-        .edge("summarize_dir", 0, "record_dir")
-        .edge("record_dir", 0, "review_dir")
         .edge("review_dir", 0, "apply_dir")
-        .edge("apply_dir", 0, "summarize_dir")
-        .edge("apply_dir", 1, "select_item")
+        .edge("apply_dir", 0, "select_item")
+        .edge("apply_dir", 1, "summarize")
         .edge("apply_dir", 2, "failed")
-        .edge("review_all", 0, "apply_all")
-        .edge("apply_all", 0, "verify")
-        .edge("apply_all", 1, "select_item")
-        .edge("apply_all", 2, "failed")
+        .edge("review_all", 0, "verify")
+        .edge("review_all", 1, "apply_all")
+        .edge("apply_all", 0, "select_item")
+        .edge("apply_all", 1, "failed")
         .edge("verify", 0, "done")
-        .edge("verify", 1, "select_item")
-        .edge("verify", 2, "failed");
+        .edge("verify", 1, "failed");
     builder
         .build()
         .map_err(|error| RunError::Graph(error.to_string()))
@@ -450,67 +423,6 @@ fn strip_span(value: &str) -> String {
     value.to_owned()
 }
 
-fn is_source(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.to_ascii_lowercase())
-        .is_some_and(|extension| SOURCE_EXTENSIONS.contains(&extension.as_str()))
-}
-
-fn parent_dir(path: &str) -> Option<&str> {
-    path.rsplit_once('/').map(|(parent, _)| parent)
-}
-
-/// Design-space qname for a File or Directory at a source path.
-fn object_name(path: &str) -> String {
-    format!("files/{path}")
-}
-
-fn expected_dirs(paths: &[String]) -> Vec<String> {
-    let mut dirs = std::collections::BTreeSet::new();
-    for path in paths {
-        let mut current = parent_dir(path);
-        while let Some(dir) = current {
-            if dir.is_empty() {
-                break;
-            }
-            dirs.insert(dir.to_owned());
-            current = parent_dir(dir);
-        }
-    }
-    dirs.into_iter().collect()
-}
-
-fn parse_changes(stdout: &str) -> Vec<Change> {
-    let mut changes = Vec::new();
-    for line in stdout.lines().filter(|line| !line.is_empty()) {
-        let mut fields = line.split('\t');
-        let Some(status) = fields.next() else {
-            continue;
-        };
-        let Some(status) = status.chars().next() else {
-            continue;
-        };
-        if status == 'R' {
-            let Some(old) = fields.next() else { continue };
-            let Some(new) = fields.next() else { continue };
-            changes.push(Change {
-                status,
-                old_path: Some(old.to_owned()),
-                path: new.to_owned(),
-            });
-        } else if let Some(path) = fields.next() {
-            changes.push(Change {
-                status,
-                old_path: None,
-                path: path.to_owned(),
-            });
-        }
-    }
-    changes
-}
-
 fn parse_children(shown: &str) -> Vec<String> {
     shown
         .lines()
@@ -544,40 +456,6 @@ fn parse_verdict(value: &Value) -> Verdict {
         files: Vec::new(),
         directories: Vec::new(),
     })
-}
-
-fn get_items(ctx: &Context, name: &str) -> Result<Vec<WorkItem>, NodeError> {
-    Ok(ctx.var::<Vec<WorkItem>>(name).unwrap_or_default())
-}
-
-fn get_cursor(ctx: &Context, name: &str) -> Result<usize, NodeError> {
-    Ok(ctx.var::<usize>(name).unwrap_or(0))
-}
-
-fn set_cursor(ctx: &mut Context, name: &str, value: usize) -> Result<(), NodeError> {
-    ctx.set_var(name, value)?;
-    Ok(())
-}
-
-fn current_item(ctx: &Context, queue: &str, cursor: &str) -> Result<Option<WorkItem>, NodeError> {
-    let items = get_items(ctx, queue)?;
-    let cursor = get_cursor(ctx, cursor)?;
-    Ok(items.get(cursor).cloned())
-}
-
-fn update_current_item(
-    ctx: &mut Context,
-    queue: &str,
-    cursor: &str,
-    item: WorkItem,
-) -> Result<(), NodeError> {
-    let mut items = get_items(ctx, queue)?;
-    let cursor = get_cursor(ctx, cursor)?;
-    if let Some(slot) = items.get_mut(cursor) {
-        *slot = item;
-        ctx.set_var(queue, items)?;
-    }
-    Ok(())
 }
 
 fn no_progress(ctx: &mut Context, signature: String) -> Result<bool, NodeError> {
@@ -669,102 +547,17 @@ impl Node for PrepareNode {
         ctx.set_var("design_space_url", project.design_space_url.clone())?;
         ctx.set_var("seen", Vec::<String>::new())?;
 
-        // Align every File/Directory object with the source tree in one ds
-        // invocation. Capture the previous qname set first so new directories
-        // can still be queued for design-doc review.
-        let before = ds_ok(&self.shell, &ds_workspace, "ls --files".to_owned())
-            .await?
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect::<std::collections::BTreeSet<_>>();
+        // Align File/Directory objects with the source tree. Pending work is
+        // derived from ds status, not from an in-memory queue.
         ds_ok(&self.shell, &ds_workspace, "source sync".to_owned()).await?;
-
-        let changes =
-            parse_changes(&ds_source(&self.shell, &ds_workspace, "changes".to_owned()).await?);
         let all_files = ds_source(&self.shell, &ds_workspace, "ls".to_owned())
             .await?
             .lines()
             .filter(|line| !line.is_empty())
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let dirs = expected_dirs(&all_files);
         delete_stale_namespaces(&self.shell, &ds_workspace, &all_files).await?;
-
-        let mut pending_files = std::collections::BTreeSet::new();
-        let mut raw_source_files = std::collections::BTreeSet::new();
-        let mut changed_dirs = std::collections::BTreeSet::new();
-        for change in &changes {
-            match change.status {
-                'D' => {
-                    if let Some(parent) = parent_dir(&change.path) {
-                        changed_dirs.insert(parent.to_owned());
-                    }
-                }
-                'R' => {
-                    if let Some(old) = &change.old_path
-                        && let Some(parent) = parent_dir(old)
-                    {
-                        changed_dirs.insert(parent.to_owned());
-                    }
-                    pending_files.insert(change.path.clone());
-                    if is_source(&change.path) {
-                        raw_source_files.insert(change.path.clone());
-                    }
-                    if let Some(parent) = parent_dir(&change.path) {
-                        changed_dirs.insert(parent.to_owned());
-                    }
-                }
-                _ => {
-                    pending_files.insert(change.path.clone());
-                    if is_source(&change.path) {
-                        raw_source_files.insert(change.path.clone());
-                    }
-                    if change.status == 'A'
-                        && let Some(parent) = parent_dir(&change.path)
-                    {
-                        changed_dirs.insert(parent.to_owned());
-                    }
-                }
-            }
-        }
-
-        let new_dirs = dirs
-            .iter()
-            .filter(|dir| !before.contains(&object_name(dir)))
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-
-        let mut dir_queue = dirs
-            .iter()
-            .filter(|dir| changed_dirs.contains(*dir) || new_dirs.contains(*dir))
-            .cloned()
-            .collect::<Vec<_>>();
-        dir_queue.sort();
-        dir_queue.dedup();
-
-        let file_queue = raw_source_files.into_iter().collect::<Vec<_>>();
-
-        let file_items = file_queue
-            .iter()
-            .map(|path| WorkItem::file(path.clone()))
-            .collect::<Vec<_>>();
-        let dir_items = dir_queue
-            .iter()
-            .map(|path| WorkItem::directory(path.clone()))
-            .collect::<Vec<_>>();
-        ctx.set_var("file_queue", file_items.clone())?;
-        ctx.set_var("dir_queue", dir_items.clone())?;
-        set_cursor(ctx, "file_cursor", 0)?;
-        set_cursor(ctx, "dir_cursor", 0)?;
-        ctx.set_var(
-            "changed_files",
-            pending_files.iter().cloned().collect::<Vec<_>>(),
-        )?;
-        ctx.set_var("initial_file_count", file_items.len())?;
-        ctx.set_var("initial_dir_count", dir_items.len())?;
-
-        Ok(json!({"phase":"select"}))
+        Ok(json!({"next":"select"}))
     }
 
     fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -776,49 +569,138 @@ impl Node for PrepareNode {
     }
 }
 
-/// Pick the next pending item. Cursors always point at the current item;
-/// apply nodes advance them after a successful review.
-struct SelectItemNode;
+/// Pick the next pending File/Directory from ds status.
+struct SelectItemNode {
+    shell: Arc<dyn Shell>,
+}
 
-fn select_next_item(ctx: &Context) -> Result<Value, NodeError> {
-    let files = get_items(ctx, "file_queue")?;
-    let cursor = get_cursor(ctx, "file_cursor")?;
-    if let Some(item) = files.get(cursor) {
-        return json_result(item);
+#[derive(Debug, Clone, Deserialize)]
+struct StatusEntry {
+    status: char,
+    kind: String,
+    source: String,
+}
+
+fn parse_status(stdout: &str) -> Vec<StatusEntry> {
+    stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?.chars().next()?;
+            let kind = fields.next()?.to_owned();
+            let source = fields.next()?.to_owned();
+            let _qname = fields.next()?;
+            Some(StatusEntry {
+                status,
+                kind,
+                source,
+            })
+        })
+        .collect()
+}
+
+fn clear_feedback(ctx: &mut Context, path: &str) -> Result<(), NodeError> {
+    let mut feedback = ctx
+        .var::<std::collections::BTreeMap<String, String>>("rework_feedback")
+        .unwrap_or_default();
+    feedback.remove(path);
+    ctx.set_var("rework_feedback", feedback)?;
+    Ok(())
+}
+
+fn feedback_for(ctx: &Context, path: &str) -> String {
+    ctx.var::<std::collections::BTreeMap<String, String>>("rework_feedback")
+        .unwrap_or_default()
+        .get(path)
+        .cloned()
+        .unwrap_or_default()
+}
+
+async fn stage_deletions(
+    shell: &Arc<dyn Shell>,
+    workspace: &str,
+    entries: &[StatusEntry],
+) -> Result<(), NodeError> {
+    let mut deleted_files = std::collections::BTreeSet::new();
+    for entry in entries {
+        if entry.status != 'D' || entry.source.is_empty() {
+            continue;
+        }
+        match entry.kind.as_str() {
+            "file" => {
+                ds_ok(
+                    shell,
+                    workspace,
+                    format!("add --file {}", q(&entry.source)),
+                )
+                .await?;
+            }
+            "directory" => {
+                ds_ok(
+                    shell,
+                    workspace,
+                    format!("add --directory {}", q(&entry.source)),
+                )
+                .await?;
+            }
+            _ => {
+                deleted_files.insert(entry.source.clone());
+            }
+        }
     }
-    let dirs = get_items(ctx, "dir_queue")?;
-    let cursor = get_cursor(ctx, "dir_cursor")?;
-    if let Some(item) = dirs.get(cursor) {
-        return json_result(item);
+    for path in deleted_files {
+        ds_ok(shell, workspace, format!("add --file {}", q(&path))).await?;
     }
-    Ok(json!({"phase":"review_all"}))
+    Ok(())
 }
 
 #[async_trait]
 impl Node for SelectItemNode {
     async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let item = select_next_item(ctx)?;
-        if let (Some(kind), Some(path)) = (
-            item.get("kind").and_then(Value::as_str),
-            item.get("path").and_then(Value::as_str),
-        ) {
-            tracing::info!(kind, path, "selected work item");
-        }
-        Ok(item)
+        let workspace = workspace(ctx)?;
+        let status = ds_ok(&self.shell, &workspace, "status --porcelain".to_owned()).await?;
+        let entries = parse_status(&status);
+        stage_deletions(&self.shell, &workspace, &entries).await?;
+
+        let file = entries.iter().find(|entry| {
+            entry.kind == "file" && entry.status != 'D' && !entry.source.is_empty()
+        });
+        let directory = entries.iter().find(|entry| {
+            entry.kind == "directory" && entry.status != 'D' && !entry.source.is_empty()
+        });
+        let item = if let Some(entry) = file {
+            WorkItem::file(entry.source.clone())
+        } else if let Some(entry) = directory {
+            WorkItem::directory(entry.source.clone())
+        } else if let Some(entry) = entries
+            .iter()
+            .find(|entry| entry.status != 'D' && !entry.source.is_empty())
+        {
+            // A changed concept under a file still belongs to that file.
+            WorkItem::file(entry.source.clone())
+        } else {
+            ctx.set_var("current_item", Value::Null)?;
+            return Ok(json!({"next":"review_all"}));
+        };
+
+        let mut item = item;
+        item.feedback = feedback_for(ctx, &item.path);
+        ctx.set_var("current_item", item.clone())?;
+        tracing::info!(kind = %item.kind, path = %item.path, "selected work item");
+        json_result(&item)
     }
 
     fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(
-            match output.get("kind").and_then(Value::as_str) {
-                Some("file") => 0,
-                Some("directory") => 1,
-                _ => 2,
-            },
-        ))
+        Ok(TransitionIndex(if output.get("kind").is_some() {
+            0
+        } else {
+            1
+        }))
     }
 
     fn transition_count(&self) -> usize {
-        3
+        2
     }
 }
 
@@ -931,9 +813,9 @@ async fn delete_stale_namespaces(
     Ok(())
 }
 
-struct SummaryFileNode;
+struct SummaryNode;
 
-impl LlmNode for SummaryFileNode {
+impl LlmNode for SummaryNode {
     fn system(&self) -> &PromptTemplate {
         static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
         TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
@@ -941,45 +823,26 @@ impl LlmNode for SummaryFileNode {
 
     fn user(&self) -> &PromptTemplate {
         static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(SUMMARY_FILE_PROMPT))
+        TEMPLATE.get_or_init(|| PromptTemplate::literal(SUMMARY_PROMPT))
     }
 
-    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(0))
-    }
-
-    fn transition_count(&self) -> usize {
-        1
-    }
-}
-
-struct RecordFileNode {
-    shell: Arc<dyn Shell>,
-}
-
-#[async_trait]
-impl Node for RecordFileNode {
-    async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let item = current_item(ctx, "file_queue", "file_cursor")?
-            .ok_or_else(|| NodeError::failed("no current file"))?;
-        let doc = input
-            .get("design")
-            .and_then(Value::as_str)
-            .ok_or_else(|| NodeError::failed("summarize_file output is missing design"))?
-            .to_owned();
-        let workspace = workspace(ctx)?;
-        let shell = Arc::clone(&self.shell);
-        write_doc(&shell, &workspace, &item.path, &doc).await?;
-        json_result(&item)
-    }
-
-    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(0))
+    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        let item = current_work_item(ctx)?;
+        Ok(TransitionIndex(match item.kind.as_str() {
+            "file" => 0,
+            "directory" => 1,
+            _ => return Err(NodeError::failed("unknown work item kind")),
+        }))
     }
 
     fn transition_count(&self) -> usize {
-        1
+        2
     }
+}
+
+fn current_work_item(ctx: &Context) -> Result<WorkItem, NodeError> {
+    ctx.var("current_item")
+        .map_err(|error| NodeError::failed(error.to_string()))
 }
 
 struct ReviewFileNode;
@@ -992,7 +855,9 @@ impl LlmNode for ReviewFileNode {
 
     fn user(&self) -> &PromptTemplate {
         static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_FILE_PROMPT))
+        TEMPLATE.get_or_init(|| {
+            PromptTemplate::parse(REVIEW_FILE_PROMPT).expect("valid review prompt")
+        })
     }
 
     fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -1014,8 +879,7 @@ impl Node for ApplyFileNode {
         let verdict = parse_verdict(&input);
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
-        let item = current_item(ctx, "file_queue", "file_cursor")?
-            .ok_or_else(|| NodeError::failed("no current file"))?;
+        let mut item = current_work_item(ctx)?;
         tracing::info!(
             file = %item.path,
             passed = verdict.passed,
@@ -1024,95 +888,37 @@ impl Node for ApplyFileNode {
         );
 
         if verdict.passed {
-            ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
-            let cursor = get_cursor(ctx, "file_cursor")?;
-            set_cursor(ctx, "file_cursor", cursor + 1)?;
-            ctx.set_var("apply_phase", "next")?;
-            return Ok(json!({"phase":"select"}));
+            ds_ok(&shell, &workspace, format!("add --file {}", q(&item.path))).await?;
+            clear_feedback(ctx, &item.path)?;
+            return Ok(json!({"next":"select"}));
         }
 
-        let mut failed_item = item;
-        failed_item.feedback = if verdict.feedback.is_empty() {
+        item.feedback = if verdict.feedback.is_empty() {
             input.to_string()
         } else {
             verdict.feedback.clone()
         };
-        update_current_item(ctx, "file_queue", "file_cursor", failed_item.clone())?;
-        let status = ds(&shell, &workspace, "status".to_owned()).await?.stdout;
-        let signature = format!(
-            "file:{}:{}:{}",
-            failed_item.path, failed_item.feedback, status
-        );
+        ctx.set_var("current_item", item.clone())?;
+        let status = ds_ok(&shell, &workspace, "status --porcelain".to_owned()).await?;
+        let signature = format!("file:{}:{}:{}", item.path, item.feedback, status);
         if no_progress(ctx, signature)? {
-            ctx.set_var("apply_phase", "failed")?;
-            return json_result(&failed_item);
+            return Ok(json!({"failed":true}));
         }
-        ctx.set_var("apply_phase", "retry")?;
-        json_result(&failed_item)
+        json_result(&item)
     }
 
-    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        let phase = ctx.var::<String>("apply_phase").unwrap_or_default();
-        Ok(TransitionIndex(match phase.as_str() {
-            "retry" => 0,
-            "next" => 1,
-            _ => 2,
-        }))
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            match output.get("next").and_then(Value::as_str) {
+                Some("select") => 0,
+                _ if output.get("failed").and_then(Value::as_bool) == Some(true) => 2,
+                _ => 1,
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
         3
-    }
-}
-
-struct SummaryDirNode;
-
-impl LlmNode for SummaryDirNode {
-    fn system(&self) -> &PromptTemplate {
-        static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
-    }
-
-    fn user(&self) -> &PromptTemplate {
-        static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(SUMMARY_DIR_PROMPT))
-    }
-
-    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(0))
-    }
-
-    fn transition_count(&self) -> usize {
-        1
-    }
-}
-
-struct RecordDirNode {
-    shell: Arc<dyn Shell>,
-}
-
-#[async_trait]
-impl Node for RecordDirNode {
-    async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        let item = current_item(ctx, "dir_queue", "dir_cursor")?
-            .ok_or_else(|| NodeError::failed("no current directory"))?;
-        let doc = input
-            .get("design")
-            .and_then(Value::as_str)
-            .ok_or_else(|| NodeError::failed("summarize_file output is missing design"))?
-            .to_owned();
-        let workspace = workspace(ctx)?;
-        let shell = Arc::clone(&self.shell);
-        write_doc(&shell, &workspace, &item.path, &doc).await?;
-        json_result(&item)
-    }
-
-    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(0))
-    }
-
-    fn transition_count(&self) -> usize {
-        1
     }
 }
 
@@ -1126,7 +932,9 @@ impl LlmNode for ReviewDirNode {
 
     fn user(&self) -> &PromptTemplate {
         static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_DIR_PROMPT))
+        TEMPLATE.get_or_init(|| {
+            PromptTemplate::parse(REVIEW_DIR_PROMPT).expect("valid review prompt")
+        })
     }
 
     fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -1148,8 +956,7 @@ impl Node for ApplyDirNode {
         let verdict = parse_verdict(&input);
         let workspace = workspace(ctx)?;
         let shell = Arc::clone(&self.shell);
-        let item = current_item(ctx, "dir_queue", "dir_cursor")?
-            .ok_or_else(|| NodeError::failed("no current directory"))?;
+        let mut item = current_work_item(ctx)?;
         tracing::info!(
             directory = %item.path,
             passed = verdict.passed,
@@ -1158,40 +965,33 @@ impl Node for ApplyDirNode {
         );
 
         if verdict.passed {
-            ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
-            let cursor = get_cursor(ctx, "dir_cursor")?;
-            set_cursor(ctx, "dir_cursor", cursor + 1)?;
-            ctx.set_var("apply_dir_phase", "next")?;
-            return Ok(json!({"phase":"select"}));
+            ds_ok(&shell, &workspace, format!("add --directory {}", q(&item.path))).await?;
+            clear_feedback(ctx, &item.path)?;
+            return Ok(json!({"next":"select"}));
         }
 
-        let mut failed_item = item;
-        failed_item.feedback = if verdict.feedback.is_empty() {
+        item.feedback = if verdict.feedback.is_empty() {
             input.to_string()
         } else {
             verdict.feedback.clone()
         };
-        update_current_item(ctx, "dir_queue", "dir_cursor", failed_item.clone())?;
-        let status = ds(&shell, &workspace, "status".to_owned()).await?.stdout;
-        let signature = format!(
-            "dir:{}:{}:{}",
-            failed_item.path, failed_item.feedback, status
-        );
+        ctx.set_var("current_item", item.clone())?;
+        let status = ds_ok(&shell, &workspace, "status --porcelain".to_owned()).await?;
+        let signature = format!("dir:{}:{}:{}", item.path, item.feedback, status);
         if no_progress(ctx, signature)? {
-            ctx.set_var("apply_dir_phase", "failed")?;
-            return json_result(&failed_item);
+            return Ok(json!({"failed":true}));
         }
-        ctx.set_var("apply_dir_phase", "retry")?;
-        json_result(&failed_item)
+        json_result(&item)
     }
 
-    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        let phase = ctx.var::<String>("apply_dir_phase").unwrap_or_default();
-        Ok(TransitionIndex(match phase.as_str() {
-            "retry" => 0,
-            "next" => 1,
-            _ => 2,
-        }))
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            match output.get("next").and_then(Value::as_str) {
+                Some("select") => 0,
+                _ if output.get("failed").and_then(Value::as_bool) == Some(true) => 2,
+                _ => 1,
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
@@ -1212,12 +1012,18 @@ impl LlmNode for ReviewAllNode {
         TEMPLATE.get_or_init(|| PromptTemplate::literal(REVIEW_ALL_PROMPT))
     }
 
-    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        Ok(TransitionIndex(0))
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            if output.get("passed").and_then(Value::as_bool) == Some(true) {
+                0
+            } else {
+                1
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
-        1
+        2
     }
 }
 
@@ -1229,69 +1035,56 @@ struct ApplyAllNode {
 impl Node for ApplyAllNode {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let verdict = parse_verdict(&input);
-        if verdict.passed {
-            ctx.set_var("apply_all_phase", "verify")?;
-            return Ok(json!({"phase":"verify"}));
-        }
-
-        let status = {
-            let workspace = workspace(ctx)?;
-            ds(&self.shell, &workspace, "status".to_owned())
-                .await?
-                .stdout
-        };
-        let signature = format!(
-            "all:{}:{}:{}",
-            input,
-            verdict.feedback,
-            status
-        );
+        let workspace = workspace(ctx)?;
+        let status = ds_ok(&self.shell, &workspace, "status --porcelain".to_owned()).await?;
+        let signature = format!("all:{}:{}:{}", input, verdict.feedback, status);
         if no_progress(ctx, signature)? {
-            ctx.set_var("apply_all_phase", "failed")?;
-            return Ok(input);
+            return Ok(json!({"failed":true}));
         }
 
-        let files = verdict
-            .files
-            .iter()
-            .map(|item| WorkItem {
-                kind: "file".to_owned(),
-                path: item.path.clone(),
-                feedback: item.feedback.clone(),
-            })
-            .collect::<Vec<_>>();
-        let dirs = verdict
-            .directories
-            .iter()
-            .map(|item| WorkItem {
-                kind: "directory".to_owned(),
-                path: item.path.clone(),
-                feedback: item.feedback.clone(),
-            })
-            .collect::<Vec<_>>();
-        if files.is_empty() && dirs.is_empty() {
-            ctx.set_var("apply_all_phase", "failed")?;
-            return Ok(input);
+        let mut feedback = ctx
+            .var::<std::collections::BTreeMap<String, String>>("rework_feedback")
+            .unwrap_or_default();
+        let mut any = false;
+        for item in &verdict.files {
+            ds_ok(
+                &self.shell,
+                &workspace,
+                format!("unstage --file {}", q(&item.path)),
+            )
+            .await?;
+            feedback.insert(item.path.clone(), item.feedback.clone());
+            any = true;
         }
-        ctx.set_var("file_queue", files)?;
-        ctx.set_var("dir_queue", dirs)?;
-        set_cursor(ctx, "file_cursor", 0)?;
-        set_cursor(ctx, "dir_cursor", 0)?;
-        ctx.set_var("apply_all_phase", "select")?;
-        Ok(json!({"phase":"select"}))
+        for item in &verdict.directories {
+            ds_ok(
+                &self.shell,
+                &workspace,
+                format!("unstage --directory {}", q(&item.path)),
+            )
+            .await?;
+            feedback.insert(item.path.clone(), item.feedback.clone());
+            any = true;
+        }
+        if !any {
+            return Ok(json!({"failed":true}));
+        }
+        ctx.set_var("rework_feedback", feedback)?;
+        Ok(json!({"next":"select"}))
     }
 
-    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        let phase = ctx.var::<String>("apply_all_phase").unwrap_or_default();
-        Ok(TransitionIndex(match phase.as_str() {
-            "verify" => 0,
-            "select" => 1,
-            _ => 2,
-        }))
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            if output.get("next").and_then(Value::as_str) == Some("select") {
+                0
+            } else {
+                1
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
-        3
+        2
     }
 }
 
@@ -1304,162 +1097,88 @@ impl Node for VerifyNode {
     async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let workspace = workspace(ctx)?;
         ds_ok(&self.shell, &workspace, "add -A".to_owned()).await?;
-
-        let mut errors = Vec::new();
-        if let Ok(output) = ds(&self.shell, &workspace, "verify".to_owned()).await
-            && output.exit_code != Some(0)
-        {
-            errors.push(output.stderr.trim().to_owned());
-            if errors[0].is_empty() {
-                errors[0] = output.stdout.trim().to_owned();
-            }
-        }
-        let changed_files = ctx.var::<Vec<String>>("changed_files").unwrap_or_default();
-        for path in &changed_files {
-            let name = object_name(path);
-            let shown = ds(&self.shell, &workspace, format!("show {}", q(&name))).await?;
-            if shown.exit_code != Some(0) {
-                errors.push(format!("missing File object for source path: {path}"));
-            }
+        if let Err(error) = verify_worktree(&self.shell, &workspace).await {
+            return Ok(json!({"failed":true, "error": error}));
         }
 
-        if errors.is_empty() {
-            let status = ds(&self.shell, &workspace, "status".to_owned())
-                .await?
-                .stdout;
-            let has_staged = status.contains("Changes to be committed:");
-            let mut commit = String::new();
-            if has_staged {
-                let source = ds_source(&self.shell, &workspace, "status".to_owned()).await?;
-                let short = source
-                    .lines()
-                    .find_map(|line| line.strip_prefix("commit: "))
-                    .map(|value| value.chars().take(12).collect::<String>())
-                    .unwrap_or_default();
-                let git_branch = ctx.var::<String>("git_branch").unwrap_or_default();
-                let message = format!(
-                    "CodeSummary: {git_branch}@{short} ({} files)",
-                    changed_files.len()
-                );
-                let output = ds(
-                    &self.shell,
-                    &workspace,
-                    format!("commit -m {} --author code-summary", q(&message)),
-                )
-                .await?;
-                if output.exit_code != Some(0) {
-                    return Err(NodeError::failed(format!(
-                        "ds commit failed:\n{}",
-                        output.stderr
-                    )));
-                }
-                commit = output
-                    .stdout
-                    .trim()
-                    .strip_prefix("Committed ")
-                    .and_then(|text| text.split_whitespace().next())
-                    .unwrap_or_default()
-                    .to_owned();
-                let branch = ctx.var::<String>("ds_branch").unwrap_or_default();
-                let pushed = ds(
-                    &self.shell,
-                    &workspace,
-                    format!("push --branch {}", q(&branch)),
-                )
-                .await?;
-                if pushed.exit_code != Some(0) {
-                    return Err(NodeError::failed(format!(
-                        "ds push failed:\n{}",
-                        pushed.stderr
-                    )));
-                }
-            }
-            let result = json!({
-                "status": "done",
-                "files": changed_files.len(),
-                "staged": has_staged,
-                "commit": commit,
-            });
-            ctx.set_var("verify_phase", "done")?;
-            return Ok(result);
-        }
-
-        let error_text = errors.join("\n");
         let status = ds(&self.shell, &workspace, "status".to_owned())
             .await?
             .stdout;
-        let signature = format!("verify:{error_text}:{status}");
-        if no_progress(ctx, signature)? {
-            ctx.set_var("verify_phase", "failed")?;
-            return Ok(Value::String(error_text));
+        let has_staged = status.contains("Changes to be committed:");
+        let mut commit = String::new();
+        if has_staged {
+            let source = ds_source(&self.shell, &workspace, "changes".to_owned()).await?;
+            let short = source
+                .lines()
+                .find_map(|line| line.strip_prefix("commit: "))
+                .map(|value| value.chars().take(12).collect::<String>())
+                .unwrap_or_default();
+            let git_branch = ctx.var::<String>("git_branch").unwrap_or_default();
+            let message = format!("CodeSummary: {git_branch}@{short}");
+            let output = ds(
+                &self.shell,
+                &workspace,
+                format!("commit -m {} --author code-summary", q(&message)),
+            )
+            .await?;
+            if output.exit_code != Some(0) {
+                return Err(NodeError::failed(format!(
+                    "ds commit failed:\n{}",
+                    output.stderr
+                )));
+            }
+            commit = output
+                .stdout
+                .trim()
+                .strip_prefix("Committed ")
+                .and_then(|text| text.split_whitespace().next())
+                .unwrap_or_default()
+                .to_owned();
+            let branch = ctx.var::<String>("ds_branch").unwrap_or_default();
+            let pushed = ds(
+                &self.shell,
+                &workspace,
+                format!("push --branch {}", q(&branch)),
+            )
+            .await?;
+            if pushed.exit_code != Some(0) {
+                return Err(NodeError::failed(format!(
+                    "ds push failed:\n{}",
+                    pushed.stderr
+                )));
+            }
         }
-
-        let source_files = ctx.var::<Vec<String>>("source_files").unwrap_or_default();
-        let items = source_files
-            .into_iter()
-            .map(|path| WorkItem {
-                kind: "file".to_owned(),
-                path,
-                feedback: error_text.clone(),
-            })
-            .collect::<Vec<_>>();
-        if items.is_empty() {
-            ctx.set_var("verify_phase", "failed")?;
-            return Ok(Value::String(error_text));
-        }
-        ctx.set_var("file_queue", items)?;
-        set_cursor(ctx, "file_cursor", 0)?;
-        set_cursor(ctx, "dir_cursor", 0)?;
-        ctx.set_var("verify_phase", "select")?;
-        Ok(json!({"phase":"select"}))
+        Ok(json!({"next":"done", "commit": commit, "staged": has_staged}))
     }
 
-    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        let phase = ctx.var::<String>("verify_phase").unwrap_or_default();
-        Ok(TransitionIndex(match phase.as_str() {
-            "done" => 0,
-            "select" => 1,
-            _ => 2,
-        }))
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            if output.get("next").and_then(Value::as_str) == Some("done") {
+                0
+            } else {
+                1
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
-        3
+        2
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers that need the graph tool registry
-// ---------------------------------------------------------------------------
-
-async fn write_doc(
-    shell: &Arc<dyn Shell>,
-    workspace: &str,
-    path: &str,
-    doc: &str,
-) -> Result<(), NodeError> {
-    let marker = format!(
-        "DS_DOC_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default()
-    );
-    let tmp = format!("/tmp/{marker}.md");
-    let script = format!("cat > {} <<'{marker}'\n{}\n{marker}\n", q(&tmp), doc);
-    exec(shell, script).await?;
-    ds_ok(
-        shell,
-        workspace,
-        format!(
-            "edit {} --design-file {}",
-            q(&object_name(path)),
-            q(&tmp)
-        ),
-    )
-    .await?;
-    let _ = exec(shell, format!("rm -f {}", q(&tmp))).await;
-    Ok(())
+async fn verify_worktree(shell: &Arc<dyn Shell>, workspace: &str) -> Result<(), String> {
+    let output = ds(shell, workspace, "verify".to_owned())
+        .await
+        .map_err(|error| error.to_string())?;
+    if output.exit_code == Some(0) {
+        return Ok(());
+    }
+    let message = if output.stderr.trim().is_empty() {
+        output.stdout.trim().to_owned()
+    } else {
+        output.stderr.trim().to_owned()
+    };
+    Err(message)
 }
 
 #[cfg(test)]
@@ -1486,27 +1205,6 @@ mod tests {
                 stderr: String::new(),
             })
         }
-    }
-
-    #[test]
-    fn detects_source_extensions_case_insensitively() {
-        assert!(is_source("src/main.RS"));
-        assert!(is_source("web/app.tsx"));
-        assert!(!is_source("README.md"));
-        assert!(!is_source("Makefile"));
-    }
-
-    #[test]
-    fn parses_source_changes() {
-        let changes =
-            parse_changes("A\tsrc/a.rs\nM\tsrc/b.rs\nD\tsrc/c.rs\nR\tsrc/d.rs\tsrc/e.rs\n");
-        assert_eq!(changes.len(), 4);
-        assert_eq!(changes[0].status, 'A');
-        assert_eq!(changes[0].path, "src/a.rs");
-        assert_eq!(changes[1].status, 'M');
-        assert_eq!(changes[3].status, 'R');
-        assert_eq!(changes[3].old_path.as_deref(), Some("src/d.rs"));
-        assert_eq!(changes[3].path, "src/e.rs");
     }
 
     #[test]
@@ -1539,36 +1237,16 @@ mod tests {
     }
 
     #[test]
-    fn selects_files_then_directories_then_review_all() {
-        let mut ctx = Context::new();
-        ctx.set_var("file_queue", vec![WorkItem::file("src/a.rs")])
-            .unwrap();
-        ctx.set_var("file_cursor", 0usize).unwrap();
-        let item = select_next_item(&ctx).unwrap();
-        assert_eq!(item["kind"], "file");
-        assert_eq!(item["path"], "src/a.rs");
-
-        ctx.set_var("file_cursor", 1usize).unwrap();
-        ctx.set_var("dir_queue", vec![WorkItem::directory("src")])
-            .unwrap();
-        ctx.set_var("dir_cursor", 0usize).unwrap();
-        let item = select_next_item(&ctx).unwrap();
-        assert_eq!(item["kind"], "directory");
-        assert_eq!(item["path"], "src");
-
-        ctx.set_var("dir_cursor", 1usize).unwrap();
-        let item = select_next_item(&ctx).unwrap();
-        assert_eq!(item["phase"], "review_all");
-    }
-
-    #[test]
-    fn derives_expected_directories() {
-        let dirs = expected_dirs(&[
-            "src/a.rs".to_owned(),
-            "src/nested/b.rs".to_owned(),
-            "README.md".to_owned(),
-        ]);
-        assert_eq!(dirs, vec!["src".to_owned(), "src/nested".to_owned()]);
+    fn parses_porcelain_status() {
+        let entries = parse_status(
+            "M\tfile\tsrc/a.rs\tfiles/src/a.rs\nA\tdirectory\tsrc\tfiles/src\n",
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].status, 'M');
+        assert_eq!(entries[0].kind, "file");
+        assert_eq!(entries[0].source, "src/a.rs");
+        assert_eq!(entries[1].status, 'A');
+        assert_eq!(entries[1].kind, "directory");
     }
 
     #[test]
