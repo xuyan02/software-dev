@@ -1,7 +1,7 @@
 use crate::{Context, VariableError, VariablePath};
 use serde_json::Value;
 
-/// A prompt template with `{{name}}` / `{{nodes.id.output.field}}`
+/// A prompt template with `{{name}}` / `{{name.field}}`
 /// substitutions.
 ///
 /// Supported substitutions are variable lookup only. There are no expressions,
@@ -116,7 +116,7 @@ pub enum TemplateError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, NodeId, VariableError};
+    use crate::{Context, VariableError};
     use serde_json::json;
 
     fn context() -> Context {
@@ -125,16 +125,14 @@ mod tests {
         ctx.set_var("meta", json!({"priority": 3, "tags": ["a", "b"]}))
             .unwrap();
         ctx.set_var("empty", serde_json::Value::Null).unwrap();
-        ctx.set_current_node(Some(NodeId::new("load")));
-        ctx.set_output(json!({"requirement": "auth"})).unwrap();
+        ctx.set_var("requirement", json!({"summary": "auth"})).unwrap();
         ctx
     }
 
     #[test]
-    fn renders_vars_and_node_outputs() {
+    fn renders_vars_and_nested_paths() {
         let template =
-            PromptTemplate::parse("任务：{{ task }}\n需求：{{nodes.load.output.requirement}}")
-                .unwrap();
+            PromptTemplate::parse("任务：{{ task }}\n需求：{{requirement.summary}}").unwrap();
 
         assert_eq!(
             template.render(&context()).unwrap(),

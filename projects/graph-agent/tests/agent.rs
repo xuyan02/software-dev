@@ -10,8 +10,7 @@ struct LoadNode;
 
 #[async_trait]
 impl Node for LoadNode {
-    async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        ctx.set_output("loaded")?;
+    async fn run(&self, _input: Value, _ctx: &mut Context) -> Result<Value, NodeError> {
         Ok(Value::String("loaded".to_owned()))
     }
 
@@ -76,10 +75,7 @@ async fn agent_run_returns_final_context() {
 
     let output = agent.run(context, json!(null)).await.expect("run");
     assert_eq!(output.exit().as_str(), "done");
-    assert_eq!(
-        output.context.node_output::<String>("load").unwrap(),
-        "loaded"
-    );
+    assert_eq!(output.output, json!("loaded"));
 }
 
 #[tokio::test]
@@ -89,5 +85,5 @@ async fn agent_run_mut_uses_callers_context() {
 
     let output = agent.run_mut(&mut context, json!(null)).await.expect("run");
     assert_eq!(output.exit.as_str(), "done");
-    assert_eq!(context.node_output::<String>("load").unwrap(), "loaded");
+    assert_eq!(output.output, json!("loaded"));
 }

@@ -18,10 +18,9 @@
 //! output format, records assistant tool calls and tool results, records the
 //! final reply, and parses that reply as JSON to produce the node output.
 //!
-//! Variables are addressed as `<name>` / `<name>.<field>` or
-//! `nodes.<id>.output.<field>`. Local variables and external
-//! [`VariableSource`] implementations are all resolved through [`Context`].
-//! Prompt templates use the same paths inside `{{...}}`.
+//! Variables are addressed as `<name>` / `<name>.<field>`. Local variables and
+//! external [`VariableSource`] implementations are all resolved through
+//! [`Context`]. Prompt templates use the same paths inside `{{...}}`.
 
 mod agent;
 mod context;

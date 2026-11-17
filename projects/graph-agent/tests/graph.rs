@@ -10,8 +10,7 @@ struct FixedNode {
 
 #[async_trait]
 impl Node for FixedNode {
-    async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
-        ctx.set_output(self.output)?;
+    async fn run(&self, _input: Value, _ctx: &mut Context) -> Result<Value, NodeError> {
         Ok(Value::String(self.output.to_owned()))
     }
 
@@ -76,7 +75,6 @@ async fn builds_and_runs_complete_graph() {
 
     assert_eq!(output.exit.as_str(), "done");
     assert_eq!(output.output, json!("loaded"));
-    assert_eq!(ctx.node_output::<String>("load").unwrap(), "loaded");
 }
 
 #[tokio::test]

@@ -6,7 +6,7 @@ use crate::variable::{
 };
 use crate::{LlmConfig, LlmRuntime};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -52,13 +52,11 @@ impl History {
 /// Variables are always resolved through the context. A context can aggregate:
 ///
 /// - local variables set with [`Context::set_var`];
-/// - node outputs exposed under the reserved `nodes` variable;
 /// - external [`VariableSource`] implementations registered with
 ///   [`Context::register_source`].
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Context {
     vars: BTreeMap<String, Variable>,
-    outputs: BTreeMap<NodeId, Variable>,
     #[serde(skip)]
     llm_configs: BTreeMap<NodeId, LlmConfig>,
     #[serde(skip)]
@@ -79,7 +77,6 @@ impl fmt::Debug for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Context")
             .field("vars", &self.vars)
-            .field("outputs", &self.outputs)
             .field("llm_configs", &self.llm_configs)
             .field("llm_runtime", &self.llm_runtime.is_some())
             .field("tool_registry", &self.tool_registry.is_some())
@@ -91,8 +88,6 @@ impl fmt::Debug for Context {
 }
 
 impl Context {
-    pub const NODES_VAR: &'static str = "nodes";
-
     pub fn new() -> Self {
         Self::default()
     }
@@ -105,9 +100,6 @@ impl Context {
         let name = name.into();
         if !is_identifier(&name) {
             return Err(ContextError::InvalidVarName(name));
-        }
-        if name == Self::NODES_VAR {
-            return Err(ContextError::ReservedVarName(name));
         }
 
         let value = serde_json::to_value(value)?;
@@ -124,9 +116,6 @@ impl Context {
         let name = name.into();
         if !is_identifier(&name) {
             return Err(ContextError::InvalidVarName(name));
-        }
-        if name == Self::NODES_VAR {
-            return Err(ContextError::ReservedVarName(name));
         }
 
         self.vars
@@ -214,10 +203,6 @@ impl Context {
             .split_first()
             .ok_or_else(|| VariableError::InvalidPath(path.to_string()))?;
 
-        if root == Self::NODES_VAR {
-            return traverse(&self.node_outputs_variable(), rest, &path.to_string());
-        }
-
         if let Some(variable) = self.vars.get(root) {
             return traverse(variable, rest, &path.to_string());
         }
@@ -242,62 +227,6 @@ impl Context {
         Ok(self.resolve_variable(path)?.value().clone())
     }
 
-    /// Store the output of the node currently being executed.
-    pub fn set_output<T: Serialize>(&mut self, value: T) -> Result<(), ContextError> {
-        let node = self
-            .current_node
-            .clone()
-            .ok_or(ContextError::NoCurrentNode)?;
-        let value = serde_json::to_value(value)?;
-        self.outputs
-            .insert(node.clone(), Variable::new(node.to_string(), value)?);
-        Ok(())
-    }
-
-    /// Read the output of the node currently being executed.
-    pub fn current_output<T: DeserializeOwned>(&self) -> Result<T, ContextError> {
-        let node = self
-            .current_node
-            .as_ref()
-            .ok_or(ContextError::NoCurrentNode)?;
-        let variable = self
-            .outputs
-            .get(node)
-            .ok_or_else(|| ContextError::MissingOutput(node.to_string()))?;
-        Ok(serde_json::from_value(variable.value().clone())?)
-    }
-
-    pub fn node_output<T: DeserializeOwned>(&self, node: &str) -> Result<T, ContextError> {
-        let variable = self
-            .outputs
-            .get(node)
-            .ok_or_else(|| ContextError::MissingOutput(node.to_owned()))?;
-        Ok(serde_json::from_value(variable.value().clone())?)
-    }
-
-    fn node_outputs_variable(&self) -> Variable {
-        let mut fields = BTreeMap::new();
-        let mut values = Map::new();
-
-        for (id, output) in &self.outputs {
-            fields.insert(
-                id.as_str().to_owned(),
-                VariableType::Object(BTreeMap::from([("output".to_owned(), output.ty().clone())])),
-            );
-
-            let mut wrapper = Map::new();
-            wrapper.insert("output".to_owned(), output.value().clone());
-            values.insert(id.as_str().to_owned(), Value::Object(wrapper));
-        }
-
-        Variable::typed(
-            Self::NODES_VAR,
-            VariableType::Object(fields),
-            Value::Object(values),
-        )
-        .expect("synthetic nodes variable is valid")
-    }
-
     pub(crate) fn set_current_node(&mut self, node: Option<NodeId>) {
         self.current_node = node;
     }
@@ -307,9 +236,6 @@ impl Context {
 pub enum ContextError {
     #[error("missing variable: {0}")]
     MissingVar(String),
-
-    #[error("missing output for node: {0}")]
-    MissingOutput(String),
 
     #[error("missing LLM config for node: {0}")]
     MissingLlmConfig(NodeId),
@@ -325,9 +251,6 @@ pub enum ContextError {
 
     #[error("invalid variable name: {0}")]
     InvalidVarName(String),
-
-    #[error("variable name is reserved: {0}")]
-    ReservedVarName(String),
 
     #[error(transparent)]
     Variable(#[from] VariableError),
@@ -368,28 +291,11 @@ mod tests {
     }
 
     #[test]
-    fn resolves_current_node_output_and_nodes_path() {
-        let mut ctx = Context::new();
-        ctx.set_current_node(Some(NodeId::new("load")));
-        ctx.set_output(json!({"requirement": "auth"})).unwrap();
-
-        let output: Value = ctx.current_output().unwrap();
-        assert_eq!(output["requirement"], "auth");
-
-        let requirement: String = ctx.resolve("nodes.load.output.requirement").unwrap();
-        assert_eq!(requirement, "auth");
-    }
-
-    #[test]
     fn rejects_invalid_and_reserved_variable_names() {
         let mut ctx = Context::new();
         assert!(matches!(
             ctx.set_var("bad-name", 1),
             Err(ContextError::InvalidVarName(_))
-        ));
-        assert!(matches!(
-            ctx.set_var("nodes", 1),
-            Err(ContextError::ReservedVarName(_))
         ));
     }
 

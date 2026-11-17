@@ -109,8 +109,7 @@ impl VariableSource for MapSource {
     }
 }
 
-/// A parsed variable path such as `task.title` or
-/// `nodes.load.output.requirement`.
+/// A parsed variable path such as `task.title` or `requirements.users.name`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct VariablePath {
     segments: Vec<String>,
@@ -290,8 +289,8 @@ mod tests {
 
     #[test]
     fn parses_variable_paths() {
-        let path = VariablePath::parse("nodes.load.output.requirement").unwrap();
-        assert_eq!(path.segments(), ["nodes", "load", "output", "requirement"]);
+        let path = VariablePath::parse("requirements.users.name").unwrap();
+        assert_eq!(path.segments(), ["requirements", "users", "name"]);
 
         assert!(VariablePath::parse("").is_err());
         assert!(VariablePath::parse("task..title").is_err());

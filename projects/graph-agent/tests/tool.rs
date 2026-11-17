@@ -132,8 +132,7 @@ impl Node for CallTool {
             )
             .await
             .map_err(|error| NodeError::failed(error.to_string()))?;
-        context.set_output(output)?;
-        Ok(serde_json::Value::Null)
+        serde_json::to_value(output).map_err(|error| NodeError::failed(error.to_string()))
     }
 
     fn to(&self, _output: &Value, _context: &Context) -> Result<TransitionIndex, NodeError> {
@@ -161,17 +160,11 @@ async fn deterministic_nodes_call_the_same_registry() {
         ..ToolContext::default()
     });
 
-    assert_eq!(
-        graph
-            .run(&mut context, serde_json::json!(null))
-            .await
-            .unwrap()
-            .exit
-            .as_str(),
-        "done"
-    );
-    assert_eq!(
-        context.node_output::<ToolOutput>("call").unwrap(),
-        ToolOutput::Text("from-node".to_owned())
-    );
+    let output = graph
+        .run(&mut context, serde_json::json!(null))
+        .await
+        .unwrap();
+    assert_eq!(output.exit.as_str(), "done");
+    let result: ToolOutput = serde_json::from_value(output.output).unwrap();
+    assert_eq!(result, ToolOutput::Text("from-node".to_owned()));
 }
