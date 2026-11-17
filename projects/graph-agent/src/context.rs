@@ -254,6 +254,13 @@ impl Context {
         Ok(())
     }
 
+    /// Whether the current node already stored an explicit output.
+    pub fn has_current_output(&self) -> bool {
+        self.current_node
+            .as_ref()
+            .is_some_and(|node| self.outputs.contains_key(node))
+    }
+
     /// Read the output of the node currently being executed.
     pub fn current_output<T: DeserializeOwned>(&self) -> Result<T, ContextError> {
         let node = self

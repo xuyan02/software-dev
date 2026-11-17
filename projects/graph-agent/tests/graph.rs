@@ -304,3 +304,42 @@ fn rejects_unknown_edge_target() {
         GraphError::UnknownEdgeTo(ref node) if node.as_str() == "missing"
     ));
 }
+
+struct OutputBranch;
+
+#[async_trait]
+impl Node for OutputBranch {
+    async fn run(&self, _input: Value, _ctx: &mut Context) -> Result<Value, NodeError> {
+        Ok(json!({ "go": true }))
+    }
+
+    fn to(&self, ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        let output: Value = ctx
+            .current_output()
+            .map_err(|error| NodeError::failed(error.to_string()))?;
+        Ok(TransitionIndex(if output["go"] == true { 0 } else { 1 }))
+    }
+
+    fn transition_count(&self) -> usize {
+        2
+    }
+}
+
+#[tokio::test]
+async fn stores_node_output_before_the_transition() {
+    let graph = Graph::builder("output-branch")
+        .entry("branch")
+        .exit("left")
+        .exit("right")
+        .node("branch", OutputBranch)
+        .edge("branch", 0, "left")
+        .edge("branch", 1, "right")
+        .build()
+        .expect("valid graph");
+    let mut ctx = Context::new();
+
+    let output = graph.run(&mut ctx, json!(null)).await.expect("run");
+    assert_eq!(output.exit.as_str(), "left");
+    assert_eq!(ctx.node_output::<Value>("branch").unwrap(), json!({ "go": true }));
+    assert!(ctx.resolve::<bool>("nodes.branch.output.go").unwrap());
+}
