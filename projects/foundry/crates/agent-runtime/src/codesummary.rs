@@ -30,13 +30,13 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - 只给本仓库设计空间内的对象写关系；外部库/标准库类型不建模。
 - 设计文档是纯文本，写“这里放什么、不放什么”的规则，不要枚举子对象清单。
 - ds 命令：ds show <qname>、ds ls --namespaces、ds source cat <path>、ds create/edit/rm、ds dep add/rm、ds status、ds diff。
-- File/Directory 对象的 qname 是 files/<源路径>；其他对象挂在它下面。
+- File/Directory 的 qname 是 files/<源路径>。类/接口/函数/mixin 的 qname 走 namespaces/ 下的命名空间，不要用 File qname 做前缀；用 --file 关联源码文件。
 - 关系目标可以暂时不存在，最后 ds verify 会解析。
 
 文件总结工作项：
 1. 用 ds source cat <path> 读源码。
-2. 用 ds show files/<path> 看 File 对象、文档和 children。
-3. 更新/删除该文件下已有的 namespace、class、interface、method、function、part、mixin。
+2. 用 ds show files/<path> 看 File 对象和文档；类型通常不挂在 File 下。
+3. 更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；类型挂在 namespace 下，不要建在 File 下面。
 4. 创建缺失的元素，写 source span、设计文档、superclass/interfaces/mixins/overrides 和依赖。
 5. 按用户消息要求的 JSON 格式返回该 File 的设计文档。
 

@@ -22,8 +22,8 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 | kind | 是什么 | qname 形式 | 源码锚点 | 常见子对象 |
 |---|---|---|---|---|
 | Directory | 源码目录 | `files/<目录路径>` | 目录路径 | 子目录、File |
-| File | 源码文件 | `files/<文件路径>` | 文件路径 | Namespace、Class、Interface、Function、Part |
-| Namespace | 跨文件/文件的逻辑命名空间，不等于物理目录 | `namespaces/<...>`，或某个 File/Directory/Namespace 下的 `<parent>/<name>` | 可选的 `path:start-end` | Namespace、Class、Interface、Function、Mixin |
+| File | 源码文件 | `files/<文件路径>` | 文件路径 | 通常无；文件中的类型挂在 Namespace 下，通过 `--file` 关联 |
+| Namespace | 逻辑命名空间，不等于物理目录 | `namespaces/<...>`（父是 `namespaces` 或另一个 Namespace） | 可选的 `path:start-end` | Namespace、Class、Interface、Function、Mixin |
 | Class | 类、结构体、trait 等类型声明 | 顶层：`<namespace>/<name>`；嵌套：`<parent>/<name>` | `path:start-end` | Method、内部类型 |
 | Interface | 接口、协议、抽象契约 | 同 Class | `path:start-end` | Method |
 | Method | 类型内部的可调用成员 | `<parent>/<name>#<签名哈希>` | `path:start-end` | 无 |
@@ -49,7 +49,7 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 
 ### 2.2 File
 
-表示一个源码文件。子对象是这个文件里声明的 Namespace、Class、Interface、Function、Part 等。File 的设计文档是**文件职责与边界**，不是成员清单。
+表示一个源码文件。File 通常不作为类型的 parent；文件中声明的顶层 Class/Interface/Function/Mixin 挂在 Namespace 下，并通过 `--file files/<路径>` 关联到这个文件。File 的设计文档是**文件职责与边界**，不是成员清单。
 
 写什么：
 
@@ -72,7 +72,7 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 - 与相邻命名空间的分工；
 - 对外稳定性和兼容性要求。
 
-顶层命名空间通常挂在 `namespaces/` 下；只属于单个文件的命名空间可以挂在对应 File 下。
+命名空间统一挂在 `namespaces/` 下；即使只被一个文件使用，也用独立 Namespace，不要把 File 当成 namespace，避免出现 `files/<path>/Class` 这种带文件前缀的类型 qname。
 
 ### 2.4 Class
 
@@ -152,9 +152,10 @@ Method 和 Part 的 qname 后缀由 `ds` 计算，创建后用 `ds ls` 或 `ds s
 
 ### 3.2 parent 选择
 
-- Directory / File / Namespace：`--parent <qname>`，必须是已存在的 Directory、File 或 Namespace；
+- Directory / File：`--parent <Directory qname>`（或 `files`）；
+- Namespace：`--parent namespaces` 或另一个 Namespace，不要把 File/Directory 当成 namespace；
 - 顶层 Class / Interface / Function / Mixin：`--namespace <namespace qname>`（必填），可选 `--file <file qname>` 和 `--module <module qname>` 记录文件/模块归属；
-- 嵌套 Class / Interface / Mixin：`--parent <parent qname>`；
+- 嵌套 Class / Interface / Mixin：`--parent <class/interface/mixin qname>`，parent 不是 File；
 - Method：`--parent <class/interface/mixin qname>`，并给 `--signature`；
 - Part：`--parent <qname>`，并给 `--source path:start-end`。
 
