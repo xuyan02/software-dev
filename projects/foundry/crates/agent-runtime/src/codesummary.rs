@@ -226,6 +226,7 @@ fn build_graph(shell: Arc<dyn Shell>) -> Result<Graph, RunError> {
                 shell: Arc::clone(&shell),
             },
         )
+        .node("select_item", SelectItemNode)
         .llm_node("summarize_file", SummaryFileNode)
         .node(
             "record_file",
@@ -262,31 +263,28 @@ fn build_graph(shell: Arc<dyn Shell>) -> Result<Graph, RunError> {
             },
         )
         .node("verify", VerifyNode { shell })
-        .edge("prepare", 0, "summarize_file")
-        .edge("prepare", 1, "summarize_dir")
-        .edge("prepare", 2, "review_all")
+        .edge("prepare", 0, "select_item")
+        .edge("select_item", 0, "summarize_file")
+        .edge("select_item", 1, "summarize_dir")
+        .edge("select_item", 2, "review_all")
         .edge("summarize_file", 0, "record_file")
         .edge("record_file", 0, "review_file")
         .edge("review_file", 0, "apply_file")
         .edge("apply_file", 0, "summarize_file")
-        .edge("apply_file", 1, "summarize_file")
-        .edge("apply_file", 2, "summarize_dir")
-        .edge("apply_file", 3, "review_all")
-        .edge("apply_file", 4, "failed")
+        .edge("apply_file", 1, "select_item")
+        .edge("apply_file", 2, "failed")
         .edge("summarize_dir", 0, "record_dir")
         .edge("record_dir", 0, "review_dir")
         .edge("review_dir", 0, "apply_dir")
         .edge("apply_dir", 0, "summarize_dir")
-        .edge("apply_dir", 1, "summarize_dir")
-        .edge("apply_dir", 2, "review_all")
-        .edge("apply_dir", 3, "failed")
+        .edge("apply_dir", 1, "select_item")
+        .edge("apply_dir", 2, "failed")
         .edge("review_all", 0, "apply_all")
         .edge("apply_all", 0, "verify")
-        .edge("apply_all", 1, "summarize_file")
-        .edge("apply_all", 2, "summarize_dir")
-        .edge("apply_all", 3, "failed")
+        .edge("apply_all", 1, "select_item")
+        .edge("apply_all", 2, "failed")
         .edge("verify", 0, "done")
-        .edge("verify", 1, "summarize_file")
+        .edge("verify", 1, "select_item")
         .edge("verify", 2, "failed");
     builder
         .build()
@@ -766,23 +764,57 @@ impl Node for PrepareNode {
         ctx.set_var("initial_file_count", file_items.len())?;
         ctx.set_var("initial_dir_count", dir_items.len())?;
 
-        if let Some(item) = file_items.first() {
-            return json_result(item);
-        }
-        if let Some(item) = dir_items.first() {
-            return json_result(item);
-        }
-        Ok(json!({"phase":"review_all"}))
+        Ok(json!({"phase":"select"}))
     }
 
-    fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
-        if !get_items(ctx, "file_queue")?.is_empty() {
-            Ok(TransitionIndex(0))
-        } else if !get_items(ctx, "dir_queue")?.is_empty() {
-            Ok(TransitionIndex(1))
-        } else {
-            Ok(TransitionIndex(2))
+    fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(0))
+    }
+
+    fn transition_count(&self) -> usize {
+        1
+    }
+}
+
+/// Pick the next pending item. Cursors always point at the current item;
+/// apply nodes advance them after a successful review.
+struct SelectItemNode;
+
+fn select_next_item(ctx: &Context) -> Result<Value, NodeError> {
+    let files = get_items(ctx, "file_queue")?;
+    let cursor = get_cursor(ctx, "file_cursor")?;
+    if let Some(item) = files.get(cursor) {
+        return json_result(item);
+    }
+    let dirs = get_items(ctx, "dir_queue")?;
+    let cursor = get_cursor(ctx, "dir_cursor")?;
+    if let Some(item) = dirs.get(cursor) {
+        return json_result(item);
+    }
+    Ok(json!({"phase":"review_all"}))
+}
+
+#[async_trait]
+impl Node for SelectItemNode {
+    async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
+        let item = select_next_item(ctx)?;
+        if let (Some(kind), Some(path)) = (
+            item.get("kind").and_then(Value::as_str),
+            item.get("path").and_then(Value::as_str),
+        ) {
+            tracing::info!(kind, path, "selected work item");
         }
+        Ok(item)
+    }
+
+    fn to(&self, output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
+        Ok(TransitionIndex(
+            match output.get("kind").and_then(Value::as_str) {
+                Some("file") => 0,
+                Some("directory") => 1,
+                _ => 2,
+            },
+        ))
     }
 
     fn transition_count(&self) -> usize {
@@ -995,20 +1027,8 @@ impl Node for ApplyFileNode {
             ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
             let cursor = get_cursor(ctx, "file_cursor")?;
             set_cursor(ctx, "file_cursor", cursor + 1)?;
-            let files = get_items(ctx, "file_queue")?;
-            let next_file = files.get(cursor + 1).cloned();
-            if let Some(next) = next_file {
-                ctx.set_var("apply_phase", "next")?;
-                return json_result(&next);
-            }
-            let dirs = get_items(ctx, "dir_queue")?;
-            if let Some(dir) = dirs.first() {
-                set_cursor(ctx, "dir_cursor", 0)?;
-                ctx.set_var("apply_phase", "dirs")?;
-                return json_result(dir);
-            }
-            ctx.set_var("apply_phase", "review_all")?;
-            return Ok(json!({"phase":"review_all"}));
+            ctx.set_var("apply_phase", "next")?;
+            return Ok(json!({"phase":"select"}));
         }
 
         let mut failed_item = item;
@@ -1036,14 +1056,12 @@ impl Node for ApplyFileNode {
         Ok(TransitionIndex(match phase.as_str() {
             "retry" => 0,
             "next" => 1,
-            "dirs" => 2,
-            "review_all" => 3,
-            _ => 4,
+            _ => 2,
         }))
     }
 
     fn transition_count(&self) -> usize {
-        5
+        3
     }
 }
 
@@ -1143,13 +1161,8 @@ impl Node for ApplyDirNode {
             ds_ok(&shell, &workspace, "add -A".to_owned()).await?;
             let cursor = get_cursor(ctx, "dir_cursor")?;
             set_cursor(ctx, "dir_cursor", cursor + 1)?;
-            let dirs = get_items(ctx, "dir_queue")?;
-            if let Some(next) = dirs.get(cursor + 1).cloned() {
-                ctx.set_var("apply_dir_phase", "next")?;
-                return json_result(&next);
-            }
-            ctx.set_var("apply_dir_phase", "review_all")?;
-            return Ok(json!({"phase":"review_all"}));
+            ctx.set_var("apply_dir_phase", "next")?;
+            return Ok(json!({"phase":"select"}));
         }
 
         let mut failed_item = item;
@@ -1177,13 +1190,12 @@ impl Node for ApplyDirNode {
         Ok(TransitionIndex(match phase.as_str() {
             "retry" => 0,
             "next" => 1,
-            "review_all" => 2,
-            _ => 3,
+            _ => 2,
         }))
     }
 
     fn transition_count(&self) -> usize {
-        4
+        3
     }
 }
 
@@ -1257,34 +1269,29 @@ impl Node for ApplyAllNode {
                 feedback: item.feedback.clone(),
             })
             .collect::<Vec<_>>();
-        ctx.set_var("file_queue", files.clone())?;
-        ctx.set_var("dir_queue", dirs.clone())?;
+        if files.is_empty() && dirs.is_empty() {
+            ctx.set_var("apply_all_phase", "failed")?;
+            return Ok(input);
+        }
+        ctx.set_var("file_queue", files)?;
+        ctx.set_var("dir_queue", dirs)?;
         set_cursor(ctx, "file_cursor", 0)?;
         set_cursor(ctx, "dir_cursor", 0)?;
-        if let Some(item) = files.first() {
-            ctx.set_var("apply_all_phase", "files")?;
-            return json_result(item);
-        }
-        if let Some(item) = dirs.first() {
-            ctx.set_var("apply_all_phase", "dirs")?;
-            return json_result(item);
-        }
-        ctx.set_var("apply_all_phase", "failed")?;
-        Ok(input)
+        ctx.set_var("apply_all_phase", "select")?;
+        Ok(json!({"phase":"select"}))
     }
 
     fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("apply_all_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "verify" => 0,
-            "files" => 1,
-            "dirs" => 2,
-            _ => 3,
+            "select" => 1,
+            _ => 2,
         }))
     }
 
     fn transition_count(&self) -> usize {
-        4
+        3
     }
 }
 
@@ -1396,21 +1403,22 @@ impl Node for VerifyNode {
                 feedback: error_text.clone(),
             })
             .collect::<Vec<_>>();
-        ctx.set_var("file_queue", items.clone())?;
-        set_cursor(ctx, "file_cursor", 0)?;
-        if let Some(item) = items.first() {
-            ctx.set_var("verify_phase", "files")?;
-            return json_result(item);
+        if items.is_empty() {
+            ctx.set_var("verify_phase", "failed")?;
+            return Ok(Value::String(error_text));
         }
-        ctx.set_var("verify_phase", "failed")?;
-        Ok(Value::String(error_text))
+        ctx.set_var("file_queue", items)?;
+        set_cursor(ctx, "file_cursor", 0)?;
+        set_cursor(ctx, "dir_cursor", 0)?;
+        ctx.set_var("verify_phase", "select")?;
+        Ok(json!({"phase":"select"}))
     }
 
     fn to(&self, _output: &Value, ctx: &Context) -> Result<TransitionIndex, NodeError> {
         let phase = ctx.var::<String>("verify_phase").unwrap_or_default();
         Ok(TransitionIndex(match phase.as_str() {
             "done" => 0,
-            "files" => 1,
+            "select" => 1,
             _ => 2,
         }))
     }
@@ -1528,6 +1536,29 @@ mod tests {
         assert_eq!(verdict.feedback, "bad");
         assert_eq!(verdict.files[0].path, "src/a.rs");
         assert_eq!(verdict.files[0].feedback, "fix");
+    }
+
+    #[test]
+    fn selects_files_then_directories_then_review_all() {
+        let mut ctx = Context::new();
+        ctx.set_var("file_queue", vec![WorkItem::file("src/a.rs")])
+            .unwrap();
+        ctx.set_var("file_cursor", 0usize).unwrap();
+        let item = select_next_item(&ctx).unwrap();
+        assert_eq!(item["kind"], "file");
+        assert_eq!(item["path"], "src/a.rs");
+
+        ctx.set_var("file_cursor", 1usize).unwrap();
+        ctx.set_var("dir_queue", vec![WorkItem::directory("src")])
+            .unwrap();
+        ctx.set_var("dir_cursor", 0usize).unwrap();
+        let item = select_next_item(&ctx).unwrap();
+        assert_eq!(item["kind"], "directory");
+        assert_eq!(item["path"], "src");
+
+        ctx.set_var("dir_cursor", 1usize).unwrap();
+        let item = select_next_item(&ctx).unwrap();
+        assert_eq!(item["phase"], "review_all");
     }
 
     #[test]
