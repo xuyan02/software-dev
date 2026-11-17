@@ -137,6 +137,14 @@ impl AgentRuntime {
         let agent = Agent::new("foundry-agent", graph, llm);
 
         let mut context = Context::new();
+        context
+            .set_var("task_id", request.task_id.clone())
+            .map_err(|error| RunError::Graph(error.to_string()))?;
+        if let Some(project_id) = &request.project_id {
+            context
+                .set_var("project_id", project_id.clone())
+                .map_err(|error| RunError::Graph(error.to_string()))?;
+        }
         context.set_llm_config(
             "agent",
             LlmConfig {

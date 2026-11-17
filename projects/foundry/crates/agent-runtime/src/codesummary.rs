@@ -159,6 +159,14 @@ pub async fn run(
     let agent = Agent::new("codesummary", graph, llm);
 
     let mut context = Context::new();
+    context
+        .set_var("task_id", request.task_id.clone())
+        .map_err(|error| RunError::Graph(error.to_string()))?;
+    if let Some(project_id) = &request.project_id {
+        context
+            .set_var("project_id", project_id.clone())
+            .map_err(|error| RunError::Graph(error.to_string()))?;
+    }
     let summary_system = PromptTemplate::parse(SUMMARY_SYSTEM_PROMPT)
         .map_err(|error| RunError::Graph(error.to_string()))?;
     let review_system = PromptTemplate::parse(REVIEW_SYSTEM_PROMPT)
@@ -190,12 +198,9 @@ pub async fn run(
         project_id: request.project_id.clone(),
     });
 
-    let input = json!({
-        "project_id": request.project_id,
-        "task_id": request.task_id,
-    });
+    // Project and task ids are built-in context variables, not graph input.
     let output = agent
-        .run(context, input)
+        .run(context, Value::Null)
         .await
         .map_err(|error| RunError::Graph(error.to_string()))?;
     let text = match &output.output {
