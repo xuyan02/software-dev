@@ -3760,23 +3760,28 @@ pub fn project_page(
     };
 
     let inspection_form = if ctx.can_contribute() {
+        let rows = [
+            ("consistency", "代码-设计一致性检查", "比较代码和设计空间，例如 src 或 design/app"),
+            ("style", "代码风格检查", "检查现有代码风格，例如 src"),
+            ("logic", "代码逻辑检查", "检查现有代码逻辑，例如 src/auth"),
+            ("cohesion", "逻辑聚合度检查", "检查模块内聚和耦合，例如 src/auth"),
+            ("design", "设计检查", "检查设计文档和结构，例如 design/app"),
+        ]
+        .iter()
+        .map(|(kind, label, placeholder)| {
+            format!(
+                r#"<tr><td><strong>{label}</strong></td><td><form class="inline-form" method="post" action="/projects/{id}/inspections"><input type="hidden" name="kind" value="{kind}"><input name="scope" placeholder="{placeholder}"> <button type="submit">立即运行</button></form></td></tr>"#,
+                id = project.id,
+                kind = kind,
+                label = label,
+                placeholder = placeholder,
+            )
+        })
+        .collect::<String>();
         format!(
-            r#"<h2>代码检查</h2>
-<form method="post" action="/projects/{id}/inspections">
-  <div class="grid">
-    <div class="field"><label for="inspection-kind">检查类型</label><select id="inspection-kind" name="kind">
-      <option value="consistency">代码-设计一致性检查</option>
-      <option value="style">代码风格检查</option>
-      <option value="logic">代码逻辑检查</option>
-      <option value="cohesion">逻辑聚合度检查</option>
-      <option value="design">设计检查</option>
-    </select></div>
-    <div class="field"><label for="inspection-scope">范围（可选）</label><input id="inspection-scope" name="scope" placeholder="例如 src/auth 或 design/app/core"></div>
-  </div>
-  <p class="hint">启动一个独立的检查任务；检查发现的问题会创建 Issue 并进入分诊。</p>
-  <div class="actions"><button type="submit">启动检查</button></div>
-</form>"#,
-            id = project.id,
+            r#"<h2>定时任务</h2>
+<p class="hint">当前支持手动触发；定时调度器接入后会按周期自动创建这些任务。</p>
+<table><thead><tr><th>任务</th><th>手动触发</th></tr></thead><tbody>{rows}</tbody></table>"#
         )
     } else {
         String::new()
