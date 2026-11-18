@@ -211,18 +211,27 @@ ds edit <qname> --superclass <qname> | --extends <qname> | --overrides <qname>
 - 改名/移动后，用 `ds show` 确认新 qname；
 - 不要用 `ds edit` 删对象；删对象用 `ds rm`。
 
-### 4.4.1 文档操作
+### 4.4.1 文档布局与文档操作
+
+技术设计的标准文档布局：
+
+```text
+documents/design/technical     # 统一的技术设计文档
+documents/design/directory     # 目录设计
+documents/design/namespace     # 命名空间设计
+```
+
+不要创建 `documents/specs`；它只是 CLI 示例里的临时名字，不是本项目的设计文档布局。
 
 ```bash
-ds doc mkdir documents/specs
-ds doc create documents/specs/auth --title "认证"
-ds doc section add documents/specs/auth/section --title "登录"
-ds doc topic add documents/specs/auth/section1/body --title "认证流程"
-ds doc text add documents/specs/auth/section1/body --text "登录使用 OAuth 2.0。"
-ds doc list add documents/specs/auth/section1/body1
-ds doc list item add documents/specs/auth/section1/body2/item --text "第一项"
-ds doc text set documents/specs/auth/section1/body1 --text "新的文本"
-ds doc show documents/specs/auth
+ds doc create documents/design/technical --title "技术设计"
+ds doc section add documents/design/technical/section --title "登录"
+ds doc topic add documents/design/technical/section1/body --title "认证流程"
+ds doc text add documents/design/technical/section1/body --text "登录使用 OAuth 2.0。"
+ds doc list add documents/design/technical/section1/body1
+ds doc list item add documents/design/technical/section1/body2/item --text "第一项"
+ds doc text set documents/design/technical/section1/body1 --text "新的文本"
+ds doc show documents/design/technical
 ```
 
 - `section add` 的目标是 `<document-or-section>/section` 头锚点，或已有兄弟 section 的 qname；

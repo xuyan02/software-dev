@@ -194,6 +194,10 @@ ds pull --branch source
 ### design（designer）
 
 1. 修改设计空间：更新文档、模块成员、系统/模块结构、设计约束。
+   - 技术设计使用 `documents/design/technical`；
+   - 目录设计使用 `documents/design/directory`；
+   - 命名空间设计使用 `documents/design/namespace`；
+   - 不要创建 `documents/specs` 等临时示例目录。
 2. 提交并推送 `source`：
 ```bash
 ds add -A
