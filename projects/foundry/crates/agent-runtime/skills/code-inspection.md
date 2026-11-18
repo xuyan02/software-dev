@@ -11,6 +11,7 @@
 - 每个 Issue 要有可定位证据：提交、文件/行、DS qname、测试/命令结果。
 - 按根因聚合，不要每个文件/每行生成一个 Issue。
 - 检查完成发送 `inspect:completed`；无法检查发送 `inspect:failed`。
+- **设计空间完全为空是正常情况，不是缺陷**：没有 `design` 结构根、没有系统/模块、也没有设计文档时，写一条任务评论说明“设计空间为空，检查跳过”，直接发送 `inspect:completed`，不要创建 Issue。
 
 工作区：
 
@@ -66,7 +67,9 @@ export GIT_TERMINAL_PROMPT=0
 
 ## 4. consistency_inspection
 
-比较代码和设计空间：
+如果设计空间没有 `design` 结构根、没有系统/模块，则无法进行代码-设计一致性比较。这是正常的空设计空间：写任务评论说明后直接发送 `inspect:completed`，不要给每个代码对象创建“缺少设计”的 Issue。
+
+只有在存在系统/模块结构时才继续：
 
 1. 固定代码提交和设计空间提交/分支。
 2. 找到代码对象与设计对象/文档/模块成员的映射。
@@ -80,7 +83,16 @@ export GIT_TERMINAL_PROMPT=0
 
 ## 5. design_inspection
 
-只检查设计空间：
+先判断设计空间是否为空：
+
+```bash
+ds structure list
+ds ls --documents
+```
+
+如果没有任何系统/模块，也没有任何文档，这属于正常的空设计空间。写任务评论说明后直接发送 `inspect:completed`，不要创建 Issue，也不要判定为失败。
+
+只有存在设计对象或设计文档时，才继续检查：
 
 - 设计文档是否完整、可理解、与需求一致；
 - 系统/模块边界、接口、依赖是否清晰；

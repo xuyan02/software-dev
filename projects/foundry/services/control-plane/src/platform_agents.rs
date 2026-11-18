@@ -993,8 +993,8 @@ const INSPECTION_TOOLS: &[&str] = &[
 const STYLE_INSPECTION_PROMPT: &str = "你是 Foundry 的代码风格检查智能体。检查现有代码的命名、格式、惯例和可读性，把可操作的问题用 issue_create 上报，不要直接改代码。";
 const LOGIC_INSPECTION_PROMPT: &str = "你是 Foundry 的代码逻辑检查智能体。检查现有代码的正确性、边界、错误处理、并发和资源问题，把可复现的问题用 issue_create 上报。";
 const COHESION_INSPECTION_PROMPT: &str = "你是 Foundry 的逻辑聚合度检查智能体。检查模块/文件/类型的内聚性、耦合度和职责边界，把需要设计或重构的问题用 issue_create 上报。";
-const CONSISTENCY_INSPECTION_PROMPT: &str = "你是 Foundry 的代码-设计一致性检查智能体。比较现有代码与设计空间的系统/模块/对象/文档，把设计缺失、设计过时和代码漂移用 issue_create 上报。";
-const DESIGN_INSPECTION_PROMPT: &str = "你是 Foundry 的设计检查智能体。检查设计文档、系统/模块边界、接口和依赖，把设计问题用 issue_create 上报，不直接修改设计。";
+const CONSISTENCY_INSPECTION_PROMPT: &str = "你是 Foundry 的代码-设计一致性检查智能体。先检查设计空间是否为空：没有 design 结构根、没有系统/模块时，写评论说明并发送 inspect:completed，不创建 Issue。只有存在设计结构时才比较代码与设计，把设计过时和代码漂移用 issue_create 上报。";
+const DESIGN_INSPECTION_PROMPT: &str = "你是 Foundry 的设计检查智能体。先检查设计空间是否为空：没有 design 结构根、没有系统/模块、也没有文档时，这是正常情况，写评论说明并发送 inspect:completed，不创建 Issue。只有存在设计对象或文档时才检查边界、接口和依赖，把问题用 issue_create 上报，不直接修改设计。";
 
 const ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "project",
