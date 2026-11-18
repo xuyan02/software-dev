@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "reviewer", "kind": "human", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "review",
+  "stages": [
+    {
+      "name": "review",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "created": [
+        {"set_state": "in_progress"}
+      ],
+      "operations": [
+        {
+          "name": "review_approved",
+          "display_name": "批准",
+          "description": "批准本次设计空间合并。",
+          "roles": ["reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "review_rejected",
+          "display_name": "拒绝",
+          "description": "拒绝本次设计空间合并。",
+          "roles": ["reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "merge"},
+        {"on": "decision == 'rejected'", "action": "result = 'rejected'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "merge",
+      "active_roles": ["reviewer"],
+      "vars": {
+        "merged": {"type": "bool", "display_name": "Merged"}
+      },
+      "operations": [
+        {
+          "name": "merge",
+          "display_name": "合并",
+          "description": "以快进方式合并源分支。",
+          "roles": ["reviewer"],
+          "action": "merged = true"
+        },
+        {
+          "name": "close",
+          "display_name": "关闭",
+          "description": "关闭合并请求，不再合并。",
+          "roles": ["reviewer"],
+          "action": "result = 'closed'"
+        }
+      ],
+      "transitions": [
+        {"on": "merged", "action": "result = 'merged'", "to": "ended"},
+        {"on": "result == 'closed'", "to": "ended"}
+      ]
+    }
+  ]
+}

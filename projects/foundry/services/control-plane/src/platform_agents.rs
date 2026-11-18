@@ -28,7 +28,8 @@ On every wake:
 3. Otherwise, for each task:
    The role list includes every agent role in the workflow, including roles used
    in later stages. Bind them all now; do not wait for a later stage.
-   a. For every role:
+   a. Call task_get with task_id to read role_specs and actors.
+   b. For every agent role:
       - Skip it when agent is set and enabled.
       - Otherwise call agents_list. It only returns this project's agents; choose
         an enabled agent whose role == task_role.
@@ -36,7 +37,15 @@ On every wake:
         and call agent_create_for_role with task_id, role = task_role and template_id.
       - Call task_assign_agent with task_id, role = task_role and the chosen
         agent_definition_id.
-   b. After every agent role is assigned, call task_start with task_id.
+   c. For every human role that has no actor:
+      - Call project with action=members.
+      - Choose one active member whose kind is exactly "human", preferring
+        owner or maintainer. Never choose an agent account for a human role.
+      - Call task_bind_actor with task_id, role = role name and account_id.
+      - If no active human member exists, do not bind anyone and do not start
+        the task; report the missing human member instead.
+   d. After every agent role is assigned and every human role is bound, call
+      task_start with task_id.
 4. When every Ready task is started, stop. Do not call tools again.
 
 Do not comment on issues, draft project documents, or do the task yourself.
@@ -680,24 +689,188 @@ const TEMPLATES: &[PlatformTemplate] = &[
         ],
     },
     PlatformTemplate {
-        id: "code-summary",
-        name: "CodeSummary",
-        role: CODE_SUMMARY_ROLE,
-        description: "Summarizes source code into design-space objects",
-        system_prompt: CODE_SUMMARY_PROMPT,
-        tools: CODE_SUMMARY_TOOLS,
+        id: "code-summary-group",
+        name: "CodeSummary Group",
+        role: "code_summary_group:summarizer",
+        description: "Summarizes an assigned group of source files and submits a DS MR",
+        system_prompt: GROUP_SUMMARY_PROMPT,
+        tools: GROUP_SUMMARY_TOOLS,
         shell: true,
-        skills: &["design-space"],
+        skills: &[
+            "design-space",
+            "design-writing",
+            "code-summary",
+            "design-consistency",
+        ],
+    },
+    PlatformTemplate {
+        id: "design-consistency-scanner",
+        name: "Design Consistency Scanner",
+        role: "design_consistency_maintenance:scanner",
+        description: "Syncs the source tree, groups changed files and spawns code summary tasks",
+        system_prompt: CONSISTENCY_SCANNER_PROMPT,
+        tools: CONSISTENCY_SCANNER_TOOLS,
+        shell: true,
+        skills: &["design-space", "code-summary", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-integrator",
+        name: "Design Consistency Integrator",
+        role: "design_consistency_maintenance:integrator",
+        description: "Creates the integration MR, fixes integration content, merges and cleans up",
+        system_prompt: CONSISTENCY_INTEGRATOR_PROMPT,
+        tools: CONSISTENCY_AGENT_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-content-reviewer",
+        name: "Design Consistency Content Reviewer",
+        role: "design_consistency_maintenance:content_reviewer",
+        description: "Reviews the complete integration branch content",
+        system_prompt: CONSISTENCY_CONTENT_REVIEWER_PROMPT,
+        tools: CONSISTENCY_REVIEWER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-architect",
+        name: "Design Structure Architect",
+        role: "design_consistency_maintenance:architect",
+        description: "Surveys code, partitions systems and modules, writes structure documents and fixes structure issues",
+        system_prompt: CONSISTENCY_ARCHITECT_PROMPT,
+        tools: CONSISTENCY_AGENT_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-structure-reviewer",
+        name: "Design Structure Reviewer",
+        role: "design_consistency_maintenance:structure_reviewer",
+        description: "Reviews system/module boundaries, membership and coverage",
+        system_prompt: CONSISTENCY_STRUCTURE_REVIEWER_PROMPT,
+        tools: CONSISTENCY_REVIEWER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-style-reviewer",
+        name: "Design Structure Style Reviewer",
+        role: "design_consistency_maintenance:style_reviewer",
+        description: "Reviews system and module document wording only",
+        system_prompt: CONSISTENCY_STYLE_REVIEWER_PROMPT,
+        tools: CONSISTENCY_REVIEWER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-consistency-conflict-resolver",
+        name: "Design Consistency Conflict Resolver",
+        role: "design_consistency_maintenance:conflict_resolver",
+        description: "Resolves integration branch conflicts",
+        system_prompt: CONSISTENCY_CONFLICT_PROMPT,
+        tools: CONSISTENCY_AGENT_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "code-summary-style-reviewer",
+        name: "CodeSummary Style Reviewer",
+        role: "code_summary_group:style_reviewer",
+        description: "Reviews design-writing style in a group MR",
+        system_prompt: GROUP_STYLE_REVIEWER_PROMPT,
+        tools: CONSISTENCY_REVIEWER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "code-summary-content-reviewer",
+        name: "CodeSummary Content Reviewer",
+        role: "code_summary_group:content_reviewer",
+        description: "Reviews all design content in a group MR",
+        system_prompt: GROUP_CONTENT_REVIEWER_PROMPT,
+        tools: CONSISTENCY_REVIEWER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "code-summary-merger",
+        name: "CodeSummary Merger",
+        role: "code_summary_group:merger",
+        description: "Fast-forwards a group MR into the integration branch",
+        system_prompt: GROUP_MERGER_PROMPT,
+        tools: GROUP_MERGER_TOOLS,
+        shell: false,
+        skills: &["design-consistency"],
+    },
+    PlatformTemplate {
+        id: "code-summary-conflict-resolver",
+        name: "CodeSummary Conflict Resolver",
+        role: "code_summary_group:conflict_resolver",
+        description: "Resolves group branch conflicts",
+        system_prompt: GROUP_CONFLICT_PROMPT,
+        tools: CONSISTENCY_AGENT_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-consistency"],
     },
 ];
 
-const CODE_SUMMARY_ROLE: &str = "code_summary:summarizer";
+const GROUP_SUMMARY_PROMPT: &str = "你是 Foundry 的 CodeSummary 组智能体。只处理当前任务 input.files 指定的文件，复用或创建组 MR，完成后自动提交。";
+const CONSISTENCY_SCANNER_PROMPT: &str = "你是 Foundry 的技术设计一致性扫描智能体。按当前 dispatch 阶段执行基础同步、变化扫描、分组和子任务创建。";
+const CONSISTENCY_INTEGRATOR_PROMPT: &str = "你是 Foundry 的集成分支智能体。按当前阶段创建集成 MR、修复集成内容、执行最终合入和删除集成分支。";
+const CONSISTENCY_ARCHITECT_PROMPT: &str = "你是 Foundry 的模块架构师。按当前阶段执行结构盘点、逐系统模块合成和结构问题修复。使用 ds structure 命令；先草稿、机械校验、独立批判，再落库。不要合并 MR。";
+const CONSISTENCY_STRUCTURE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计结构审查智能体。只审查系统/模块划分、成员唯一归属、层级、覆盖和模块文档与成员的对应关系；不审文风，不修改正文。发现问题写评论并打回。";
+const CONSISTENCY_STYLE_REVIEWER_PROMPT: &str = "你是 Foundry 的模块文档文风审查智能体。只审查系统和模块文档的文字，不审查结构或成员关系；发现问题写评论并打回。";
+const CONSISTENCY_CONTENT_REVIEWER_PROMPT: &str =
+    "你是 Foundry 的集成内容审查智能体。审查整个集成分支的全部设计内容，不只检查文字。";
+const CONSISTENCY_CONFLICT_PROMPT: &str =
+    "你是 Foundry 的集成冲突解决智能体。解决集成分支与主分支的冲突，并重新进入内容审查。";
+const GROUP_STYLE_REVIEWER_PROMPT: &str =
+    "你是 Foundry 的设计文风审查智能体。只检查设计文字，发现问题写 review comment 并打回。";
+const GROUP_CONTENT_REVIEWER_PROMPT: &str =
+    "你是 Foundry 的设计内容审查智能体。检查本组全部对象、关系和文档内容。";
+const GROUP_MERGER_PROMPT: &str =
+    "你是 Foundry 的组 MR 合并智能体。把本组 MR 快进合入集成分支；冲突时转冲突解决。";
+const GROUP_CONFLICT_PROMPT: &str =
+    "你是 Foundry 的组织冲突解决智能体。把组分支重新落到最新集成分支并解决冲突。";
 
-const CODE_SUMMARY_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体。
-你读取源码，创建和更新 design-space 对象、设计文档和关系，然后由 review 和 verify 决定是否提交。
-你只能通过 shell 执行 git/ds 命令，通过 project 工具读取项目信息。"#;
-
-const CODE_SUMMARY_TOOLS: &[&str] = &["project", "shell"];
+const GROUP_SUMMARY_TOOLS: &[&str] = &["project", "shell", "merge_request"];
+const CONSISTENCY_SCANNER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_spawn_children",
+];
+const CONSISTENCY_REVIEWER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "merge_request",
+];
+const CONSISTENCY_AGENT_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "merge_request",
+];
+const GROUP_MERGER_TOOLS: &[&str] = &[
+    "project",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "merge_request",
+];
 
 pub fn templates() -> &'static [PlatformTemplate] {
     TEMPLATES
@@ -730,14 +903,9 @@ pub async fn ensure_project_agents(
     match ProjectRepository::list(store.as_ref(), ProjectFilter::default()).await {
         Ok(projects) => {
             for project in projects {
-                if let Err(error) = ensure_project_pm(
-                    store.as_ref(),
-                    &supervisor,
-                    project.id,
-                    &base_url,
-                    &model,
-                )
-                .await
+                if let Err(error) =
+                    ensure_project_pm(store.as_ref(), &supervisor, project.id, &base_url, &model)
+                        .await
                 {
                     tracing::warn!(
                         project = %project.name,
@@ -970,13 +1138,6 @@ async fn ensure_agent_account(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn code_summary_loads_the_design_space_skill() {
-        let code_summary = template("code-summary").expect("code summary template");
-        assert_eq!(code_summary.skills, &["design-space"]);
-        assert!(code_summary.shell);
-    }
 
     #[test]
     fn writer_template_loads_the_writing_guide() {

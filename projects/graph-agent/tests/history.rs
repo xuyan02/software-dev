@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use graph_agent::{
-    Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmResponse, LlmRole,
-    LlmRuntime, ModelProfileRef, Node, NodeError, PromptTemplate, ScriptedModel, SkillError,
-    SkillRegistry, Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, ToolRegistry,
-    TransitionIndex,
+    Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmResponse, LlmRole, LlmRuntime,
+    ModelProfileRef, Node, NodeError, PromptTemplate, ScriptedModel, SkillError, SkillRegistry,
+    Tool, ToolContext, ToolDefinition, ToolError, ToolOutput, ToolRegistry, TransitionIndex,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -43,7 +42,8 @@ impl LlmNode for TestLlm {
 
     fn user(&self) -> &PromptTemplate {
         static TEMPLATE: std::sync::OnceLock<PromptTemplate> = std::sync::OnceLock::new();
-        TEMPLATE.get_or_init(|| PromptTemplate::literal(""))
+        TEMPLATE
+            .get_or_init(|| PromptTemplate::parse("输入：{{input}}").expect("valid input template"))
     }
 
     fn to(&self, _output: &Value, _ctx: &Context) -> Result<TransitionIndex, NodeError> {
@@ -120,13 +120,15 @@ async fn llm_records_user_tool_calls_and_final_reply() {
 
     let messages = output.context.history().messages();
     assert_eq!(messages[0].role, LlmRole::User);
-    assert!(messages[0].content.contains("Input (JSON):"));
-    assert!(messages[0].content.contains("\"hello\""));
+    assert_eq!(messages[0].content, "输入：hello");
     assert_eq!(messages[1].role, LlmRole::Assistant);
     assert_eq!(messages[1].tool_calls[0].name, "echo");
     assert_eq!(messages[2].role, LlmRole::Tool);
     assert_eq!(messages[2].content, "hi");
     assert_eq!(messages[3].role, LlmRole::Assistant);
-    assert_eq!(messages[3].content, json!({ "summary": "done" }).to_string());
+    assert_eq!(
+        messages[3].content,
+        json!({ "summary": "done" }).to_string()
+    );
     assert_eq!(messages.len(), 4);
 }

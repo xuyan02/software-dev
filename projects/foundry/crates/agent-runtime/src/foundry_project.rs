@@ -29,7 +29,7 @@ impl Tool for ProjectTool {
                 "type": "object",
                 "required": ["action"],
                 "properties": {
-                    "action": { "type": "string", "enum": ["get"] }
+                    "action": { "type": "string", "enum": ["get", "members"] }
                 }
             }),
         }
@@ -56,6 +56,17 @@ impl Tool for ProjectTool {
                 // at the top level.
                 let project = detail.get("project").cloned().unwrap_or(detail);
                 let content = serde_json::to_string_pretty(&project)
+                    .map_err(|error| ToolError::Failed(error.to_string()))?;
+                Ok(ToolOutput::success(content))
+            }
+            "members" => {
+                let detail = self
+                    .client
+                    .get_project()
+                    .await
+                    .map_err(|error| ToolError::Failed(error.to_string()))?;
+                let members = detail.get("members").cloned().unwrap_or(Value::Array(Vec::new()));
+                let content = serde_json::to_string_pretty(&members)
                     .map_err(|error| ToolError::Failed(error.to_string()))?;
                 Ok(ToolOutput::success(content))
             }

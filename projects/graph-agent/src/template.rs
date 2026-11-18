@@ -1,3 +1,4 @@
+use crate::variable::{Variable, traverse};
 use crate::{Context, VariableError, VariablePath};
 use serde_json::Value;
 
@@ -6,7 +7,8 @@ use serde_json::Value;
 ///
 /// Supported substitutions are variable lookup only. There are no expressions,
 /// conditionals, loops, or function calls. Literal `{{` is not escapable in the
-/// first version.
+/// first version. When rendered with [`PromptTemplate::render_with_input`], the
+/// root `input` is reserved for the previous node's JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptTemplate {
     source: String,
@@ -72,13 +74,27 @@ impl PromptTemplate {
     }
 
     pub fn render(&self, ctx: &Context) -> Result<String, TemplateError> {
+        self.render_with_input(ctx, &Value::Null)
+    }
+
+    /// Render the template with the previous node's JSON as the `input` root.
+    ///
+    /// `{{input}}` renders the whole value; `{{input.kind}}` and similar paths
+    /// traverse it like any other variable. Other roots still resolve from the
+    /// context.
+    pub fn render_with_input(&self, ctx: &Context, input: &Value) -> Result<String, TemplateError> {
+        let input = Variable::new("input", input.clone())?;
         let mut output = String::with_capacity(self.source.len());
 
         for part in &self.parts {
             match part {
                 TemplatePart::Literal(text) => output.push_str(text),
                 TemplatePart::Variable(path) => {
-                    let variable = ctx.resolve_variable(path)?;
+                    let variable = if path.segments().first().map(String::as_str) == Some("input") {
+                        traverse(&input, &path.segments()[1..], &path.to_string())?
+                    } else {
+                        ctx.resolve_variable(path)?
+                    };
                     output.push_str(&render_value(variable.value())?);
                 }
             }
@@ -125,7 +141,8 @@ mod tests {
         ctx.set_var("meta", json!({"priority": 3, "tags": ["a", "b"]}))
             .unwrap();
         ctx.set_var("empty", serde_json::Value::Null).unwrap();
-        ctx.set_var("requirement", json!({"summary": "auth"})).unwrap();
+        ctx.set_var("requirement", json!({"summary": "auth"}))
+            .unwrap();
         ctx
     }
 
@@ -145,6 +162,19 @@ mod tests {
         let template = PromptTemplate::parse("{{meta.priority}}|{{meta.tags}}|{{empty}}").unwrap();
 
         assert_eq!(template.render(&context()).unwrap(), "3|[\"a\",\"b\"]|");
+    }
+
+    #[test]
+    fn renders_input_values() {
+        let template =
+            PromptTemplate::parse("kind={{input.kind}} sections={{input.sections}}").unwrap();
+        let ctx = Context::new();
+        assert_eq!(
+            template
+                .render_with_input(&ctx, &json!({"kind": "file", "sections": ["a", "b"]}))
+                .unwrap(),
+            "kind=file sections=[\"a\",\"b\"]"
+        );
     }
 
     #[test]

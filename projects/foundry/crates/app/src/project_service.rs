@@ -113,13 +113,6 @@ where
             .filter(|branch| !branch.is_empty())
             .unwrap_or(DEFAULT_BRANCH)
             .to_owned();
-        project.design_space_branch = command
-            .design_space_branch
-            .as_deref()
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .unwrap_or(DEFAULT_BRANCH)
-            .to_owned();
         project
             .validate()
             .map_err(|error| ServiceError::Validation(error.to_string()))?;
@@ -139,7 +132,7 @@ where
         let mut root = TaskDAO::new(
             project.id,
             None,
-            reference.workflow_id,
+            reference.workflow_id.clone(),
             reference.version,
             project.name.clone(),
             now,
@@ -213,15 +206,9 @@ where
         if command.name.is_some()
             || command.description.is_some()
             || command.git_branch.is_some()
-            || command.design_space_branch.is_some()
         {
             project
-                .update(
-                    command.name,
-                    command.description,
-                    command.git_branch,
-                    command.design_space_branch,
-                )
+                .update(command.name, command.description, command.git_branch)
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
         if command.status == Some(ProjectStatus::Archived) {

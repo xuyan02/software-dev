@@ -20,8 +20,9 @@ use foundry_adapter_postgres::{
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
     AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
-    IssueService, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases,
-    TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
+    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, ProjectService,
+    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
+    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases,
     WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::OperationName;
@@ -33,6 +34,7 @@ use std::time::Duration;
 mod agent_admin;
 mod agent_credentials;
 mod design_space;
+mod remote_design_space;
 mod github_app;
 mod platform_agents;
 mod supervisor;
@@ -125,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
     let tasks = Arc::new(TaskService::new(
         task_repository,
         Arc::clone(&task_dispatcher),
-        workflows,
+        Arc::clone(&workflows),
     ));
     let workflows_admin: Arc<dyn WorkflowUseCases> = Arc::new(WorkflowService::new(
         Arc::clone(&store),
@@ -231,6 +233,25 @@ async fn main() -> anyhow::Result<()> {
     ));
     let design_space_access =
         design_space_root.map(|root| Arc::new(foundry_api_http::DesignSpaceAccess::new(root)));
+    let design_space_gateway: Arc<dyn DesignSpaceGateway> = match design_space_access.as_ref() {
+        Some(access) => access.clone(),
+        None => Arc::new(remote_design_space::RemoteDesignSpaceGateway::new(
+            &design_space_base,
+            design_space_token.clone(),
+            foundry_shared::default_config_path()
+                .and_then(|path| path.parent().map(|dir| dir.join("design-space-cache")))
+                .unwrap_or_else(|| std::env::temp_dir().join("foundry-design-space-cache")),
+        )),
+    };
+    let task_use_cases: Arc<dyn TaskUseCases> = tasks.clone();
+    let merge_requests = Arc::new(MergeRequestService::new(
+        Arc::clone(&store) as Arc<dyn MergeRequestRepository>,
+        Arc::clone(&task_use_cases),
+        Arc::clone(&task_dispatcher),
+        Arc::clone(&workflows),
+        Arc::clone(&store) as Arc<dyn foundry_app::AccountRepository>,
+        design_space_gateway,
+    ));
     let state = AppState {
         issues: Arc::new(issues),
         accounts,
@@ -248,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
             &config.editor_dir,
         ))),
         design_space: design_space_access,
+        merge_requests,
     };
     let credentials = agent_credentials::CredentialState {
         auth: credential_auth,
@@ -307,7 +329,12 @@ fn resolve_editor_dir(configured: &Path) -> PathBuf {
 
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown signal received");
+    tracing::info!("shutdown signal received; waiting up to 5s for requests to finish");
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        tracing::warn!("graceful shutdown timed out; forcing process exit");
+        std::process::exit(0);
+    });
 }
 
 /// Re-evaluate transitions for tasks that were already in progress when the

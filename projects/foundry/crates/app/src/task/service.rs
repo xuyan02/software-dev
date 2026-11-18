@@ -1,12 +1,14 @@
 use crate::{
     RepoError, ServiceError, TaskActorRow, TaskCommand, TaskCommentRow, TaskDependencyRow,
     TaskDispatchError, TaskDispatcher, TaskFilter, TaskListRow, TaskRepository, WorkflowCatalog,
+    WorkflowLookup,
 };
 use foundry_domain::{
-    AllowedOperation, OperationName, StageKey, Task, TaskActor, TaskComment, TaskCommentDAO,
-    TaskDAO, TaskDependency, TaskDispatchState, TaskOperation, WorkflowVersionRef,
+    Actor, AllowedOperation, DomainEvent, DomainEventKind, OperationName, StageKey, Task,
+    TaskActor, TaskComment, TaskCommentDAO, TaskDAO, TaskDependency, TaskDispatchState,
+    TaskOperation, WorkflowId, WorkflowVersionRef,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -41,6 +43,26 @@ impl TaskViewer {
             can_see_all: true,
         }
     }
+}
+
+/// One child task requested by a running task, typically a scanner that
+/// produced a bounded work group.
+#[derive(Debug, Clone)]
+pub struct SpawnTask {
+    pub workflow: String,
+    pub title: String,
+    pub description: String,
+    pub input: Value,
+}
+
+/// A project-scoped task that is not a child of another task, used for
+/// event-driven work such as Issue triage.
+#[derive(Debug, Clone)]
+pub struct NewTask {
+    pub workflow: String,
+    pub title: String,
+    pub description: String,
+    pub input: Value,
 }
 
 pub struct TaskService {
@@ -173,6 +195,166 @@ impl TaskService {
         };
         self.repository.add_comment(&comment).await?;
         self.get(project_id, id, viewer).await
+    }
+
+    pub async fn create_task(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError> {
+        if spec.title.trim().is_empty() {
+            return Err(ServiceError::Validation(
+                "task title is required".to_string(),
+            ));
+        }
+        if spec.description.trim().is_empty() {
+            return Err(ServiceError::Validation(
+                "task description is required".to_string(),
+            ));
+        }
+        let workflow = WorkflowId::new(spec.workflow.trim());
+        let reference = match self.workflows.latest_visible(None, &workflow).await? {
+            WorkflowLookup::Published(reference) => reference,
+            WorkflowLookup::Unpublished(id) => {
+                return Err(ServiceError::Unpublished(id.to_string()));
+            }
+            WorkflowLookup::NotFound => {
+                return Err(ServiceError::not_found_named("workflow", workflow.as_str()));
+            }
+        };
+        let now = OffsetDateTime::now_utc();
+        let mut task = TaskDAO::new(
+            project_id,
+            None,
+            reference.workflow_id,
+            reference.version,
+            spec.title,
+            now,
+        );
+        task.description = spec.description;
+        task.input = spec.input;
+        let events = [DomainEvent::new(
+            DomainEventKind::TaskCreated,
+            task.id,
+            Actor::System,
+            json!({
+                "workflow": task.workflow,
+                "workflow_version": task.workflow_version,
+                "title": task.title,
+                "parent_id": task.parent_id,
+            }),
+        )];
+        self.repository.insert(&task, &[], &events).await?;
+        if let Err(error) = self.dispatcher.process(task.id, None).await {
+            tracing::warn!(task_id = %task.id, error = %error, "task created but initialization failed");
+        }
+        self.get(project_id, task.id, TaskViewer::member(actor_id))
+            .await
+    }
+
+    /// Create child tasks under `parent_id` in one logical batch. When
+    /// `sequential` is true, each child depends on the previous one so only
+    /// one group runs at a time.
+    pub async fn spawn_children(
+        &self,
+        project_id: Uuid,
+        parent_id: Uuid,
+        tasks: Vec<SpawnTask>,
+        sequential: bool,
+        actor_id: Uuid,
+    ) -> Result<Vec<Task>, ServiceError> {
+        if tasks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let parent = self.load(project_id, parent_id).await?;
+        let now = OffsetDateTime::now_utc();
+        let mut created = Vec::with_capacity(tasks.len());
+        let mut previous: Option<Uuid> = None;
+        for (index, spec) in tasks.into_iter().enumerate() {
+            if spec.title.trim().is_empty() {
+                return Err(ServiceError::Validation(
+                    "child task title is required".to_string(),
+                ));
+            }
+            if spec.description.trim().is_empty() {
+                return Err(ServiceError::Validation(
+                    "child task description is required".to_string(),
+                ));
+            }
+            let workflow = WorkflowId::new(spec.workflow.trim());
+            let reference = match self.workflows.latest_visible(None, &workflow).await? {
+                WorkflowLookup::Published(reference) => reference,
+                WorkflowLookup::Unpublished(id) => {
+                    return Err(ServiceError::Unpublished(id.to_string()));
+                }
+                WorkflowLookup::NotFound => {
+                    return Err(ServiceError::not_found_named("workflow", workflow.as_str()));
+                }
+            };
+            let mut task = TaskDAO::new(
+                project_id,
+                Some(parent_id),
+                reference.workflow_id,
+                reference.version,
+                spec.title,
+                now,
+            );
+            task.input = spec.input;
+            let dependencies = if sequential {
+                previous.into_iter().collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let events = [
+                DomainEvent::new(
+                    DomainEventKind::TaskCreated,
+                    task.id,
+                    Actor::System,
+                    json!({
+                        "workflow": task.workflow,
+                        "workflow_version": task.workflow_version,
+                        "title": task.title,
+                        "parent_id": task.parent_id,
+                        "dependencies": dependencies,
+                    }),
+                ),
+                DomainEvent::new(
+                    DomainEventKind::ChildCreated,
+                    parent.id,
+                    Actor::System,
+                    json!({
+                        "child_id": task.id,
+                        "workflow": task.workflow,
+                        "title": task.title,
+                    }),
+                ),
+            ];
+            self.repository
+                .insert(&task, &dependencies, &events)
+                .await?;
+            if let Err(error) = self.dispatcher.process(task.id, None).await {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %error,
+                    "child task spawned but initialization failed"
+                );
+            }
+            if index == 0 {
+                tracing::info!(parent = %parent.id, child = %task.id, "child task spawned");
+            }
+            previous = Some(task.id);
+            created.push(task.id);
+        }
+        // The parent Task is the dispatcher command partition; append the
+        // child-created events there so its workflow sees them.
+        let _ = actor_id;
+        let mut views = Vec::with_capacity(created.len());
+        for id in created {
+            views.push(self.get(project_id, id, TaskViewer::system()).await?);
+        }
+        let _ = self.dispatcher.dispatch_ready().await;
+        Ok(views)
     }
 
     pub async fn comments(
@@ -360,10 +542,12 @@ impl TaskService {
             workflow: task.workflow,
             workflow_version: task.workflow_version,
             title: task.title,
+            description: task.description,
             state: task.state,
             dispatch_state: TaskDispatchState::derive(task.state, dependencies_ready),
             stage: task.stage,
             result: task.result,
+            input: task.input,
             created_at: task.created_at,
             updated_at: task.updated_at,
             completed_at: task.completed_at,
@@ -393,6 +577,7 @@ fn visible_actors(rows: Vec<TaskActorRow>, viewer: TaskViewer) -> Vec<TaskActor>
                 role_key: row.role_key,
                 account_id: row.account_id,
                 display_name: row.display_name,
+                agent_definition_id: row.agent_definition_id,
                 active: row.active,
                 work,
             })
@@ -507,6 +692,31 @@ pub trait TaskUseCases: Send + Sync {
         offset: i64,
     ) -> Result<Vec<TaskComment>, ServiceError>;
 
+    async fn spawn_children(
+        &self,
+        project_id: Uuid,
+        parent_id: Uuid,
+        tasks: Vec<SpawnTask>,
+        sequential: bool,
+        actor_id: Uuid,
+    ) -> Result<Vec<Task>, ServiceError>;
+
+    async fn create_task(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError>;
+
+    async fn bind_actor(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        role: foundry_domain::RoleKey,
+        account_id: Uuid,
+        bound_by: Uuid,
+    ) -> Result<(), ServiceError>;
+
     async fn history(
         &self,
         project_id: Uuid,
@@ -573,6 +783,39 @@ impl TaskUseCases for TaskService {
         offset: i64,
     ) -> Result<Vec<TaskComment>, ServiceError> {
         self.comments(project_id, id, limit, offset).await
+    }
+
+    async fn spawn_children(
+        &self,
+        project_id: Uuid,
+        parent_id: Uuid,
+        tasks: Vec<SpawnTask>,
+        sequential: bool,
+        actor_id: Uuid,
+    ) -> Result<Vec<Task>, ServiceError> {
+        self.spawn_children(project_id, parent_id, tasks, sequential, actor_id)
+            .await
+    }
+
+    async fn create_task(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError> {
+        self.create_task(project_id, spec, actor_id).await
+    }
+
+    async fn bind_actor(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        role: foundry_domain::RoleKey,
+        account_id: Uuid,
+        bound_by: Uuid,
+    ) -> Result<(), ServiceError> {
+        self.bind_actor(project_id, id, role, account_id, bound_by)
+            .await
     }
 
     async fn history(

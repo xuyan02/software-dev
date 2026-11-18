@@ -144,12 +144,85 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
             validate_object_hashes(&p.children, "mixin children")?;
             Ok(())
         }
+        ObjectPayload::DocumentDirectory(p) => {
+            require_hash(p.qualified_name, "document directory qualified_name")?;
+            validate_parent_ref(p.parent)?;
+            validate_object_hashes(&p.children, "document directory children")?;
+            validate_comments(&p.comments, "document directory comments")?;
+            Ok(())
+        }
+        ObjectPayload::Document(p) => {
+            require_hash(p.qualified_name, "document qualified_name")?;
+            require_hash(p.parent, "document parent")?;
+            validate_text(&p.title, "document title")?;
+            validate_ref_list(&p.sections, "document sections")?;
+            validate_object_hashes(&p.children, "document children")?;
+            validate_comments(&p.comments, "document comments")?;
+            Ok(())
+        }
+        ObjectPayload::DocumentSection(p) => {
+            require_hash(p.qualified_name, "document section qualified_name")?;
+            require_hash(p.parent, "document section parent")?;
+            validate_text(&p.title, "document section title")?;
+            validate_ref_list(&p.body, "document section body")?;
+            validate_ref_list(&p.sections, "document section sections")?;
+            validate_object_hashes(&p.children, "document section children")?;
+            validate_comments(&p.comments, "document section comments")?;
+            Ok(())
+        }
+        ObjectPayload::DocumentList(p) => {
+            require_hash(p.qualified_name, "document list qualified_name")?;
+            require_hash(p.parent, "document list parent")?;
+            validate_ref_list(&p.items, "document list items")?;
+            validate_object_hashes(&p.children, "document list children")?;
+            validate_comments(&p.comments, "document list comments")?;
+            Ok(())
+        }
+        ObjectPayload::DocumentText(p) => {
+            require_hash(p.qualified_name, "document text qualified_name")?;
+            require_hash(p.parent, "document text parent")?;
+            validate_text(&p.text, "document text")?;
+            validate_comments(&p.comments, "document text comments")?;
+            Ok(())
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            require_hash(p.qualified_name, "document topic qualified_name")?;
+            require_hash(p.parent, "document topic parent")?;
+            validate_text(&p.title, "document topic title")?;
+            validate_ref_list(&p.paragraphs, "document topic paragraphs")?;
+            validate_object_hashes(&p.children, "document topic children")?;
+            validate_comments(&p.comments, "document topic comments")?;
+            Ok(())
+        }
+        ObjectPayload::DesignStructure(p) => {
+            require_hash(p.qualified_name, "design structure qualified_name")?;
+            validate_parent_ref(p.parent)?;
+            validate_text(&p.title, "design structure title")?;
+            validate_object_hashes(&p.children, "design structure children")?;
+            Ok(())
+        }
+        ObjectPayload::System(p) => {
+            require_hash(p.qualified_name, "system qualified_name")?;
+            require_hash(p.parent, "system parent")?;
+            validate_text(&p.title, "system title")?;
+            validate_object_hashes(&p.children, "system children")?;
+            Ok(())
+        }
+        ObjectPayload::Module(p) => {
+            require_hash(p.qualified_name, "module qualified_name")?;
+            require_hash(p.parent, "module parent")?;
+            validate_text(&p.title, "module title")?;
+            validate_symbol_list(&p.members, "module members", true)?;
+            validate_object_hashes(&p.children, "module children")?;
+            Ok(())
+        }
     }
 }
 
 fn validate_view(p: &ViewPayload) -> Result<()> {
     require_hash(p.files, "view files")?;
     require_hash(p.namespaces, "view namespaces")?;
+    require_hash(p.documents, "view documents")?;
     // p.design may be zero until the design view exists.
     Ok(())
 }
@@ -185,7 +258,11 @@ fn validate_interface_payload(p: &InterfacePayload, top_level: bool) -> Result<(
     Ok(())
 }
 
-fn validate_type_parent_form(parent: ClassParent, top_level: bool, _what: &'static str) -> Result<()> {
+fn validate_type_parent_form(
+    parent: ClassParent,
+    top_level: bool,
+    _what: &'static str,
+) -> Result<()> {
     match (top_level, parent) {
         (true, ClassParent::TopLevel { namespace, .. }) => {
             require_hash(namespace, "top-level namespace parent")
@@ -288,6 +365,38 @@ fn validate_object_hashes(hashes: &[ObjectHash], what: &'static str) -> Result<(
             return Err(FormatError::NonCanonicalList(what));
         }
         previous = Some(*hash);
+    }
+    Ok(())
+}
+
+fn validate_ref_list(hashes: &[SymbolHash], what: &'static str) -> Result<()> {
+    let mut seen = HashSet::with_capacity(hashes.len());
+    for hash in hashes {
+        require_hash(*hash, what)?;
+        if !seen.insert(hash.0.0) {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+    }
+    Ok(())
+}
+
+fn validate_text(text: &str, what: &'static str) -> Result<()> {
+    if text.is_empty() || text.contains('\n') || text.contains('\r') {
+        return Err(FormatError::InvalidValue(what));
+    }
+    Ok(())
+}
+
+fn validate_comments(comments: &[DocComment], what: &'static str) -> Result<()> {
+    let mut previous = 0u32;
+    for comment in comments {
+        if comment.id == 0 || comment.id <= previous {
+            return Err(FormatError::NonCanonicalList(what));
+        }
+        if comment.text.is_empty() {
+            return Err(FormatError::InvalidValue(what));
+        }
+        previous = comment.id;
     }
     Ok(())
 }
@@ -424,11 +533,22 @@ fn encode_payload(object: &DesignObject) -> Result<Vec<u8>> {
         ObjectPayload::File(p) => encode_file(p, &mut out),
         ObjectPayload::Namespace(p) => encode_namespace(p, &mut out),
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => encode_class(p, &mut out),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => encode_interface(p, &mut out),
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            encode_interface(p, &mut out)
+        }
         ObjectPayload::Method(p) => encode_method(p, &mut out),
         ObjectPayload::Function(p) => encode_function(p, &mut out),
         ObjectPayload::Part(p) => encode_part(p, &mut out),
         ObjectPayload::Mixin(p) => encode_mixin(p, &mut out),
+        ObjectPayload::DocumentDirectory(p) => encode_document_directory(p, &mut out),
+        ObjectPayload::Document(p) => encode_document(p, &mut out),
+        ObjectPayload::DocumentSection(p) => encode_document_section(p, &mut out),
+        ObjectPayload::DocumentList(p) => encode_document_list(p, &mut out),
+        ObjectPayload::DocumentText(p) => encode_document_text(p, &mut out),
+        ObjectPayload::DocumentTopic(p) => encode_document_topic(p, &mut out),
+        ObjectPayload::DesignStructure(p) => encode_design_structure(p, &mut out),
+        ObjectPayload::System(p) => encode_system(p, &mut out),
+        ObjectPayload::Module(p) => encode_module(p, &mut out),
     }
     Ok(out)
 }
@@ -447,6 +567,19 @@ fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> 
         Kind::Function => ObjectPayload::Function(decode_function(reader)?),
         Kind::Part => ObjectPayload::Part(decode_part(reader)?),
         Kind::Mixin => ObjectPayload::Mixin(decode_mixin(reader)?),
+        Kind::DocumentDirectory => {
+            ObjectPayload::DocumentDirectory(decode_document_directory(reader)?)
+        }
+        Kind::Document => ObjectPayload::Document(decode_document(reader)?),
+        Kind::DocumentSection => ObjectPayload::DocumentSection(decode_document_section(reader)?),
+        Kind::DocumentList => ObjectPayload::DocumentList(decode_document_list(reader)?),
+        Kind::DocumentText => ObjectPayload::DocumentText(decode_document_text(reader)?),
+        Kind::DocumentTopic => ObjectPayload::DocumentTopic(decode_document_topic(reader)?),
+        Kind::DesignStructure => {
+            ObjectPayload::DesignStructure(decode_design_structure(reader)?)
+        }
+        Kind::System => ObjectPayload::System(decode_system(reader)?),
+        Kind::Module => ObjectPayload::Module(decode_module(reader)?),
     })
 }
 
@@ -455,6 +588,7 @@ fn encode_view(p: &ViewPayload, out: &mut Vec<u8>) {
     put_hash(out, p.files);
     put_hash(out, p.namespaces);
     put_hash(out, p.design);
+    put_hash(out, p.documents);
 }
 
 fn decode_view(r: &mut Reader<'_>) -> Result<ViewPayload> {
@@ -463,6 +597,7 @@ fn decode_view(r: &mut Reader<'_>) -> Result<ViewPayload> {
         files: ObjectHash(Hash32(read_32(r)?)),
         namespaces: ObjectHash(Hash32(read_32(r)?)),
         design: ObjectHash(Hash32(read_32(r)?)),
+        documents: ObjectHash(Hash32(read_32(r)?)),
     })
 }
 
@@ -470,7 +605,7 @@ fn encode_directory(p: &DirectoryPayload, out: &mut Vec<u8>) {
     put_hash(out, p.qualified_name);
     encode_parent_ref(out, p.parent);
     encode_opt_path_source(out, p.source);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     encode_object_hashes(out, &p.children);
 }
 
@@ -479,7 +614,7 @@ fn decode_directory(r: &mut Reader<'_>) -> Result<DirectoryPayload> {
         qualified_name: SymbolHash(Hash32(read_32(r)?)),
         parent: decode_parent_ref(r)?,
         source: decode_opt_path_source(r)?,
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         children: decode_object_hashes(r)?,
     })
 }
@@ -489,7 +624,7 @@ fn encode_file(p: &FilePayload, out: &mut Vec<u8>) {
     put_hash(out, p.parent);
     encode_opt_path_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     encode_object_hashes(out, &p.children);
 }
 
@@ -499,7 +634,7 @@ fn decode_file(r: &mut Reader<'_>) -> Result<FilePayload> {
         parent: SymbolHash(Hash32(read_32(r)?)),
         source: decode_opt_path_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         children: decode_object_hashes(r)?,
     })
 }
@@ -509,7 +644,7 @@ fn encode_namespace(p: &NamespacePayload, out: &mut Vec<u8>) {
     encode_parent_ref(out, p.parent);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     encode_object_hashes(out, &p.children);
 }
 
@@ -519,7 +654,7 @@ fn decode_namespace(r: &mut Reader<'_>) -> Result<NamespacePayload> {
         parent: decode_parent_ref(r)?,
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         children: decode_object_hashes(r)?,
     })
 }
@@ -529,7 +664,7 @@ fn encode_class(p: &ClassPayload, out: &mut Vec<u8>) {
     encode_class_parent(out, p.parent);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     put_hash(out, p.superclass);
     encode_symbols(out, &p.interfaces);
     encode_symbols(out, &p.mixins);
@@ -544,7 +679,7 @@ fn decode_class(r: &mut Reader<'_>) -> Result<ClassPayload> {
         parent: decode_class_parent(r)?,
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         superclass: SymbolHash(Hash32(read_32(r)?)),
         interfaces: decode_symbols(r)?,
         mixins: decode_symbols(r)?,
@@ -559,7 +694,7 @@ fn encode_interface(p: &InterfacePayload, out: &mut Vec<u8>) {
     encode_class_parent(out, p.parent);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     put_hash(out, p.extends);
     encode_dependencies(out, &p.explicit_dependencies);
     encode_dependencies(out, &p.implicit_dependencies);
@@ -572,7 +707,7 @@ fn decode_interface(r: &mut Reader<'_>) -> Result<InterfacePayload> {
         parent: decode_class_parent(r)?,
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         extends: SymbolHash(Hash32(read_32(r)?)),
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
@@ -585,7 +720,7 @@ fn encode_method(p: &MethodPayload, out: &mut Vec<u8>) {
     put_hash(out, p.parent);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     put_hash(out, p.overrides);
     encode_dependencies(out, &p.explicit_dependencies);
     encode_dependencies(out, &p.implicit_dependencies);
@@ -597,7 +732,7 @@ fn decode_method(r: &mut Reader<'_>) -> Result<MethodPayload> {
         parent: SymbolHash(Hash32(read_32(r)?)),
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         overrides: SymbolHash(Hash32(read_32(r)?)),
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
@@ -611,7 +746,7 @@ fn encode_function(p: &FunctionPayload, out: &mut Vec<u8>) {
     put_hash(out, p.module);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     encode_dependencies(out, &p.explicit_dependencies);
     encode_dependencies(out, &p.implicit_dependencies);
 }
@@ -624,7 +759,7 @@ fn decode_function(r: &mut Reader<'_>) -> Result<FunctionPayload> {
         module: SymbolHash(Hash32(read_32(r)?)),
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
     })
@@ -635,7 +770,6 @@ fn encode_part(p: &PartPayload, out: &mut Vec<u8>) {
     put_hash(out, p.parent);
     encode_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
     encode_dependencies(out, &p.explicit_dependencies);
     encode_dependencies(out, &p.implicit_dependencies);
     encode_object_hashes(out, &p.children);
@@ -647,7 +781,6 @@ fn decode_part(r: &mut Reader<'_>) -> Result<PartPayload> {
         parent: SymbolHash(Hash32(read_32(r)?)),
         source: decode_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
         children: decode_object_hashes(r)?,
@@ -659,7 +792,7 @@ fn encode_mixin(p: &MixinPayload, out: &mut Vec<u8>) {
     encode_class_parent(out, p.parent);
     encode_opt_span_source(out, p.source);
     put_raw_hash(out, p.content_hash);
-    put_hash(out, p.design_doc);
+    put_hash(out, p.document);
     encode_symbols(out, &p.on);
     put_hash(out, p.superclass);
     encode_symbols(out, &p.interfaces);
@@ -675,13 +808,181 @@ fn decode_mixin(r: &mut Reader<'_>) -> Result<MixinPayload> {
         parent: decode_class_parent(r)?,
         source: decode_opt_span_source(r)?,
         content_hash: Hash32(read_32(r)?),
-        design_doc: DocHash(Hash32(read_32(r)?)),
+        document: SymbolHash(Hash32(read_32(r)?)),
         on: decode_symbols(r)?,
         superclass: SymbolHash(Hash32(read_32(r)?)),
         interfaces: decode_symbols(r)?,
         mixins: decode_symbols(r)?,
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_document_directory(p: &DocumentDirectoryPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_parent_ref(out, p.parent);
+    encode_object_hashes(out, &p.children);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document_directory(r: &mut Reader<'_>) -> Result<DocumentDirectoryPayload> {
+    Ok(DocumentDirectoryPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_parent_ref(r)?,
+        children: decode_object_hashes(r)?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_document(p: &DocumentPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    encode_symbols(out, &p.sections);
+    encode_object_hashes(out, &p.children);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document(r: &mut Reader<'_>) -> Result<DocumentPayload> {
+    Ok(DocumentPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "document title")?,
+        sections: decode_symbols(r)?,
+        children: decode_object_hashes(r)?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_document_section(p: &DocumentSectionPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    encode_symbols(out, &p.body);
+    encode_symbols(out, &p.sections);
+    encode_object_hashes(out, &p.children);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document_section(r: &mut Reader<'_>) -> Result<DocumentSectionPayload> {
+    Ok(DocumentSectionPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "document section title")?,
+        body: decode_symbols(r)?,
+        sections: decode_symbols(r)?,
+        children: decode_object_hashes(r)?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_document_list(p: &DocumentListPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    encode_symbols(out, &p.items);
+    encode_object_hashes(out, &p.children);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document_list(r: &mut Reader<'_>) -> Result<DocumentListPayload> {
+    Ok(DocumentListPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        items: decode_symbols(r)?,
+        children: decode_object_hashes(r)?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_document_text(p: &DocumentTextPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.text);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document_text(r: &mut Reader<'_>) -> Result<DocumentTextPayload> {
+    Ok(DocumentTextPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        text: read_string(r, "document text")?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_document_topic(p: &DocumentTopicPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    encode_symbols(out, &p.paragraphs);
+    encode_object_hashes(out, &p.children);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_document_topic(r: &mut Reader<'_>) -> Result<DocumentTopicPayload> {
+    Ok(DocumentTopicPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "document topic title")?,
+        paragraphs: decode_symbols(r)?,
+        children: decode_object_hashes(r)?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_design_structure(p: &DesignStructurePayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_parent_ref(out, p.parent);
+    put_string(out, &p.title);
+    put_hash(out, p.document);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_design_structure(r: &mut Reader<'_>) -> Result<DesignStructurePayload> {
+    Ok(DesignStructurePayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_parent_ref(r)?,
+        title: read_string(r, "design structure title")?,
+        document: SymbolHash(Hash32(read_32(r)?)),
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_system(p: &SystemPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    put_hash(out, p.document);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_system(r: &mut Reader<'_>) -> Result<SystemPayload> {
+    Ok(SystemPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "system title")?,
+        document: SymbolHash(Hash32(read_32(r)?)),
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_module(p: &ModulePayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    put_hash(out, p.document);
+    encode_symbols(out, &p.members);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_module(r: &mut Reader<'_>) -> Result<ModulePayload> {
+    Ok(ModulePayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "module title")?,
+        document: SymbolHash(Hash32(read_32(r)?)),
+        members: decode_symbols(r)?,
         children: decode_object_hashes(r)?,
     })
 }
@@ -790,6 +1091,28 @@ fn encode_object_hashes(out: &mut Vec<u8>, hashes: &[ObjectHash]) {
 
 fn decode_object_hashes(r: &mut Reader<'_>) -> Result<Vec<ObjectHash>> {
     decode_vec(r, |r| Ok(ObjectHash(Hash32(read_32(r)?))))
+}
+
+fn encode_comments(out: &mut Vec<u8>, comments: &[DocComment]) {
+    put_len(out, comments.len());
+    for comment in comments {
+        out.extend_from_slice(&comment.id.to_le_bytes());
+        out.push(if comment.resolved { 1 } else { 0 });
+        put_string(out, &comment.text);
+    }
+}
+
+fn decode_comments(r: &mut Reader<'_>) -> Result<Vec<DocComment>> {
+    decode_vec(r, |r| {
+        let id = r.read_u32()?;
+        let resolved = match r.read_u8()? {
+            0 => false,
+            1 => true,
+            tag => return Err(FormatError::InvalidTag("comment status", tag)),
+        };
+        let text = read_string(r, "comment text")?;
+        Ok(DocComment { id, text, resolved })
+    })
 }
 
 fn encode_symbols(out: &mut Vec<u8>, hashes: &[SymbolHash]) {
@@ -1068,6 +1391,7 @@ mod tests {
                 files: o(2),
                 namespaces: o(3),
                 design: ObjectHash::ZERO,
+                documents: o(4),
             }),
         ));
     }
@@ -1080,7 +1404,7 @@ mod tests {
                 qualified_name: s(1),
                 parent: ParentRef::View,
                 source: Some(PathSource { path: s(2) }),
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![o(3), o(4)],
             }),
         ));
@@ -1107,7 +1431,7 @@ mod tests {
                     },
                 }),
                 content_hash: Hash32([5; 32]),
-                design_doc: d(6),
+                document: s(6),
                 superclass: s(7),
                 interfaces: vec![s(8)],
                 mixins: vec![s(9)],
@@ -1143,7 +1467,7 @@ mod tests {
                 parent: ClassParent::Nested { parent: s(2) },
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 superclass: s(3),
                 interfaces: vec![s(4)],
                 mixins: vec![s(5)],
@@ -1163,7 +1487,7 @@ mod tests {
                 parent: ClassParent::Nested { parent: s(2) },
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 extends: s(3),
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
@@ -1181,7 +1505,7 @@ mod tests {
                 parent: s(2),
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 overrides: s(3),
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
@@ -1196,7 +1520,7 @@ mod tests {
                 module: SymbolHash::ZERO,
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
             }),
@@ -1220,7 +1544,6 @@ mod tests {
                     },
                 },
                 content_hash: Hash32([4; 32]),
-                design_doc: DocHash::ZERO,
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
                 children: vec![],
@@ -1237,13 +1560,139 @@ mod tests {
                 },
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 on: vec![s(3), s(4)],
                 superclass: SymbolHash::ZERO,
                 interfaces: vec![s(5)],
                 mixins: vec![s(6)],
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
+                children: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn roundtrips_document_objects() {
+        roundtrip(DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: s(1),
+                parent: ParentRef::View,
+                children: vec![],
+                comments: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::Document,
+            ObjectPayload::Document(DocumentPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                title: "Auth".into(),
+                sections: vec![s(3), s(4)],
+                children: vec![o(5), o(6)],
+                comments: vec![DocComment {
+                    id: 1,
+                    text: "needs examples".into(),
+                    resolved: false,
+                }],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::DocumentSection,
+            ObjectPayload::DocumentSection(DocumentSectionPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                title: "Login".into(),
+                body: vec![s(3), s(4)],
+                sections: vec![s(5)],
+                children: vec![o(6), o(7), o(8)],
+                comments: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::DocumentList,
+            ObjectPayload::DocumentList(DocumentListPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                items: vec![s(3), s(4)],
+                children: vec![o(5), o(6)],
+                comments: vec![DocComment {
+                    id: 1,
+                    text: "keep sorted".into(),
+                    resolved: true,
+                }],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::DocumentText,
+            ObjectPayload::DocumentText(DocumentTextPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: "one line".into(),
+                comments: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::DocumentTopic,
+            ObjectPayload::DocumentTopic(DocumentTopicPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                title: "Responsibilities".into(),
+                paragraphs: vec![s(3), s(4)],
+                children: vec![o(5), o(6)],
+                comments: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_document_text() {
+        let object = DesignObject::new(
+            Kind::DocumentText,
+            ObjectPayload::DocumentText(DocumentTextPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: "two\nlines".into(),
+                comments: vec![],
+            }),
+        );
+        assert!(matches!(
+            validate_object(&object),
+            Err(FormatError::InvalidValue("document text"))
+        ));
+    }
+
+    #[test]
+    fn roundtrips_structure_objects() {
+        roundtrip(DesignObject::new(
+            Kind::DesignStructure,
+            ObjectPayload::DesignStructure(DesignStructurePayload {
+                qualified_name: s(1),
+                parent: ParentRef::View,
+                title: "设计结构".to_owned(),
+                document: SymbolHash::ZERO,
+                children: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::System,
+            ObjectPayload::System(SystemPayload {
+                qualified_name: s(2),
+                parent: s(1),
+                title: "应用".to_owned(),
+                document: s(3),
+                children: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::Module,
+            ObjectPayload::Module(ModulePayload {
+                qualified_name: s(4),
+                parent: s(2),
+                title: "核心".to_owned(),
+                document: s(3),
+                members: vec![s(7), s(8)],
                 children: vec![],
             }),
         ));
@@ -1273,6 +1722,7 @@ mod tests {
                 files: o(1),
                 namespaces: o(2),
                 design: ObjectHash::ZERO,
+                documents: o(3),
             }),
         );
         let mut bytes = encode_object(&object).unwrap();
@@ -1317,7 +1767,7 @@ mod tests {
                 qualified_name: SymbolHash::ZERO,
                 parent: ParentRef::View,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         );
@@ -1333,7 +1783,7 @@ mod tests {
                 parent: s(2),
                 source: None,
                 content_hash: Hash32([3; 32]),
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         );
@@ -1349,7 +1799,7 @@ mod tests {
                 parent: s(2),
                 source: Some(PathSource { path: s(3) }),
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         );
@@ -1369,7 +1819,7 @@ mod tests {
                 },
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 superclass: SymbolHash::ZERO,
                 interfaces: vec![s(3), s(2)],
                 mixins: vec![],
@@ -1398,7 +1848,6 @@ mod tests {
                     },
                 },
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
                 children: vec![],

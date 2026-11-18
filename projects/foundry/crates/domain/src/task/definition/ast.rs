@@ -58,6 +58,10 @@ pub struct WorkflowStage {
     /// stage. Falls back to the workflow's initial stage when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reject_to: Option<String>,
+    /// Stage to enter when a retry is requested from this stage. Only failure
+    /// stages declare it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_to: Option<String>,
 }
 
 impl WorkflowStage {

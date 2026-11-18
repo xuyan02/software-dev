@@ -329,9 +329,7 @@ impl AgentLogFiles {
                     .unwrap_or_default();
                 Ok(format!("{}:{}", metadata.len(), modified.as_nanos()))
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok("none".to_string())
-            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("none".to_string()),
             Err(error) => Err(error),
         }
     }
@@ -384,6 +382,79 @@ pub fn init_tracing(default_filter: &str) {
         .with_target(true)
         .with_ansi(std::io::stdout().is_terminal())
         .try_init();
+}
+
+/// Initialize tracing for agent processes captured into the console log.
+/// The agent log viewer only shows message content, so omit timestamp, level,
+/// target and source location.
+pub fn init_agent_tracing(default_filter: &str) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_filter));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .without_time()
+        .with_level(false)
+        .with_target(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_ansi(false)
+        .try_init();
+}
+
+/// Remove the tracing prefix from captured agent log lines.
+///
+/// Old log files still contain `timestamp LEVEL target: message`; the viewer
+/// strips it so it can show only message content.
+pub fn strip_agent_log_prefixes(log: &str) -> String {
+    log.lines()
+        .map(strip_agent_log_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn strip_agent_log_line(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    let Some(space) = trimmed.find(|character: char| character.is_whitespace()) else {
+        return line;
+    };
+    let timestamp = &trimmed[..space];
+    if !looks_like_timestamp(timestamp) {
+        return line;
+    }
+    let rest = trimmed[space..].trim_start();
+    let mut level_rest = None;
+    for level in ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] {
+        if let Some(value) = rest.strip_prefix(level) {
+            level_rest = Some(value);
+            break;
+        }
+    }
+    let Some(rest) = level_rest else {
+        return line;
+    };
+    let rest = rest.trim_start();
+    let message = rest
+        .split_once(": ")
+        .map(|(_, message)| message)
+        .unwrap_or(rest);
+    strip_shell_output_prefix(message)
+}
+
+fn strip_shell_output_prefix(message: &str) -> &str {
+    let Some(rest) = message.strip_prefix("shell output stream=\"") else {
+        return message;
+    };
+    let Some(index) = rest.find("\" line=") else {
+        return message;
+    };
+    &rest[index + "\" line=".len()..]
+}
+
+fn looks_like_timestamp(value: &str) -> bool {
+    value.len() >= 20
+        && value.starts_with(|character: char| character.is_ascii_digit())
+        && value.contains('T')
+        && value.ends_with('Z')
 }
 
 #[cfg(test)]
@@ -525,6 +596,18 @@ mod tests {
         );
         assert_eq!(config_home(Some(OsString::new())), None);
         assert_eq!(config_home(None), None);
+    }
+
+    #[test]
+    fn strips_agent_log_prefixes() {
+        let log = "2026-11-16T16:31:01.059632Z  INFO foundry_agentd: dispatcher sweep started\n\
+2026-11-16T16:31:01.583506Z  INFO foundry_agent_runtime::tools: count=0\n\
+2026-11-16T16:31:01.600000Z  INFO foundry_agentd::shell: shell output stream=\"stdout\" line=contents\n\
+plain output\n";
+        assert_eq!(
+            strip_agent_log_prefixes(log),
+            "dispatcher sweep started\ncount=0\ncontents\nplain output"
+        );
     }
 
     #[test]

@@ -32,14 +32,37 @@ type TaskRow = (
     i32,
     String,
     String,
+    String,
     Option<String>,
     Option<String>,
+    Value,
     Value,
     Value,
     OffsetDateTime,
     OffsetDateTime,
     Option<OffsetDateTime>,
 );
+
+#[derive(sqlx::FromRow)]
+struct TaskListSqlRow {
+    id: Uuid,
+    project_id: Uuid,
+    parent_id: Option<Uuid>,
+    workflow: String,
+    workflow_version: i32,
+    title: String,
+    description: String,
+    state: String,
+    stage: Option<String>,
+    result: Option<String>,
+    stage_variables: Value,
+    task_variables: Value,
+    input: Value,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+    completed_at: Option<OffsetDateTime>,
+    dependencies_ready: bool,
+}
 
 fn trigger_kinds() -> Vec<String> {
     [
@@ -78,8 +101,8 @@ impl TaskRepository for PostgresStore {
 
     async fn get(&self, id: Uuid) -> Result<Option<TaskDAO>, RepoError> {
         let row: Option<TaskRow> = sqlx::query_as(
-            "select id, project_id, parent_id, workflow, workflow_version, title, state, stage, \
-             result, stage_variables, task_variables, created_at, updated_at, completed_at \
+            "select id, project_id, parent_id, workflow, workflow_version, title, description, \
+             state, stage, result, stage_variables, task_variables, input, created_at, updated_at, completed_at \
              from tasks where id = $1",
         )
         .bind(id)
@@ -98,29 +121,13 @@ impl TaskRepository for PostgresStore {
         let dispatch_state = filter
             .dispatch_state
             .map(foundry_domain::TaskDispatchState::as_str);
-        let rows: Vec<(
-            Uuid,
-            Uuid,
-            Option<Uuid>,
-            String,
-            i32,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Value,
-            Value,
-            OffsetDateTime,
-            OffsetDateTime,
-            Option<OffsetDateTime>,
-            bool,
-        )> = sqlx::query_as(
+        let rows: Vec<TaskListSqlRow> = sqlx::query_as(
             "select t.id, t.project_id, t.parent_id, t.workflow, t.workflow_version, t.title, \
-             t.state, t.stage, t.result, t.stage_variables, t.task_variables, t.created_at, \
+             t.description, t.state, t.stage, t.result, t.stage_variables, t.task_variables, t.input, t.created_at, \
              t.updated_at, t.completed_at, t.dependencies_ready \
              from ( \
                  select t.id, t.project_id, t.parent_id, t.workflow, t.workflow_version, t.title, \
-                 t.state, t.stage, t.result, t.stage_variables, t.task_variables, t.created_at, \
+                 t.description, t.state, t.stage, t.result, t.stage_variables, t.task_variables, t.input, t.created_at, \
                  t.updated_at, \
                  t.completed_at, not exists ( \
                      select 1 from task_dependencies d \
@@ -165,23 +172,26 @@ impl TaskRepository for PostgresStore {
 
         rows.into_iter()
             .map(
-                |(
-                    id,
-                    project_id,
-                    parent_id,
-                    workflow,
-                    workflow_version,
-                    title,
-                    state,
-                    stage,
-                    result,
-                    stage_variables,
-                    task_variables,
-                    created_at,
-                    updated_at,
-                    completed_at,
-                    dependencies_ready,
-                )| {
+                |row| {
+                    let TaskListSqlRow {
+                        id,
+                        project_id,
+                        parent_id,
+                        workflow,
+                        workflow_version,
+                        title,
+                        description,
+                        state,
+                        stage,
+                        result,
+                        stage_variables,
+                        task_variables,
+                        input,
+                        created_at,
+                        updated_at,
+                        completed_at,
+                        dependencies_ready,
+                    } = row;
                     Ok(TaskListRow {
                         task: TaskDAO {
                             id,
@@ -190,6 +200,7 @@ impl TaskRepository for PostgresStore {
                             workflow: WorkflowId::new(workflow),
                             workflow_version: workflow_version.max(0) as u32,
                             title,
+                            description,
                             state: parse_enum(&state)?,
                             stage: stage.map(foundry_domain::StageKey::new),
                             result: result.map(TaskResult::new),
@@ -197,6 +208,7 @@ impl TaskRepository for PostgresStore {
                                 .map_err(|error| RepoError::Backend(error.to_string()))?,
                             task_variables: serde_json::from_value(task_variables)
                                 .map_err(|error| RepoError::Backend(error.to_string()))?,
+                            input,
                             created_at,
                             updated_at,
                             completed_at,
@@ -231,8 +243,10 @@ impl TaskRepository for PostgresStore {
     }
 
     async fn actors(&self, task_id: Uuid) -> Result<Vec<TaskActorRow>, RepoError> {
-        let rows: Vec<(String, Uuid, String, bool, Option<String>)> = sqlx::query_as(
-            "select a.role_key, a.account_id, acc.display_name, a.active, a.work \
+        let rows: Vec<(String, Uuid, String, Option<Uuid>, bool, Option<String>)> = sqlx::query_as(
+            "select a.role_key, a.account_id, acc.display_name, \
+                    (select d.id from agent_definitions d where d.account_id = a.account_id limit 1), \
+                    a.active, a.work \
              from task_actors a join accounts acc on acc.id = a.account_id \
              where a.task_id = $1 order by a.active desc, a.role_key, acc.display_name",
         )
@@ -243,12 +257,15 @@ impl TaskRepository for PostgresStore {
         Ok(rows
             .into_iter()
             .map(
-                |(role_key, account_id, display_name, active, work)| TaskActorRow {
-                    role_key: foundry_domain::RoleKey::new(role_key),
-                    account_id,
-                    display_name,
-                    active,
-                    work,
+                |(role_key, account_id, display_name, agent_definition_id, active, work)| {
+                    TaskActorRow {
+                        role_key: foundry_domain::RoleKey::new(role_key),
+                        account_id,
+                        display_name,
+                        agent_definition_id,
+                        active,
+                        work,
+                    }
                 },
             )
             .collect())
@@ -703,8 +720,8 @@ async fn load_aggregate(
     task_id: Uuid,
 ) -> Result<TaskAggregate, RepoError> {
     let row: Option<TaskRow> = sqlx::query_as(
-        "select id, project_id, parent_id, workflow, workflow_version, title, state, stage, \
-         result, stage_variables, task_variables, created_at, updated_at, completed_at \
+        "select id, project_id, parent_id, workflow, workflow_version, title, description, \
+         state, stage, result, stage_variables, task_variables, input, created_at, updated_at, completed_at \
          from tasks where id = $1 for update",
     )
     .bind(task_id)
@@ -969,9 +986,9 @@ pub(crate) async fn insert_task(
 ) -> Result<(), RepoError> {
     sqlx::query(
         "insert into tasks \
-         (id, project_id, parent_id, workflow, workflow_version, title, state, stage, result, \
-          stage_variables, task_variables, created_at, updated_at, completed_at) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+         (id, project_id, parent_id, workflow, workflow_version, title, description, state, stage, result, \
+          stage_variables, task_variables, input, created_at, updated_at, completed_at) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(task.id)
     .bind(task.project_id)
@@ -979,6 +996,7 @@ pub(crate) async fn insert_task(
     .bind(task.workflow.as_str())
     .bind(task.workflow_version as i32)
     .bind(&task.title)
+    .bind(&task.description)
     .bind(task.state.as_str())
     .bind(task.stage.as_ref().map(foundry_domain::StageKey::as_str))
     .bind(task.result.as_ref().map(TaskResult::as_str))
@@ -990,6 +1008,7 @@ pub(crate) async fn insert_task(
         serde_json::to_value(&task.task_variables)
             .map_err(|error| RepoError::Backend(error.to_string()))?,
     )
+    .bind(&task.input)
     .bind(task.created_at)
     .bind(task.updated_at)
     .bind(task.completed_at)
@@ -1074,11 +1093,13 @@ fn row_to_task(row: TaskRow) -> Result<TaskDAO, RepoError> {
         workflow,
         workflow_version,
         title,
+        description,
         state,
         stage,
         result,
         stage_variables,
         task_variables,
+        input,
         created_at,
         updated_at,
         completed_at,
@@ -1090,6 +1111,7 @@ fn row_to_task(row: TaskRow) -> Result<TaskDAO, RepoError> {
         workflow: WorkflowId::new(workflow),
         workflow_version: workflow_version.max(0) as u32,
         title,
+        description,
         state: parse_enum(&state)?,
         stage: stage.map(foundry_domain::StageKey::new),
         result: result.map(TaskResult::new),
@@ -1097,6 +1119,7 @@ fn row_to_task(row: TaskRow) -> Result<TaskDAO, RepoError> {
             .map_err(|error| RepoError::Backend(error.to_string()))?,
         task_variables: serde_json::from_value(task_variables)
             .map_err(|error| RepoError::Backend(error.to_string()))?,
+        input,
         created_at,
         updated_at,
         completed_at,

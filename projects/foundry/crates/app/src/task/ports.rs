@@ -83,6 +83,7 @@ pub struct TaskActorRow {
     pub role_key: RoleKey,
     pub account_id: Uuid,
     pub display_name: String,
+    pub agent_definition_id: Option<Uuid>,
     pub active: bool,
     pub work: Option<String>,
 }

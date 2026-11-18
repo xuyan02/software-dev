@@ -10,12 +10,15 @@ use foundry_adapter_policy::DemoPolicy;
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
     AccountFilter, AccountRepository, AccountService, AnchorDocumentService,
-    AnchorDocumentUseCases, AuthService, CreateProject, IssueRepository, IssueService,
-    ProjectRepository, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases,
-    TaskDispatcher, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
-    WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    AnchorDocumentUseCases, AuthService, CreateProject, DesignSpaceGateway,
+    DesignSpaceGatewayError, IssueRepository, IssueService, MergeRequestRepository,
+    MergeRequestService, ProjectRepository, ProjectService, RequirementsDocumentService,
+    RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases,
+    TaskRepository, TaskService, TaskUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
-use foundry_domain::WorkflowId;
+use foundry_domain::{
+    Account, AccountKind, AccountRole, ProjectRole, RoleKey, TaskState, WorkflowId,
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -23,6 +26,79 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 struct TestDesignSpaces;
+
+/// Stable branches for merge-request API tests; branch movement is a no-op
+/// because those tests assert the Task-driven approval path.
+struct TestMergeGateway;
+
+const MR_SOURCE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const MR_TARGET: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+#[async_trait::async_trait]
+impl DesignSpaceGateway for TestMergeGateway {
+    async fn branches(
+        &self,
+        _project: &foundry_domain::Project,
+    ) -> Result<Vec<String>, DesignSpaceGatewayError> {
+        Ok(vec!["main".to_string(), "feature".to_string()])
+    }
+
+    async fn branch_head(
+        &self,
+        _project: &foundry_domain::Project,
+        branch: &str,
+    ) -> Result<Option<String>, DesignSpaceGatewayError> {
+        Ok(Some(match branch {
+            "main" => MR_TARGET.to_string(),
+            "feature" => MR_SOURCE.to_string(),
+            _ => return Ok(None),
+        }))
+    }
+
+    async fn is_ancestor(
+        &self,
+        _project: &foundry_domain::Project,
+        ancestor: &str,
+        descendant: &str,
+    ) -> Result<bool, DesignSpaceGatewayError> {
+        Ok(ancestor == MR_TARGET && descendant == MR_SOURCE)
+    }
+
+    async fn diff(
+        &self,
+        _project: &foundry_domain::Project,
+        _from_commit: &str,
+        _to_commit: &str,
+    ) -> Result<Vec<foundry_domain::MergeRequestChange>, DesignSpaceGatewayError> {
+        Ok(Vec::new())
+    }
+
+    async fn comment_count(
+        &self,
+        _project: &foundry_domain::Project,
+        _commit: &str,
+    ) -> Result<usize, DesignSpaceGatewayError> {
+        Ok(0)
+    }
+
+    async fn fast_forward(
+        &self,
+        _project: &foundry_domain::Project,
+        _target_branch: &str,
+        _expected_target: &str,
+        _source_commit: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        Ok(())
+    }
+
+    async fn delete_branch(
+        &self,
+        _project: &foundry_domain::Project,
+        _branch: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        Ok(())
+    }
+}
 
 #[async_trait::async_trait]
 impl foundry_app::ports::DesignSpaceProvisioner for TestDesignSpaces {
@@ -80,7 +156,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
     let tasks = Arc::new(TaskService::new(
         task_repository,
         dispatcher.clone(),
-        catalog,
+        Arc::clone(&catalog),
     ));
     let workflows_admin: Arc<dyn WorkflowUseCases> = Arc::new(WorkflowService::new(
         Arc::clone(&store),
@@ -106,6 +182,14 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
+    let merge_requests = Arc::new(MergeRequestService::new(
+        Arc::clone(&store) as Arc<dyn MergeRequestRepository>,
+        Arc::clone(&tasks) as Arc<dyn TaskUseCases>,
+        dispatcher.clone(),
+        Arc::clone(&catalog),
+        Arc::clone(&store) as Arc<dyn AccountRepository>,
+        Arc::new(TestMergeGateway),
+    ));
 
     let project = projects
         .create(
@@ -115,7 +199,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
                 description: None,
                 git_repository: "git@example.com:test/repo.git".to_string(),
                 git_branch: None,
-                design_space_branch: None,
                 root_workflow_id: WorkflowId::new("project"),
             },
         )
@@ -146,6 +229,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         )),
         editor: Arc::new(foundry_api_http::EditorAssets::new(editor_dir)),
         design_space: None,
+        merge_requests: merge_requests.clone(),
     });
 
     let token = login(&router, "admin", "admin-password").await;
@@ -443,7 +527,7 @@ async fn only_owners_manage_projects_and_archived_projects_can_be_restored() {
     );
     assert_eq!(project["git_repository"], "git@example.com:test/repo.git");
     assert_eq!(project["git_branch"], "main");
-    assert_eq!(project["design_space_branch"], "main");
+    assert_eq!(project["design_space_branch"], "source");
     let project_id = project["id"].as_str().unwrap().to_string();
 
     body_json(
@@ -1255,7 +1339,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        16
+        18
     );
 
     let created = body_json(
@@ -1305,7 +1389,7 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
     let tasks = Arc::new(TaskService::new(
         task_repository,
         dispatcher.clone(),
-        catalog,
+        Arc::clone(&catalog),
     ));
     let workflows_admin: Arc<dyn WorkflowUseCases> = Arc::new(WorkflowService::new(
         Arc::clone(&store),
@@ -1330,6 +1414,14 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&store),
         Arc::clone(&store),
         Arc::clone(&events),
+    ));
+    let merge_requests = Arc::new(MergeRequestService::new(
+        Arc::clone(&store) as Arc<dyn MergeRequestRepository>,
+        Arc::clone(&tasks) as Arc<dyn TaskUseCases>,
+        dispatcher.clone(),
+        Arc::clone(&catalog),
+        Arc::clone(&store) as Arc<dyn AccountRepository>,
+        Arc::new(TestMergeGateway),
     ));
     let issues = IssueService::new(
         Arc::clone(&store),
@@ -1361,6 +1453,7 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         setup: Arc::clone(&setup),
         editor: Arc::new(foundry_api_http::EditorAssets::new(missing_editor_dir())),
         design_space: None,
+        merge_requests,
     });
 
     // Every route is blocked and API calls get a 503.
@@ -2040,7 +2133,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 16);
+    assert_eq!(platform.len(), 18);
     assert!(
         platform
             .iter()
@@ -2208,7 +2301,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 17);
+    assert_eq!(own.as_array().unwrap().len(), 19);
 }
 
 #[tokio::test]
@@ -4047,4 +4140,465 @@ async fn anchor_annotations_are_anchored_and_become_stale() {
     )
     .await;
     assert_eq!(stale[0]["status"], "stale");
+}
+
+#[tokio::test]
+async fn merge_request_approval_and_merge_use_the_review_task() {
+    let harness = harness().await;
+    let reviewer_id = create_account(&harness, "reviewer", "human").await;
+    let _ = reviewer_id;
+    body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/projects/{}/members", harness.project_id),
+            Some(&harness.admin_token),
+            None,
+            json!({ "handle": "reviewer", "role": "maintainer" }),
+        ),
+    )
+    .await;
+
+    let created = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/projects/{}/merge-requests", harness.project_id),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "title": "Land feature",
+                "description": "Design-space merge",
+                "source_branch": "feature",
+                "target_branch": "main"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(created["status"], "reviewing");
+    let merge_request_id = created["merge_request"]["id"].as_str().unwrap().to_string();
+    let task_id = created["task"]["id"].as_str().unwrap().to_string();
+
+    let reviewer_token = login(&harness.router, "reviewer", "reviewer-password").await;
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{task_id}/operations"),
+            Some(&reviewer_token),
+            None,
+            json!({
+                "operation": "review:review_approved",
+                "idempotency_key": "mr-approve-1"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let detail = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!(
+                "/api/v1/projects/{}/merge-requests/{merge_request_id}",
+                harness.project_id
+            ),
+            Some(&reviewer_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(detail["status"], "approved");
+    assert!(
+        detail["task"]["allowed_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|operation| operation["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with(":merge")))
+    );
+
+    let merged = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/merge-requests/{merge_request_id}/merge",
+                harness.project_id
+            ),
+            Some(&reviewer_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(merged["status"], "merged");
+    assert_eq!(merged["merge_request"]["merge_commit"], MR_SOURCE);
+    assert_eq!(merged["task"]["result"], "merged");
+}
+
+#[tokio::test]
+async fn spawns_children_with_input_and_can_retry_a_failed_task() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{}", harness.project_id),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    let root_task_id = project["project"]["root_task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let children = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{root_task_id}/children"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "sequential": true,
+                "tasks": [
+                    {
+                        "workflow": "code_summary_group",
+                        "title": "Group 1",
+                        "description": "处理 src/a.rs 的设计总结，目标为集成分支 design-consistency/root。",
+                        "input": { "files": ["src/a.rs"], "target_branch": "design-consistency/root" }
+                    },
+                    {
+                        "workflow": "code_summary_group",
+                        "title": "Group 2",
+                        "description": "处理 src/b.rs 的设计总结，目标为集成分支 design-consistency/root。",
+                        "input": { "files": ["src/b.rs"], "target_branch": "design-consistency/root" }
+                    }
+                ]
+            }),
+        ),
+    )
+    .await;
+    let children = children.as_array().unwrap();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0]["input"]["files"][0], "src/a.rs");
+    assert_eq!(children[0]["parent_id"], root_task_id);
+    assert_eq!(children[1]["dependencies"][0]["task_id"], children[0]["id"]);
+    let child_id = children[0]["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+
+    // Process creation and bind the test administrator to the summarizer role.
+    harness.dispatcher.process(child_id, None).await.unwrap();
+    for role in [
+        "summarizer",
+        "style_reviewer",
+        "content_reviewer",
+        "merger",
+        "conflict_resolver",
+    ] {
+        harness
+            .dispatcher
+            .process(
+                child_id,
+                Some(TaskCommand::BindActor {
+                    role: RoleKey::new(role),
+                    account_id: harness.admin_id,
+                    bound_by: harness.admin_id,
+                }),
+            )
+            .await
+            .unwrap();
+    }
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{child_id}/operations"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "operation": "summary:failed", "idempotency_key": "fail-1" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let failed = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{child_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(failed["stage"], "failed");
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{child_id}/retry"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let retried = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{child_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(retried["stage"], "summary");
+    assert_eq!(retried["state"], "in_progress");
+    assert_eq!(retried["input"]["files"][0], "src/a.rs");
+}
+
+#[tokio::test]
+async fn abandons_a_failed_task() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{}", harness.project_id),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    let root_task_id = project["project"]["root_task_id"].as_str().unwrap();
+    let children = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{root_task_id}/children"),
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "tasks": [{
+                    "workflow": "code_summary_group",
+                    "title": "Group",
+                    "description": "处理 src/a.rs 的设计总结。",
+                    "input": { "files": ["src/a.rs"] }
+                }]
+            }),
+        ),
+    )
+    .await;
+    let child_id = children[0]["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    harness.dispatcher.process(child_id, None).await.unwrap();
+    for role in [
+        "summarizer",
+        "style_reviewer",
+        "content_reviewer",
+        "merger",
+        "conflict_resolver",
+    ] {
+        harness
+            .dispatcher
+            .process(
+                child_id,
+                Some(TaskCommand::BindActor {
+                    role: RoleKey::new(role),
+                    account_id: harness.admin_id,
+                    bound_by: harness.admin_id,
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{child_id}/operations"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "operation": "summary:failed", "idempotency_key": "fail-abandon" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{child_id}/abandon"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let abandoned = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{child_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(abandoned["state"], "completed");
+    assert_eq!(abandoned["result"], "abandoned");
+    assert_eq!(abandoned["dispatch_state"], "closed");
+    let _ = TaskState::Completed;
+}
+
+#[tokio::test]
+async fn technical_design_consistency_can_be_a_project_root_workflow() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "name": "Consistency",
+                "description": null,
+                "git_repository": "git@example.com:test/consistency.git",
+                "root_workflow_id": "design_consistency_maintenance"
+            }),
+        ),
+    )
+    .await;
+    assert!(project["root_task_id"].is_string());
+    let project_id = project["id"].as_str().unwrap();
+    let detail = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{project_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    let root_task_id = detail["project"]["root_task_id"].as_str().unwrap();
+    let task = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{root_task_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(task["workflow"], "design_consistency_maintenance");
+    assert_eq!(task["stage"], "dispatch");
+    let root_task_id = root_task_id.to_string();
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{root_task_id}/actors"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "role": "acceptor", "account_id": harness.admin_id }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let task = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{root_task_id}"),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert!(
+        task["actors"].as_array().unwrap().iter().any(|actor| {
+            actor["role_key"] == "acceptor"
+                && actor["account_id"] == harness.admin_id.to_string()
+        }),
+        "{task}"
+    );
+}
+
+#[tokio::test]
+async fn human_task_roles_reject_agent_accounts() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "name": "Agent binding",
+                "description": null,
+                "git_repository": "git@example.com:test/agent-binding.git",
+                "root_workflow_id": "design_consistency_maintenance"
+            }),
+        ),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let root_task_id = project["root_task_id"].as_str().unwrap();
+
+    let agent = Account::new(
+        "agent-test",
+        "Agent Test",
+        AccountKind::Agent,
+        AccountRole::Member,
+        None,
+        None,
+    )
+    .unwrap();
+    AccountRepository::insert(harness.store.as_ref(), &agent)
+        .await
+        .unwrap();
+    let mut stored = ProjectRepository::get(harness.store.as_ref(), project_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let version = stored.version;
+    stored.add_member(agent.id, ProjectRole::Member).unwrap();
+    ProjectRepository::save(harness.store.as_ref(), &stored, version)
+        .await
+        .unwrap();
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{root_task_id}/actors"),
+            Some(&harness.admin_token),
+            None,
+            json!({ "role": "acceptor", "account_id": agent.id }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(body.contains("active human project member"), "{body}");
 }

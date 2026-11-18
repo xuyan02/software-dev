@@ -32,8 +32,6 @@ pub struct CreateProject {
     pub git_repository: String,
     /// Branch of the git repository. Defaults to `main`.
     pub git_branch: Option<String>,
-    /// Branch of the project's design space. Defaults to `main`.
-    pub design_space_branch: Option<String>,
     pub root_workflow_id: WorkflowId,
 }
 
@@ -84,7 +82,6 @@ pub struct UpdateProject {
     pub name: Option<String>,
     pub description: Option<Option<String>>,
     pub git_branch: Option<String>,
-    pub design_space_branch: Option<String>,
     pub status: Option<ProjectStatus>,
 }
 

@@ -44,7 +44,6 @@ impl History {
         )));
         self.messages.extend(tail);
     }
-
 }
 
 /// State shared by all nodes in one graph run.

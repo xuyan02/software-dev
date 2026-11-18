@@ -11,8 +11,10 @@ use clap::Parser;
 use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    FoundryClient, ProjectTool, Shell, ShellOutput, ShellTool, TaskAssignAgentTool, TaskStartTool,
-    TasksReadyListTool, ToolError, ToolRegistry, compose_system_prompt,
+    FoundryClient, MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool,
+    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool, TaskGetTool, TaskHistoryTool,
+    TaskOperationTool, TaskSpawnChildrenTool, TaskStartTool, TasksReadyListTool, ToolError,
+    ToolRegistry, compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
 use graph_agent::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
@@ -65,7 +67,7 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    foundry_shared::init_tracing(
+    foundry_shared::init_agent_tracing(
         "foundry_agentd=info,foundry_agent_runtime=info,graph_agent=info",
     );
     let config = Config::from_args();
@@ -144,14 +146,9 @@ impl Shell for CapsuleShell {
         );
         let output = self
             .capsule
-            .exec_streaming(&command, |stream, line| {
+            .exec_streaming(&command, |_stream, line| {
                 if !line.is_empty() {
-                    tracing::info!(
-                        target: "foundry_agentd::shell",
-                        stream,
-                        line = %truncate_log_line(line),
-                        "shell output"
-                    );
+                    tracing::info!(target: "foundry_agentd::shell", "{}", truncate_log_line(line));
                 }
             })
             .await
@@ -275,7 +272,7 @@ async fn run_dispatcher_watcher(
     let client = Arc::new(FoundryClient::new(
         &config.foundry_url,
         &config.foundry_token,
-        "",
+        definition.project_id.to_string(),
     ));
     let tools = build_tools(definition, &client, shell.clone())?;
     let runtime = build_runtime(definition, model, tools, shell)?;
@@ -368,6 +365,7 @@ async fn task_context(client: &FoundryClient, task_id: Uuid, account_id: Uuid) -
         "state": task.get("state"),
         "stage": task.get("stage"),
         "result": task.get("result"),
+        "input": task.get("input"),
         "role_specs": task.get("role_specs"),
         "actors": task.get("actors"),
         "allowed_operations": task.get("allowed_operations"),
@@ -397,11 +395,12 @@ async fn execute_task(
     let tools = build_tools(definition, &client, shell.clone())?;
     let runtime = build_runtime(definition, model, tools, shell.clone())?;
 
-    let is_codesummary = definition.role.starts_with("code_summary");
-    if is_codesummary {
+    if definition.shell {
         let Some(shell) = shell.as_ref() else {
-            finish_codesummary(&client, task, false).await;
-            anyhow::bail!("CodeSummary agent has no shell");
+            if definition.role.ends_with(":summarizer") {
+                finish_codesummary(&client, task, false).await;
+            }
+            anyhow::bail!("shell agent has no shell");
         };
         match client.agent_credentials(task.task_id).await {
             Ok(credentials) => {
@@ -413,7 +412,9 @@ async fn execute_task(
                         error = %error,
                         "cannot inject task credentials"
                     );
-                    finish_codesummary(&client, task, false).await;
+                    if definition.role.ends_with(":summarizer") {
+                        finish_codesummary(&client, task, false).await;
+                    }
                     return Err(error);
                 }
             }
@@ -423,7 +424,9 @@ async fn execute_task(
                     error = %error,
                     "cannot fetch task credentials"
                 );
-                finish_codesummary(&client, task, false).await;
+                if definition.role.ends_with(":summarizer") {
+                    finish_codesummary(&client, task, false).await;
+                }
                 return Err(anyhow::anyhow!("cannot fetch task credentials: {error}"));
             }
         }
@@ -438,6 +441,7 @@ async fn execute_task(
         "Inspect the task and decide what to do.",
     )
     .with_project_id(task.project_id.to_string());
+    request.task_input = task.input.clone();
     request.context.push(
         "current_task",
         task_id.clone(),
@@ -462,19 +466,30 @@ async fn execute_task(
         }
     };
 
-    if is_codesummary {
+    if definition.shell {
         clear_task_credentials(shell.as_ref(), task.project_id).await;
+    }
+    if definition.role.ends_with(":summarizer")
+        && task.workflow.as_str() == "code_summary_group"
+        && task.stage.as_deref() == Some("summary")
+    {
         finish_codesummary(&client, task, succeeded).await;
     }
     Ok(())
 }
 
 async fn finish_codesummary(client: &FoundryClient, task: &AssignedTask, succeeded: bool) {
-    if task.workflow != "code_summary" {
-        return;
-    }
+    let operation = match task.workflow.as_str() {
+        "code_summary_group" => {
+            if succeeded {
+                "submitted"
+            } else {
+                "failed"
+            }
+        }
+        _ => return,
+    };
     let stage = task.stage.as_deref().unwrap_or("summary");
-    let operation = if succeeded { "completed" } else { "failed" };
     let key = Uuid::now_v7().to_string();
     match client
         .send_task_operation(task.task_id, &format!("{stage}:{operation}"), &key)
@@ -499,8 +514,7 @@ fn redact_credentials(command: &str) -> String {
     while let Some(index) = rest.find("://") {
         let (before, after) = rest.split_at(index + 3);
         out.push_str(before);
-        let stop = after
-            .find(['@', '/', '"', ' ', '\n']);
+        let stop = after.find(['@', '/', '"', ' ', '\n']);
         match stop {
             Some(at) if after.as_bytes()[at] == b'@' => {
                 out.push_str("***@");
@@ -669,7 +683,7 @@ fn build_runtime(
     tools: ToolRegistry,
     shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<AgentRuntime> {
-    if definition.role.starts_with("code_summary") {
+    if definition.role.ends_with(":summarizer") {
         let shell = shell.ok_or_else(|| {
             anyhow::anyhow!(
                 "agent {} is a CodeSummary agent but has no shell",
@@ -696,6 +710,34 @@ fn build_tools(
         tools.register(Arc::new(AgentCreateForRoleTool::new(Arc::clone(client))));
         tools.register(Arc::new(TaskAssignAgentTool::new(Arc::clone(client))));
         tools.register(Arc::new(TaskStartTool::new(Arc::clone(client))));
+        tools.register(Arc::new(TaskGetTool::new(Arc::clone(client))));
+        tools.register(Arc::new(TaskBindActorTool::new(Arc::clone(client))));
+    }
+    for tool in &definition.tools {
+        match tool.as_str() {
+            "task_get" => {
+                tools.register(Arc::new(TaskGetTool::new(Arc::clone(client))));
+            }
+            "task_allowed_operations" => {
+                tools.register(Arc::new(TaskAllowedOperationsTool::new(Arc::clone(client))));
+            }
+            "task_operation" => {
+                tools.register(Arc::new(TaskOperationTool::new(Arc::clone(client))));
+            }
+            "task_comment" => {
+                tools.register(Arc::new(TaskCommentTool::new(Arc::clone(client))));
+            }
+            "task_history" => {
+                tools.register(Arc::new(TaskHistoryTool::new(Arc::clone(client))));
+            }
+            "task_spawn_children" => {
+                tools.register(Arc::new(TaskSpawnChildrenTool::new(Arc::clone(client))));
+            }
+            "merge_request" => {
+                tools.register(Arc::new(MergeRequestTool::new(Arc::clone(client))));
+            }
+            _ => {}
+        }
     }
     if definition.shell {
         let shell = shell.ok_or_else(|| {

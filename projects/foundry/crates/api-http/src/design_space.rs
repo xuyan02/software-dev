@@ -13,14 +13,18 @@ use std::sync::{Arc, Mutex};
 use design_space as ds;
 use ds::catalog::Catalog;
 use ds::model::{
-    CommitHash, DesignObject, DocHash, GitOid, Hash32, Kind, ObjectPayload, ViewPayload,
+    CommitHash, DesignObject, DocComment, GitOid, Hash32, Kind, ObjectPayload, SymbolHash,
+    ViewPayload,
 };
 use ds::store::Store;
-use foundry_domain::Project;
+use foundry_app::{DesignSpaceGateway, DesignSpaceGatewayError};
+use foundry_domain::{MergeRequestChange, MergeRequestChangeStatus, Project};
 use foundry_web::{
-    DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine, DesignSpaceOverview, DesignSpaceSource,
+    DesignSpaceComment, DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine,
+    DesignSpaceMember, DesignSpaceOverview, DesignSpaceSource,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 
 const SOURCE_CONTEXT: u32 = 18;
 const SOURCE_MAX_LINES: u32 = 600;
@@ -44,10 +48,23 @@ impl DesignSpaceAccess {
         }
     }
 
-    pub async fn overview(&self, project: &Project) -> Result<DesignSpaceOverview, String> {
+    pub async fn branches(&self, project: &Project) -> Result<Vec<String>, String> {
         let access = self.clone();
         let project = project.clone();
-        tokio::task::spawn_blocking(move || access.overview_blocking(&project))
+        tokio::task::spawn_blocking(move || access.branches_blocking(&project))
+            .await
+            .map_err(|error| error.to_string())?
+    }
+
+    pub async fn overview(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<DesignSpaceOverview, String> {
+        let access = self.clone();
+        let project = project.clone();
+        let branch = branch.to_owned();
+        tokio::task::spawn_blocking(move || access.overview_blocking(&project, &branch))
             .await
             .map_err(|error| error.to_string())?
     }
@@ -56,36 +73,48 @@ impl DesignSpaceAccess {
         &self,
         project: &Project,
         hash: &str,
+        branch: &str,
     ) -> Result<DesignSpaceDetail, String> {
         let access = self.clone();
         let project = project.clone();
         let hash = hash.to_owned();
-        tokio::task::spawn_blocking(move || access.element_blocking(&project, &hash))
+        let branch = branch.to_owned();
+        tokio::task::spawn_blocking(move || access.element_blocking(&project, &hash, &branch))
             .await
             .map_err(|error| error.to_string())?
     }
 
-    pub async fn source(&self, project: &Project, hash: &str) -> Result<DesignSpaceSource, String> {
+    pub async fn source(
+        &self,
+        project: &Project,
+        hash: &str,
+        branch: &str,
+    ) -> Result<DesignSpaceSource, String> {
         let access = self.clone();
         let project = project.clone();
         let hash = hash.to_owned();
-        tokio::task::spawn_blocking(move || access.source_blocking(&project, &hash))
+        let branch = branch.to_owned();
+        tokio::task::spawn_blocking(move || access.source_blocking(&project, &hash, &branch))
             .await
             .map_err(|error| error.to_string())?
     }
 
-    fn overview_blocking(&self, project: &Project) -> Result<DesignSpaceOverview, String> {
-        let branch = branch_of(project);
+    fn overview_blocking(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<DesignSpaceOverview, String> {
         let mut overview = DesignSpaceOverview {
-            branch: branch.clone(),
+            branch: branch.to_owned(),
             version: None,
             source_commit: String::new(),
             file_count: 0,
             element_count: 0,
+            document_count: 0,
             designed_count: 0,
             elements: Vec::new(),
         };
-        let Some(loaded) = self.load_branch(project, &branch)? else {
+        let Some(loaded) = self.load_branch(project, branch)? else {
             return Ok(overview);
         };
         overview.version = Some(loaded.commit_hash.to_hex());
@@ -93,12 +122,24 @@ impl DesignSpaceAccess {
 
         for (qname, object) in loaded.catalog.iter() {
             let qname_text = loaded.store.get_symbol(qname).map_err(display)?;
-            if qname_text == "files" || qname_text == "namespaces" {
+            if qname_text == "files" || qname_text == "namespaces" || qname_text == "documents" {
+                continue;
+            }
+            if is_document_kind(object.kind)
+                && object.kind != Kind::Document
+                && object.kind != Kind::DocumentDirectory
+            {
                 continue;
             }
             let element = element_info(&loaded.store, qname, object)?;
-            if element.is_file {
+            if object.kind == Kind::Document {
+                overview.document_count += 1;
+            } else if is_document_kind(object.kind) {
+                // Document directories are folders, not design elements.
+            } else if element.is_file {
                 overview.file_count += 1;
+            } else if element.is_structure {
+                // Systems and modules are counted by the structure tree.
             } else {
                 overview.element_count += 1;
                 if element.has_design {
@@ -116,17 +157,30 @@ impl DesignSpaceAccess {
         Ok(overview)
     }
 
-    fn element_blocking(&self, project: &Project, hash: &str) -> Result<DesignSpaceDetail, String> {
-        let branch = branch_of(project);
+    fn element_blocking(
+        &self,
+        project: &Project,
+        hash: &str,
+        branch: &str,
+    ) -> Result<DesignSpaceDetail, String> {
         let loaded = self
-            .load_branch(project, &branch)?
+            .load_branch(project, branch)?
             .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
         let (qname, object) = find_object(&loaded.catalog, hash)?;
         let info = element_info(&loaded.store, qname, object)?;
-        let design = design_doc(object)
-            .filter(|hash| !hash.is_zero())
-            .map(|hash| loaded.store.get_doc(hash).map_err(display))
-            .transpose()?;
+        let (design, comments) = match document_target(object) {
+            Some(target) => {
+                let (design, comments) =
+                    render_document(&loaded.store, &loaded.catalog, target)?;
+                (Some(design), comments)
+            }
+            None if is_document_kind(object.kind) => {
+                let (design, comments) =
+                    render_document(&loaded.store, &loaded.catalog, qname)?;
+                (Some(design), comments)
+            }
+            None => (None, Vec::new()),
+        };
         Ok(DesignSpaceDetail {
             hash: info.hash,
             name: info.name,
@@ -136,13 +190,19 @@ impl DesignSpaceAccess {
             start_line: info.start_line,
             end_line: info.end_line,
             design,
+            comments,
+            members: structure_member_infos(&loaded.store, &loaded.catalog, qname, object)?,
         })
     }
 
-    fn source_blocking(&self, project: &Project, hash: &str) -> Result<DesignSpaceSource, String> {
-        let branch = branch_of(project);
+    fn source_blocking(
+        &self,
+        project: &Project,
+        hash: &str,
+        branch: &str,
+    ) -> Result<DesignSpaceSource, String> {
         let loaded = self
-            .load_branch(project, &branch)?
+            .load_branch(project, branch)?
             .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
         let (_, object) = find_object(&loaded.catalog, hash)?;
         let commit = git_oid_hex(loaded.view_payload.source_commit);
@@ -242,6 +302,385 @@ impl DesignSpaceAccess {
         }
         Ok(dir)
     }
+
+    fn branches_blocking(&self, project: &Project) -> Result<Vec<String>, String> {
+        let path = self.repo_path(project)?;
+        let dir = path.join("refs/heads");
+        let mut branches = Vec::new();
+        collect_branches(&dir, &dir, &mut branches)?;
+        branches.sort();
+        Ok(branches)
+    }
+
+    fn branch_head_blocking(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<Option<String>, String> {
+        let path = self.repo_path(project)?;
+        Ok(read_branch_commit(&path, branch)?.map(CommitHash::to_hex))
+    }
+
+    fn is_ancestor_blocking(
+        &self,
+        project: &Project,
+        ancestor: &str,
+        descendant: &str,
+    ) -> Result<bool, String> {
+        let path = self.repo_path(project)?;
+        let store = Store::open(&path).map_err(display)?;
+        let ancestor = commit_hash(ancestor)?;
+        let mut current = commit_hash(descendant)?;
+        let mut steps = 0u32;
+        while !current.is_zero() {
+            if current == ancestor {
+                return Ok(true);
+            }
+            if steps > 1_000_000 {
+                return Err("commit history is too deep".to_string());
+            }
+            current = store.get_commit(current).map_err(display)?.parent;
+            steps += 1;
+        }
+        Ok(false)
+    }
+
+    fn diff_blocking(
+        &self,
+        project: &Project,
+        from_commit: &str,
+        to_commit: &str,
+    ) -> Result<Vec<MergeRequestChange>, String> {
+        let path = self.repo_path(project)?;
+        let store = Store::open(&path).map_err(display)?;
+        let from = load_commit_catalog(&store, from_commit)?;
+        let to = load_commit_catalog(&store, to_commit)?;
+        let mut names = BTreeSet::new();
+        names.extend(from.catalog.iter().map(|(name, _)| name));
+        names.extend(to.catalog.iter().map(|(name, _)| name));
+        let mut changes = Vec::with_capacity(names.len());
+        for qname in names {
+            let qname_text = store.get_symbol(qname).map_err(display)?;
+            match (from.catalog.get(qname), to.catalog.get(qname)) {
+                (None, Some(object)) => changes.push(MergeRequestChange {
+                    status: MergeRequestChangeStatus::Added,
+                    qname: qname_text,
+                    kind: kind_label(object.kind).to_string(),
+                }),
+                (Some(object), None) => changes.push(MergeRequestChange {
+                    status: MergeRequestChangeStatus::Removed,
+                    qname: qname_text,
+                    kind: kind_label(object.kind).to_string(),
+                }),
+                (Some(before), Some(after)) if before != after => {
+                    changes.push(MergeRequestChange {
+                        status: MergeRequestChangeStatus::Modified,
+                        qname: qname_text,
+                        kind: kind_label(after.kind).to_string(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        changes.sort_by(|left, right| left.qname.cmp(&right.qname));
+        Ok(changes)
+    }
+
+    fn comment_count_blocking(&self, project: &Project, commit: &str) -> Result<usize, String> {
+        let path = self.repo_path(project)?;
+        let store = Store::open(&path).map_err(display)?;
+        let loaded = load_commit_catalog(&store, commit)?;
+        let count = loaded
+            .catalog
+            .iter()
+            .map(|(_, object)| document_comments(object).len())
+            .sum();
+        Ok(count)
+    }
+
+    fn delete_branch_blocking(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        let path = self
+            .repo_path(project)
+            .map_err(DesignSpaceGatewayError::Backend)?;
+        if branch.is_empty()
+            || branch.starts_with('/')
+            || branch.ends_with('/')
+            || branch
+                .split('/')
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err(DesignSpaceGatewayError::Conflict(format!(
+                "invalid branch: {branch}"
+            )));
+        }
+        let file = path.join("refs/heads").join(branch);
+        match fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(DesignSpaceGatewayError::Backend(error.to_string())),
+        }
+    }
+
+    fn fast_forward_blocking(
+        &self,
+        project: &Project,
+        target_branch: &str,
+        expected_target: &str,
+        source_commit: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        let _guard = self
+            .git_lock
+            .lock()
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?;
+        let path = self
+            .repo_path(project)
+            .map_err(DesignSpaceGatewayError::Backend)?;
+        let current = read_branch_commit(&path, target_branch)
+            .map_err(DesignSpaceGatewayError::Backend)?
+            .ok_or_else(|| {
+                DesignSpaceGatewayError::NotFound(format!("分支不存在: {target_branch}"))
+            })?;
+        if current.to_hex() == source_commit {
+            // A previous attempt already moved the ref but failed before the
+            // merge-request row was updated. Treat the retry as successful.
+            return Ok(());
+        }
+        if current.to_hex() != expected_target {
+            return Err(DesignSpaceGatewayError::Conflict(
+                "目标分支在合并请求创建后已经前进，请重新创建合并请求".to_string(),
+            ));
+        }
+        let target = commit_hash(expected_target).map_err(DesignSpaceGatewayError::Backend)?;
+        let source = commit_hash(source_commit).map_err(DesignSpaceGatewayError::Backend)?;
+        if source == target {
+            return Err(DesignSpaceGatewayError::Conflict(
+                "源分支没有新的提交".to_string(),
+            ));
+        }
+        let store = Store::open(&path)
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?;
+        store
+            .get_commit(source)
+            .map_err(|error| DesignSpaceGatewayError::NotFound(format!("源提交不存在: {error}")))?;
+        store.get_commit(target).map_err(|error| {
+            DesignSpaceGatewayError::NotFound(format!("目标提交不存在: {error}"))
+        })?;
+        let mut cursor = source;
+        let mut ancestor = false;
+        let mut steps = 0u32;
+        while !cursor.is_zero() {
+            if cursor == target {
+                ancestor = true;
+                break;
+            }
+            if steps > 1_000_000 {
+                return Err(DesignSpaceGatewayError::Conflict(
+                    "提交历史过深".to_string(),
+                ));
+            }
+            cursor = store
+                .get_commit(cursor)
+                .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+                .parent;
+            steps += 1;
+        }
+        if !ancestor {
+            return Err(DesignSpaceGatewayError::Conflict(
+                "目标分支不是源分支的祖先，无法快进合并".to_string(),
+            ));
+        }
+        write_branch_ref(&path, target_branch, source).map_err(DesignSpaceGatewayError::Backend)?;
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl DesignSpaceGateway for DesignSpaceAccess {
+    async fn branches(&self, project: &Project) -> Result<Vec<String>, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        tokio::task::spawn_blocking(move || access.branches_blocking(&project))
+            .await
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+            .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn branch_head(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<Option<String>, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let branch = branch.to_owned();
+        tokio::task::spawn_blocking(move || access.branch_head_blocking(&project, &branch))
+            .await
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+            .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn is_ancestor(
+        &self,
+        project: &Project,
+        ancestor: &str,
+        descendant: &str,
+    ) -> Result<bool, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let ancestor = ancestor.to_owned();
+        let descendant = descendant.to_owned();
+        tokio::task::spawn_blocking(move || {
+            access.is_ancestor_blocking(&project, &ancestor, &descendant)
+        })
+        .await
+        .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+        .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn diff(
+        &self,
+        project: &Project,
+        from_commit: &str,
+        to_commit: &str,
+    ) -> Result<Vec<MergeRequestChange>, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let from_commit = from_commit.to_owned();
+        let to_commit = to_commit.to_owned();
+        tokio::task::spawn_blocking(move || {
+            access.diff_blocking(&project, &from_commit, &to_commit)
+        })
+        .await
+        .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+        .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn comment_count(
+        &self,
+        project: &Project,
+        commit: &str,
+    ) -> Result<usize, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let commit = commit.to_owned();
+        tokio::task::spawn_blocking(move || access.comment_count_blocking(&project, &commit))
+            .await
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+            .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn delete_branch(
+        &self,
+        project: &Project,
+        branch: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let branch = branch.to_owned();
+        tokio::task::spawn_blocking(move || access.delete_branch_blocking(&project, &branch))
+            .await
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+    }
+
+    async fn fast_forward(
+        &self,
+        project: &Project,
+        target_branch: &str,
+        expected_target: &str,
+        source_commit: &str,
+    ) -> Result<(), DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let target_branch = target_branch.to_owned();
+        let expected_target = expected_target.to_owned();
+        let source_commit = source_commit.to_owned();
+        tokio::task::spawn_blocking(move || {
+            access.fast_forward_blocking(&project, &target_branch, &expected_target, &source_commit)
+        })
+        .await
+        .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+    }
+}
+
+struct CommitCatalog {
+    catalog: Catalog,
+}
+
+fn load_commit_catalog(store: &Store, commit: &str) -> Result<CommitCatalog, String> {
+    let hash = commit_hash(commit)?;
+    let commit = store.get_commit(hash).map_err(display)?;
+    let object = store.get_object(commit.view).map_err(display)?;
+    if object.kind != Kind::View {
+        return Err("提交的 View 不是 view 对象".to_string());
+    }
+    Ok(CommitCatalog {
+        catalog: Catalog::load(store, commit.view).map_err(display)?,
+    })
+}
+
+fn commit_hash(text: &str) -> Result<CommitHash, String> {
+    Hash32::from_hex(text)
+        .map(CommitHash)
+        .ok_or_else(|| format!("invalid commit hash: {text}"))
+}
+
+fn collect_branches(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_branches(root, &path, out)?;
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let text = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        if Hash32::from_hex(text.trim()).is_some() {
+            out.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn write_branch_ref(root: &Path, branch: &str, commit: CommitHash) -> Result<(), String> {
+    if branch.is_empty()
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!("invalid branch: {branch}"));
+    }
+    let path = root.join("refs/heads").join(branch);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid branch path: {branch}"))?;
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("tmp")).map_err(|error| error.to_string())?;
+    let temp = root.join("tmp").join(format!(
+        "ref-{}-{}.tmp",
+        std::process::id(),
+        short(&commit.to_hex())
+    ));
+    fs::write(&temp, format!("{}\n", commit.to_hex())).map_err(|error| error.to_string())?;
+    fs::rename(&temp, &path).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 struct Loaded {
@@ -251,14 +690,6 @@ struct Loaded {
     catalog: Catalog,
 }
 
-fn branch_of(project: &Project) -> String {
-    let branch = project.design_space_branch.trim();
-    if branch.is_empty() {
-        "main".to_owned()
-    } else {
-        branch.to_owned()
-    }
-}
 
 fn read_branch_commit(path: &Path, branch: &str) -> Result<Option<CommitHash>, String> {
     if branch.is_empty()
@@ -295,26 +726,140 @@ fn find_object<'a>(
     Err("design-space object not found".to_string())
 }
 
+fn structure_member_infos(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+) -> Result<Vec<DesignSpaceMember>, String> {
+    if !matches!(
+        object.kind,
+        Kind::DesignStructure | Kind::System | Kind::Module
+    ) {
+        return Ok(Vec::new());
+    }
+    let mut members = Vec::new();
+    if let ObjectPayload::Module(module) = &object.payload {
+        members.extend(module.members.iter().copied());
+    }
+    members.extend(catalog.children(qname));
+    members.sort();
+    members.dedup();
+    let mut out = Vec::with_capacity(members.len());
+    for member in members {
+        let Some(target) = catalog.get(member) else {
+            continue;
+        };
+        let qname = store.get_symbol(member).map_err(display)?;
+        out.push(DesignSpaceMember {
+            hash: ds::format::object_hash(target).map_err(display)?.to_hex(),
+            name: structure_title(target).unwrap_or_else(|| local_name(&qname)),
+            qname,
+            kind: kind_label(target.kind).to_owned(),
+        });
+    }
+    out.sort_by(|left, right| left.qname.cmp(&right.qname));
+    Ok(out)
+}
+
 fn element_info(
     store: &Store,
     qname: ds::model::SymbolHash,
     object: &DesignObject,
 ) -> Result<DesignSpaceElement, String> {
     let qname_text = store.get_symbol(qname).map_err(display)?;
-    let path = source_path(store, object)?.unwrap_or_else(|| qname_text.clone());
+    let is_document = is_document_kind(object.kind);
+    let path = if is_document {
+        qname_text.clone()
+    } else {
+        source_path(store, object)?.unwrap_or_else(|| qname_text.clone())
+    };
     let (start_line, end_line) = source_span(object);
     Ok(DesignSpaceElement {
         hash: ds::format::object_hash(object).map_err(display)?.to_hex(),
         qname: qname_text.clone(),
-        name: local_name(&qname_text),
-        lang: language_for_path(&path),
+        name: if is_document {
+            document_name(object, &qname_text)
+        } else if let Some(title) = structure_title(object) {
+            title
+        } else {
+            local_name(&qname_text)
+        },
+        lang: if is_document || is_structure_kind(object.kind) {
+            String::new()
+        } else {
+            language_for_path(&path)
+        },
         kind: kind_label(object.kind).to_owned(),
         path,
         start_line,
         end_line,
-        has_design: design_doc(object).is_some_and(|doc| !doc.is_zero()),
+        has_design: is_document || document_target(object).is_some(),
         is_file: object.kind == Kind::File,
+        is_structure: matches!(
+            object.kind,
+            Kind::DesignStructure | Kind::System | Kind::Module
+        ),
+        members: module_members(store, object)?,
     })
+}
+
+fn structure_title(object: &DesignObject) -> Option<String> {
+    match &object.payload {
+        ObjectPayload::DesignStructure(p) => Some(p.title.clone()),
+        ObjectPayload::System(p) => Some(p.title.clone()),
+        ObjectPayload::Module(p) => Some(p.title.clone()),
+        _ => None,
+    }
+}
+
+fn is_structure_kind(kind: Kind) -> bool {
+    matches!(kind, Kind::DesignStructure | Kind::System | Kind::Module)
+}
+
+fn module_members(store: &Store, object: &DesignObject) -> Result<Vec<String>, String> {
+    let ObjectPayload::Module(module) = &object.payload else {
+        return Ok(Vec::new());
+    };
+    module
+        .members
+        .iter()
+        .map(|member| store.get_symbol(*member).map_err(display))
+        .collect()
+}
+
+fn is_document_kind(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::DocumentDirectory
+            | Kind::Document
+            | Kind::DocumentSection
+            | Kind::DocumentList
+            | Kind::DocumentText
+            | Kind::DocumentTopic
+    )
+}
+
+fn document_name(object: &DesignObject, qname: &str) -> String {
+    match &object.payload {
+        ObjectPayload::Document(p) => p.title.clone(),
+        ObjectPayload::DocumentSection(p) => p.title.clone(),
+        ObjectPayload::DocumentTopic(p) => p.title.clone(),
+        ObjectPayload::DocumentList(_) => "列表".to_owned(),
+        ObjectPayload::DocumentText(p) => {
+            let mut text = p.text.chars().take(40).collect::<String>();
+            if p.text.chars().count() > 40 {
+                text.push('…');
+            }
+            if text.is_empty() {
+                "文本".to_owned()
+            } else {
+                text
+            }
+        }
+        ObjectPayload::DocumentDirectory(_) => local_name(qname),
+        _ => local_name(qname),
+    }
 }
 
 fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, String> {
@@ -352,7 +897,16 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
             .source
             .as_ref()
             .map(|source| store.get_symbol(source.path)),
-        ObjectPayload::View(_) => None,
+        ObjectPayload::View(_)
+        | ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => None,
     };
     path.transpose().map_err(display)
 }
@@ -360,30 +914,187 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
 fn source_span(object: &DesignObject) -> (u32, u32) {
     let span = match &object.payload {
         ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.span),
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.source.as_ref().map(|source| source.span),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.source.as_ref().map(|source| source.span),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            p.source.as_ref().map(|source| source.span)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            p.source.as_ref().map(|source| source.span)
+        }
         ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.span),
         ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.span),
         ObjectPayload::Part(p) => Some(p.source.span),
         ObjectPayload::Mixin(p) => p.source.as_ref().map(|source| source.span),
-        ObjectPayload::Directory(_) | ObjectPayload::File(_) | ObjectPayload::View(_) => None,
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_)
+        | ObjectPayload::Directory(_)
+        | ObjectPayload::File(_)
+        | ObjectPayload::View(_) => None,
     };
     span.map(|span| (span.start_line, span.end_line))
         .unwrap_or((0, 0))
 }
 
-fn design_doc(object: &DesignObject) -> Option<DocHash> {
+fn document_target(object: &DesignObject) -> Option<SymbolHash> {
+    let target = match &object.payload {
+        ObjectPayload::View(_) => return None,
+        ObjectPayload::Directory(p) => p.document,
+        ObjectPayload::File(p) => p.document,
+        ObjectPayload::Namespace(p) => p.document,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document,
+        ObjectPayload::Method(p) => p.document,
+        ObjectPayload::Function(p) => p.document,
+        ObjectPayload::Mixin(p) => p.document,
+        ObjectPayload::DesignStructure(p) => p.document,
+        ObjectPayload::System(p) => p.document,
+        ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Part(_)
+        | ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => return None,
+    };
+    (!target.is_zero()).then_some(target)
+}
+
+fn render_document(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+) -> Result<(String, Vec<DesignSpaceComment>), String> {
+    let mut out = String::new();
+    let mut comments = Vec::new();
+    render_doc(store, catalog, qname, 0, &mut out, &mut comments)?;
+    Ok((out, comments))
+}
+
+fn render_doc(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    depth: usize,
+    out: &mut String,
+    comments: &mut Vec<DesignSpaceComment>,
+) -> Result<(), String> {
+    let object = catalog
+        .get(qname)
+        .ok_or_else(|| format!("document fragment not found: {}", qname.to_hex()))?;
+    let marker = comment_marker(object);
     match &object.payload {
-        ObjectPayload::View(_) => None,
-        ObjectPayload::Directory(p) => Some(p.design_doc),
-        ObjectPayload::File(p) => Some(p.design_doc),
-        ObjectPayload::Namespace(p) => Some(p.design_doc),
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.design_doc),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.design_doc),
-        ObjectPayload::Method(p) => Some(p.design_doc),
-        ObjectPayload::Function(p) => Some(p.design_doc),
-        ObjectPayload::Part(p) => Some(p.design_doc),
-        ObjectPayload::Mixin(p) => Some(p.design_doc),
+        ObjectPayload::DocumentDirectory(_) => {
+            if !marker.is_empty() {
+                out.push_str(&marker);
+                out.push_str("\n\n");
+            }
+            let mut children = catalog.children(qname);
+            children.sort_by(|left, right| {
+                store
+                    .get_symbol(*left)
+                    .unwrap_or_default()
+                    .cmp(&store.get_symbol(*right).unwrap_or_default())
+            });
+            for child in children {
+                render_doc(store, catalog, child, depth, out, comments)?;
+            }
+        }
+        ObjectPayload::Document(p) => {
+            out.push_str(&format!("{}{}\n\n", p.title, marker));
+            for section in &p.sections {
+                render_doc(store, catalog, *section, depth + 1, out, comments)?;
+            }
+        }
+        ObjectPayload::DocumentSection(p) => {
+            out.push_str(&format!(
+                "{} {}{}\n\n",
+                "#".repeat((depth + 1).min(6)),
+                p.title,
+                marker
+            ));
+            for paragraph in &p.body {
+                render_doc(store, catalog, *paragraph, depth + 1, out, comments)?;
+            }
+            for section in &p.sections {
+                render_doc(store, catalog, *section, depth + 1, out, comments)?;
+            }
+        }
+        ObjectPayload::DocumentList(p) => {
+            let last = p.items.len().saturating_sub(1);
+            for (position, item) in p.items.iter().enumerate() {
+                let item_object = catalog
+                    .get(*item)
+                    .ok_or_else(|| format!("document item not found: {}", item.to_hex()))?;
+                if let ObjectPayload::DocumentText(text) = &item_object.payload {
+                    let trailing = if position == last { marker.as_str() } else { "" };
+                    out.push_str(&format!("- {}{}\n", text.text, trailing));
+                } else {
+                    render_doc(store, catalog, *item, depth + 1, out, comments)?;
+                    if position == last && !marker.is_empty() {
+                        out.push_str(&marker);
+                        out.push('\n');
+                    }
+                }
+            }
+            if p.items.is_empty() && !marker.is_empty() {
+                out.push_str(&marker);
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        ObjectPayload::DocumentText(p) => {
+            out.push_str(&format!("{}{}\n\n", p.text, marker));
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            out.push_str(&format!("**{}**{}\n\n", p.title, marker));
+            for paragraph in &p.paragraphs {
+                render_doc(store, catalog, *paragraph, depth + 1, out, comments)?;
+            }
+        }
+        _ => return Err("document reference does not point at a document fragment".to_owned()),
+    }
+    let target = store.get_symbol(qname).map_err(display)?;
+    for comment in document_comments(object) {
+        comments.push(DesignSpaceComment {
+            id: comment.id,
+            resolved: comment.resolved,
+            target: target.clone(),
+            text: comment.text.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// A marker rendered by the web UI as a collapsed comment button. Comment
+/// bodies stay out of the document flow and open in a popover on click.
+fn comment_marker(object: &DesignObject) -> String {
+    let ids = document_comments(object)
+        .iter()
+        .map(|comment| comment.id.to_string())
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        String::new()
+    } else {
+        format!("{{{{comments:{}}}}}", ids.join(","))
+    }
+}
+
+fn document_comments(object: &DesignObject) -> &[DocComment] {
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(p) => &p.comments,
+        ObjectPayload::Document(p) => &p.comments,
+        ObjectPayload::DocumentSection(p) => &p.comments,
+        ObjectPayload::DocumentList(p) => &p.comments,
+        ObjectPayload::DocumentText(p) => &p.comments,
+        ObjectPayload::DocumentTopic(p) => &p.comments,
+        _ => &[],
     }
 }
 
@@ -401,6 +1112,15 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Function => "function",
         Kind::Part => "part",
         Kind::Mixin => "mixin",
+        Kind::DocumentDirectory => "document-directory",
+        Kind::Document => "document",
+        Kind::DocumentSection => "document-section",
+        Kind::DocumentList => "document-list",
+        Kind::DocumentText => "document-text",
+        Kind::DocumentTopic => "document-topic",
+        Kind::DesignStructure => "design-structure",
+        Kind::System => "system",
+        Kind::Module => "module",
     }
 }
 
@@ -631,7 +1351,10 @@ fn short(value: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use design_space::model::{DirectoryPayload, NamespacePayload, ParentRef};
+    use design_space::model::{
+        DirectoryPayload, DocumentDirectoryPayload, DocumentPayload, DocumentSectionPayload,
+        DocumentTextPayload, NamespacePayload, ParentRef, SymbolHash,
+    };
     use design_space::{Catalog, Commit, DesignObject, ObjectPayload};
     use tempfile::tempdir;
 
@@ -668,6 +1391,7 @@ mod tests {
         let store = Store::open(&repo).unwrap();
         let files = store.put_symbol("files").unwrap();
         let namespaces = store.put_symbol("namespaces").unwrap();
+        let documents = store.put_symbol("documents").unwrap();
         let mut catalog = Catalog::new(GitOid::ZERO);
         catalog
             .insert(
@@ -678,7 +1402,7 @@ mod tests {
                         qualified_name: files,
                         parent: ParentRef::View,
                         source: None,
-                        design_doc: DocHash::ZERO,
+                        document: SymbolHash::ZERO,
                         children: vec![],
                     }),
                 ),
@@ -694,8 +1418,95 @@ mod tests {
                         parent: ParentRef::View,
                         source: None,
                         content_hash: Hash32::ZERO,
-                        design_doc: DocHash::ZERO,
+                        document: SymbolHash::ZERO,
                         children: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                documents,
+                DesignObject::new(
+                    Kind::DocumentDirectory,
+                    ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                        qualified_name: documents,
+                        parent: ParentRef::View,
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let design_dir = store.put_symbol("documents/design").unwrap();
+        let technical = store.put_symbol("documents/design/technical").unwrap();
+        let section = store
+            .put_symbol("documents/design/technical/section1")
+            .unwrap();
+        let text = store
+            .put_symbol("documents/design/technical/section1/body1")
+            .unwrap();
+        catalog
+            .insert(
+                design_dir,
+                DesignObject::new(
+                    Kind::DocumentDirectory,
+                    ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                        qualified_name: design_dir,
+                        parent: ParentRef::Object(documents),
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                technical,
+                DesignObject::new(
+                    Kind::Document,
+                    ObjectPayload::Document(DocumentPayload {
+                        qualified_name: technical,
+                        parent: design_dir,
+                        title: "技术设计".to_owned(),
+                        sections: vec![section],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                section,
+                DesignObject::new(
+                    Kind::DocumentSection,
+                    ObjectPayload::DocumentSection(DocumentSectionPayload {
+                        qualified_name: section,
+                        parent: technical,
+                        title: "登录".to_owned(),
+                        body: vec![text],
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![DocComment {
+                            id: 7,
+                            text: "需要补充失败语义".to_owned(),
+                            resolved: false,
+                        }],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                text,
+                DesignObject::new(
+                    Kind::DocumentText,
+                    ObjectPayload::DocumentText(DocumentTextPayload {
+                        qualified_name: text,
+                        parent: section,
+                        text: "登录使用 OAuth。".to_owned(),
+                        comments: vec![],
                     }),
                 ),
             )
@@ -711,7 +1522,7 @@ mod tests {
         let commit_hash = store.put_commit(&commit).unwrap();
         std::fs::create_dir_all(repo.join("refs/heads")).unwrap();
         std::fs::write(
-            repo.join("refs/heads/main"),
+            repo.join("refs/heads/source"),
             format!("{}\n", commit_hash.to_hex()),
         )
         .unwrap();
@@ -720,17 +1531,199 @@ mod tests {
         let mut project =
             Project::new("Alpha", None, "git@example.com:test/repo.git", owner).unwrap();
         project.design_space_url = "http://127.0.0.1:7700/alpha".to_owned();
-        project.design_space_branch = "main".to_owned();
+        project.design_space_branch = "source".to_owned();
 
         let access = DesignSpaceAccess::new(dir.path().join("repos"));
-        let overview = access.overview(&project).await.unwrap();
-        assert_eq!(overview.branch, "main");
+        let overview = access.overview(&project, "source").await.unwrap();
+        assert_eq!(overview.branch, "source");
         assert_eq!(
             overview.version.as_deref(),
             Some(commit_hash.to_hex().as_str())
         );
         // `files` and `namespaces` are structural roots, not elements.
         assert_eq!(overview.element_count, 0);
-        assert!(overview.elements.is_empty());
+        assert_eq!(overview.document_count, 1);
+        let document = overview
+            .elements
+            .iter()
+            .find(|element| element.qname == "documents/design/technical")
+            .expect("document element");
+        assert_eq!(document.kind, "document");
+        assert_eq!(document.name, "技术设计");
+        assert!(document.has_design);
+        assert!(
+            !overview
+                .elements
+                .iter()
+                .any(|element| element.qname.contains("/section1"))
+        );
+        let detail = access
+            .element(&project, &document.hash, "source")
+            .await
+            .unwrap();
+        assert!(
+            detail
+                .design
+                .as_deref()
+                .unwrap()
+                .contains("登录使用 OAuth。")
+        );
+        assert!(
+            detail
+                .design
+                .as_deref()
+                .unwrap()
+                .contains("## 登录{{comments:7}}")
+        );
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].id, 7);
+    }
+}
+
+#[cfg(test)]
+mod merge_gateway_tests {
+    use super::*;
+    use design_space::model::{Commit, DirectoryPayload, ParentRef, SymbolHash};
+    use design_space::server::RepoCollection;
+    use design_space::{Catalog, DesignObject, ObjectPayload};
+    use tempfile::tempdir;
+
+    fn project(owner: uuid::Uuid) -> Project {
+        let mut project = Project::new(
+            "Merge gateway",
+            None,
+            "git@example.com:test/repo.git",
+            owner,
+        )
+        .unwrap();
+        project.design_space_url = "http://example.test/alpha".to_string();
+        project.design_space_branch = "source".to_string();
+        project
+    }
+
+    #[tokio::test]
+    async fn fast_forwards_only_an_ancestor_and_reports_object_diff() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repos");
+        let collection = RepoCollection::open(&root).unwrap();
+        collection.create("alpha", "main").unwrap();
+        let repo = root.join("alpha");
+        let store = Store::open(&repo).unwrap();
+        let main = read_branch_commit(&repo, "main").unwrap().unwrap();
+        let commit = store.get_commit(main).unwrap();
+        let mut catalog = Catalog::load(&store, commit.view).unwrap();
+        let files = store.put_symbol("files").unwrap();
+        let feature_name = store.put_symbol("files/feature").unwrap();
+        catalog
+            .insert(
+                feature_name,
+                DesignObject::new(
+                    Kind::Directory,
+                    ObjectPayload::Directory(DirectoryPayload {
+                        qualified_name: feature_name,
+                        parent: ParentRef::Object(files),
+                        source: None,
+                        document: SymbolHash::ZERO,
+                        children: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let view = catalog.rebuild(&store).unwrap();
+        let feature = store
+            .put_commit(&Commit {
+                view,
+                parent: main,
+                message: "feature".to_string(),
+                author: "test".to_string(),
+                timestamp: 2,
+            })
+            .unwrap();
+        write_branch_ref(&repo, "feature", feature).unwrap();
+
+        let access = DesignSpaceAccess::new(&root);
+        let project = project(uuid::Uuid::now_v7());
+        let main_hex = main.to_hex();
+        let feature_hex = feature.to_hex();
+        assert_eq!(
+            access
+                .branch_head(&project, "main")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(main_hex.as_str())
+        );
+        assert!(
+            access
+                .is_ancestor(&project, &main_hex, &feature_hex)
+                .await
+                .unwrap()
+        );
+        let changes = access
+            .diff(&project, &main_hex, &feature_hex)
+            .await
+            .unwrap();
+        let added = changes
+            .iter()
+            .find(|change| change.qname == "files/feature")
+            .expect("added feature directory");
+        assert_eq!(added.status, MergeRequestChangeStatus::Added);
+        assert!(
+            changes.iter().any(|change| change.qname == "files"
+                && change.status == MergeRequestChangeStatus::Modified)
+        );
+
+        access
+            .fast_forward(&project, "main", &main_hex, &feature_hex)
+            .await
+            .unwrap();
+        assert_eq!(
+            access.branch_head(&project, "main").await.unwrap(),
+            Some(feature_hex)
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_a_non_ancestor_and_a_moved_target() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repos");
+        let collection = RepoCollection::open(&root).unwrap();
+        collection.create("alpha", "main").unwrap();
+        let repo = root.join("alpha");
+        let store = Store::open(&repo).unwrap();
+        let main = read_branch_commit(&repo, "main").unwrap().unwrap();
+        let commit = store.get_commit(main).unwrap();
+        let view = Catalog::load(&store, commit.view).unwrap();
+        let other = store
+            .put_commit(&Commit {
+                view: view.rebuild(&store).unwrap(),
+                parent: CommitHash::ZERO,
+                message: "unrelated".to_string(),
+                author: "test".to_string(),
+                timestamp: 2,
+            })
+            .unwrap();
+        write_branch_ref(&repo, "feature", other).unwrap();
+
+        let access = DesignSpaceAccess::new(&root);
+        let project = project(uuid::Uuid::now_v7());
+        assert!(
+            !access
+                .is_ancestor(&project, &main.to_hex(), &other.to_hex())
+                .await
+                .unwrap()
+        );
+        assert!(
+            access
+                .fast_forward(&project, "main", &main.to_hex(), &other.to_hex())
+                .await
+                .is_err()
+        );
+        assert!(
+            access
+                .fast_forward(&project, "main", &"0".repeat(64), &other.to_hex())
+                .await
+                .is_err()
+        );
     }
 }

@@ -76,7 +76,7 @@ impl LlmNode for TestLlm {
 fn test_llm() -> TestLlm {
     TestLlm {
         system: PromptTemplate::parse("节点系统").unwrap(),
-        user: PromptTemplate::parse("任务：{{task}}").unwrap(),
+        user: PromptTemplate::parse("任务：{{task}}；kind={{input.kind}}").unwrap(),
         skills: vec!["document".into()],
     }
 }
@@ -118,7 +118,7 @@ async fn agent_installs_runtime_for_llm_nodes() {
     let mut ctx = Context::new();
     configure_context(&mut ctx);
 
-    let output = agent.run(ctx, json!(null)).await.expect("run");
+    let output = agent.run(ctx, json!({"kind": "file"})).await.expect("run");
     assert_eq!(output.exit().as_str(), "done");
 
     assert_eq!(
@@ -127,8 +127,8 @@ async fn agent_installs_runtime_for_llm_nodes() {
     );
     let user = output.output["user"].as_str().expect("user message");
     assert!(user.contains("任务：login"));
-    assert!(user.contains("Input (JSON):"));
-    assert!(user.contains("Input (JSON):\nnull"));
+    assert!(user.contains("kind=file"));
+    assert!(!user.contains("Input (JSON):"));
 }
 
 #[tokio::test]
@@ -167,6 +167,9 @@ async fn rejects_a_non_json_final_reply() {
         Arc::new(TestSkills),
     ));
     let agent = Agent::new("llm-agent", graph, llm);
-    let error = agent.run(ctx, json!(null)).await.expect_err("must reject");
+    let error = agent
+        .run(ctx, json!({"kind": "file"}))
+        .await
+        .expect_err("must reject");
     assert!(error.to_string().contains("invalid JSON"));
 }

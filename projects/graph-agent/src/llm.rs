@@ -12,11 +12,11 @@ static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// An LLM-backed node.
 ///
-/// The node provides its system prompt, its user prompt (which must describe
-/// the node's JSON output format) and transition logic. The user prompt and the
-/// input JSON form one user message that is recorded in History. The adapter appends the
-/// input JSON to the user message, records the full conversation in History,
-/// parses the final reply as JSON and returns it as the node output.
+/// The node provides its system prompt, its user prompt and transition logic.
+/// The user prompt must describe the node's JSON output format and may use
+/// `{{input}}` / `{{input.field}}` to render the previous node's JSON. The
+/// rendered user prompt is recorded in History; raw input JSON is not appended.
+/// The adapter parses the final reply as JSON and returns it as the node output.
 pub trait LlmNode: Send + Sync {
     fn system(&self) -> &PromptTemplate;
     fn user(&self) -> &PromptTemplate;
@@ -184,9 +184,9 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
             )
         };
 
-        let shared_system = shared_system.render(ctx)?;
-        let node_system = self.inner.system().render(ctx)?;
-        let fixed_user = self.inner.user().render(ctx)?;
+        let shared_system = shared_system.render_with_input(ctx, &input)?;
+        let node_system = self.inner.system().render_with_input(ctx, &input)?;
+        let fixed_user = self.inner.user().render_with_input(ctx, &input)?;
         let system = join_system(shared_system, node_system);
         let system = append_skills(system, runtime.skills.as_ref(), self.inner.skills())?;
         let tools = runtime
@@ -198,9 +198,9 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
 
-        // The node's user prompt states its output format; the input is always
-        // the previous node's JSON value. Both form one user message.
-        let user_text = build_user_message(&fixed_user, &input);
+        // The node's user prompt is fully rendered from context and input; the
+        // previous node's JSON is not appended separately.
+        let user_text = fixed_user.trim().to_owned();
         let fixed_tokens = estimate_tokens(&system) + estimate_tokens(&user_text);
         compress_history(&runtime, &model, &params, fixed_tokens, 0, ctx).await?;
 
@@ -267,35 +267,71 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
     }
 }
 
-/// Build the single user message for an LLM node. The fixed prompt owns the
-/// output-format description; the input is rendered as JSON.
-fn build_user_message(prompt: &str, input: &Value) -> String {
-    let input = serde_json::to_string_pretty(input).unwrap_or_else(|_| "null".to_owned());
-    let mut text = String::new();
-    if !prompt.trim().is_empty() {
-        text.push_str(prompt.trim());
-        text.push_str("\n\n");
-    }
-    text.push_str("Input (JSON):\n");
-    text.push_str(&input);
-    text.push_str(
-        "\n\nReturn exactly one JSON value as this node's output. \
-         Do not wrap it in Markdown fences and do not add prose outside the JSON.",
-    );
-    text
-}
-
 fn parse_node_output(content: &str) -> Result<Value, NodeError> {
     let text = strip_json_fence(content.trim());
     if text.is_empty() {
         return Err(NodeError::failed("LLM node returned an empty response"));
     }
-    serde_json::from_str(text).map_err(|error| {
-        NodeError::failed(format!(
-            "LLM node returned invalid JSON: {error}; response: {}",
-            truncate_for_error(text)
-        ))
-    })
+    if let Ok(value) = serde_json::from_str(text) {
+        return Ok(value);
+    }
+    // Models occasionally wrap the final JSON object in prose. Keep the
+    // strict parse above, then accept the last complete JSON object/array in
+    // the response so a harmless explanation does not fail the whole run.
+    if let Some(value) = last_json_value(text) {
+        return Ok(value);
+    }
+    let error = serde_json::from_str::<Value>(text).expect_err("strict parse failed");
+    Err(NodeError::failed(format!(
+        "LLM node returned invalid JSON: {error}; response: {}",
+        truncate_for_error(text)
+    )))
+}
+
+fn last_json_value(text: &str) -> Option<Value> {
+    let bytes = text.as_bytes();
+    let mut last = None;
+    for start in 0..bytes.len() {
+        let opening = bytes[start];
+        if opening != b'{' && opening != b'[' {
+            continue;
+        }
+        let closing = if opening == b'{' { b'}' } else { b']' };
+        let mut stack = vec![closing];
+        let mut in_string = false;
+        let mut escaped = false;
+        for end in start + 1..bytes.len() {
+            let byte = bytes[end];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'{' => stack.push(b'}'),
+                b'[' => stack.push(b']'),
+                b'}' | b']' => {
+                    if stack.pop() != Some(byte) {
+                        break;
+                    }
+                    if stack.is_empty() {
+                        if let Ok(value) = serde_json::from_str(&text[start..=end]) {
+                            last = Some(value);
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    last
 }
 
 fn strip_json_fence(text: &str) -> &str {
@@ -512,6 +548,15 @@ mod tests {
         fn transition_count(&self) -> usize {
             1
         }
+    }
+
+    #[test]
+    fn parses_json_after_prose() {
+        let value = parse_node_output(
+            "Cargo.toml 没有代码元素，无需修改。\n\n{\"ok\":true}",
+        )
+        .unwrap();
+        assert_eq!(value, serde_json::json!({ "ok": true }));
     }
 
     struct NoSkills;

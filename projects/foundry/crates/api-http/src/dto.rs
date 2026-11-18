@@ -203,8 +203,6 @@ pub struct CreateProjectRequest {
     pub git_repository: String,
     #[serde(default)]
     pub git_branch: Option<String>,
-    #[serde(default)]
-    pub design_space_branch: Option<String>,
     pub root_workflow_id: String,
 }
 
@@ -215,7 +213,6 @@ impl CreateProjectRequest {
             description: self.description,
             git_repository: self.git_repository.trim().to_string(),
             git_branch: self.git_branch,
-            design_space_branch: self.design_space_branch,
             root_workflow_id: WorkflowId::new(self.root_workflow_id),
         }
     }
@@ -230,8 +227,6 @@ pub struct UpdateProjectRequest {
     #[serde(default)]
     pub git_branch: Option<String>,
     #[serde(default)]
-    pub design_space_branch: Option<String>,
-    #[serde(default)]
     pub status: Option<ProjectStatus>,
 }
 
@@ -242,7 +237,6 @@ impl UpdateProjectRequest {
             name: self.name,
             description: self.description,
             git_branch: self.git_branch,
-            design_space_branch: self.design_space_branch,
             status: self.status,
         }
     }
@@ -294,8 +288,6 @@ pub struct NewProjectForm {
     #[serde(default)]
     pub git_branch: String,
     #[serde(default)]
-    pub design_space_branch: String,
-    #[serde(default)]
     pub root_workflow_id: String,
 }
 
@@ -306,7 +298,6 @@ impl NewProjectForm {
             description: optional_text(&self.description),
             git_repository: self.git_repository.trim().to_string(),
             git_branch: optional_text(&self.git_branch),
-            design_space_branch: optional_text(&self.design_space_branch),
             root_workflow_id: WorkflowId::new(self.root_workflow_id.trim()),
         }
     }
@@ -321,8 +312,6 @@ pub struct ProjectUpdateForm {
     #[serde(default)]
     pub git_branch: String,
     #[serde(default)]
-    pub design_space_branch: String,
-    #[serde(default)]
     pub status: String,
 }
 
@@ -333,7 +322,6 @@ impl ProjectUpdateForm {
             name: (!self.name.trim().is_empty()).then(|| self.name.trim().to_string()),
             description: Some(optional_text(&self.description)),
             git_branch: optional_text(&self.git_branch),
-            design_space_branch: optional_text(&self.design_space_branch),
             status: if self.status.is_empty() {
                 None
             } else {
@@ -1114,6 +1102,94 @@ pub struct AgentListQuery {
 pub struct AgentTemplateQuery {
     #[serde(default)]
     pub role: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Design-space merge requests
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMergeRequestRequest {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub source_branch: String,
+    pub target_branch: String,
+}
+
+impl CreateMergeRequestRequest {
+    pub fn into_command(self) -> foundry_app::CreateDesignSpaceMergeRequest {
+        foundry_app::CreateDesignSpaceMergeRequest {
+            title: self.title,
+            description: self.description,
+            source_branch: self.source_branch,
+            target_branch: self.target_branch,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMergeRequestForm {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub source_branch: String,
+    pub target_branch: String,
+}
+
+impl CreateMergeRequestForm {
+    pub fn into_command(self) -> foundry_app::CreateDesignSpaceMergeRequest {
+        foundry_app::CreateDesignSpaceMergeRequest {
+            title: self.title,
+            description: self.description,
+            source_branch: self.source_branch,
+            target_branch: self.target_branch,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergeRequestOperationForm {
+    pub operation: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MergeRequestCommentForm {
+    pub body: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BindTaskActorRequest {
+    pub role: String,
+    pub account_id: uuid::Uuid,
+}
+
+// ---------------------------------------------------------------------------
+// Task children
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct SpawnChildTaskRequest {
+    pub workflow: String,
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct SpawnChildTasksRequest {
+    #[serde(default)]
+    pub tasks: Vec<SpawnChildTaskRequest>,
+    #[serde(default)]
+    pub sequential: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteDesignSpaceBranchRequest {
+    pub branch: String,
 }
 
 // ---------------------------------------------------------------------------

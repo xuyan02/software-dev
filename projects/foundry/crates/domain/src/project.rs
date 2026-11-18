@@ -91,6 +91,10 @@ pub struct Project {
 
 pub const DEFAULT_BRANCH: &str = "main";
 
+/// The design-space branch is a fixed platform contract, not a project
+/// setting. Foundry always reads and writes this branch.
+pub const DESIGN_SPACE_BRANCH: &str = "source";
+
 fn default_branch() -> String {
     DEFAULT_BRANCH.to_owned()
 }
@@ -132,7 +136,7 @@ impl Project {
             git_repository,
             git_branch: DEFAULT_BRANCH.to_owned(),
             design_space_url: String::new(),
-            design_space_branch: DEFAULT_BRANCH.to_owned(),
+            design_space_branch: DESIGN_SPACE_BRANCH.to_owned(),
             status: ProjectStatus::Active,
             root_task_id: None,
             members: vec![ProjectMember {
@@ -205,7 +209,6 @@ impl Project {
         name: Option<String>,
         description: Option<Option<String>>,
         git_branch: Option<String>,
-        design_space_branch: Option<String>,
     ) -> Result<(), ProjectValidationError> {
         if self.is_archived() {
             return Err(ProjectValidationError(vec![
@@ -220,9 +223,6 @@ impl Project {
         }
         if let Some(branch) = git_branch {
             self.git_branch = branch.trim().to_string();
-        }
-        if let Some(branch) = design_space_branch {
-            self.design_space_branch = branch.trim().to_string();
         }
         self.touch();
         self.validate()
@@ -345,25 +345,20 @@ mod tests {
         assert_eq!(project.role_of(owner), Some(ProjectRole::Owner));
         assert_eq!(project.status, ProjectStatus::Active);
         assert_eq!(project.git_branch, "main");
-        assert_eq!(project.design_space_branch, "main");
+        assert_eq!(project.design_space_branch, DESIGN_SPACE_BRANCH);
     }
 
     #[test]
     fn branches_can_be_updated_but_not_empty() {
         let mut project = project();
         project
-            .update(
-                None,
-                None,
-                Some("release".to_string()),
-                Some("design/release".to_string()),
-            )
+            .update(None, None, Some("release".to_string()))
             .unwrap();
         assert_eq!(project.git_branch, "release");
-        assert_eq!(project.design_space_branch, "design/release");
+        assert_eq!(project.design_space_branch, DESIGN_SPACE_BRANCH);
         assert!(
             project
-                .update(None, None, Some("  ".to_string()), None)
+                .update(None, None, Some("  ".to_string()))
                 .is_err()
         );
     }

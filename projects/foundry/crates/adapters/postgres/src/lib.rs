@@ -35,6 +35,7 @@ use uuid::Uuid;
 mod agent_runs;
 mod agents;
 mod anchor_document;
+mod merge_request;
 mod requirements_doc;
 mod task;
 mod task_link;

@@ -1,0 +1,770 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "name": "scanner",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "integrator",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "content_reviewer",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "conflict_resolver",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "acceptor",
+      "kind": "human",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "architect",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "structure_reviewer",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    },
+    {
+      "name": "style_reviewer",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    }
+  ],
+  "vars": {
+    "expected": {
+      "type": "int",
+      "display_name": "Expected groups"
+    },
+    "merged": {
+      "type": "int",
+      "display_name": "Merged groups"
+    },
+    "abandoned": {
+      "type": "int",
+      "display_name": "Abandoned groups"
+    },
+    "no_changes": {
+      "type": "bool",
+      "display_name": "No changes"
+    }
+  },
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": [
+        "scanner"
+      ],
+      "operations": [
+        {
+          "name": "groups_created",
+          "display_name": "完成扫描和分组",
+          "description": "基础同步完成，代码总结组任务已创建。",
+          "roles": [
+            "scanner"
+          ],
+          "action": "expected = count_children('code_summary_group')"
+        },
+        {
+          "name": "no_changes",
+          "display_name": "没有变化",
+          "description": "设计空间已经和代码一致。",
+          "roles": [
+            "scanner"
+          ],
+          "action": "no_changes = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "扫描失败",
+          "description": "扫描、基础同步或创建组任务失败。",
+          "roles": [
+            "scanner"
+          ],
+          "action": "result = 'failed'"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "expected > 0",
+          "to": "waiting"
+        },
+        {
+          "on": "no_changes",
+          "action": "result = 'no_changes'",
+          "to": "ended"
+        },
+        {
+          "on": "result == 'failed'",
+          "to": "dispatch_failed"
+        }
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'code_summary_group' and event.child.state == 'completed' { if event.child.result == 'merged' { merged = merged + 1 } if event.child.result == 'abandoned' { abandoned = abandoned + 1 } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "abandoned > 0 and merged + abandoned == expected",
+          "action": "result = 'failed'",
+          "to": "ended"
+        },
+        {
+          "on": "expected > 0 and merged == expected",
+          "to": "structure_survey"
+        }
+      ]
+    },
+    {
+      "name": "structure_survey",
+      "active_roles": [
+        "architect"
+      ],
+      "vars": {
+        "surveyed": {
+          "type": "bool",
+          "display_name": "Surveyed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "surveyed",
+          "display_name": "完成结构盘点",
+          "description": "系统清单、元素清单和现有模块树已写入草稿。",
+          "roles": [
+            "architect"
+          ],
+          "action": "surveyed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "盘点失败",
+          "description": "结构盘点失败。",
+          "roles": [
+            "architect"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "surveyed",
+          "to": "structure_synthesis"
+        },
+        {
+          "on": "failed",
+          "to": "structure_survey_failed"
+        }
+      ]
+    },
+    {
+      "name": "structure_synthesis",
+      "active_roles": [
+        "architect"
+      ],
+      "vars": {
+        "synthesized": {
+          "type": "bool",
+          "display_name": "Synthesized"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "synthesized",
+          "display_name": "完成模块合成",
+          "description": "系统、模块、成员关系和模块文档已写入集成分支。",
+          "roles": [
+            "architect"
+          ],
+          "action": "synthesized = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "模块合成失败",
+          "description": "模块合成失败。",
+          "roles": [
+            "architect"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "synthesized",
+          "to": "structure_review"
+        },
+        {
+          "on": "failed",
+          "to": "structure_failed"
+        }
+      ]
+    },
+    {
+      "name": "structure_review",
+      "active_roles": [
+        "structure_reviewer"
+      ],
+      "vars": {
+        "decision": {
+          "type": "string",
+          "display_name": "Decision"
+        }
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "结构通过",
+          "description": "系统/模块划分和成员关系通过。",
+          "roles": [
+            "structure_reviewer"
+          ],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "结构打回",
+          "description": "系统/模块划分或成员关系需要修改。",
+          "roles": [
+            "structure_reviewer"
+          ],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "decision == 'approved'",
+          "to": "structure_style_review"
+        },
+        {
+          "on": "decision == 'rejected'",
+          "to": "structure_fix"
+        }
+      ]
+    },
+    {
+      "name": "structure_fix",
+      "active_roles": [
+        "architect"
+      ],
+      "vars": {
+        "fixed": {
+          "type": "bool",
+          "display_name": "Fixed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "fixed",
+          "display_name": "修复结构问题",
+          "description": "结构审查问题已修复。",
+          "roles": [
+            "architect"
+          ],
+          "action": "fixed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "结构修复失败",
+          "description": "结构问题无法修复。",
+          "roles": [
+            "architect"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "fixed",
+          "to": "structure_review"
+        },
+        {
+          "on": "failed",
+          "to": "structure_failed"
+        }
+      ]
+    },
+    {
+      "name": "structure_style_review",
+      "active_roles": [
+        "style_reviewer"
+      ],
+      "vars": {
+        "decision": {
+          "type": "string",
+          "display_name": "Decision"
+        }
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "模块文风通过",
+          "description": "系统和模块文档文风通过。",
+          "roles": [
+            "style_reviewer"
+          ],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "模块文风打回",
+          "description": "系统和模块文档文风需要修改。",
+          "roles": [
+            "style_reviewer"
+          ],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "decision == 'approved'",
+          "to": "integration_review"
+        },
+        {
+          "on": "decision == 'rejected'",
+          "to": "structure_text_fix"
+        }
+      ]
+    },
+    {
+      "name": "structure_text_fix",
+      "active_roles": [
+        "architect"
+      ],
+      "vars": {
+        "fixed": {
+          "type": "bool",
+          "display_name": "Fixed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "fixed",
+          "display_name": "修复模块文档",
+          "description": "模块文风问题已修复。",
+          "roles": [
+            "architect"
+          ],
+          "action": "fixed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "模块文档修复失败",
+          "description": "模块文风问题无法修复。",
+          "roles": [
+            "architect"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "fixed",
+          "to": "structure_style_review"
+        },
+        {
+          "on": "failed",
+          "to": "structure_failed"
+        }
+      ]
+    },
+    {
+      "name": "integration_review",
+      "active_roles": [
+        "integrator"
+      ],
+      "vars": {
+        "submitted": {
+          "type": "bool",
+          "display_name": "Submitted"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "submitted",
+          "display_name": "提交集成 MR",
+          "description": "集成分支已创建最终 MR。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "submitted = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "集成失败",
+          "description": "最终 MR 创建失败。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "submitted",
+          "to": "integration_content_review"
+        },
+        {
+          "on": "failed",
+          "to": "integration_failed"
+        }
+      ]
+    },
+    {
+      "name": "integration_content_review",
+      "active_roles": [
+        "content_reviewer"
+      ],
+      "vars": {
+        "decision": {
+          "type": "string",
+          "display_name": "Decision"
+        }
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "集成内容通过",
+          "description": "整个集成分支的内容审查通过。",
+          "roles": [
+            "content_reviewer"
+          ],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "集成内容打回",
+          "description": "集成分支仍有内容问题。",
+          "roles": [
+            "content_reviewer"
+          ],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "decision == 'approved'",
+          "to": "human_review"
+        },
+        {
+          "on": "decision == 'rejected'",
+          "to": "integration_fix"
+        }
+      ]
+    },
+    {
+      "name": "integration_fix",
+      "active_roles": [
+        "integrator"
+      ],
+      "vars": {
+        "fixed": {
+          "type": "bool",
+          "display_name": "Fixed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "fixed",
+          "display_name": "修复集成问题",
+          "description": "集成内容问题已修复，重新进行内容审查。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "fixed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "修复失败",
+          "description": "集成内容问题无法修复。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "fixed",
+          "to": "integration_content_review"
+        },
+        {
+          "on": "failed",
+          "to": "integration_failed"
+        }
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": [
+        "acceptor"
+      ],
+      "vars": {
+        "decision": {
+          "type": "string",
+          "display_name": "Decision"
+        }
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "人类批准",
+          "description": "集成分支批准合入主分支。",
+          "roles": [
+            "acceptor"
+          ],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "人类打回",
+          "description": "集成分支需要修改。",
+          "roles": [
+            "acceptor"
+          ],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "decision == 'approved'",
+          "to": "merge"
+        },
+        {
+          "on": "decision == 'rejected'",
+          "to": "integration_fix"
+        }
+      ]
+    },
+    {
+      "name": "merge",
+      "active_roles": [
+        "integrator"
+      ],
+      "vars": {
+        "merged_ok": {
+          "type": "bool",
+          "display_name": "Merged"
+        },
+        "conflict": {
+          "type": "bool",
+          "display_name": "Conflict"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "merge",
+          "display_name": "合入主分支",
+          "description": "把集成分支快进合入 DS 主分支。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "merged_ok = true"
+        },
+        {
+          "name": "conflict",
+          "display_name": "存在冲突",
+          "description": "主分支在审批期间前进，需要解决冲突。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "conflict = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "合入失败",
+          "description": "合入主分支失败。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "merged_ok",
+          "to": "cleanup"
+        },
+        {
+          "on": "conflict",
+          "to": "integration_conflict_resolution"
+        },
+        {
+          "on": "failed",
+          "to": "integration_failed"
+        }
+      ]
+    },
+    {
+      "name": "integration_conflict_resolution",
+      "active_roles": [
+        "conflict_resolver"
+      ],
+      "vars": {
+        "resolved": {
+          "type": "bool",
+          "display_name": "Resolved"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "resolved",
+          "display_name": "集成冲突已解决",
+          "description": "集成分支已重新落到最新主分支，重新审查。",
+          "roles": [
+            "conflict_resolver"
+          ],
+          "action": "resolved = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "无法解决",
+          "description": "集成冲突无法解决。",
+          "roles": [
+            "conflict_resolver"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "resolved",
+          "to": "structure_synthesis"
+        },
+        {
+          "on": "failed",
+          "to": "integration_failed"
+        }
+      ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": [
+        "integrator"
+      ],
+      "vars": {
+        "cleaned": {
+          "type": "bool",
+          "display_name": "Cleaned"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "cleaned",
+          "display_name": "清理完成",
+          "description": "集成分支已删除。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "cleaned = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "清理失败",
+          "description": "集成分支删除失败。",
+          "roles": [
+            "integrator"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "cleaned",
+          "action": "result = 'completed'",
+          "to": "ended"
+        },
+        {
+          "on": "failed",
+          "to": "cleanup_failed"
+        }
+      ]
+    },
+    {
+      "name": "structure_survey_failed",
+      "active_roles": [],
+      "retry_to": "structure_survey"
+    },
+    {
+      "name": "structure_failed",
+      "active_roles": [],
+      "retry_to": "structure_synthesis"
+    },
+    {
+      "name": "dispatch_failed",
+      "active_roles": [],
+      "retry_to": "dispatch"
+    },
+    {
+      "name": "integration_failed",
+      "active_roles": [],
+      "retry_to": "integration_review"
+    },
+    {
+      "name": "cleanup_failed",
+      "active_roles": [],
+      "retry_to": "cleanup"
+    }
+  ]
+}

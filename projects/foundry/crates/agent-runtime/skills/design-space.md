@@ -1,19 +1,19 @@
 # design-space（ds）使用技能
 
-`ds` 是设计空间的命令行。设计空间不是代码的副本，而是对代码的**设计说明**：每个对象回答“这里为什么这样组织、承担什么职责、边界在哪里”。对象、设计文档和关系都提交到设计空间分支；源码只读。
+`ds` 是设计空间的命令行。设计空间保存源码对象、文档对象和关系；源码只读。
 
 ## 1. 基本模型
 
 - 工作区里有一个 `.ds/`。不要手改 `.ds/` 下的文件，只用 `ds` 命令。
-- 设计对象是内容寻址的。对象有稳定的 qualified name（qname）、kind、源码锚点和设计文档。
+- 设计对象是内容寻址的。对象有稳定的 qualified name（qname）、kind、源码锚点和 document 引用。
 - 工作流：worktree（未暂存）→ index（`ds add` 暂存）→ commit（`ds commit`）→ remote（`ds push`）。
-- 两种根对象由 `ds init` 创建，不能自行创建或删除：
+- 三种根对象由 `ds init` 创建，不能自行创建或删除：
   - `files`：源码目录和文件的根；
-  - `namespaces`：跨文件逻辑命名空间的根。
+  - `namespaces`：跨文件逻辑命名空间的根；
+  - `documents`：文档对象的根。
 - 对象之间有两类关系：
   - 包含关系：parent / children；
   - 语义关系：superclass、interfaces、mixins、on、extends、overrides，以及显式/隐式依赖。
-- 设计文档是给人和后续智能体读的说明，不是源码摘要，也不是逐行注释。
 
 ## 2. 对象类型
 
@@ -32,47 +32,21 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 | Function | 不属于某个类型的函数/过程 | 同 Class | `path:start-end` | 无 |
 | Part | 没有独立名字、但需要说明的代码片段（配置块、宏体、特殊常量段等） | `<parent>/part#<内容哈希>` | 必须 `path:start-end` | 无 |
 | Mixin | 可复用的行为片段 | 同 Class | `path:start-end` | Method |
-| View | 根视图/快照，由 `ds` 维护 | 不可创建 | 无 | `files`、`namespaces` |
+| View | 根视图/快照，由 `ds` 维护 | 不可创建 | 无 | `files`、`namespaces`、`documents` |
 
 不要把外部库、标准库、第三方类型建成对象；只建当前仓库的设计空间内的对象。
 
 ### 2.1 Directory
 
-表示源码目录。子对象是该目录下的子目录和 File。目录对象的设计文档是**目录规则**，不是子项清单。
-
-写什么：
-
-- 这个目录负责哪一层、哪一类内容；
-- 什么应该放在这里，什么不应该；
-- 目录内部的划分约定、命名约定、依赖方向；
-- 如果目录是分层/分行/分模块的边界的，说明边界。
-
-不要写：文件清单、某个函数的实现、逐项罗列子目录或文件。
+表示源码目录。子对象是该目录下的子目录和 File。
 
 ### 2.2 File
 
-表示一个源码文件。File 通常不作为类型的 parent；文件中声明的顶层 Class/Interface/Function/Mixin 挂在 Namespace 下，并通过 `--file files/<路径>` 关联到这个文件。File 的设计文档是**文件职责与边界**，不是成员清单。
-
-写什么：
-
-- 文件的主要职责和存在理由；
-- 对外暴露什么、被谁使用；
-- 不该放在这个文件里的内容；
-- 关键的约束（例如无副作用、无 I/O、只依赖某层）；
-- 变更时需要注意的影响面。
-
-不要写：逐个成员的功能、逐行代码解释、把所有 Class/Method 再抄一遍。
+表示一个源码文件。File 通常不作为类型的 parent；文件中声明的顶层 Class/Interface/Function/Mixin 挂在 Namespace 下，并通过 `--file files/<路径>` 关联到这个文件。
 
 ### 2.3 Namespace
 
 表示逻辑上的命名空间/模块，用来组织跨文件的概念；物理目录由 Directory 表示，两者不必一一对应。
-
-写什么：
-
-- 这个概念边界包含什么，不包含什么；
-- 允许依赖哪些层/模块，禁止依赖哪些；
-- 与相邻命名空间的分工；
-- 对外稳定性和兼容性要求。
 
 命名空间统一挂在 `namespaces/` 下；即使只被一个文件使用，也用独立 Namespace，不要把 File 当成 namespace，避免出现 `files/<path>/Class` 这种带文件前缀的类型 qname。
 
@@ -83,17 +57,6 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 
 表示类、结构体、trait、enum 等类型声明。
 
-写什么：
-
-- 类型承担的责任和核心抽象；
-- 关键不变量（构造后哪些条件必须成立）；
-- 生命周期、所有权、可变性、线程/并发约束；
-- 与哪些对象协作，通过什么契约协作；
-- 扩展点、继承关系、需要子类/实现者遵守的规则；
-- 明确它**不是**什么，避免被误用。
-
-不要写：每个方法的逐行实现、重复接口签名。
-
 ### 2.5 Interface / InnerInterface
 
 `Interface` 是顶层接口；`InnerInterface` 是嵌套接口，`--parent` 必须是类型。
@@ -101,49 +64,37 @@ qname 分别走 namespace 或 parent 类型，不使用 File 前缀。
 
 表示接口、协议或抽象契约。
 
-写什么：
-
-- 契约的语义：实现者必须保证什么，调用者可以假设什么；
-- 成功、失败、异常和边界条件；
-- 实现者集合或典型实现；
-- 兼容性、版本化和弃用约束；
-- 与 Class 的关系（`extends`）。
-
 ### 2.6 Method / Function
 
 表示可调用成员。Method 必须给出 `--signature`，qname 里的签名哈希由 `ds` 生成，不要手写。
 
-写什么：
-
-- 行为：做什么，返回什么；
-- 输入、输出、错误/异常；
-- 前置条件、后置条件、不变量；
-- 副作用（I/O、状态修改、并发、资源）；
-- 性能和复杂度上必须满足的约束；
-- 与调用方/被调用方的重要协作。
-
-不要写：逐行解释实现、复制函数体。实现细节只在影响契约时写。
-
 ### 2.7 Part
 
-表示没有独立名字、但设计上需要说明的代码片段，例如宏体、配置块、内嵌 DSL 段、特殊常量表。必须用 `--source path:start-end` 指定行范围。
-
-写什么：
-
-- 这个片段属于哪个结构、为什么单独存在；
-- 它保证了什么、依赖什么格式/协议；
-- 修改时哪些约束不能破坏。
+表示没有独立名字、但设计上需要说明的代码片段，例如宏体、配置块、内嵌 DSL 段、特殊常量表。必须用 `--source path:start-end` 指定行范围。Part 不关联设计文档，不接受 `--document`。
 
 ### 2.8 Mixin
 
 表示可复用、可组合的行为片段。
 
-写什么：
+### 2.9 文档对象
 
-- 它给使用者增加什么行为；
-- 使用前提和假设；
-- 与 superclass、interfaces、其他 mixin 的冲突/覆盖规则（`--on`）；
-- 不应被用在什么场景。
+`documents` 下的对象是文档片段，和源码对象共用 View、index、worktree、提交和评论系统。
+
+| kind | 是什么 | qname 形式 |
+|---|---|---|
+| document-directory | 文档目录 | `<parent>/<name>` |
+| document | 文档 | `<parent>/<name>` |
+| document-section | 章节 | `<parent>/section<n>` |
+| document-topic | 带标题的内容块 | `<parent>/body<n>` |
+| document-list | 列表 | `<parent>/body<n>` 或 `<parent>/item<n>` |
+| document-text | 文本 | `<parent>/body<n>` 或 `<parent>/item<n>` |
+
+- `document-section` 的正文可以放 `document-text`、`document-list`、`document-topic`；子章节单独放在 `sections`。
+- `document-topic` 只属于 `document-section`；它有一个标题和段落列表，段落只能是 `document-text` 或 `document-list`。
+- 自动名只取决于父对象和集合：子章节 `section<n>`，正文元素 `body<n>`，列表项 `item<n>`。不要手写这些名字。
+- 正文元素插入到 Section 或 Topic 的正文：目标用 `<section-qname>/body`、`<topic-qname>/body` 头锚点，或已有正文元素 qname。
+
+文档内容写什么、格式是什么，见 `design-writing` 技能。
 
 ## 3. qname、parent 和 source
 
@@ -165,7 +116,7 @@ Method 和 Part 的 qname 后缀由 `ds` 计算，创建后用 `ds ls` 或 `ds s
 - 顶层 Class / Interface / Function / Mixin：`--namespace <namespace qname>`（必填），可选 `--file <file qname>` 和 `--module <module qname>` 记录文件/模块归属；
 - 嵌套 Class/Interface 用 `inner-class`/`inner-interface`，并给 `--parent <type qname>`；parent 不是 File；
 - Mixin 仍按 `--namespace`（顶层）或 `--parent`（嵌套）选择；
-- Method：`--parent <class/interface/mixin qname>`，并给 `--signature`；
+- Method：`--parent <class/interface/mixin/part qname>`，并给 `--signature`；
 - Part：`--parent <qname>`，并给 `--source path:start-end`。
 
 ### 3.3 source
@@ -209,23 +160,23 @@ ds ls [--files] [--namespaces] [--design] [--staged]
 ds status --porcelain
 ```
 
-`ds status --porcelain` 输出未暂存对象：状态、完整 kind 名、source、qname，每行一个。
+`ds status --porcelain` 输出未暂存对象：状态和 qname，每行一个；需要 kind/source 时用 `--detail`，否则用 `ds show <qname>` 查询。
 
-- `ds show` 显示 kind、parent、source、content hash、设计文档，以及 `children:`；
+- `ds show` 显示 kind、parent、source、content hash、`document:` 引用，以及 `children:`；
 - `ds show --source` 同时输出锚定的源码；
 - `ds show --staged` 读 index；
 - `ds ls --files` 列 Directory/File 的 qname；
 - `ds ls --namespaces` 列非 File/Directory 的 qname；
-- `ds ls --design` 列已有设计文档的 qname 和文档 hash。
+- `ds ls --design` 列已有 `document` 引用的对象，输出 qname 和 document qname。
 
 ### 4.3 创建对象
 
 ```bash
-ds create directory <name> --parent <qname> --source <path> [--design <text>]
-ds create file <name> --parent <qname> --source <path> [--design <text>]
-ds create namespace <name> --parent <qname> [--source path:start-end] [--design <text>]
+ds create directory <name> --parent <qname> --source <path> [--document <qname>]
+ds create file <name> --parent <qname> --source <path> [--document <qname>]
+ds create namespace <name> --parent <qname> [--source path:start-end] [--document <qname>]
 ds create class <name> --namespace <ns> [--file <file>] [--source path:start-end] \
-  [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]... [--design <text>]
+  [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]... [--document <qname>]
 ds create inner-class <name> --parent <type qname> [--source path:start-end] \
   [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]...
 ds create interface <name> --namespace <ns> [--extends <qname>] [--source path:start-end]
@@ -233,20 +184,20 @@ ds create inner-interface <name> --parent <type qname> [--extends <qname>]
 ds create function <name> --namespace <ns> [--file <file>] [--source path:start-end]
 ds create method <name> --parent <type qname> --signature 'foo(x)' [--source path:start-end] \
   [--overrides <method qname>]
-ds create part <name> --parent <qname> --source path:start-end [--design <text>]
+ds create part <name> --parent <qname> --source path:start-end
 ds create mixin <name> --namespace <ns> [--on <qname>]... [--superclass <qname>] \
   [--interface <qname>]... [--mixin <qname>]...
 ```
 
 - `part` 的 `<name>` 只是 CLI 的占位参数；qname 由 `<parent>/part#<内容哈希>` 决定，不是本地名；
-- 长文档用 `--design-file <path>`，避免 shell 转义问题；
+- 文档正文用 `ds doc text add <section-or-topic>/body --text ...` 写入；代码对象用 `ds edit <qname> --document <section-qname>` 关联；“未分类实体”等具体组织规则见 CodeSummary 提示词。
 - `--interface`、`--mixin`、`--on` 可以重复；
 - 关系目标可以暂时不存在，最后用 `ds verify` 解析。
 
 ### 4.4 编辑对象
 
 ```bash
-ds edit <qname> [--design <text> | --design-file <path> | --clear-design]
+ds edit <qname> [--document <qname> | --clear-document]
 ds edit <qname> --source path:start-end
 ds edit <qname> --name <new local name>
 ds edit <qname> --parent <new parent>
@@ -259,6 +210,42 @@ ds edit <qname> --superclass <qname> | --extends <qname> | --overrides <qname>
 - 改 parent、namespace、file、module 或本地名时，`ds` 会一起迁移子孙的 qname、关系和依赖；
 - 改名/移动后，用 `ds show` 确认新 qname；
 - 不要用 `ds edit` 删对象；删对象用 `ds rm`。
+
+### 4.4.1 文档操作
+
+```bash
+ds doc mkdir documents/specs
+ds doc create documents/specs/auth --title "认证"
+ds doc section add documents/specs/auth/section --title "登录"
+ds doc topic add documents/specs/auth/section1/body --title "认证流程"
+ds doc text add documents/specs/auth/section1/body --text "登录使用 OAuth 2.0。"
+ds doc list add documents/specs/auth/section1/body1
+ds doc list item add documents/specs/auth/section1/body2/item --text "第一项"
+ds doc text set documents/specs/auth/section1/body1 --text "新的文本"
+ds doc show documents/specs/auth
+```
+
+- `section add` 的目标是 `<document-or-section>/section` 头锚点，或已有兄弟 section 的 qname；
+- `topic add` 的目标是 `<section>/body` 头锚点，或已有正文元素 qname；
+- `text add` / `list add` 的目标是 `<section-or-topic>/body` 头锚点，或已有正文元素 qname；
+- `list item add` 的目标是 `<list>/item` 头锚点，或已有列表项 qname；
+- 所有 `add` 命令只接收一个目标位置，不传父对象，也没有 `--after`。
+
+### 4.4.2 文档评论
+
+每个文档对象（document-directory、document、document-section、document-list、document-text、document-topic）都有独立评论列表。评论状态只有 `open` 和 `resolved`。
+
+```bash
+ds doc comment add <doc-qname> --text "需要补充错误码"
+ds doc comment list <doc-qname>
+ds doc comment resolve <doc-qname> comment1
+```
+
+- 评论 id 是对象内的 `comment1`、`comment2`；
+- 评论不是正文，不要混进文档文字；
+- 问题未解决时不要 resolve；
+- `ds doc show` 和 `ds show` 都会显示评论状态。
+- CodeSummary review 用评论承载意见，JSON 只传 `passed` 和 `sections`；总结节点读取 open 评论，修复后 resolve。
 
 ### 4.5 删除对象
 
@@ -302,7 +289,7 @@ ds push --branch <branch>
 
 流程：
 
-1. 创建/编辑/删除对象，写设计文档和关系；
+1. 创建/编辑/删除对象，关联文档和关系；
 2. `ds status` / `ds diff` 查看未暂存改动；
 3. `ds add -A`；
 4. `ds diff --staged` 和 `ds ls --staged` 复核；
@@ -311,50 +298,46 @@ ds push --branch <branch>
 
 不要跳过 review 和 verify 直接提交。
 
-## 5. 设计文档的写法
+## 5. 系统与模块
 
-### 5.1 通用规则
+逻辑结构是独立于文件/命名空间树的一棵树：
 
-- 用纯文本，简洁、可判断；不要空话、TODO、占位符或“待补充”；
-- 写“是什么、为什么、边界、约束、契约、什么不属于这里”，不要逐行复述源码；
-- 不写实现细节，除非它会改变其他对象的契约；
-- 不写密钥、内部 URL、个人数据；
-- 文档语言与项目文档保持一致（本项目以中文为主）；
-- File/Directory 的文档不要枚举子对象；子对象的细节放在子对象自己的文档里；
-- 一个对象没有设计可写时，不要创建空文档；但一旦创建了对象，就写清它的职责和边界。
+- 根 qname 固定为 `design`；
+- 系统 qname 为 `design/<system>`；
+- 模块 qname 为 `<system-or-module>/<module>`；
+- 模块成员只引用顶层 Class/Interface/Function/Mixin；一个元素只能属于一个模块；
+- 子模块通过 parent 关系嵌套，不要写进 members。
 
-### 5.2 按类型的检查清单
+```bash
+ds structure init
+ds structure system create app --title '应用' --document <doc-section>
+ds structure module create core --parent design/app --title '核心' --document <doc-section>
+ds structure assign design/app/core namespaces/app/Auth namespaces/app/Session
+ds structure unassign design/app/core namespaces/app/Session
+ds structure list
+ds structure show design/app/core
+ds structure unassigned
+ds structure check
+```
 
-- **Directory**：职责分层；放置规则；禁止内容；命名/依赖约定；边界。
-- **File**：文件职责；对外暴露；不该出现的内容；依赖方向；变更影响。
-- **Namespace**：语义边界；包含/不包含；允许/禁止的依赖；与相邻模块分工。
-- **Class**：核心抽象；不变量；生命周期/所有权/并发；协作对象；扩展点；明确不是什么。
-- **Interface**：实现者保证；调用者可假设；错误与边界；兼容性；实现者集合。
-- **Method/Function**：行为；输入输出；错误；前置/后置条件；副作用；性能/并发约束。
-- **Part**：所属结构；存在理由；格式/协议约束；修改禁忌。
-- **Mixin**：增加的行为；使用前提；冲突/覆盖规则；适用和不适用场景。
+`ds structure check` 会检查成员存在、唯一归属、空模块、空系统、所有顶层元素已归属；它和 `ds verify` 一样是提交前必须通过的检查。
 
-### 5.3 关系怎么写
+## 6. 文档写作
 
-- 只写当前仓库内的对象；外部库/标准库类型不建模；
-- superclass/interfaces/mixins 表示语义关系，不是源码文本的复制；
-- `overrides` 指向被覆盖的 Method；
-- 依赖分 explicit（源码可见）和 implicit（运行时/设计约束），并给证据或理由；
-- 关系目标可以是稍后创建的对象，最终必须通过 `ds verify`。
+每种对象的文档写什么、格式是什么，由 `design-writing` 技能规定。本技能只负责 ds 对象模型、qname、命令、文档位置和 staging。
 
-## 6. 常见错误
+## 7. 常见错误
 
 - 用源码路径直接当 qname（File 需要 `files/<path>`）；
 - 创建或删除 `files` / `namespaces` 根对象；
 - 给 Method 手写 `#hash`，或漏掉 `--signature`；
 - 给 Part 用没有行范围的 `--source`；
-- 目录/文件文档写成子项清单；
 - 关系目标写成外部库类型；
 - 未 `ds verify` 就 commit；
 - 直接用 `ds rm` 删除源码已不存在的文件树，而不是 `ds source sync`；
 - 改 qname 后没有重新 `ds show` 确认，仍用旧名字继续操作。
 
-## 7. 速查
+## 8. 速查
 
 ```bash
 # 看当前状态
@@ -372,15 +355,15 @@ ds create directory app --parent files/src --source src/app
 ds create file main.rs --parent files/src --source src/main.rs
 ds create namespace data_core --parent namespaces --source src/data_core.rs:1-80
 ds create class Value --namespace namespaces/data_core --file files/src/data_core.rs \
-  --source src/data_core.rs:10-120 --design-file /tmp/value.md
+  --source src/data_core.rs:10-120 --document <value-section-qname>
 ds create inner-class Entry --parent namespaces/data_core/Value \
   --source src/data_core.rs:40-80
 ds create method get --parent namespaces/data_core/Value --signature 'get(path)' \
   --source src/data_core.rs:40-70
 
-# 写文档
-ds edit files/src/main.rs --design-file /tmp/main.md
-ds edit namespaces/data_core/Value --design-file /tmp/value.md
+# 关联文档
+ds edit files/src/main.rs --document <file-section-qname>
+ds edit namespaces/data_core/Value --document <value-section-qname>
 
 # 关系
 ds dep add namespaces/data_core/Value namespaces/data_core/Path --explicit \

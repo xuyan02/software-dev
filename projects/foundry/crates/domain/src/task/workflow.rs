@@ -495,11 +495,13 @@ impl<'a> WorkflowContext<'a> {
             // The adapter pins the child's published version before persisting.
             workflow_version: 0,
             title: title.clone(),
+            description: String::new(),
             state: TaskState::Pending,
             stage: None,
             result: None,
             stage_variables: Default::default(),
             task_variables: Default::default(),
+            input: serde_json::Value::Null,
             created_at: self.now,
             updated_at: self.now,
             completed_at: None,

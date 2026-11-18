@@ -17,6 +17,7 @@ foundry-adapter-policy.workspace = true
 foundry-agent-runtime.workspace = true
 foundry-api-http.workspace = true
 foundry-shared.workspace = true
+design-space.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 axum.workspace = true

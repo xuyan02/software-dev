@@ -508,6 +508,71 @@ GET  /api/v1/projects/{project}/documents/test_report/content
 
 MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
 
+## 技术设计一致性任务
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `POST` | `/api/v1/tasks/{id}/children` | 创建子任务，携带 input，可串行依赖 |
+| `POST` | `/api/v1/tasks/{id}/retry` | 重试进入可重试失败阶段的任务 |
+| `POST` | `/api/v1/tasks/{id}/abandon` | 放弃可重试失败阶段的任务 |
+| `POST` | `/api/v1/tasks/{id}/actors` | 把真人绑定到 human 任务角色 |
+| `POST` | `/api/v1/tasks/{id}/merge-requests` | 为已存在任务创建或刷新 DS MR |
+| `GET` | `/api/v1/tasks/{id}/merge-request` | 读取任务关联的 DS MR |
+| `POST` | `/api/v1/projects/{project}/design-space/branches/delete` | 删除设计空间分支 |
+
+创建子任务：
+
+```json
+{
+  "sequential": true,
+  "tasks": [
+    {
+      "workflow": "code_summary_group",
+      "title": "Group 1",
+      "input": {
+        "files": ["src/a.rs"],
+        "target_branch": "design-consistency/<root-task>",
+        "source_branch": "design-consistency/<root-task>/g1",
+        "source_git_commit": "<git-sha>"
+      }
+    }
+  ]
+}
+```
+
+`retry` 和 `abandon` 只允许项目 Maintainer/Owner 或全局管理员调用。`actors` 允许 Maintainer/Owner、全局管理员或项目 Agent 调用；PM 用它指定人类审批人。
+
+## Design-space 合并请求
+
+合并请求保存源/目标分支、创建时的 commit 和合并结果；审批状态从关联 Task 派生，审批、评论和操作都走 Task。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/api/v1/projects/{project}/merge-requests` | 列出合并请求及其审核 Task |
+| `POST` | `/api/v1/projects/{project}/merge-requests` | 创建合并请求并创建审核 Task |
+| `GET` | `/api/v1/projects/{project}/merge-requests/{id}` | 合并请求详情、Task 和对象差异 |
+| `POST` | `/api/v1/projects/{project}/merge-requests/{id}/merge` | 审核通过后执行快进合并 |
+
+创建：
+
+```json
+{
+  "title": "Land feature branch",
+  "description": "Move the design space forward",
+  "source_branch": "feature",
+  "target_branch": "main"
+}
+```
+
+创建要求源分支包含目标分支（可快进），否则返回 `422 validation_failed`。审批使用普通 Task 操作：
+
+```http
+POST /api/v1/tasks/{task_id}/operations
+{"operation": "review:review_approved", "idempotency_key": "approve-1"}
+```
+
+`review:review_rejected`、`merge:close` 同理。`merge:merge` 不能通过通用 Task operation 接口发送；通用接口会返回 `reserved_operation`，必须调用合并请求的 `/merge` 接口，确保分支确实被移动。合并请求状态为 `reviewing` / `approved` / `merged` / `rejected` / `closed`，全部由 Task 的 state、stage 和 result 派生，不单独持久化。评论使用 `/api/v1/tasks/{task_id}/comments`。
+
 ## Task
 
 Task 属于唯一项目，不能跨项目。`/api/v1/tasks/{id}` 及其操作、评论、历史和链接接口只按 `task_id` 解析所属项目，并校验当前账户对该项目可见；这些接口不使用 `X-Foundry-Project`。

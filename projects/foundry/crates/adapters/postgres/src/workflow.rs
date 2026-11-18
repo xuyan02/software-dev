@@ -118,17 +118,22 @@ impl WorkflowCatalog for PostgresWorkflowCatalog {
     }
 
     async fn root_candidates(&self, account_id: Uuid) -> Result<Vec<WorkflowOption>, RepoError> {
+        let _ = account_id;
+        let enabled = foundry_domain::ENABLED_ROOT_WORKFLOWS
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
         let rows: Vec<(String, String, Option<Uuid>, Option<String>)> = sqlx::query_as(
             "select d.id, d.title, d.owner_account_id, a.display_name \
              from workflow_definitions d \
              left join accounts a on a.id = d.owner_account_id \
-             where d.id = 'code_summary' \
+             where d.id = any($1) \
                and exists ( \
                    select 1 from workflow_versions v where v.workflow_id = d.id \
                ) \
              order by (d.owner_account_id is not null), d.title, d.id",
         )
-        .bind(account_id)
+        .bind(&enabled)
         .fetch_all(&self.pool)
         .await
         .map_err(backend)?;

@@ -55,6 +55,8 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/state", get(routes::tasks_state))
         .route("/tasks/{id}", get(routes::task_page))
         .route("/tasks/{id}/state", get(routes::task_state))
+        .route("/tasks/{id}/retry", post(routes::retry_task_form))
+        .route("/tasks/{id}/abandon", post(routes::abandon_task_form))
         .route(
             "/projects",
             get(routes::projects_index).post(routes::create_project_form),
@@ -109,6 +111,22 @@ pub fn router(state: AppState) -> Router {
             "/projects/{id}/design-space/elements/{hash}/source",
             get(routes::design_space_element_source),
         )
+        .route(
+            "/projects/{id}/merge-requests",
+            get(routes::merge_requests_page).post(routes::create_merge_request_form),
+        )
+        .route(
+            "/projects/{id}/merge-requests/{merge_request_id}",
+            get(routes::merge_request_page),
+        )
+        .route(
+            "/projects/{id}/merge-requests/{merge_request_id}/comments",
+            post(routes::merge_request_comment_form),
+        )
+        .route(
+            "/projects/{id}/merge-requests/{merge_request_id}/operations",
+            post(routes::merge_request_operation_form),
+        )
         .route("/projects/{id}/edit", post(routes::update_project_form))
         .route("/projects/{id}/delete", post(routes::delete_project_form))
         .route("/projects/{id}/members", post(routes::add_member_form))
@@ -131,10 +149,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents", get(routes::agents_index))
         .route("/agents/{id}/logs", get(routes::agent_logs_page))
         .route("/agents/{id}/logs/state", get(routes::agent_log_state))
-        .route(
-            "/agents/{id}/logs/content",
-            get(routes::agent_log_content),
-        )
+        .route("/agents/{id}/logs/content", get(routes::agent_log_content))
         .route("/agents/{id}/start", post(routes::start_agent_form))
         .route("/agents/{id}/stop", post(routes::stop_agent_form))
         .route("/agents/{id}/restart", post(routes::restart_agent_form))
@@ -251,6 +266,22 @@ pub fn router(state: AppState) -> Router {
             get(routes::get_anchor_version),
         )
         .route(
+            "/api/v1/projects/{project}/merge-requests",
+            get(routes::list_merge_requests).post(routes::create_merge_request),
+        )
+        .route(
+            "/api/v1/projects/{project}/merge-requests/{merge_request_id}",
+            get(routes::get_merge_request),
+        )
+        .route(
+            "/api/v1/projects/{project}/merge-requests/{merge_request_id}/merge",
+            post(routes::merge_merge_request),
+        )
+        .route(
+            "/api/v1/projects/{project}/design-space/branches/delete",
+            post(routes::delete_design_space_branch),
+        )
+        .route(
             "/api/v1/issues",
             get(routes::list_issues).post(routes::create_issue),
         )
@@ -287,6 +318,21 @@ pub fn router(state: AppState) -> Router {
             post(routes::send_task_operation),
         )
         .route("/api/v1/tasks/{id}/start", post(routes::start_task))
+        .route("/api/v1/tasks/{id}/retry", post(routes::retry_task))
+        .route("/api/v1/tasks/{id}/abandon", post(routes::abandon_task))
+        .route(
+            "/api/v1/tasks/{id}/children",
+            post(routes::spawn_task_children),
+        )
+        .route("/api/v1/tasks/{id}/actors", post(routes::bind_task_actor))
+        .route(
+            "/api/v1/tasks/{id}/merge-requests",
+            post(routes::create_merge_request_for_task),
+        )
+        .route(
+            "/api/v1/tasks/{id}/merge-request",
+            get(routes::get_merge_request_for_task),
+        )
         .route(
             "/api/v1/tasks/{id}/allowed-operations",
             get(routes::task_allowed_operations),

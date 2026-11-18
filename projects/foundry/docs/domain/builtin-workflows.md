@@ -1,6 +1,6 @@
 # 内置流程
 
-当前实现 14 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
+当前实现 19 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
 
 RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响应和项目退役；下表后半部分是尚未实现的计划项，落地时必须按“新增流程”更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和本文档。
 
@@ -8,6 +8,7 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 
 | id | 标题 | 用途 | 状态 |
 |---|---|---|---|
+| `empty` | Empty (no-op) | 不声明阶段和角色；用于测试和空 Task | 已实现 |
 | `project` | Project lifecycle | 项目根 Task，串起从项目文档撰写到迭代的完整生命周期 | 已实现 |
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
@@ -22,10 +23,48 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `iteration` | Iteration | 规划、实现、评审和验收一个迭代；开发证据写入开发记录 | 已实现 |
 | `release` | Release | 候选、验证、批准、部署和观察 | 已实现 |
 | `project_review` | Project review | 项目复盘 | 已实现 |
+| `design_space_merge` | Design-space merge | 设计空间合并请求的人类审核与快进合并 | 已实现 |
+| `code_summary_group` | Code summary group | 按文件组总结设计，经过文风和内容审查后自动合入集成分支 | 已实现 |
+| `design_consistency_maintenance` | Technical design consistency | 扫描代码变化、分组、驱动组任务、集成审查、人类审批和最终合入 | 已实现 |
 | `requirements_baseline` | Requirements baseline | 固定一批已批准需求并生成基线 | 计划 |
 | `change_request` | Change request | 影响分析、验证计划、批准、关闭 | 计划 |
 | `incident_response` | Incident response | 分级、止损、修复、复盘 | 计划 |
 | `project_retirement` | Project retirement | 依赖、数据、迁移、归档 | 计划 |
+
+## 技术设计一致性维护
+
+`design_consistency_maintenance` 是项目根流程。`dispatch` 阶段由 Scanner 智能体完成基础同步、变化扫描和分组，并创建 `code_summary_group` 子任务。子任务串行执行，依次经过 summary、文风审查、内容审查、合入集成分支和删除组分支。
+
+所有组完成后，模块架构师依次执行 `structure_survey`（盘点系统和元素）和 `structure_synthesis`（逐系统划分模块、绑定唯一成员、写模块文档），然后由独立的结构审查和文风审查两个阶段把关。通过后创建集成分支到 DS 主分支的最终 MR，进行集成内容审查和人类审批；合入前清理设计评论，合入后删除集成分支。
+
+组任务失败进入 `failed` 阶段，可由项目维护者重试或放弃；重试复用同一 Task 和同一 MR。
+
+## Code summary group
+
+`code_summary_group` 处理一个约 50 个文件的组：
+
+| Stage | 角色 | 说明 |
+|---|---|---|
+| `summary` | summarizer（agent） | 只处理任务 input 中的文件，创建或复用具 MR |
+| `style_review` | style_reviewer（agent） | 只检查设计文字 |
+| `content_review` | content_reviewer（agent） | 检查本组全部设计内容和对象关系 |
+| `merge` | merger（agent） | 快进合入集成分支；冲突转冲突解决 |
+| `cleanup` | merger（agent） | 删除组分支 |
+| `conflict_resolution` | conflict_resolver（agent） | 重置组分支并重新生成，复用同一 MR |
+| `failed` | 无 | 人类重试或放弃 |
+
+组 MR 合入集成分支不需要人类审批。
+
+## Design-space merge
+
+`design_space_merge` 是合并请求专用的审核流程。合并请求本身只保存源/目标分支、创建时的两个 commit 和合并结果；审核人、审批、评论和操作历史全部来自该 Task。
+
+| Stage | active roles | operation |
+|---|---|---|
+| `review` | `reviewer`（human） | `review_approved` 写 `decision = 'approved'` → `merge`；`review_rejected` 写 `decision = 'rejected'`，完成并设置 `result = 'rejected'` |
+| `merge` | `reviewer`（human） | `merge` 写 `merged = true`，完成并设置 `result = 'merged'`；`close` 写 `result = 'closed'`，完成 |
+
+创建合并请求时，Foundry 同时创建这个 Task，并把项目里的一位真人成员绑定到 `reviewer` 角色；通常优先选择不是创建者的成员。合并请求没有独立的审批状态或审批人表，页面和 API 都从 Task 读取 `allowed_operations`。快进合并由 Foundry 执行，成功后发送 `merge` operation 完成任务。
 
 ## Project lifecycle
 

@@ -379,7 +379,7 @@ mod tests {
                     qualified_name: symbol_store(store, "files"),
                     parent: ParentRef::View,
                     source: None,
-                    design_doc: DocHash::ZERO,
+                    document: SymbolHash::ZERO,
                     children: vec![],
                 }),
             ))
@@ -392,8 +392,19 @@ mod tests {
                     parent: ParentRef::View,
                     source: None,
                     content_hash: Hash32::ZERO,
-                    design_doc: DocHash::ZERO,
+                    document: SymbolHash::ZERO,
                     children: vec![],
+                }),
+            ))
+            .unwrap();
+        let documents = store
+            .put_object(&DesignObject::new(
+                Kind::DocumentDirectory,
+                ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                    qualified_name: symbol_store(store, "documents"),
+                    parent: ParentRef::View,
+                    children: vec![],
+                    comments: vec![],
                 }),
             ))
             .unwrap();
@@ -404,6 +415,7 @@ mod tests {
                 files,
                 namespaces,
                 design: ObjectHash::ZERO,
+                documents,
             }),
         )
     }

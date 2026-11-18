@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "summarizer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "content_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "merger", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "conflict_resolver", "kind": "agent", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "summary",
+  "stages": [
+    {
+      "name": "summary",
+      "active_roles": ["summarizer"],
+      "vars": {
+        "submitted": {"type": "bool", "display_name": "Submitted"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {
+          "name": "submitted",
+          "display_name": "提交组 MR",
+          "description": "本组设计总结已提交到组分支并创建 MR。",
+          "roles": ["summarizer"],
+          "action": "submitted = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "总结失败",
+          "description": "本组总结失败，进入可重试状态。",
+          "roles": ["summarizer"],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "submitted", "to": "style_review"},
+        {"on": "failed", "to": "failed"}
+      ]
+    },
+    {
+      "name": "style_review",
+      "active_roles": ["style_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "文风通过",
+          "description": "设计文字文风通过。",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "文风打回",
+          "description": "设计文字文风需要修改。",
+          "roles": ["style_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "content_review"},
+        {"on": "decision == 'rejected'", "to": "summary"}
+      ]
+    },
+    {
+      "name": "content_review",
+      "active_roles": ["content_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {
+          "name": "approved",
+          "display_name": "内容通过",
+          "description": "本组全部设计内容和对象关系通过。",
+          "roles": ["content_reviewer"],
+          "action": "decision = 'approved'"
+        },
+        {
+          "name": "rejected",
+          "display_name": "内容打回",
+          "description": "本组设计内容需要修改。",
+          "roles": ["content_reviewer"],
+          "action": "decision = 'rejected'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "merge"},
+        {"on": "decision == 'rejected'", "to": "summary"}
+      ]
+    },
+    {
+      "name": "merge",
+      "active_roles": ["merger"],
+      "vars": {
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "conflict": {"type": "bool", "display_name": "Conflict"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {
+          "name": "merge",
+          "display_name": "合入集成分支",
+          "description": "把组 MR 快进合入集成分支。",
+          "roles": ["merger"],
+          "action": "merged = true"
+        },
+        {
+          "name": "conflict",
+          "display_name": "存在冲突",
+          "description": "组 MR 与集成分支冲突，转冲突解决。",
+          "roles": ["merger"],
+          "action": "conflict = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "合入失败",
+          "description": "合入失败，进入可重试状态。",
+          "roles": ["merger"],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "merged", "to": "cleanup"},
+        {"on": "conflict", "to": "conflict_resolution"},
+        {"on": "failed", "to": "failed"}
+      ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": ["merger"],
+      "vars": {
+        "cleaned": {"type": "bool", "display_name": "Cleaned"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {
+          "name": "cleaned",
+          "display_name": "清理完成",
+          "description": "组分支已删除。",
+          "roles": ["merger"],
+          "action": "cleaned = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "清理失败",
+          "description": "组分支删除失败。",
+          "roles": ["merger"],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "cleaned", "action": "result = 'merged'", "to": "ended"},
+        {"on": "failed", "to": "cleanup_failed"}
+      ]
+    },
+    {
+      "name": "conflict_resolution",
+      "active_roles": ["conflict_resolver"],
+      "vars": {
+        "resolved": {"type": "bool", "display_name": "Resolved"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {
+          "name": "resolved",
+          "display_name": "冲突已解决",
+          "description": "组分支已重新落到最新集成分支，重新进入审查。",
+          "roles": ["conflict_resolver"],
+          "action": "resolved = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "无法解决",
+          "description": "冲突无法自动解决，进入可重试状态。",
+          "roles": ["conflict_resolver"],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {"on": "resolved", "to": "style_review"},
+        {"on": "failed", "to": "failed"}
+      ]
+    },
+    {
+      "name": "cleanup_failed",
+      "active_roles": [],
+      "retry_to": "cleanup"
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "summary"
+    }
+  ]
+}

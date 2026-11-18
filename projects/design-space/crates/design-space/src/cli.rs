@@ -53,6 +53,16 @@ enum Command {
     Create(CreateArgs),
     /// Edit one design object.
     Edit(EditArgs),
+    /// Manage documents and document fragments.
+    Doc {
+        #[command(subcommand)]
+        command: DocCommand,
+    },
+    /// Manage systems and modules.
+    Structure {
+        #[command(subcommand)]
+        command: StructureCommand,
+    },
     /// Inspect or change explicit/implicit dependencies.
     Dep {
         #[command(subcommand)]
@@ -132,16 +142,24 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Delete a local branch.
+    BranchDelete {
+        /// Branch to delete. The current branch cannot be deleted.
+        branch: String,
+    },
     /// List design objects in the worktree.
     Ls {
         /// List directory and file objects.
-        #[arg(long, conflicts_with_all = ["namespaces", "design"])]
+        #[arg(long, conflicts_with_all = ["namespaces", "documents", "design"])]
         files: bool,
         /// List namespace and code objects.
-        #[arg(long, conflicts_with_all = ["files", "design"])]
+        #[arg(long, conflicts_with_all = ["files", "documents", "design"])]
         namespaces: bool,
+        /// List document objects.
+        #[arg(long, conflicts_with_all = ["files", "namespaces", "design"])]
+        documents: bool,
         /// List objects that have a design document.
-        #[arg(long, conflicts_with_all = ["files", "namespaces"])]
+        #[arg(long, conflicts_with_all = ["files", "namespaces", "documents"])]
         design: bool,
         /// Read the index instead of the worktree.
         #[arg(long)]
@@ -150,9 +168,12 @@ enum Command {
     /// Show HEAD, index, and worktree roots plus changed objects.
     Status {
         /// Machine-readable unstaged changes only:
-        /// status, kind, source, qname per line, tab-separated.
+        /// status and qname per line, tab-separated.
         #[arg(long)]
         porcelain: bool,
+        /// Add kind and source after qname. Only for scripts that need them.
+        #[arg(long, requires = "porcelain")]
+        detail: bool,
     },
     /// Verify the worktree object graph.
     Verify,
@@ -240,12 +261,9 @@ struct CreateArgs {
     /// Source: `path` or `path:start-end` (1-based lines).
     #[arg(long)]
     source: Option<String>,
-    /// Inline design text.
-    #[arg(long, conflicts_with = "design_file")]
-    design: Option<String>,
-    /// Read design text from a file.
-    #[arg(long, conflicts_with = "design")]
-    design_file: Option<PathBuf>,
+    /// Document or section qname that describes this object.
+    #[arg(long)]
+    document: Option<String>,
     /// Class/mixin semantic superclass.
     #[arg(long)]
     superclass: Option<String>,
@@ -272,15 +290,12 @@ struct CreateArgs {
 #[derive(Debug, Clone, Args)]
 struct EditArgs {
     name: String,
-    /// Replace the design text.
-    #[arg(long, conflicts_with_all = ["design_file", "clear_design"])]
-    design: Option<String>,
-    /// Read replacement design text from a file.
-    #[arg(long, conflicts_with_all = ["design", "clear_design"])]
-    design_file: Option<PathBuf>,
-    /// Remove the design document reference.
-    #[arg(long)]
-    clear_design: bool,
+    /// Replace the document or section reference.
+    #[arg(long, conflicts_with = "clear_document")]
+    document: Option<String>,
+    /// Remove the document reference.
+    #[arg(long = "clear-document", conflicts_with = "document")]
+    clear_document: bool,
     /// Replace the source anchor.
     #[arg(long)]
     source: Option<String>,
@@ -404,6 +419,216 @@ enum SourceCommand {
     Sync,
 }
 
+#[derive(Debug, Clone, Subcommand)]
+enum StructureCommand {
+    /// Create the design-structure root.
+    Init,
+    /// Manage systems.
+    System {
+        #[command(subcommand)]
+        command: StructureSystemCommand,
+    },
+    /// Manage modules.
+    Module {
+        #[command(subcommand)]
+        command: StructureModuleCommand,
+    },
+    /// Add top-level code elements to a module.
+    Assign {
+        /// Module qualified name.
+        module: String,
+        /// Top-level class/interface/function/mixin qualified names.
+        members: Vec<String>,
+    },
+    /// Remove members from a module.
+    Unassign {
+        /// Module qualified name.
+        module: String,
+        /// Member qualified names.
+        members: Vec<String>,
+    },
+    /// List systems and modules.
+    List,
+    /// Show one system or module.
+    Show {
+        /// System/module qualified name.
+        qname: String,
+    },
+    /// Report structure problems.
+    Check,
+    /// List top-level elements that belong to no module.
+    Unassigned,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum StructureSystemCommand {
+    /// Create a system under the design structure.
+    Create {
+        /// Local system name.
+        name: String,
+        /// Display title. Defaults to the name.
+        #[arg(long)]
+        title: Option<String>,
+        /// Document or section qname describing the system.
+        #[arg(long)]
+        document: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum StructureModuleCommand {
+    /// Create a module under a system or another module.
+    Create {
+        /// Local module name.
+        name: String,
+        /// Parent system or module qualified name.
+        #[arg(long)]
+        parent: String,
+        /// Display title. Defaults to the name.
+        #[arg(long)]
+        title: Option<String>,
+        /// Document or section qname describing the module.
+        #[arg(long)]
+        document: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocCommand {
+    /// Create a document directory.
+    Mkdir {
+        /// Full qualified name, for example documents/specs.
+        qname: String,
+    },
+    /// Create a document with a title.
+    Create {
+        /// Full qualified name, for example documents/specs/auth.
+        qname: String,
+        #[arg(long)]
+        title: String,
+    },
+    /// Add a section.
+    Section {
+        #[command(subcommand)]
+        command: DocSectionCommand,
+    },
+    /// Add a titled topic.
+    Topic {
+        #[command(subcommand)]
+        command: DocTopicCommand,
+    },
+    /// Add or edit a text paragraph.
+    Text {
+        #[command(subcommand)]
+        command: DocTextCommand,
+    },
+    /// Add a list.
+    List {
+        #[command(subcommand)]
+        command: DocListCommand,
+    },
+    /// Add, resolve, or list comments on a document object.
+    Comment {
+        #[command(subcommand)]
+        command: DocCommentCommand,
+    },
+    /// Render a document or fragment.
+    Show {
+        /// Document, section, topic, list, text or document directory qname.
+        qname: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocCommentCommand {
+    /// Add an open comment.
+    Add {
+        /// Any document object qname.
+        qname: String,
+        #[arg(long)]
+        text: String,
+    },
+    /// Resolve one comment.
+    Resolve {
+        /// Any document object qname.
+        qname: String,
+        /// Comment id: `1` or `comment1`.
+        comment: String,
+    },
+    /// List comments and their status.
+    List {
+        /// Any document object qname.
+        qname: String,
+    },
+    /// Remove every comment from the worktree.
+    Clear,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocSectionCommand {
+    /// Add a section after a target position.
+    Add {
+        /// Anchor qname (`.../section`) or an existing sibling section qname.
+        target: String,
+        #[arg(long)]
+        title: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocTopicCommand {
+    /// Add a topic after a target position in a section body.
+    Add {
+        /// Anchor qname (`.../body`) or an existing section body element qname.
+        target: String,
+        #[arg(long)]
+        title: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocTextCommand {
+    /// Add a text paragraph after a target position.
+    Add {
+        /// Anchor qname (`.../body`) or an existing body element qname.
+        target: String,
+        #[arg(long)]
+        text: String,
+    },
+    /// Replace the text of one paragraph.
+    Set {
+        /// Text paragraph qname.
+        qname: String,
+        #[arg(long)]
+        text: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocListCommand {
+    /// Add an empty list after a target position.
+    Add {
+        /// Anchor qname (`.../body`) or an existing body element qname.
+        target: String,
+    },
+    /// Add or edit list items.
+    Item {
+        #[command(subcommand)]
+        command: DocListItemCommand,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocListItemCommand {
+    /// Add a text item after a target position.
+    Add {
+        /// Anchor qname (`.../item`) or an existing list item qname.
+        target: String,
+        #[arg(long)]
+        text: String,
+    },
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -415,6 +640,8 @@ pub fn run() -> Result<()> {
         } => clone(cli.dir, &remote, &source, &branch),
         Command::Create(args) => create(cli.dir, args),
         Command::Edit(args) => edit(cli.dir, args),
+        Command::Doc { command } => doc(cli.dir, command),
+        Command::Structure { command } => structure(cli.dir, command),
         Command::Dep { command } => dep(cli.dir, command),
         Command::Source { command } => source(cli.dir, command),
         Command::Remote { command } => remote(cli.dir, command),
@@ -436,13 +663,15 @@ pub fn run() -> Result<()> {
             create,
             force,
         } => checkout(cli.dir, &branch, create, force),
+        Command::BranchDelete { branch } => branch_delete(cli.dir, &branch),
         Command::Ls {
             files,
             namespaces,
+            documents,
             design,
             staged,
-        } => ls(cli.dir, files, namespaces, design, staged),
-        Command::Status { porcelain } => status(cli.dir, porcelain),
+        } => ls(cli.dir, files, namespaces, documents, design, staged),
+        Command::Status { porcelain, detail } => status(cli.dir, porcelain, detail),
         Command::Verify => verify(cli.dir),
         Command::Commit {
             message,
@@ -471,6 +700,7 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
     let mut catalog = Catalog::new(GitOid::ZERO);
     let files = ws.put_symbol("files")?;
     let namespaces = ws.put_symbol("namespaces")?;
+    let documents = ws.put_symbol("documents")?;
     catalog.insert(
         files,
         DesignObject::new(
@@ -479,7 +709,7 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
                 qualified_name: files,
                 parent: ParentRef::View,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         ),
@@ -493,8 +723,20 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
                 parent: ParentRef::View,
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
+            }),
+        ),
+    )?;
+    catalog.insert(
+        documents,
+        DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: documents,
+                parent: ParentRef::View,
+                children: vec![],
+                comments: vec![],
             }),
         ),
     )?;
@@ -515,10 +757,14 @@ fn clone(dir: Option<PathBuf>, remote_url: &str, source: &str, branch: &str) -> 
     if meta.join("config").exists() {
         bail!("{} already exists", meta.display());
     }
-    let ws = Workspace::init(&meta, source, ObjectFormat::Sha1)?;
+    let mut ws = Workspace::init(&meta, source, ObjectFormat::Sha1)?;
     let token_file = std::env::var_os("DS_TOKEN_FILE")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
+    ws.set_remote_url(remote_url)?;
+    if let Some(path) = &token_file {
+        ws.set_remote_token_file(Some(path.to_string_lossy().into_owned()))?;
+    }
     let remote = Remote::open(remote_url, token_file.as_deref())?;
     remote.fetch(&ws)?;
     let commit_hash = ws
@@ -560,6 +806,1074 @@ fn create(dir: Option<PathBuf>, args: CreateArgs) -> Result<()> {
     })?;
     println!("Created {qname_text}");
     println!("Worktree view {}", view.to_hex());
+    Ok(())
+}
+
+fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
+    let ws = open_workspace(dir)?;
+    let state = ws
+        .read_worktree()?
+        .context("worktree is not initialized; run `ds init`")?;
+    let mut catalog = Catalog::load(ws.store(), state.root_view)?;
+    match command {
+        DocCommand::Mkdir { qname } => {
+            let (parent, local) = doc_parent_and_local(&ws, &catalog, &qname)?;
+            let parent_object = catalog
+                .get(parent)
+                .with_context(|| format!("parent not found: {}", qname))?;
+            if parent_object.kind != Kind::DocumentDirectory {
+                bail!("document directories must be created under a document directory: {qname}");
+            }
+            let qname_hash = child_qname(&ws, parent, &local)?;
+            if catalog.get(qname_hash).is_some() {
+                bail!("object already exists: {qname}");
+            }
+            let object = DesignObject::new(
+                Kind::DocumentDirectory,
+                ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                    qualified_name: qname_hash,
+                    parent: ParentRef::Object(parent),
+                    children: vec![],
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname_hash, object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
+        DocCommand::Create { qname, title } => {
+            let (parent, local) = doc_parent_and_local(&ws, &catalog, &qname)?;
+            let parent_object = catalog
+                .get(parent)
+                .with_context(|| format!("parent not found: {qname}"))?;
+            if parent_object.kind != Kind::DocumentDirectory {
+                bail!("documents must be created under a document directory: {qname}");
+            }
+            let qname_hash = child_qname(&ws, parent, &local)?;
+            if catalog.get(qname_hash).is_some() {
+                bail!("object already exists: {qname}");
+            }
+            let object = DesignObject::new(
+                Kind::Document,
+                ObjectPayload::Document(DocumentPayload {
+                    qualified_name: qname_hash,
+                    parent,
+                    title,
+                    sections: vec![],
+                    children: vec![],
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname_hash, object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
+        DocCommand::Section {
+            command: DocSectionCommand::Add { target, title },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Sections,
+                "section",
+                &[Kind::DocumentSection],
+                &[Kind::Document, Kind::DocumentSection],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "section")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::DocumentSection,
+                ObjectPayload::DocumentSection(DocumentSectionPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    title,
+                    body: vec![],
+                    sections: vec![],
+                    children: vec![],
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Sections,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Topic {
+            command: DocTopicCommand::Add { target, title },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[Kind::DocumentSection],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::DocumentTopic,
+                ObjectPayload::DocumentTopic(DocumentTopicPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    title,
+                    paragraphs: vec![],
+                    children: vec![],
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Text {
+            command: DocTextCommand::Add { target, text },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::DocumentText,
+                ObjectPayload::DocumentText(DocumentTextPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    text,
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Text {
+            command: DocTextCommand::Set { qname, text },
+        } => {
+            let qname_hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get_mut(qname_hash)
+                .with_context(|| format!("object not found: {qname}"))?;
+            let ObjectPayload::DocumentText(payload) = &mut object.payload else {
+                bail!("not a text paragraph: {qname}");
+            };
+            payload.text = text;
+            format::validate_object(object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
+        DocCommand::List {
+            command: DocListCommand::Add { target },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::DocumentList,
+                ObjectPayload::DocumentList(DocumentListPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    items: vec![],
+                    children: vec![],
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::List {
+            command:
+                DocListCommand::Item {
+                    command: DocListItemCommand::Add { target, text },
+                },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Items,
+                "item",
+                &[Kind::DocumentText, Kind::DocumentList],
+                &[Kind::DocumentList],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "item")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::DocumentText,
+                ObjectPayload::DocumentText(DocumentTextPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    text,
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Items,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Comment { command } => match command {
+            DocCommentCommand::Add { qname, text } => {
+                let hash = ws.put_symbol(&qname)?;
+                let id;
+                {
+                    let object = catalog
+                        .get_mut(hash)
+                        .with_context(|| format!("object not found: {qname}"))?;
+                    let comments = doc_comments_mut(object)
+                        .with_context(|| format!("not a document object: {qname}"))?;
+                    id = comments
+                        .last()
+                        .map(|comment| comment.id.saturating_add(1))
+                        .unwrap_or(1);
+                    comments.push(DocComment {
+                        id,
+                        text,
+                        resolved: false,
+                    });
+                    format::validate_object(object)?;
+                }
+                println!("Added comment{id}");
+                save_worktree(&ws, state, &catalog, &qname)?;
+            }
+            DocCommentCommand::Resolve { qname, comment } => {
+                let hash = ws.put_symbol(&qname)?;
+                let id = parse_comment_id(&comment)?;
+                let mut resolve = false;
+                {
+                    let object = catalog
+                        .get_mut(hash)
+                        .with_context(|| format!("object not found: {qname}"))?;
+                    let comments = doc_comments_mut(object)
+                        .with_context(|| format!("not a document object: {qname}"))?;
+                    let target = comments
+                        .iter_mut()
+                        .find(|comment| comment.id == id)
+                        .with_context(|| format!("comment not found: {comment}"))?;
+                    if target.resolved {
+                        println!("comment{id} is already resolved");
+                    } else {
+                        target.resolved = true;
+                        resolve = true;
+                    }
+                    format::validate_object(object)?;
+                }
+                if resolve {
+                    println!("Resolved comment{id}");
+                    save_worktree(&ws, state, &catalog, &qname)?;
+                }
+            }
+            DocCommentCommand::List { qname } => {
+                let hash = ws.put_symbol(&qname)?;
+                let object = catalog
+                    .get(hash)
+                    .with_context(|| format!("object not found: {qname}"))?;
+                let comments = doc_comments(object)
+                    .with_context(|| format!("not a document object: {qname}"))?;
+                if comments.is_empty() {
+                    println!("no comments");
+                } else {
+                    for comment in comments {
+                        println!(
+                            "comment{}\t{}\t{}",
+                            comment.id,
+                            comment_status(comment),
+                            escape_comment_text(&comment.text)
+                        );
+                    }
+                }
+            }
+            DocCommentCommand::Clear => {
+                let targets = catalog
+                    .iter()
+                    .filter(|(_, object)| {
+                        doc_comments(object).is_some_and(|comments| !comments.is_empty())
+                    })
+                    .map(|(qname, _)| qname)
+                    .collect::<Vec<_>>();
+                if targets.is_empty() {
+                    println!("no comments");
+                    return Ok(());
+                }
+                let mut removed = 0usize;
+                for qname in &targets {
+                    let Some(object) = catalog.get_mut(*qname) else {
+                        continue;
+                    };
+                    if let Some(comments) = doc_comments_mut(object) {
+                        removed += comments.len();
+                        comments.clear();
+                    }
+                    format::validate_object(object)?;
+                }
+                println!(
+                    "Cleared {removed} comment(s) from {} object(s)",
+                    targets.len()
+                );
+                save_worktree(&ws, state, &catalog, "comments cleared")?;
+            }
+        },
+        DocCommand::Show { qname } => {
+            doc_show(&ws, &catalog, &qname)?;
+        }
+    }
+    Ok(())
+}
+
+fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
+    let ws = open_workspace(dir)?;
+    let state = ws
+        .read_worktree()?
+        .context("worktree is not initialized; run `ds init`")?;
+    let mut catalog = Catalog::load(ws.store(), state.root_view)?;
+    let root = ws.put_symbol("design")?;
+    match command {
+        StructureCommand::Init => {
+            if catalog.get(root).is_some() {
+                println!("design structure already exists");
+                return Ok(());
+            }
+            let object = DesignObject::new(
+                Kind::DesignStructure,
+                ObjectPayload::DesignStructure(DesignStructurePayload {
+                    qualified_name: root,
+                    parent: ParentRef::View,
+                    title: "设计结构".to_owned(),
+                    document: SymbolHash::ZERO,
+                    children: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(root, object)?;
+            save_worktree(&ws, state, &catalog, "design")?;
+        }
+        StructureCommand::System { command } => match command {
+            StructureSystemCommand::Create {
+                name,
+                title,
+                document,
+            } => {
+                let parent = catalog
+                    .get(root)
+                    .context("design structure is missing; run `ds structure init`")?;
+                if parent.kind != Kind::DesignStructure {
+                    bail!("design root is not a design structure");
+                }
+                validate_structure_name(&name)?;
+                let qname = child_qname(&ws, root, &name)?;
+                if catalog.get(qname).is_some() {
+                    bail!("system already exists: {name}");
+                }
+                let object = DesignObject::new(
+                    Kind::System,
+                    ObjectPayload::System(SystemPayload {
+                        qualified_name: qname,
+                        parent: root,
+                        title: title.unwrap_or_else(|| name.clone()),
+                        document: optional_ref(&ws, document.as_deref())?,
+                        children: vec![],
+                    }),
+                );
+                format::validate_object(&object)?;
+                catalog.insert(qname, object)?;
+                save_worktree(&ws, state, &catalog, &format!("design/{name}"))?;
+            }
+        },
+        StructureCommand::Module { command } => match command {
+            StructureModuleCommand::Create {
+                name,
+                parent,
+                title,
+                document,
+            } => {
+                validate_structure_name(&name)?;
+                let parent_hash = ws.put_symbol(&parent)?;
+                let parent_object = catalog
+                    .get(parent_hash)
+                    .with_context(|| format!("parent not found: {parent}"))?;
+                if !matches!(parent_object.kind, Kind::System | Kind::Module) {
+                    bail!("module parent must be a system or module: {parent}");
+                }
+                let qname = child_qname(&ws, parent_hash, &name)?;
+                if catalog.get(qname).is_some() {
+                    bail!("module already exists: {name}");
+                }
+                let object = DesignObject::new(
+                    Kind::Module,
+                    ObjectPayload::Module(ModulePayload {
+                        qualified_name: qname,
+                        parent: parent_hash,
+                        title: title.unwrap_or_else(|| name.clone()),
+                        document: optional_ref(&ws, document.as_deref())?,
+                        members: vec![],
+                        children: vec![],
+                    }),
+                );
+                format::validate_object(&object)?;
+                catalog.insert(qname, object)?;
+                save_worktree(&ws, state, &catalog, &format!("{parent}/{name}"))?;
+            }
+        },
+        StructureCommand::Assign { module, members } => {
+            let module_hash = ws.put_symbol(&module)?;
+            let member_hashes = structure_member_hashes(&ws, &catalog, &members)?;
+            for member in &member_hashes {
+                let owner = catalog.iter().find(|(qname, object)| {
+                    *qname != module_hash
+                        && matches!(&object.payload, ObjectPayload::Module(p) if p.members.contains(member))
+                });
+                if let Some((owner, _)) = owner {
+                    bail!(
+                        "{} already belongs to module {}",
+                        symbol_text(&ws, *member),
+                        symbol_text(&ws, owner)
+                    );
+                }
+            }
+            {
+                let object = catalog
+                    .get_mut(module_hash)
+                    .with_context(|| format!("module not found: {module}"))?;
+                let ObjectPayload::Module(p) = &mut object.payload else {
+                    bail!("not a module: {module}");
+                };
+                p.members.extend(member_hashes);
+                p.members.sort();
+                p.members.dedup();
+                format::validate_object(object)?;
+            }
+            save_worktree(&ws, state, &catalog, &module)?;
+        }
+        StructureCommand::Unassign { module, members } => {
+            let module_hash = ws.put_symbol(&module)?;
+            let member_hashes = structure_member_hashes(&ws, &catalog, &members)?;
+            {
+                let object = catalog
+                    .get_mut(module_hash)
+                    .with_context(|| format!("module not found: {module}"))?;
+                let ObjectPayload::Module(p) = &mut object.payload else {
+                    bail!("not a module: {module}");
+                };
+                p.members.retain(|member| !member_hashes.contains(member));
+                format::validate_object(object)?;
+            }
+            save_worktree(&ws, state, &catalog, &module)?;
+        }
+        StructureCommand::List => {
+            let mut rows = catalog
+                .iter()
+                .filter(|(_, object)| {
+                    matches!(
+                        object.kind,
+                        Kind::DesignStructure | Kind::System | Kind::Module
+                    )
+                })
+                .map(|(qname, object)| {
+                    (
+                        ws.get_symbol(qname).unwrap_or_default(),
+                        structure_kind_label(object.kind),
+                        structure_title(object).unwrap_or_default(),
+                        structure_members(object).len(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            rows.sort_by(|left, right| left.0.cmp(&right.0));
+            for (qname, kind, title, members) in rows {
+                println!("{kind}\t{qname}\t{title}\tmembers={members}");
+            }
+        }
+        StructureCommand::Show { qname } => {
+            let hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get(hash)
+                .with_context(|| format!("object not found: {qname}"))?;
+            if !matches!(
+                object.kind,
+                Kind::DesignStructure | Kind::System | Kind::Module
+            ) {
+                bail!("not a system or module: {qname}");
+            }
+            println!("{qname}");
+            println!("kind: {}", structure_kind_label(object.kind));
+            println!("title: {}", structure_title(object).unwrap_or_default());
+            println!(
+                "document: {}",
+                structure_document(&ws, object).unwrap_or_default()
+            );
+            let children = catalog
+                .children(hash)
+                .iter()
+                .map(|child| ws.get_symbol(*child).unwrap_or_default())
+                .collect::<Vec<_>>();
+            if !children.is_empty() {
+                println!("children:");
+                for child in children {
+                    println!("  {child}");
+                }
+            }
+            let members = structure_members(object);
+            if !members.is_empty() {
+                println!("members:");
+                for member in members {
+                    println!("  {}", ws.get_symbol(*member).unwrap_or_default());
+                }
+            }
+        }
+        StructureCommand::Check => {
+            catalog
+                .verify(ws.store())
+                .context("design-space verification failed")?;
+            let assigned = catalog
+                .iter()
+                .filter_map(|(_, object)| match &object.payload {
+                    ObjectPayload::Module(p) => Some(p.members.iter().copied()),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<BTreeSet<_>>();
+            let mut problems = Vec::new();
+            let mut top_level = Vec::new();
+            for (qname, object) in catalog.iter() {
+                if matches!(
+                    object.kind,
+                    Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+                ) {
+                    top_level.push(qname);
+                    if !assigned.contains(&qname) {
+                        problems.push(format!(
+                            "top-level element is not assigned to a module: {}",
+                            ws.get_symbol(qname).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            for (qname, object) in catalog.iter() {
+                match &object.payload {
+                    ObjectPayload::DesignStructure(p) => {
+                        if p.children.is_empty() {
+                            problems.push("design structure has no systems".to_owned());
+                        }
+                    }
+                    ObjectPayload::System(p) => {
+                        if p.children.is_empty() {
+                            problems.push(format!(
+                                "system has no modules: {}",
+                                ws.get_symbol(qname).unwrap_or_default()
+                            ));
+                        }
+                    }
+                    ObjectPayload::Module(p) => {
+                        if p.members.is_empty() && p.children.is_empty() {
+                            problems.push(format!(
+                                "module is empty: {}",
+                                ws.get_symbol(qname).unwrap_or_default()
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if problems.is_empty() {
+                println!(
+                    "structure ok: {} top-level element(s), {} assigned",
+                    top_level.len(),
+                    assigned.len()
+                );
+            } else {
+                for problem in &problems {
+                    println!("problem: {problem}");
+                }
+                bail!("structure check found {} problem(s)", problems.len());
+            }
+        }
+        StructureCommand::Unassigned => {
+            let assigned = catalog
+                .iter()
+                .filter_map(|(_, object)| match &object.payload {
+                    ObjectPayload::Module(p) => Some(p.members.iter().copied()),
+                    _ => None,
+                })
+                .flatten()
+                .collect::<BTreeSet<_>>();
+            let mut rows = catalog
+                .iter()
+                .filter(|(qname, object)| {
+                    matches!(
+                        object.kind,
+                        Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+                    ) && !assigned.contains(qname)
+                })
+                .map(|(qname, _)| ws.get_symbol(qname).unwrap_or_default())
+                .collect::<Vec<_>>();
+            rows.sort();
+            for qname in rows {
+                println!("{qname}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_structure_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+    {
+        bail!("invalid structure name: {name}");
+    }
+    Ok(())
+}
+
+fn structure_member_hashes(
+    ws: &Workspace,
+    catalog: &Catalog,
+    members: &[String],
+) -> Result<Vec<SymbolHash>> {
+    let mut out = Vec::with_capacity(members.len());
+    for member in members {
+        let hash = ws.put_symbol(member)?;
+        let object = catalog
+            .get(hash)
+            .with_context(|| format!("member not found: {member}"))?;
+        if !matches!(
+            object.kind,
+            Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+        ) {
+            bail!("not a top-level code element: {member}");
+        }
+        out.push(hash);
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn structure_kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::DesignStructure => "design-structure",
+        Kind::System => "system",
+        Kind::Module => "module",
+        _ => "object",
+    }
+}
+
+fn structure_title(object: &DesignObject) -> Option<String> {
+    match &object.payload {
+        ObjectPayload::DesignStructure(p) => Some(p.title.clone()),
+        ObjectPayload::System(p) => Some(p.title.clone()),
+        ObjectPayload::Module(p) => Some(p.title.clone()),
+        _ => None,
+    }
+}
+
+fn structure_document(ws: &Workspace, object: &DesignObject) -> Option<String> {
+    let document = match &object.payload {
+        ObjectPayload::DesignStructure(p) => p.document,
+        ObjectPayload::System(p) => p.document,
+        ObjectPayload::Module(p) => p.document,
+        _ => return None,
+    };
+    (!document.is_zero()).then(|| ws.get_symbol(document).unwrap_or_default())
+}
+
+fn structure_members(object: &DesignObject) -> &[SymbolHash] {
+    match &object.payload {
+        ObjectPayload::Module(p) => &p.members,
+        _ => &[],
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DocRole {
+    Sections,
+    Body,
+    Items,
+}
+
+struct DocPosition {
+    parent: SymbolHash,
+    index: usize,
+}
+
+fn doc_parent_and_local(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: &str,
+) -> Result<(SymbolHash, String)> {
+    if qname == "documents" {
+        bail!("the documents root already exists");
+    }
+    let (parent, local) = qname
+        .rsplit_once('/')
+        .with_context(|| format!("qname must include a parent: {qname}"))?;
+    if local.is_empty() {
+        bail!("empty document name: {qname}");
+    }
+    if !local
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+    {
+        bail!("document names use lowercase letters, digits, '-' and '_': {local:?}");
+    }
+    let parent = ws.put_symbol(parent)?;
+    if catalog.get(parent).is_none() {
+        bail!("parent not found: {parent:?}");
+    }
+    Ok((parent, local.to_owned()))
+}
+
+fn resolve_doc_position(
+    ws: &Workspace,
+    catalog: &Catalog,
+    target: &str,
+    role: DocRole,
+    anchor: &str,
+    element_kinds: &[Kind],
+    owner_kinds: &[Kind],
+) -> Result<DocPosition> {
+    let target_hash = symbol_hash(target);
+    if let Some(object) = catalog.get(target_hash) {
+        if !element_kinds.contains(&object.kind) {
+            bail!(
+                "target has kind {:?}; expected one of {:?}",
+                object.kind,
+                element_kinds
+            );
+        }
+        let parents = catalog.parents(target_hash);
+        if parents.len() != 1 {
+            bail!("target must have exactly one parent: {target}");
+        }
+        let parent = parents[0];
+        let parent_object = catalog
+            .get(parent)
+            .with_context(|| format!("parent not found for target: {target}"))?;
+        if !owner_kinds.contains(&parent_object.kind) {
+            bail!(
+                "target parent has kind {:?}; expected one of {:?}",
+                parent_object.kind,
+                owner_kinds
+            );
+        }
+        let refs = ordered_refs(parent_object, role)
+            .with_context(|| format!("target is not in a valid {role:?} collection: {target}"))?;
+        let index = refs
+            .iter()
+            .position(|candidate| *candidate == target_hash)
+            .with_context(|| format!("target is not in the {role:?} collection: {target}"))?;
+        return Ok(DocPosition {
+            parent,
+            index: index + 1,
+        });
+    }
+
+    let (owner_text, local) = target
+        .rsplit_once('/')
+        .with_context(|| format!("object not found: {target}"))?;
+    if local != anchor {
+        bail!("object not found: {target}");
+    }
+    let owner = ws.put_symbol(owner_text)?;
+    let owner_object = catalog
+        .get(owner)
+        .with_context(|| format!("parent not found: {owner_text}"))?;
+    if !owner_kinds.contains(&owner_object.kind) {
+        bail!(
+            "anchor owner has kind {:?}; expected one of {:?}",
+            owner_object.kind,
+            owner_kinds
+        );
+    }
+    ordered_refs(owner_object, role)
+        .with_context(|| format!("{owner_text} does not have a {role:?} collection"))?;
+    Ok(DocPosition {
+        parent: owner,
+        index: 0,
+    })
+}
+
+fn ordered_refs(object: &DesignObject, role: DocRole) -> Option<&Vec<SymbolHash>> {
+    match (&object.payload, role) {
+        (ObjectPayload::Document(p), DocRole::Sections) => Some(&p.sections),
+        (ObjectPayload::DocumentSection(p), DocRole::Sections) => Some(&p.sections),
+        (ObjectPayload::DocumentSection(p), DocRole::Body) => Some(&p.body),
+        (ObjectPayload::DocumentTopic(p), DocRole::Body) => Some(&p.paragraphs),
+        (ObjectPayload::DocumentList(p), DocRole::Items) => Some(&p.items),
+        _ => None,
+    }
+}
+
+fn ordered_refs_mut(object: &mut DesignObject, role: DocRole) -> Option<&mut Vec<SymbolHash>> {
+    match (&mut object.payload, role) {
+        (ObjectPayload::Document(p), DocRole::Sections) => Some(&mut p.sections),
+        (ObjectPayload::DocumentSection(p), DocRole::Sections) => Some(&mut p.sections),
+        (ObjectPayload::DocumentSection(p), DocRole::Body) => Some(&mut p.body),
+        (ObjectPayload::DocumentTopic(p), DocRole::Body) => Some(&mut p.paragraphs),
+        (ObjectPayload::DocumentList(p), DocRole::Items) => Some(&mut p.items),
+        _ => None,
+    }
+}
+
+fn insert_doc_ref(
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    role: DocRole,
+    index: usize,
+    child: SymbolHash,
+) -> Result<()> {
+    let object = catalog
+        .get_mut(parent)
+        .with_context(|| format!("parent not found: {}", parent.to_hex()))?;
+    let refs = ordered_refs_mut(object, role)
+        .with_context(|| format!("parent does not have a {role:?} collection"))?;
+    if index > refs.len() {
+        bail!("insert position is out of range");
+    }
+    refs.insert(index, child);
+    Ok(())
+}
+
+fn next_doc_id(
+    ws: &Workspace,
+    catalog: &Catalog,
+    parent: SymbolHash,
+    prefix: &str,
+) -> Result<String> {
+    let mut next = 1u32;
+    for (qname, _) in catalog.iter() {
+        if !catalog.parents(qname).contains(&parent) {
+            continue;
+        }
+        let Some(text) = ws.get_symbol(qname).ok() else {
+            continue;
+        };
+        let Some(local) = text.rsplit_once('/').map(|(_, local)| local) else {
+            continue;
+        };
+        let Some(number) = local.strip_prefix(prefix) else {
+            continue;
+        };
+        if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        if let Ok(value) = number.parse::<u32>() {
+            next = next.max(value + 1);
+        }
+    }
+    Ok(format!("{prefix}{next}"))
+}
+
+fn save_worktree(ws: &Workspace, state: State, catalog: &Catalog, name: &str) -> Result<()> {
+    let view = catalog.rebuild(ws.store())?;
+    ws.write_worktree(State {
+        base_commit: state.base_commit,
+        root_view: view,
+    })?;
+    println!("Wrote {name}");
+    println!("Worktree view {}", view.to_hex());
+    Ok(())
+}
+
+fn doc_comments(object: &DesignObject) -> Option<&[DocComment]> {
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(p) => Some(&p.comments),
+        ObjectPayload::Document(p) => Some(&p.comments),
+        ObjectPayload::DocumentSection(p) => Some(&p.comments),
+        ObjectPayload::DocumentList(p) => Some(&p.comments),
+        ObjectPayload::DocumentText(p) => Some(&p.comments),
+        ObjectPayload::DocumentTopic(p) => Some(&p.comments),
+        _ => None,
+    }
+}
+
+fn doc_comments_mut(object: &mut DesignObject) -> Option<&mut Vec<DocComment>> {
+    match &mut object.payload {
+        ObjectPayload::DocumentDirectory(p) => Some(&mut p.comments),
+        ObjectPayload::Document(p) => Some(&mut p.comments),
+        ObjectPayload::DocumentSection(p) => Some(&mut p.comments),
+        ObjectPayload::DocumentList(p) => Some(&mut p.comments),
+        ObjectPayload::DocumentText(p) => Some(&mut p.comments),
+        ObjectPayload::DocumentTopic(p) => Some(&mut p.comments),
+        _ => None,
+    }
+}
+
+fn parse_comment_id(text: &str) -> Result<u32> {
+    let digits = text.strip_prefix("comment").unwrap_or(text);
+    let id = digits
+        .parse::<u32>()
+        .with_context(|| format!("invalid comment id: {text}"))?;
+    if id == 0 {
+        bail!("comment id must be greater than zero");
+    }
+    Ok(id)
+}
+
+fn comment_status(comment: &DocComment) -> &'static str {
+    if comment.resolved { "resolved" } else { "open" }
+}
+
+fn escape_comment_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn comments_text(comments: &[DocComment]) -> String {
+    if comments.is_empty() {
+        return "<none>".to_owned();
+    }
+    comments
+        .iter()
+        .map(|comment| {
+            format!(
+                "comment{} [{}] {}",
+                comment.id,
+                comment_status(comment),
+                escape_comment_text(&comment.text)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn print_comments(comments: &[DocComment], indent: &str) {
+    for comment in comments {
+        println!(
+            "{indent}comment{} [{}] {}",
+            comment.id,
+            comment_status(comment),
+            escape_comment_text(&comment.text)
+        );
+    }
+}
+
+fn doc_show(ws: &Workspace, catalog: &Catalog, qname: &str) -> Result<()> {
+    let hash = symbol_hash(qname);
+    let object = catalog
+        .get(hash)
+        .with_context(|| format!("object not found: {qname}"))?;
+    render_doc(ws, catalog, hash, object, 0)
+}
+
+fn render_doc(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    depth: usize,
+) -> Result<()> {
+    let indent = "  ".repeat(depth);
+    let name = ws.get_symbol(qname)?;
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(_p) => {
+            println!("{indent}{name}  document-directory");
+            let mut children = Vec::new();
+            for child in catalog.children(qname) {
+                children.push((ws.get_symbol(child)?, child));
+            }
+            children.sort_by(|left, right| left.0.cmp(&right.0));
+            for (_, child) in children {
+                let child_object = catalog.get(child).context("missing child")?;
+                render_doc(ws, catalog, child, child_object, depth + 1)?;
+            }
+        }
+        ObjectPayload::Document(p) => {
+            println!("{indent}{name}  document {:?}", p.title);
+            for section in &p.sections {
+                let child = catalog.get(*section).context("missing section")?;
+                render_doc(ws, catalog, *section, child, depth + 1)?;
+            }
+        }
+        ObjectPayload::DocumentSection(p) => {
+            println!("{indent}{name}  section {:?}", p.title);
+            for paragraph in &p.body {
+                let child = catalog.get(*paragraph).context("missing paragraph")?;
+                render_doc(ws, catalog, *paragraph, child, depth + 1)?;
+            }
+            for section in &p.sections {
+                let child = catalog.get(*section).context("missing subsection")?;
+                render_doc(ws, catalog, *section, child, depth + 1)?;
+            }
+        }
+        ObjectPayload::DocumentList(p) => {
+            println!("{indent}{name}  list");
+            for item in &p.items {
+                let child = catalog.get(*item).context("missing item")?;
+                render_doc(ws, catalog, *item, child, depth + 1)?;
+            }
+        }
+        ObjectPayload::DocumentText(p) => {
+            println!("{indent}{name}  text {:?}", p.text);
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            println!("{indent}{name}  topic {:?}", p.title);
+            for paragraph in &p.paragraphs {
+                let child = catalog.get(*paragraph).context("missing topic paragraph")?;
+                render_doc(ws, catalog, *paragraph, child, depth + 1)?;
+            }
+        }
+        _ => bail!("not a document object: {name}"),
+    }
+    if let Some(comments) = doc_comments(object) {
+        print_comments(comments, &format!("{indent}  "));
+    }
     Ok(())
 }
 
@@ -650,7 +1964,6 @@ fn pull(dir: Option<PathBuf>, branch: Option<String>) -> Result<()> {
     Ok(())
 }
 
-
 fn object_qname_text(path: &str) -> String {
     format!("files/{path}")
 }
@@ -671,13 +1984,26 @@ fn object_source_path(ws: &Workspace, object: &DesignObject) -> Result<Option<St
         ObjectPayload::Directory(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::File(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Namespace(p) => p.source.as_ref().map(|source| source.path),
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.source.as_ref().map(|source| source.path),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.source.as_ref().map(|source| source.path),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            p.source.as_ref().map(|source| source.path)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            p.source.as_ref().map(|source| source.path)
+        }
         ObjectPayload::Method(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Function(p) => p.source.as_ref().map(|source| source.path),
         ObjectPayload::Part(p) => Some(p.source.path),
         ObjectPayload::Mixin(p) => p.source.as_ref().map(|source| source.path),
-        ObjectPayload::View(_) => None,
+        ObjectPayload::View(_)
+        | ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => None,
     };
     match symbol {
         Some(symbol) => Ok(Some(ws.get_symbol(symbol)?)),
@@ -722,6 +2048,15 @@ fn set_object_source(ws: &Workspace, object: &mut DesignObject, path: &str) -> R
             }
         }
         ObjectPayload::View(_) => bail!("view objects have no source"),
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => bail!("document objects have no source"),
+        ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => bail!("structure objects have no source"),
     }
     Ok(())
 }
@@ -803,7 +2138,7 @@ fn create_directory(
                 qualified_name: qname,
                 parent: ParentRef::Object(parent),
                 source: Some(PathSource { path: source }),
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         ),
@@ -1009,7 +2344,7 @@ fn sync_source(ws: &Workspace, repo: &SourceRepo) -> Result<()> {
                             parent,
                             source: Some(PathSource { path: source }),
                             content_hash: hash,
-                            design_doc: DocHash::ZERO,
+                            document: SymbolHash::ZERO,
                             children: vec![],
                         }),
                     ),
@@ -1209,12 +2544,10 @@ fn edit(dir: Option<PathBuf>, args: EditArgs) -> Result<()> {
         .clone();
     let old_text = ws.get_symbol(old_qname)?;
 
-    if args.clear_design {
-        set_design_doc(&mut object, DocHash::ZERO)?;
-    } else if let Some(text) = args.design.as_deref() {
-        set_design_doc(&mut object, ws.put_doc(text)?)?;
-    } else if let Some(path) = args.design_file.as_deref() {
-        set_design_doc(&mut object, ws.put_doc(&fs::read_to_string(path)?)?)?;
+    if args.clear_document {
+        set_document(&mut object, SymbolHash::ZERO)?;
+    } else if let Some(text) = args.document.as_deref() {
+        set_document(&mut object, relation_symbol(&ws, Some(text))?)?;
     }
 
     if let Some(spec) = args.source.as_deref() {
@@ -1400,7 +2733,13 @@ fn apply_structure_edit(
                     ws,
                     catalog,
                     parent,
-                    &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface, Kind::Part],
+                    &[
+                        Kind::Class,
+                        Kind::InnerClass,
+                        Kind::Interface,
+                        Kind::InnerInterface,
+                        Kind::Part,
+                    ],
                 )?;
                 let (name, sig) = local
                     .split_once('#')
@@ -1412,7 +2751,17 @@ fn apply_structure_edit(
         }
         ObjectPayload::Part(p) => {
             if let Some(parent) = args.parent.as_deref() {
-                let parent = parent_symbol(ws, catalog, parent, &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface])?;
+                let parent = parent_symbol(
+                    ws,
+                    catalog,
+                    parent,
+                    &[
+                        Kind::Class,
+                        Kind::InnerClass,
+                        Kind::Interface,
+                        Kind::InnerInterface,
+                    ],
+                )?;
                 p.parent = parent;
                 p.qualified_name =
                     ws.put_symbol(&format!("{}/{}", ws.get_symbol(parent)?, local))?;
@@ -1432,6 +2781,19 @@ fn apply_structure_edit(
             }
         }
         ObjectPayload::View(_) => {}
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => {
+            bail!("document objects are edited with `ds doc`")
+        }
+        ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => {
+            bail!("structure objects are edited with `ds structure`")
+        }
     }
     Ok(())
 }
@@ -1505,6 +2867,19 @@ fn apply_rename(ws: &Workspace, object: &mut DesignObject, name: Option<&str>) -
             bail!("part name is derived from its content hash");
         }
         ObjectPayload::View(_) => bail!("view has no name"),
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => {
+            bail!("document fragments have fixed local names; create a new fragment")
+        }
+        ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => {
+            bail!("structure objects have fixed local names; create a new object")
+        }
     }
     Ok(())
 }
@@ -1541,7 +2916,17 @@ fn edit_class_parent(
         bail!("an inner type cannot be moved to a namespace/file/module");
     }
     if let Some(new_parent) = args.parent.as_deref() {
-        let new_parent = parent_symbol(ws, catalog, new_parent, &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface])?;
+        let new_parent = parent_symbol(
+            ws,
+            catalog,
+            new_parent,
+            &[
+                Kind::Class,
+                Kind::InnerClass,
+                Kind::Interface,
+                Kind::InnerInterface,
+            ],
+        )?;
         *parent = ClassParent::Nested { parent: new_parent };
         *qname = rename_qname(ws, new_parent, local)?;
         if args.file.is_some() || args.module.is_some() {
@@ -1736,18 +3121,29 @@ enum SymbolList {
     On,
 }
 
-fn set_design_doc(object: &mut DesignObject, doc: DocHash) -> Result<()> {
+fn set_document(object: &mut DesignObject, document: SymbolHash) -> Result<()> {
     match &mut object.payload {
-        ObjectPayload::View(_) => bail!("view has no design document"),
-        ObjectPayload::Directory(p) => p.design_doc = doc,
-        ObjectPayload::File(p) => p.design_doc = doc,
-        ObjectPayload::Namespace(p) => p.design_doc = doc,
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.design_doc = doc,
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.design_doc = doc,
-        ObjectPayload::Method(p) => p.design_doc = doc,
-        ObjectPayload::Function(p) => p.design_doc = doc,
-        ObjectPayload::Part(p) => p.design_doc = doc,
-        ObjectPayload::Mixin(p) => p.design_doc = doc,
+        ObjectPayload::View(_) => bail!("view has no document reference"),
+        ObjectPayload::Directory(p) => p.document = document,
+        ObjectPayload::File(p) => p.document = document,
+        ObjectPayload::Namespace(p) => p.document = document,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document = document,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document = document,
+        ObjectPayload::Method(p) => p.document = document,
+        ObjectPayload::Function(p) => p.document = document,
+        ObjectPayload::Part(_) => bail!("part has no document reference"),
+        ObjectPayload::Mixin(p) => p.document = document,
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => {
+            bail!("document objects have no design document field")
+        }
+        ObjectPayload::DesignStructure(p) => p.document = document,
+        ObjectPayload::System(p) => p.document = document,
+        ObjectPayload::Module(p) => p.document = document,
     }
     Ok(())
 }
@@ -1809,6 +3205,15 @@ fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result
             p.content_hash = source.content_hash;
         }
         ObjectPayload::View(_) => bail!("view has no source"),
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => bail!("document objects have no source"),
+        ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => bail!("structure objects have no source"),
     }
     Ok(())
 }
@@ -1935,6 +3340,10 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
     let mut changed = false;
     match &mut object.payload {
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
             if p.superclass == target {
                 p.superclass = SymbolHash::ZERO;
                 changed = true;
@@ -1945,6 +3354,10 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
             if p.extends == target {
                 p.extends = SymbolHash::ZERO;
                 changed = true;
@@ -1953,6 +3366,10 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
         ObjectPayload::Method(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
             if p.overrides == target {
                 p.overrides = SymbolHash::ZERO;
                 changed = true;
@@ -1961,6 +3378,10 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
         ObjectPayload::Function(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
             changed |= remove_dependencies(&mut p.explicit_dependencies, target);
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
@@ -1969,6 +3390,10 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
         }
         ObjectPayload::Mixin(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
             changed |= remove_symbol(&mut p.on, target);
             if p.superclass == target {
                 p.superclass = SymbolHash::ZERO;
@@ -1978,6 +3403,56 @@ fn remove_references_to(object: &mut DesignObject, target: SymbolHash) -> bool {
             changed |= remove_symbol(&mut p.mixins, target);
             changed |= remove_dependencies(&mut p.explicit_dependencies, target);
             changed |= remove_dependencies(&mut p.implicit_dependencies, target);
+        }
+        ObjectPayload::Module(p) => {
+            changed |= remove_symbol(&mut p.members, target);
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::DesignStructure(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::System(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::Directory(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::File(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::Namespace(p) => {
+            if p.document == target {
+                p.document = SymbolHash::ZERO;
+                changed = true;
+            }
+        }
+        ObjectPayload::Document(p) => {
+            changed |= remove_symbol(&mut p.sections, target);
+        }
+        ObjectPayload::DocumentSection(p) => {
+            changed |= remove_symbol(&mut p.body, target);
+            changed |= remove_symbol(&mut p.sections, target);
+        }
+        ObjectPayload::DocumentList(p) => {
+            changed |= remove_symbol(&mut p.items, target);
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            changed |= remove_symbol(&mut p.paragraphs, target);
         }
         _ => {}
     }
@@ -2062,8 +3537,12 @@ fn remove_from(list: &mut Vec<Dependency>, target: SymbolHash) -> Result<()> {
 
 fn dependency_lists(object: &DesignObject) -> Result<(&[Dependency], &[Dependency])> {
     match &object.payload {
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            Ok((&p.explicit_dependencies, &p.implicit_dependencies))
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            Ok((&p.explicit_dependencies, &p.implicit_dependencies))
+        }
         ObjectPayload::Method(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Function(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Part(p) => Ok((&p.explicit_dependencies, &p.implicit_dependencies)),
@@ -2117,8 +3596,12 @@ fn add(
             bail!("--dir cannot be combined with qnames");
         }
         let qname = ws.put_symbol(&object_qname_text(&path))?;
-        if work_catalog.get(qname).is_some() {
+        if let Some(object) = work_catalog.get(qname) {
+            let document = document_of(object);
             stage_object_with_parents(&work_catalog, &mut index_catalog, qname)?;
+            if let Some(document) = document {
+                stage_object_with_parents(&work_catalog, &mut index_catalog, document)?;
+            }
         } else {
             index_catalog.remove(qname);
         }
@@ -2161,6 +3644,50 @@ fn file_scope_qnames(
                 || object_file_association(ws, object)? == Some(file_qname);
             if belongs {
                 qnames.insert(qname);
+                if let Some(document) = document_of(object) {
+                    qnames.insert(document);
+                }
+            }
+        }
+    }
+    Ok(qnames)
+}
+
+fn directory_scope_qnames(
+    ws: &Workspace,
+    left: &Catalog,
+    right: &Catalog,
+    path: &str,
+) -> Result<BTreeSet<SymbolHash>> {
+    let dir_qname = ws.put_symbol(&object_qname_text(path))?;
+    let dir_text = ws.get_symbol(dir_qname)?;
+    let prefix = format!("{dir_text}/");
+    let mut qnames = BTreeSet::new();
+    for catalog in [left, right] {
+        for (qname, object) in catalog.iter() {
+            let qname_text = ws.get_symbol(qname)?;
+            let source = object_source_path(ws, object)?;
+            let source_belongs = source.as_deref().is_some_and(|source| {
+                source == path
+                    || source
+                        .strip_prefix(path)
+                        .is_some_and(|rest| rest.starts_with('/'))
+            });
+            let associated_file = object_file_association(ws, object)?
+                .map(|file| ws.get_symbol(file))
+                .transpose()?
+                .is_some_and(|file| {
+                    file.as_str() == dir_text.as_str() || file.starts_with(&prefix)
+                });
+            let belongs = qname == dir_qname
+                || qname_text.starts_with(&prefix)
+                || source_belongs
+                || associated_file;
+            if belongs {
+                qnames.insert(qname);
+                if let Some(document) = document_of(object) {
+                    qnames.insert(document);
+                }
             }
         }
     }
@@ -2190,11 +3717,7 @@ fn object_file_association(_ws: &Workspace, object: &DesignObject) -> Result<Opt
     }
 }
 
-fn unstage(
-    dir: Option<PathBuf>,
-    file: Option<String>,
-    dir_path: Option<String>,
-) -> Result<()> {
+fn unstage(dir: Option<PathBuf>, file: Option<String>, dir_path: Option<String>) -> Result<()> {
     let ws = open_workspace(dir)?;
     let branch = current_branch(&ws)?;
     let head = ws.read_ref(&branch)?;
@@ -2209,15 +3732,12 @@ fn unstage(
     )?;
     let mut index_catalog = Catalog::load(ws.store(), index.root_view)?;
     let targets = match (file, dir_path) {
-        (Some(path), None) => {
-            file_scope_qnames(&ws, &index_catalog, &head_catalog, &path)?
-        }
-        (None, Some(path)) => {
-            let qname = ws.put_symbol(&object_qname_text(&path))?;
-            BTreeSet::from([qname])
-        }
+        (Some(path), None) => file_scope_qnames(&ws, &index_catalog, &head_catalog, &path)?,
+        (None, Some(path)) => directory_scope_qnames(&ws, &index_catalog, &head_catalog, &path)?,
         _ => bail!("use exactly one of --file or --dir"),
     };
+    let mut targets = targets;
+    expand_subtree_qnames(&ws, &[&index_catalog, &head_catalog], &mut targets)?;
     for qname in &targets {
         if let Some(object) = head_catalog.get(*qname) {
             if index_catalog.get(*qname).is_some() {
@@ -2235,6 +3755,29 @@ fn unstage(
         root_view: view,
     })?;
     println!("Unstaged {} objects", targets.len());
+    Ok(())
+}
+
+fn expand_subtree_qnames(
+    ws: &Workspace,
+    catalogs: &[&Catalog],
+    targets: &mut BTreeSet<SymbolHash>,
+) -> Result<()> {
+    let mut prefixes = Vec::new();
+    for qname in targets.iter() {
+        prefixes.push(ws.get_symbol(*qname)?);
+    }
+    for catalog in catalogs {
+        for (qname, _) in catalog.iter() {
+            let text = ws.get_symbol(qname)?;
+            if prefixes.iter().any(|prefix| {
+                text.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with('/'))
+            }) {
+                targets.insert(qname);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2261,6 +3804,11 @@ fn stage_object_with_parents(
             }
         }
         queue.extend(worktree.parents(current));
+        if let Some(object) = worktree.get(current)
+            && let Some(document) = document_of(object)
+        {
+            queue.push(document);
+        }
     }
     Ok(())
 }
@@ -2329,24 +3877,41 @@ fn remove_subtree(catalog: &mut Catalog, qname: SymbolHash) {
     }
 }
 
-fn status(dir: Option<PathBuf>, porcelain: bool) -> Result<()> {
+fn branch_delete(dir: Option<PathBuf>, branch: &str) -> Result<()> {
+    let ws = open_workspace(dir)?;
+    let current = current_branch(&ws)?;
+    if current == branch {
+        bail!("cannot delete the current branch: {branch}");
+    }
+    let path = ws.meta_root().join("refs/heads").join(branch);
+    if !path.is_file() {
+        bail!("branch not found: {branch}");
+    }
+    std::fs::remove_file(&path)?;
+    println!("Deleted branch {branch}");
+    Ok(())
+}
+
+fn status(dir: Option<PathBuf>, porcelain: bool, detail: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let branch = current_branch(&ws)?;
     let head = ws.read_ref(&branch)?;
     let index = ws.read_index()?;
     let worktree = ws.read_worktree()?;
-    println!("On branch {branch}");
-    match head {
-        Some(hash) => println!("HEAD commit       {}", hash.to_hex()),
-        None => println!("HEAD commit       (none)"),
-    }
-    match index {
-        Some(state) => println!("Index view        {}", state.root_view.to_hex()),
-        None => println!("Index view        (none)"),
-    }
-    match worktree {
-        Some(state) => println!("Worktree view     {}", state.root_view.to_hex()),
-        None => println!("Worktree view     (none)"),
+    if !porcelain {
+        println!("On branch {branch}");
+        match head {
+            Some(hash) => println!("HEAD commit       {}", hash.to_hex()),
+            None => println!("HEAD commit       (none)"),
+        }
+        match index {
+            Some(state) => println!("Index view        {}", state.root_view.to_hex()),
+            None => println!("Index view        (none)"),
+        }
+        match worktree {
+            Some(state) => println!("Worktree view     {}", state.root_view.to_hex()),
+            None => println!("Worktree view     (none)"),
+        }
     }
 
     let head_catalog = load_catalog(
@@ -2375,11 +3940,19 @@ fn status(dir: Option<PathBuf>, porcelain: bool) -> Result<()> {
 
     if porcelain {
         for (status, name) in &unstaged {
+            if !detail {
+                println!("{status}\t{name}");
+                continue;
+            }
             let qname = ws.put_symbol(name)?;
             let object = worktree_catalog
                 .as_ref()
                 .and_then(|catalog| catalog.get(qname))
-                .or_else(|| index_catalog.as_ref().and_then(|catalog| catalog.get(qname)));
+                .or_else(|| {
+                    index_catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.get(qname))
+                });
             let (kind, source) = match object {
                 Some(object) => (
                     kind_name(object.kind),
@@ -2428,6 +4001,15 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::Function => "function",
         Kind::Part => "part",
         Kind::Mixin => "mixin",
+        Kind::DocumentDirectory => "document-directory",
+        Kind::Document => "document",
+        Kind::DocumentSection => "document-section",
+        Kind::DocumentList => "document-list",
+        Kind::DocumentText => "document-text",
+        Kind::DocumentTopic => "document-topic",
+        Kind::DesignStructure => "design-structure",
+        Kind::System => "system",
+        Kind::Module => "module",
     }
 }
 
@@ -2602,6 +4184,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             fields.insert("source_commit", p.source_commit.to_hex());
             fields.insert("files", p.files.to_hex());
             fields.insert("namespaces", p.namespaces.to_hex());
+            fields.insert("documents", p.documents.to_hex());
             fields.insert("design", format_hash(p.design.0));
         }
         ObjectPayload::Directory(p) => {
@@ -2613,7 +4196,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                     .map(|source| path_source_text(ws, source))
                     .unwrap_or_else(|| "<none>".to_owned()),
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::File(p) => {
             fields.insert("parent", symbol_text(ws, p.parent));
@@ -2625,7 +4208,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                     .unwrap_or_else(|| "<none>".to_owned()),
             );
             fields.insert("content_hash", format_hash(p.content_hash));
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Namespace(p) => {
             fields.insert("parent", parent_ref_text(ws, p.parent));
@@ -2637,7 +4220,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                     .unwrap_or_else(|| "<none>".to_owned()),
             );
             fields.insert("content_hash", format_hash(p.content_hash));
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             fields.insert("parent", class_parent_text(ws, &p.parent));
@@ -2660,7 +4243,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             fields.insert("parent", class_parent_text(ws, &p.parent));
@@ -2681,7 +4264,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Method(p) => {
             fields.insert("parent", symbol_text(ws, p.parent));
@@ -2702,7 +4285,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Function(p) => {
             fields.insert("file", symbol_text(ws, p.file));
@@ -2724,7 +4307,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
         }
         ObjectPayload::Part(p) => {
             fields.insert("parent", symbol_text(ws, p.parent));
@@ -2738,7 +4321,6 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
         }
         ObjectPayload::Mixin(p) => {
             fields.insert("parent", class_parent_text(ws, &p.parent));
@@ -2762,7 +4344,56 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
                 "implicit_dependencies",
                 dependencies_text(ws, &p.implicit_dependencies)?,
             );
-            fields.insert("design", summarize_doc(ws, p.design_doc)?);
+            fields.insert("document", symbol_text(ws, p.document));
+        }
+        ObjectPayload::DocumentDirectory(p) => {
+            fields.insert("parent", parent_ref_text(ws, p.parent));
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::Document(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("sections", symbol_list_text(ws, &p.sections));
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentSection(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("body", symbol_list_text(ws, &p.body));
+            fields.insert("sections", symbol_list_text(ws, &p.sections));
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentList(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("items", symbol_list_text(ws, &p.items));
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentText(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("text", p.text.clone());
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("paragraphs", symbol_list_text(ws, &p.paragraphs));
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::DesignStructure(p) => {
+            fields.insert("parent", parent_ref_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("document", symbol_text(ws, p.document));
+        }
+        ObjectPayload::System(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("document", symbol_text(ws, p.document));
+        }
+        ObjectPayload::Module(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("document", symbol_text(ws, p.document));
+            fields.insert("members", symbol_list_text(ws, &p.members));
         }
     }
     Ok(fields)
@@ -2880,7 +4511,10 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
         .context("worktree is not initialized; run `ds init`")?;
     let mut catalog = Catalog::load(ws.store(), state.root_view)?;
     let qname = ws.put_symbol(name)?;
-    if qname == symbol_hash("files") || qname == symbol_hash("namespaces") {
+    if qname == symbol_hash("files")
+        || qname == symbol_hash("namespaces")
+        || qname == symbol_hash("documents")
+    {
         bail!("cannot remove a root object");
     }
     if catalog.get(qname).is_none() {
@@ -2894,6 +4528,15 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", ");
         bail!("object has children; remove them first: {names}");
+    }
+    for module in catalog.references_to(qname) {
+        let Some(object) = catalog.get_mut(module) else {
+            continue;
+        };
+        if matches!(&object.payload, ObjectPayload::Module(p) if p.members.contains(&qname)) {
+            remove_references_to(object, qname);
+            println!("Unassigned from {}", symbol_text(&ws, module));
+        }
     }
     let references = catalog.references_to(qname);
     if !references.is_empty() {
@@ -2916,6 +4559,15 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
         changed.sort();
         for name in changed {
             println!("Unreferenced from {name}");
+        }
+    }
+    // Document fragments are referenced by their parent's ordered collection.
+    // Remove that containment reference before deleting the child.
+    for parent in catalog.parents(qname) {
+        if let Some(object) = catalog.get_mut(parent)
+            && remove_references_to(object, qname)
+        {
+            println!("Removed from {}", symbol_text(&ws, parent));
         }
     }
     catalog.remove(qname);
@@ -2979,6 +4631,7 @@ fn ls(
     dir: Option<PathBuf>,
     files: bool,
     namespaces: bool,
+    documents: bool,
     design: bool,
     staged: bool,
 ) -> Result<()> {
@@ -2996,20 +4649,25 @@ fn ls(
         let selected = if files {
             matches!(object.kind, Kind::Directory | Kind::File)
         } else if namespaces {
-            !matches!(object.kind, Kind::Directory | Kind::File)
+            !is_document_kind(object.kind) && !matches!(object.kind, Kind::Directory | Kind::File)
+        } else if documents {
+            is_document_kind(object.kind)
         } else if design {
-            design_doc_of(object).is_some_and(|doc| !doc.is_zero())
+            document_of(object).is_some()
         } else {
             true
         };
         if selected {
-            rows.push((symbol_text(&ws, qname), design_doc_of(object)));
+            rows.push((symbol_text(&ws, qname), document_of(object)));
         }
     }
     rows.sort_by(|left, right| left.0.cmp(&right.0));
-    for (name, design_doc) in rows {
+    for (name, document) in rows {
         if design {
-            println!("{name}\t{}", design_doc.unwrap_or(DocHash::ZERO).to_hex());
+            let document = document
+                .map(|target| symbol_text(&ws, target))
+                .unwrap_or_else(|| "<none>".to_owned());
+            println!("{name}\t{document}");
         } else {
             println!("{name}");
         }
@@ -3017,19 +4675,41 @@ fn ls(
     Ok(())
 }
 
-fn design_doc_of(object: &DesignObject) -> Option<DocHash> {
-    match &object.payload {
-        ObjectPayload::View(_) => None,
-        ObjectPayload::Directory(p) => Some(p.design_doc),
-        ObjectPayload::File(p) => Some(p.design_doc),
-        ObjectPayload::Namespace(p) => Some(p.design_doc),
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.design_doc),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.design_doc),
-        ObjectPayload::Method(p) => Some(p.design_doc),
-        ObjectPayload::Function(p) => Some(p.design_doc),
-        ObjectPayload::Part(p) => Some(p.design_doc),
-        ObjectPayload::Mixin(p) => Some(p.design_doc),
-    }
+fn is_document_kind(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::DocumentDirectory
+            | Kind::Document
+            | Kind::DocumentSection
+            | Kind::DocumentList
+            | Kind::DocumentText
+            | Kind::DocumentTopic
+    )
+}
+
+fn document_of(object: &DesignObject) -> Option<SymbolHash> {
+    let target = match &object.payload {
+        ObjectPayload::View(_) => return None,
+        ObjectPayload::Directory(p) => p.document,
+        ObjectPayload::File(p) => p.document,
+        ObjectPayload::Namespace(p) => p.document,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document,
+        ObjectPayload::Method(p) => p.document,
+        ObjectPayload::Function(p) => p.document,
+        ObjectPayload::Mixin(p) => p.document,
+        ObjectPayload::DesignStructure(p) => p.document,
+        ObjectPayload::System(p) => p.document,
+        ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Part(_)
+        | ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_) => return None,
+    };
+    (!target.is_zero()).then_some(target)
 }
 
 fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<()> {
@@ -3052,17 +4732,17 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
         ObjectPayload::View(_) => {}
         ObjectPayload::Directory(p) => {
             print_source_path(p.source, &ws)?;
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::File(p) => {
             print_source_path(p.source, &ws)?;
             print_content_hash(p.content_hash);
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Namespace(p) => {
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             print_class_parent(p.parent, &ws)?;
@@ -3071,21 +4751,21 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_optional_symbol("superclass", p.superclass, &ws)?;
             print_symbol_list("interfaces", &p.interfaces, &ws)?;
             print_symbol_list("mixins", &p.mixins, &ws)?;
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             print_class_parent(p.parent, &ws)?;
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
             print_optional_symbol("extends", p.extends, &ws)?;
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Method(p) => {
             print_optional_symbol("parent", p.parent, &ws)?;
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
             print_optional_symbol("overrides", p.overrides, &ws)?;
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Function(p) => {
             print_optional_symbol("file", p.file, &ws)?;
@@ -3093,13 +4773,12 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_optional_symbol("module", p.module, &ws)?;
             print_span_source(p.source, &ws)?;
             print_content_hash(p.content_hash);
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
         }
         ObjectPayload::Part(p) => {
             print_optional_symbol("parent", p.parent, &ws)?;
             print_span_source(Some(p.source), &ws)?;
             print_content_hash(p.content_hash);
-            print_design(&ws, p.design_doc)?;
         }
         ObjectPayload::Mixin(p) => {
             print_class_parent(p.parent, &ws)?;
@@ -3109,7 +4788,56 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_optional_symbol("superclass", p.superclass, &ws)?;
             print_symbol_list("interfaces", &p.interfaces, &ws)?;
             print_symbol_list("mixins", &p.mixins, &ws)?;
-            print_design(&ws, p.design_doc)?;
+            print_document(&ws, p.document);
+        }
+        ObjectPayload::DocumentDirectory(p) => {
+            println!("parent: {}", parent_ref_text(&ws, p.parent));
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::Document(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_symbol_list("sections", &p.sections, &ws)?;
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentSection(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_symbol_list("body", &p.body, &ws)?;
+            print_symbol_list("sections", &p.sections, &ws)?;
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentList(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            print_symbol_list("items", &p.items, &ws)?;
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentText(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("text: {}", p.text);
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_symbol_list("paragraphs", &p.paragraphs, &ws)?;
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::DesignStructure(p) => {
+            println!("parent: {}", parent_ref_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_document(&ws, p.document);
+        }
+        ObjectPayload::System(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_document(&ws, p.document);
+        }
+        ObjectPayload::Module(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            print_document(&ws, p.document);
+            print_symbol_list("members", &p.members, &ws)?;
         }
     }
     let children = catalog.children(qname);
@@ -3153,6 +4881,15 @@ fn print_source_content(ws: &Workspace, catalog: &Catalog, object: &DesignObject
         ObjectPayload::Function(p) => span_anchor(p.source)?,
         ObjectPayload::Part(p) => (p.source.path, Some(p.source.span)),
         ObjectPayload::Mixin(p) => span_anchor(p.source)?,
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => bail!("object has no source anchor"),
     };
     let path = ws.get_symbol(path)?;
     let bytes = repo.read_path(&commit, &path)?;
@@ -3296,7 +5033,7 @@ fn mark_view(
     let ObjectPayload::View(p) = &view.payload else {
         bail!("commit does not point at a view");
     };
-    for root in [p.files, p.namespaces, p.design] {
+    for root in [p.files, p.namespaces, p.documents, p.design] {
         mark_object(ws, root, objects, docs, symbols)?;
     }
     Ok(())
@@ -3335,6 +5072,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         ObjectPayload::View(_) => {}
         ObjectPayload::Directory(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             push_parent_ref(&mut out, p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3342,6 +5080,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::File(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             out.push(p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3349,6 +5088,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Namespace(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             push_parent_ref(&mut out, p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3356,6 +5096,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             push_class_parent(&mut out, p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3368,6 +5109,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             push_class_parent(&mut out, p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3378,6 +5120,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Method(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             out.push(p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3388,6 +5131,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Function(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             out.push(p.file);
             out.push(p.namespace);
             out.push(p.module);
@@ -3406,6 +5150,7 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Mixin(p) => {
             out.push(p.qualified_name);
+            out.push(p.document);
             push_class_parent(&mut out, p.parent);
             if let Some(source) = p.source {
                 out.push(source.path);
@@ -3417,6 +5162,51 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
             push_deps(&mut out, &p.explicit_dependencies);
             push_deps(&mut out, &p.implicit_dependencies);
         }
+        ObjectPayload::DocumentDirectory(p) => {
+            out.push(p.qualified_name);
+            push_parent_ref(&mut out, p.parent);
+        }
+        ObjectPayload::Document(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+            out.extend(p.sections.iter().copied());
+        }
+        ObjectPayload::DocumentSection(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+            out.extend(p.body.iter().copied());
+            out.extend(p.sections.iter().copied());
+        }
+        ObjectPayload::DocumentList(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+            out.extend(p.items.iter().copied());
+        }
+        ObjectPayload::DocumentText(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+            out.extend(p.paragraphs.iter().copied());
+        }
+        ObjectPayload::DesignStructure(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            push_parent_ref(&mut out, p.parent);
+        }
+        ObjectPayload::System(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            out.push(p.parent);
+        }
+        ObjectPayload::Module(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            out.push(p.parent);
+            out.extend(p.members.iter().copied());
+        }
     }
     out.retain(|hash| !hash.is_zero());
     out
@@ -3426,39 +5216,40 @@ fn object_docs(object: &DesignObject) -> Vec<DocHash> {
     let mut out = Vec::new();
     match &object.payload {
         ObjectPayload::View(_) => {}
-        ObjectPayload::Directory(p) => out.push(p.design_doc),
-        ObjectPayload::File(p) => out.push(p.design_doc),
-        ObjectPayload::Namespace(p) => out.push(p.design_doc),
+        ObjectPayload::Directory(_) | ObjectPayload::File(_) | ObjectPayload::Namespace(_) => {}
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
         ObjectPayload::Method(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
         ObjectPayload::Function(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
         ObjectPayload::Part(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
         ObjectPayload::Mixin(p) => {
-            out.push(p.design_doc);
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
+        ObjectPayload::DocumentDirectory(_)
+        | ObjectPayload::Document(_)
+        | ObjectPayload::DocumentSection(_)
+        | ObjectPayload::DocumentList(_)
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::DesignStructure(_)
+        | ObjectPayload::System(_)
+        | ObjectPayload::Module(_) => {}
     }
     out.retain(|hash| !hash.is_zero());
     out
@@ -3473,6 +5264,11 @@ fn object_children(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => &p.children,
         ObjectPayload::Part(p) => &p.children,
         ObjectPayload::Mixin(p) => &p.children,
+        ObjectPayload::DocumentDirectory(p) => &p.children,
+        ObjectPayload::Document(p) => &p.children,
+        ObjectPayload::DocumentSection(p) => &p.children,
+        ObjectPayload::DocumentList(p) => &p.children,
+        ObjectPayload::DocumentTopic(p) => &p.children,
         _ => &[],
     }
 }
@@ -3585,7 +5381,7 @@ fn current_branch(ws: &Workspace) -> Result<String> {
 }
 
 fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<DesignObject> {
-    let design_doc = read_design(ws, args)?;
+    let document = optional_ref(ws, args.document.as_deref())?;
     let object = match args.kind {
         KindArg::Directory => {
             let parent =
@@ -3599,7 +5395,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     qualified_name: qname,
                     parent: ParentRef::Object(parent),
                     source: path_source,
-                    design_doc,
+                    document,
                     children: vec![],
                 }),
             )
@@ -3620,7 +5416,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.map(|s| PathSource { path: s.path }),
                     content_hash: content,
-                    design_doc,
+                    document,
                     children: vec![],
                 }),
             )
@@ -3641,7 +5437,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent: ParentRef::Object(parent),
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     children: vec![],
                 }),
             )
@@ -3660,7 +5456,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     superclass: relation_symbol(ws, args.superclass.as_deref())?,
                     interfaces: relation_symbols(ws, &args.interfaces)?,
                     mixins: relation_symbols(ws, &args.mixins)?,
@@ -3690,7 +5486,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent: ClassParent::Nested { parent },
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     superclass: relation_symbol(ws, args.superclass.as_deref())?,
                     interfaces: relation_symbols(ws, &args.interfaces)?,
                     mixins: relation_symbols(ws, &args.mixins)?,
@@ -3714,7 +5510,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     extends: relation_symbol(ws, args.extends.as_deref())?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
@@ -3742,7 +5538,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent: ClassParent::Nested { parent },
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     extends: relation_symbol(ws, args.extends.as_deref())?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
@@ -3755,7 +5551,13 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                 ws,
                 catalog,
                 args.parent.as_deref(),
-                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface, Kind::Mixin],
+                &[
+                    Kind::Class,
+                    Kind::InnerClass,
+                    Kind::Interface,
+                    Kind::InnerInterface,
+                    Kind::Mixin,
+                ],
             )?;
             let signature = args
                 .signature
@@ -3780,7 +5582,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     overrides: relation_symbol(ws, args.overrides.as_deref())?,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
@@ -3805,7 +5607,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     module: optional_ref(ws, args.module.as_deref())?,
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                 }),
@@ -3831,7 +5633,6 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.span_source(),
                     content_hash: source.content_hash,
-                    design_doc,
                     explicit_dependencies: vec![],
                     implicit_dependencies: vec![],
                     children: vec![],
@@ -3852,7 +5653,7 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                     parent,
                     source: source.map(|s| s.span_source()),
                     content_hash: content,
-                    design_doc,
+                    document,
                     on: relation_symbols(ws, &args.on)?,
                     superclass: relation_symbol(ws, args.superclass.as_deref())?,
                     interfaces: relation_symbols(ws, &args.interfaces)?,
@@ -3911,19 +5712,28 @@ fn validate_create_args(args: &CreateArgs) -> Result<()> {
         }
         KindArg::Method | KindArg::Part => {
             if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
-                bail!("{} does not take --namespace/--file/--module", match args.kind {
-                    KindArg::Method => "method",
-                    _ => "part",
-                });
+                bail!(
+                    "{} does not take --namespace/--file/--module",
+                    match args.kind {
+                        KindArg::Method => "method",
+                        _ => "part",
+                    }
+                );
+            }
+            if matches!(args.kind, KindArg::Part) && args.document.is_some() {
+                bail!("part does not take --document");
             }
         }
         KindArg::Directory | KindArg::File | KindArg::Namespace => {
             if args.namespace.is_some() || args.file.is_some() || args.module.is_some() {
-                bail!("{} does not take --namespace/--file/--module", match args.kind {
-                    KindArg::Directory => "directory",
-                    KindArg::File => "file",
-                    _ => "namespace",
-                });
+                bail!(
+                    "{} does not take --namespace/--file/--module",
+                    match args.kind {
+                        KindArg::Directory => "directory",
+                        KindArg::File => "file",
+                        _ => "namespace",
+                    }
+                );
             }
         }
     }
@@ -4049,19 +5859,6 @@ fn ordered_relation_symbols(ws: &Workspace, names: &[String]) -> Result<Vec<Symb
     Ok(out)
 }
 
-fn read_design(ws: &Workspace, args: &CreateArgs) -> Result<DocHash> {
-    let text = match (&args.design, &args.design_file) {
-        (Some(text), None) => Some(text.clone()),
-        (None, Some(path)) => Some(fs::read_to_string(path)?),
-        (None, None) => None,
-        (Some(_), Some(_)) => bail!("use either --design or --design-file"),
-    };
-    match text {
-        Some(text) => Ok(ws.put_doc(&text)?),
-        None => Ok(DocHash::ZERO),
-    }
-}
-
 #[derive(Debug)]
 struct SourceSpec {
     path: SymbolHash,
@@ -4181,6 +5978,15 @@ fn object_qname(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::Function(p) => Some(p.qualified_name),
         ObjectPayload::Part(p) => Some(p.qualified_name),
         ObjectPayload::Mixin(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentDirectory(p) => Some(p.qualified_name),
+        ObjectPayload::Document(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentSection(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentList(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentText(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentTopic(p) => Some(p.qualified_name),
+        ObjectPayload::DesignStructure(p) => Some(p.qualified_name),
+        ObjectPayload::System(p) => Some(p.qualified_name),
+        ObjectPayload::Module(p) => Some(p.qualified_name),
     }
 }
 
@@ -4211,11 +6017,8 @@ fn print_content_hash(hash: Hash32) {
     }
 }
 
-fn print_design(ws: &Workspace, doc: DocHash) -> Result<()> {
-    if !doc.is_zero() {
-        println!("design:\n{}", ws.get_doc(doc)?);
-    }
-    Ok(())
+fn print_document(ws: &Workspace, target: SymbolHash) {
+    println!("document: {}", symbol_text(ws, target));
 }
 
 fn print_optional_symbol(label: &str, symbol: SymbolHash, ws: &Workspace) -> Result<()> {

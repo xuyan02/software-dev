@@ -2,20 +2,23 @@ use crate::ApiError;
 use crate::auth::{self, ApiSession, WebAccountSession, WebSession};
 use crate::dto::{
     AccountUpdateForm, AddAnchorAnnotationRequest, AddMemberForm, AddMemberRequest,
-    AddTaskLinkRequest, AgentListQuery, AgentTemplateQuery, AnchorAnnotationForm, AnchorAnnotationQuery,
-    AnchorQuery, AnnotateRequirementsForm, AnnotateRequirementsRequest,
+    AddTaskLinkRequest, AgentListQuery, AgentTemplateQuery, AnchorAnnotationForm,
+    AnchorAnnotationQuery, AnchorQuery, AnnotateRequirementsForm, AnnotateRequirementsRequest,
     ApplyAnchorOperationsRequest, ApplyRequirementsOperationsRequest, ApproveDocumentForm,
-    ApproveRequirementsForm, AssignAgentRequest, CommentIssueForm, CommentIssueRequest,
-    CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest, CreateProjectRequest,
-    CreateWorkflowRequest, DecideAnchorDocumentRequest, DecideRequirementsRequest, IssueListQuery,
-    IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse, MemberRoleForm,
-    NewAccountForm, NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
+    ApproveRequirementsForm, AssignAgentRequest, BindTaskActorRequest, CommentIssueForm,
+    CommentIssueRequest,
+    CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest,
+    CreateMergeRequestForm, CreateMergeRequestRequest, CreateProjectRequest, CreateWorkflowRequest,
+    DecideAnchorDocumentRequest, DecideRequirementsRequest, DeleteDesignSpaceBranchRequest,
+    IssueListQuery, IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse,
+    MemberRoleForm, MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm,
+    NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
     PublishWorkflowForm, RejectDocumentForm, RejectRequirementsForm, RenameWorkflowForm,
     RenameWorkflowRequest, RequirementsAnnotationQuery, ResolveAnchorAnnotationRequest,
     ResolveRequirementsAnnotationRequest, SaveDraftRequest, SelectProjectForm,
-    SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, TaskCommentRequest, TaskListQuery,
-    TaskOperationRequest, TransitionIssueRequest, UpdateAccountRequest, UpdateProjectRequest,
-    ValidateWorkflowRequest,
+    SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, SpawnChildTasksRequest,
+    TaskCommentRequest, TaskListQuery, TaskOperationRequest, TransitionIssueRequest,
+    UpdateAccountRequest, UpdateProjectRequest, ValidateWorkflowRequest,
 };
 use crate::error::{anchor_document_error, requirements_error, workflow_error};
 use axum::Form;
@@ -190,6 +193,7 @@ pub struct AppState {
     pub editor: Arc<EditorAssets>,
     /// Local design-space reader; absent in remote design-space mode.
     pub design_space: Option<Arc<crate::design_space::DesignSpaceAccess>>,
+    pub merge_requests: Arc<foundry_app::MergeRequestService>,
 }
 
 /// The built workflow-editor SPA served under `/workflows/editor/`.
@@ -538,7 +542,10 @@ pub async fn dispatch_agents(
 ) -> Result<Json<Vec<foundry_domain::AgentDefinition>>, ApiError> {
     let account = auth::api_account(&state, &headers).await?;
     Ok(Json(
-        state.agents.agents(account.actor(), query.project_id).await?,
+        state
+            .agents
+            .agents(account.actor(), query.project_id)
+            .await?,
     ))
 }
 
@@ -549,7 +556,10 @@ pub async fn dispatch_ready_tasks(
 ) -> Result<Json<Vec<foundry_domain::ReadyTaskView>>, ApiError> {
     let account = auth::api_account(&state, &headers).await?;
     Ok(Json(
-        state.agents.ready_tasks(account.actor(), query.project_id).await?,
+        state
+            .agents
+            .ready_tasks(account.actor(), query.project_id)
+            .await?,
     ))
 }
 
@@ -655,7 +665,7 @@ pub async fn agent_logs_page(
         Ok(log) => no_store(foundry_web::agent_logs_page(
             &session.context,
             &definition,
-            &log,
+            &foundry_shared::strip_agent_log_prefixes(&log),
             &fingerprint,
         )),
         Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
@@ -693,7 +703,7 @@ pub async fn agent_log_content(
         return response;
     }
     match state.agent_logs.tail(&id.to_string(), 256 * 1024) {
-        Ok(log) => no_store_text(log),
+        Ok(log) => no_store_text(foundry_shared::strip_agent_log_prefixes(&log)),
         Err(error) => auth::web_internal(format!("无法读取智能体日志：{error}")),
     }
 }
@@ -742,8 +752,16 @@ async fn agent_action(
         return auth::web_forbidden("仅管理员可以管理智能体。");
     }
     let actor = session.account.actor();
-    match state.agents.overview(actor.clone(), agents_scope(&session)).await {
-        Ok(overview) if overview.definitions.iter().any(|definition| definition.id == id) => {}
+    match state
+        .agents
+        .overview(actor.clone(), agents_scope(&session))
+        .await
+    {
+        Ok(overview)
+            if overview
+                .definitions
+                .iter()
+                .any(|definition| definition.id == id) => {}
         Ok(_) => return auth::web_error(ServiceError::not_found("agent", id)),
         Err(error) => return auth::web_error(error),
     }
@@ -764,7 +782,11 @@ async fn agents_response(
     error: Option<String>,
 ) -> Response {
     let project_id = agents_scope(session);
-    match state.agents.overview(session.account.actor(), project_id).await {
+    match state
+        .agents
+        .overview(session.account.actor(), project_id)
+        .await
+    {
         Ok(overview) => Html(foundry_web::agents_page(
             &session.context,
             &overview,
@@ -1082,10 +1104,27 @@ pub async fn project_page(
     }
 }
 
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct DesignSpaceQuery {
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+fn requested_design_space_branch(project: &Project, query: &DesignSpaceQuery) -> String {
+    query
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .unwrap_or(project.design_space_branch.as_str())
+        .to_string()
+}
+
 pub async fn design_space_page(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Query(query): Query<DesignSpaceQuery>,
 ) -> Response {
     let session = match auth::web_account_session(&state, &headers).await {
         Ok(session) => session,
@@ -1106,11 +1145,18 @@ pub async fn design_space_page(
         ))
         .into_response();
     };
-    match access.overview(&project).await {
+    let branches = access.branches(&project).await.unwrap_or_default();
+    let mut branch = requested_design_space_branch(&project, &query);
+    if !branches.iter().any(|candidate| candidate == &branch) {
+        branch = project.design_space_branch.clone();
+    }
+    match access.overview(&project, &branch).await {
         Ok(overview) => Html(foundry_web::design_space_page(
             &session.context,
             &project,
             &overview,
+            &branches,
+            &branch,
         ))
         .into_response(),
         Err(error) => Html(foundry_web::design_space_unavailable_page(
@@ -1126,6 +1172,7 @@ pub async fn design_space_tree(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
+    Query(query): Query<DesignSpaceQuery>,
 ) -> Response {
     let session = match auth::web_account_session(&state, &headers).await {
         Ok(session) => session,
@@ -1145,7 +1192,8 @@ pub async fn design_space_tree(
         )
             .into_response();
     };
-    match access.overview(&project).await {
+    let branch = requested_design_space_branch(&project, &query);
+    match access.overview(&project, &branch).await {
         Ok(overview) => Json(overview).into_response(),
         Err(error) => (StatusCode::BAD_REQUEST, Json(json!({ "error": error }))).into_response(),
     }
@@ -1155,6 +1203,7 @@ pub async fn design_space_element(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((id, hash)): Path<(Uuid, String)>,
+    Query(query): Query<DesignSpaceQuery>,
 ) -> Response {
     let session = match auth::web_account_session(&state, &headers).await {
         Ok(session) => session,
@@ -1173,8 +1222,11 @@ pub async fn design_space_element(
         ))
         .into_response();
     };
-    let source_url = format!("/projects/{id}/design-space/elements/{hash}/source");
-    match access.element(&project, &hash).await {
+    let branch = requested_design_space_branch(&project, &query);
+    let source_url = format!(
+        "/projects/{id}/design-space/elements/{hash}/source?branch={branch}"
+    );
+    match access.element(&project, &hash, &branch).await {
         Ok(detail) => Html(foundry_web::design_space_element(&detail, &source_url)).into_response(),
         Err(error) => Html(foundry_web::design_space_element_error(&error)).into_response(),
     }
@@ -1184,6 +1236,7 @@ pub async fn design_space_element_source(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((id, hash)): Path<(Uuid, String)>,
+    Query(query): Query<DesignSpaceQuery>,
 ) -> Response {
     let session = match auth::web_account_session(&state, &headers).await {
         Ok(session) => session,
@@ -1202,10 +1255,412 @@ pub async fn design_space_element_source(
         ))
         .into_response();
     };
-    match access.source(&project, &hash).await {
+    let branch = requested_design_space_branch(&project, &query);
+    match access.source(&project, &hash, &branch).await {
         Ok(source) => Html(foundry_web::design_space_source(&source)).into_response(),
         Err(error) => Html(foundry_web::design_space_source_error(&error)).into_response(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Design-space merge requests
+// ---------------------------------------------------------------------------
+
+fn merge_request_viewer(account: &foundry_domain::Account) -> TaskViewer {
+    if account.is_admin() {
+        TaskViewer::manager(account.id)
+    } else {
+        TaskViewer::member(account.id)
+    }
+}
+
+fn can_contribute_to_project(account: &foundry_domain::Account, project: &Project) -> bool {
+    account.is_admin()
+        || project
+            .role_of(account.id)
+            .is_some_and(ProjectRole::can_contribute)
+}
+
+pub async fn merge_requests_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let viewer = merge_request_viewer(&session.account);
+    let requests = match state.merge_requests.list(&project, viewer).await {
+        Ok(requests) => requests,
+        Err(error) => return auth::web_error(error),
+    };
+    let branches = state
+        .merge_requests
+        .branches(&project)
+        .await
+        .unwrap_or_default();
+    Html(foundry_web::merge_requests_page(
+        &session.context,
+        &project,
+        &requests,
+        &branches,
+        None,
+    ))
+    .into_response()
+}
+
+pub async fn create_merge_request_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<CreateMergeRequestForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    if !can_contribute_to_project(&session.account, &project) {
+        return auth::web_forbidden("当前项目角色不能创建合并请求。");
+    }
+    match state
+        .merge_requests
+        .create(&project, session.account.id, form.into_command())
+        .await
+    {
+        Ok(view) => Redirect::to(&format!(
+            "/projects/{}/merge-requests/{}",
+            project.id, view.merge_request.id
+        ))
+        .into_response(),
+        Err(ServiceError::Validation(message) | ServiceError::Forbidden(message)) => {
+            let viewer = merge_request_viewer(&session.account);
+            let requests = state
+                .merge_requests
+                .list(&project, viewer)
+                .await
+                .unwrap_or_default();
+            let branches = state
+                .merge_requests
+                .branches(&project)
+                .await
+                .unwrap_or_default();
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Html(foundry_web::merge_requests_page(
+                    &session.context,
+                    &project,
+                    &requests,
+                    &branches,
+                    Some(&message),
+                )),
+            )
+                .into_response()
+        }
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn merge_request_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .merge_requests
+        .get(
+            &project,
+            merge_request_id,
+            merge_request_viewer(&session.account),
+        )
+        .await
+    {
+        Ok(detail) => Html(foundry_web::merge_request_page(
+            &session.context,
+            &project,
+            &detail,
+        ))
+        .into_response(),
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn merge_request_comment_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, merge_request_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<MergeRequestCommentForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    if !can_contribute_to_project(&session.account, &project) {
+        return auth::web_forbidden("当前项目角色不能评论合并请求。");
+    }
+    let request = match state
+        .merge_requests
+        .load(project.id, merge_request_id)
+        .await
+    {
+        Ok(request) => request,
+        Err(error) => return auth::web_error(error),
+    };
+    match state
+        .tasks
+        .add_comment(
+            project.id,
+            request.task_id,
+            session.account.id,
+            form.body,
+            merge_request_viewer(&session.account),
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!(
+            "/projects/{}/merge-requests/{merge_request_id}",
+            project.id
+        ))
+        .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn merge_request_operation_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, merge_request_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<MergeRequestOperationForm>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let operation = form.operation.trim();
+    let operation_name = operation
+        .rsplit_once(':')
+        .map(|(_, name)| name)
+        .unwrap_or(operation);
+    if operation_name == "merge" {
+        match state
+            .merge_requests
+            .merge(&project, merge_request_id, session.account.id)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) => return auth::web_error(error),
+        }
+    } else {
+        let request = match state
+            .merge_requests
+            .load(project.id, merge_request_id)
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => return auth::web_error(error),
+        };
+        let idempotency = form
+            .idempotency_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("design-space-mr:{merge_request_id}:{operation}"));
+        if let Err(error) = state
+            .tasks
+            .send_operation(
+                project.id,
+                request.task_id,
+                session.account.id,
+                OperationName::new(operation),
+                idempotency,
+            )
+            .await
+        {
+            return auth::web_error(error);
+        }
+    }
+    Redirect::to(&format!(
+        "/projects/{}/merge-requests/{merge_request_id}",
+        project.id
+    ))
+    .into_response()
+}
+
+pub async fn create_merge_request_for_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<Uuid>,
+    Json(body): Json<CreateMergeRequestRequest>,
+) -> Result<(StatusCode, Json<foundry_domain::MergeRequestReview>), ApiError> {
+    let session = task_api_session(&state, &headers, task_id).await?;
+    let view = state
+        .merge_requests
+        .create_for_task(
+            &session.project,
+            task_id,
+            session.account.id,
+            body.into_command(),
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+pub async fn get_merge_request_for_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(task_id): Path<Uuid>,
+) -> Result<Json<foundry_domain::MergeRequestDetail>, ApiError> {
+    let session = task_api_session(&state, &headers, task_id).await?;
+    let detail = state
+        .merge_requests
+        .for_task(
+            &session.project,
+            task_id,
+            merge_request_viewer(&session.account),
+        )
+        .await?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this task has no merge request",
+            )
+        })?;
+    Ok(Json(detail))
+}
+
+pub async fn delete_design_space_branch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<DeleteDesignSpaceBranchRequest>,
+) -> Result<StatusCode, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    if !can_contribute_to_project(&account, &project) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "current project role cannot delete design-space branches",
+        ));
+    }
+    state
+        .merge_requests
+        .delete_branch(&project, body.branch.trim())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn list_merge_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<foundry_domain::MergeRequestReview>>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    Ok(Json(
+        state
+            .merge_requests
+            .list(&project, merge_request_viewer(&account))
+            .await?,
+    ))
+}
+
+pub async fn create_merge_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<CreateMergeRequestRequest>,
+) -> Result<(StatusCode, Json<foundry_domain::MergeRequestReview>), ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    if !can_contribute_to_project(&account, &project) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "current project role cannot create merge requests",
+        ));
+    }
+    let view = state
+        .merge_requests
+        .create(&project, account.id, body.into_command())
+        .await?;
+    Ok((StatusCode::CREATED, Json(view)))
+}
+
+pub async fn get_merge_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<foundry_domain::MergeRequestDetail>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    Ok(Json(
+        state
+            .merge_requests
+            .get(&project, merge_request_id, merge_request_viewer(&account))
+            .await?,
+    ))
+}
+
+pub async fn merge_merge_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<foundry_domain::MergeRequestReview>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    Ok(Json(
+        state
+            .merge_requests
+            .merge(&project, merge_request_id, account.id)
+            .await?,
+    ))
 }
 
 pub async fn anchor_document_page(
@@ -2790,6 +3245,65 @@ pub async fn task_page(
     Html(foundry_web::task_page(&session.context, &task, &links)).into_response()
 }
 
+pub async fn retry_task_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    task_recovery_form(state, headers, id, foundry_domain::RETRY_OPERATION).await
+}
+
+pub async fn abandon_task_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Response {
+    task_recovery_form(state, headers, id, foundry_domain::ABANDON_OPERATION).await
+}
+
+async fn task_recovery_form(
+    state: AppState,
+    headers: HeaderMap,
+    id: Uuid,
+    operation: &str,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_dispose() {
+        return auth::web_forbidden("当前项目角色不能重试或放弃任务。");
+    }
+    let task = match state
+        .tasks
+        .get(session.project.id, id, web_task_viewer(&session))
+        .await
+    {
+        Ok(task) => task,
+        Err(error) => return auth::web_error(error),
+    };
+    if task.project_id != session.project.id {
+        return auth::web_error(ServiceError::not_found("task", id));
+    }
+    if let Err(error) = state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(operation),
+            format!(
+                "{operation}:{id}:{}",
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            ),
+        )
+        .await
+    {
+        return auth::web_error(error);
+    }
+    Redirect::to(&format!("/tasks/{id}")).into_response()
+}
+
 pub async fn tasks_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let session = match auth::web_session(&state, &headers).await {
         Ok(session) => session,
@@ -2976,6 +3490,127 @@ fn review_document_kind(workflow: &str) -> Option<&'static str> {
     }
 }
 
+pub async fn bind_task_actor(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<BindTaskActorRequest>,
+) -> Result<StatusCode, ApiError> {
+    let session = task_api_session(&state, &headers, id).await?;
+    let agent_may_bind = session.account.kind == foundry_domain::AccountKind::Agent
+        && session.project.member(session.account.id).is_some();
+    if !session.account.is_admin() && !session.can_dispose() && !agent_may_bind {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only a project maintainer, administrator or project agent can bind task actors",
+        ));
+    }
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    let Some(role) = task
+        .role_specs
+        .iter()
+        .find(|role| role.name == body.role)
+    else {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unknown_role",
+            format!("workflow does not declare role {}", body.role),
+        ));
+    };
+    if role.kind != foundry_domain::RoleKind::Human {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "agent_role",
+            "agent roles are bound through agent assignment, not human binding",
+        ));
+    }
+    let detail = state
+        .projects
+        .detail(session.account.actor(), session.project.id)
+        .await?;
+    let member = detail
+        .members
+        .iter()
+        .find(|member| member.account_id == body.account_id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "not_a_member",
+                "the bound account is not a member of this project",
+            )
+        })?;
+    if member.kind != foundry_domain::AccountKind::Human
+        || member.status != foundry_domain::AccountStatus::Active
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_a_human",
+            "human task roles require an active human project member",
+        ));
+    }
+    state
+        .tasks
+        .bind_actor(
+            session.project.id,
+            id,
+            foundry_domain::RoleKey::new(body.role),
+            body.account_id,
+            session.account.id,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn spawn_task_children(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SpawnChildTasksRequest>,
+) -> Result<(StatusCode, Json<Vec<foundry_domain::Task>>), ApiError> {
+    let session = task_api_session(&state, &headers, id).await?;
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    let active = session.account.is_admin()
+        || task
+            .actors
+            .iter()
+            .any(|actor| actor.account_id == session.account.id && actor.active);
+    if !active {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only an active task actor or an administrator can spawn child tasks",
+        ));
+    }
+    let tasks = body
+        .tasks
+        .into_iter()
+        .map(|task| foundry_app::SpawnTask {
+            workflow: task.workflow,
+            title: task.title,
+            description: task.description,
+            input: task.input,
+        })
+        .collect();
+    let children = state
+        .tasks
+        .spawn_children(
+            session.project.id,
+            id,
+            tasks,
+            body.sequential,
+            session.account.id,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(children)))
+}
+
 pub async fn send_task_operation(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2991,6 +3626,8 @@ pub async fn send_task_operation(
         foundry_domain::START_OPERATION,
         foundry_domain::ACCEPT_OPERATION,
         foundry_domain::REJECT_OPERATION,
+        foundry_domain::RETRY_OPERATION,
+        foundry_domain::ABANDON_OPERATION,
     ]
     .contains(&operation_name)
     {
@@ -3008,6 +3645,18 @@ pub async fn send_task_operation(
         ));
     }
     let session = task_api_session(&state, &headers, id).await?;
+    if operation_name == foundry_domain::DESIGN_SPACE_MERGE_OPERATION
+        && state
+            .merge_requests
+            .has_merge_request(session.project.id, id)
+            .await?
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "reserved_operation",
+            "use the merge request merge endpoint so the branch is moved",
+        ));
+    }
     if operation_name == "approved" {
         let task = state
             .tasks
@@ -3043,6 +3692,64 @@ pub async fn send_task_operation(
             session.account.id,
             OperationName::new(body.operation),
             body.idempotency_key,
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn retry_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let session = task_api_session(&state, &headers, id).await?;
+    if !session.account.is_admin() && !session.can_dispose() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only project maintainers can retry tasks",
+        ));
+    }
+    state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(foundry_domain::RETRY_OPERATION),
+            format!(
+                "retry:{id}:{}",
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            ),
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn abandon_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, ApiError> {
+    let session = task_api_session(&state, &headers, id).await?;
+    if !session.account.is_admin() && !session.can_dispose() {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only project maintainers can abandon tasks",
+        ));
+    }
+    state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(foundry_domain::ABANDON_OPERATION),
+            format!(
+                "abandon:{id}:{}",
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            ),
         )
         .await?;
     Ok(StatusCode::NO_CONTENT)

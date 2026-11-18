@@ -22,6 +22,7 @@ pub struct AgentRunRequest {
     pub system_prompt: String,
     pub user_message: String,
     pub context: ContextBundle,
+    pub task_input: Value,
 }
 
 impl AgentRunRequest {
@@ -38,6 +39,7 @@ impl AgentRunRequest {
             system_prompt: system_prompt.into(),
             user_message: user_message.into(),
             context: ContextBundle::default(),
+            task_input: Value::Null,
         }
     }
 
@@ -115,10 +117,11 @@ impl AgentRuntime {
         };
         let node = FoundryLlmNode {
             system: PromptTemplate::literal(request.system_prompt),
-            user: PromptTemplate::literal(
-                "Return exactly one JSON object with the key \"message\" whose value is \
-                 your complete final reply to the user. Do not add prose outside the JSON.",
-            ),
+            user: PromptTemplate::parse(
+                "{{input}}\n\nReturn exactly one JSON object with the key \"message\" whose \
+                 value is your complete final reply to the user. Do not add prose outside the JSON.",
+            )
+            .expect("valid generic user template"),
         };
         let graph = Graph::builder("foundry-agent")
             .entry("agent")

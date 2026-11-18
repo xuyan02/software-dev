@@ -21,6 +21,18 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/design-space.md"),
     },
     Skill {
+        id: "design-writing",
+        prompt: include_str!("../skills/design-writing.md"),
+    },
+    Skill {
+        id: "code-summary",
+        prompt: include_str!("../skills/code-summary.md"),
+    },
+    Skill {
+        id: "design-consistency",
+        prompt: include_str!("../skills/design-consistency.md"),
+    },
+    Skill {
         id: "project-document-writing-guide",
         prompt: include_str!("../../../docs/design/project-document-writing-guide.md"),
     },
@@ -302,6 +314,30 @@ mod tests {
         assert_eq!(error.0, "missing");
     }
     #[test]
+    fn appends_design_writing_skill() {
+        let prompt = compose_system_prompt("base", &["design-writing".to_string()]).unwrap();
+        assert!(prompt.contains("### design-writing"));
+        assert!(prompt.contains("设计文档撰写技能"));
+        assert!(prompt.contains("置放"));
+    }
+
+    #[test]
+    fn appends_code_summary_skill() {
+        let prompt = compose_system_prompt("base", &["code-summary".to_string()]).unwrap();
+        assert!(prompt.contains("### code-summary"));
+        assert!(prompt.contains("代码总结技能"));
+        assert!(prompt.contains("反推设计"));
+        assert!(prompt.contains("用户提示词"));
+        assert!(prompt.contains("文件总结"));
+        assert!(prompt.contains("目录总结"));
+        assert!(prompt.contains("修改工作项"));
+        assert!(prompt.contains("文件 Review"));
+        assert!(prompt.contains("目录 Review"));
+        assert!(prompt.contains("整体 Review"));
+        assert!(prompt.contains("修改阶段"));
+    }
+
+    #[test]
     fn design_space_skill_covers_object_kinds_and_documents() {
         let skill = skill("design-space").expect("design-space skill");
         for kind in [
@@ -317,8 +353,8 @@ mod tests {
         ] {
             assert!(skill.prompt.contains(kind), "missing {kind}");
         }
-        assert!(skill.prompt.contains("设计文档"));
+        assert!(skill.prompt.contains("documents"));
+        assert!(skill.prompt.contains("design-writing"));
         assert!(skill.prompt.contains("ds source sync"));
     }
-
 }

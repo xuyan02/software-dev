@@ -38,7 +38,7 @@ Hash32 = 32 bytes
 ```text
 ObjectHash   设计对象 hash
 CommitHash   提交 hash
-DocHash      设计文档 hash
+DocHash      原始文本文档 hash
 SymbolHash   符号 hash
 GitOid       源码 git 仓库的 commit OID，不是设计空间内部 hash；
              固定 32 字节，零表示没有，按 source.object_format 解释
@@ -76,12 +76,17 @@ Text = u32 byte_len || UTF-8 bytes
 
 ### Text 的使用位置
 
-当前只有提交记录的两个字段使用 `Text`：
+当前使用 `Text` 的字段：
 
 | 记录 | 字段 | 类型 |
 |---|---|---|
 | `CMT1` | `payload.message` | `Text` |
 | `CMT1` | `payload.author` | `Text` |
+| `DocumentPayload` | `title` | `Text` |
+| `DocumentSectionPayload` | `title` | `Text` |
+| `DocumentTextPayload` | `text` | `Text` |
+| `DocumentTopicPayload` | `title` | `Text` |
+| `Comment` | `text` | `Text` |
 
 这里的 `payload.message` 表示：`CMT1` 记录中，`payload` 里的 `message` 字段。
 没有其他使用位置。
@@ -103,7 +108,7 @@ qualified_name       SymbolHash
 parent refs          ParentRef / file / namespace / module
 source.path          SymbolHash
 dependency.target    SymbolHash
-design_doc           DocHash
+document            SymbolHash
 dependency.rationale DocHash
 ```
 
@@ -400,24 +405,39 @@ SHA-256(...) == 文件名中的 hash
 0x0A  mixin
 0x0C  inner-class
 0x0D  inner-interface
+0x0E  document-directory
+0x0F  document
+0x10  document-section
+0x11  document-list
+0x12  document-text
+0x13  document-topic
+0x14  design-structure
+0x15  system
+0x16  module
 ```
 
-`0x0B` 保留给 design 视图。module 的 kind 以后再分配。
+`0x0B` 保留。逻辑模块使用 0x16；顶层代码对象上的 `module` 字段仍是源码语言模块引用，不是这里的逻辑模块。
 
 ### 4.4 字段使用
 
 不存在适用于所有 kind 的 `ObjectCommon`。每个 kind 明确列出自己的字段。
 
-| kind | qualified_name | source | content_hash | design_doc | dependencies | children |
+| kind | qualified_name | source | content_hash | document ref | dependencies | children |
 |---|---|---|---|---|---|---|
-| view | 无 | 无 | 无 | 无 | 无 | 固定三个根 |
-| directory | 有 | `Opt<PathSource>` | 无 | `DocHash`，零表示无 | 无 | `List<ObjectHash>` |
+| view | 无 | 无 | 无 | 无 | 无 | 固定结构子对象 |
+| directory | 有 | `Opt<PathSource>` | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
 | file | 有 | `Opt<PathSource>` | `Hash32`，零表示无 | 同上 | 无 | `List<ObjectHash>` |
 | namespace | 有 | `Opt<SpanSource>` | 同上 | 同上 | 无 | `List<ObjectHash>` |
 | class/interface | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
 | method/function | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | 无 |
-| part | 有 | `SpanSource` 必填 | `Hash32` 必填非零 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
+| part | 有 | `SpanSource` 必填 | `Hash32` 必填非零 | 无 | 有，显式/隐式 | `List<ObjectHash>` |
 | mixin | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
+| document-directory | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| document | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| document-section | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| document-list | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| document-text | 有 | 无 | 无 | 无 | 无 | 无 |
+| document-topic | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
 
 规则：
 
@@ -428,9 +448,9 @@ SHA-256(...) == 文件名中的 hash
 - 不转换换行、不去 BOM、不做 Unicode normalization；
 - 空 span 的 content_hash 是 SHA-256(空字节)，不是零；
 - Directory 和 View 没有 content_hash；
-- `design_doc` 零表示没有设计文档；
+- `document` 零表示没有文档引用；
 - `dependencies` 只允许出现在 class/interface/method/function/part/mixin；
-- `children` 只允许出现在 view/directory/file/namespace/class/interface/part/mixin；
+- `children` 只允许出现在 view/directory/file/namespace/class/interface/part/mixin/document-directory/document/document-section/document-list/document-topic；
 - `children` 存 ObjectHash，不存子对象名字。
 
 ### 4.4.1 Parent
@@ -457,6 +477,12 @@ ParentRef =
 | part | `parent:SymbolHash`，原对象 |
 | mixin 顶层 | `file`、`namespace`、`module` 三个显式字段 |
 | mixin 内部 | `parent:SymbolHash`，上级 class/interface |
+| document-directory | `ParentRef`：根 `documents` 是 View，其他是 DocumentDirectory |
+| document | `parent:SymbolHash`，DocumentDirectory |
+| document-section | `parent:SymbolHash`，Document 或 DocumentSection |
+| document-list | `parent:SymbolHash`，DocumentSection、DocumentTopic 或 DocumentList |
+| document-text | `parent:SymbolHash`，DocumentSection、DocumentTopic 或 DocumentList |
+| document-topic | `parent:SymbolHash`，DocumentSection |
 
 顶层 class/interface/function/mixin 的规则：
 
@@ -465,7 +491,7 @@ ParentRef =
 - `module` 可以为零，模块对象以后定义；
 - `file` 非零时必须是 file；
 - `namespace` 非零时必须是 namespace；
-- `module` 非零时必须是后续定义的 module 对象；当前格式不定义 module kind；
+- `module` 非零时必须是已存在的源码语言模块引用；逻辑模块是独立对象，不通过这个字段表达；
 - 三个字段都记录完整的 SymbolHash，不使用 parent 列表。
 
 内部 class/interface/mixin：
@@ -547,25 +573,28 @@ ViewPayload =
     files:ObjectHash
     namespaces:ObjectHash
     design:ObjectHash
+    documents:ObjectHash
 ```
 
 - View 没有 qualified_name；
 - View 没有 parent 字段；
 - View 没有 source；
 - View 没有 content_hash；
-- View 没有 design_doc；
+- View 没有 document；
 - View 没有 dependencies；
 - `source_commit` 使用 `GitOid` 的零值表示没有源码版本；
-- `files` 和 `namespaces` 必须非零；
+- `files`、`namespaces`、`documents` 必须非零；
 - `design` 当前允许是 32 字节全零，表示 design 视图尚未定义；
 - 根 directory 的 qualified name 是保留符号 `files`；
 - 虚拟根 namespace 的 qualified name 是保留符号 `namespaces`；
+- 根 document directory 的 qualified name 是保留符号 `documents`；
 - 根 directory 的 parent 是 View；
 - 虚拟根 namespace 的 parent 是 View；
-- View 的三个根是结构性子对象；根 directory 和虚拟根 namespace 的 parent 固定为 View；
+- 根 document directory 的 parent 是 View；
+- View 的结构性子对象；根 directory、虚拟根 namespace 和根 document directory 的 parent 固定为 View；
 - 顶层 namespace 的 qualified name 是 `namespaces/<name>`；
 - 全局命名空间中的 class/interface/function/mixin 的 namespace parent 是 `namespaces`，qualified name 形如 `namespaces/<Name>`；
-- `files` 和 `namespaces` 是保留限定名，普通对象不能使用。
+- `files`、`namespaces` 和 `documents` 是保留限定名，普通对象不能使用。
 
 ```text
 GitOid = 32 bytes
@@ -602,7 +631,7 @@ DirectoryPayload =
     qualified_name:SymbolHash
     parent:ParentRef
     source:Opt<PathSource>
-    design_doc:DocHash
+    document:SymbolHash
     children:List<ObjectHash>
 ```
 
@@ -614,7 +643,7 @@ FilePayload =
     parent:SymbolHash
     source:Opt<PathSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     children:List<ObjectHash>
 ```
 
@@ -626,7 +655,7 @@ NamespacePayload =
     parent:ParentRef
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     children:List<ObjectHash>
 ```
 
@@ -638,7 +667,7 @@ ClassPayload =
     parent:ClassParent
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     superclass:SymbolHash
     interfaces:List<SymbolHash>
     mixins:List<SymbolHash>
@@ -651,7 +680,7 @@ InterfacePayload =
     parent:ClassParent
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     extends:SymbolHash
     explicit_dependencies:List<Dependency>
     implicit_dependencies:List<Dependency>
@@ -682,7 +711,7 @@ MethodPayload =
     parent:SymbolHash
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     overrides:SymbolHash
     explicit_dependencies:List<Dependency>
     implicit_dependencies:List<Dependency>
@@ -694,7 +723,7 @@ FunctionPayload =
     module:SymbolHash
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     explicit_dependencies:List<Dependency>
     implicit_dependencies:List<Dependency>
 ```
@@ -731,7 +760,6 @@ PartPayload =
     parent:SymbolHash
     source:SpanSource
     content_hash:Hash32
-    design_doc:DocHash
     explicit_dependencies:List<Dependency>
     implicit_dependencies:List<Dependency>
     children:List<ObjectHash>
@@ -756,7 +784,7 @@ MixinPayload =
     parent:ClassParent
     source:Opt<SpanSource>
     content_hash:Hash32
-    design_doc:DocHash
+    document:SymbolHash
     on:List<SymbolHash>
     superclass:SymbolHash
     interfaces:List<SymbolHash>
@@ -779,6 +807,114 @@ MixinPayload =
 - C++ 中一个源码类只创建一个设计对象，由智能体根据用途选择 kind=class 或 kind=mixin；
 - 不创建 class/mixin 双重对象。
 
+### 4.12.1 文档对象
+
+文档片段也是设计对象，和源码对象共用 View、对象索引、提交和 pack。
+
+```text
+DocumentDirectoryPayload =
+    qualified_name:SymbolHash
+    parent:ParentRef
+    children:List<ObjectHash>
+    comments:List<Comment>
+
+DocumentPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    sections:List<SymbolHash>
+    children:List<ObjectHash>
+    comments:List<Comment>
+
+DocumentSectionPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    body:List<SymbolHash>
+    sections:List<SymbolHash>
+    children:List<ObjectHash>
+    comments:List<Comment>
+
+DocumentListPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    items:List<SymbolHash>
+    children:List<ObjectHash>
+    comments:List<Comment>
+
+DocumentTextPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    text:Text
+    comments:List<Comment>
+
+DocumentTopicPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    paragraphs:List<SymbolHash>
+    children:List<ObjectHash>
+    comments:List<Comment>
+
+DesignStructurePayload =
+    qualified_name:SymbolHash
+    parent:ParentRef
+    title:Text
+    document:SymbolHash
+    children:List<ObjectHash>
+
+SystemPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    document:SymbolHash
+    children:List<ObjectHash>
+
+ModulePayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    document:SymbolHash
+    members:List<SymbolHash>
+    children:List<ObjectHash>
+
+Comment =
+    id:u32
+    resolved:u8      # 0 open, 1 resolved
+    text:Text
+```
+
+规则：
+
+- 根 `documents` 是 DocumentDirectory，parent 为 View；
+- 其他 DocumentDirectory 的 parent 必须是 DocumentDirectory；
+- Document 的 parent 必须是 DocumentDirectory；
+- DocumentSection 的 parent 必须是 Document 或 DocumentSection；
+- DocumentSection 的 `body` 允许 DocumentText、DocumentList、DocumentTopic；
+- DocumentTopic 的 parent 必须是 DocumentSection；
+- DocumentTopic 的 `paragraphs` 允许 DocumentText、DocumentList；
+- DocumentList 的 parent 必须是 DocumentSection、DocumentTopic 或 DocumentList；
+- DocumentList 的 `items` 允许 DocumentText、DocumentList；
+- DocumentText 的 parent 必须是 DocumentSection、DocumentTopic 或 DocumentList；
+- DesignStructure 的 qname 固定为 `design`，parent 为 View；它可选存在，存在时是结构树根；
+- System 的 parent 必须是 DesignStructure；System 和 Module 的 qname 都从 `design/` 开始；
+- Module 的 parent 必须是 System 或 Module；
+- Module 的 `members` 只允许顶层 Class/Interface/Function/Mixin，且一个成员在所有模块中最多出现一次；
+- System/Module 的 `children` 是子模块的 ObjectHash，按 hash 排序。
+- `sections`、`body`、`paragraphs`、`items` 是**有序**的 qname 引用，不做排序；
+- 同一个有序列表内不允许重复 qname；
+- `children` 仍然存全部直接子对象的 ObjectHash，按 ObjectHash 升序排序；
+- DocumentText 没有 children；
+- `title` 和 `text` 都是单行文本，不能为空，不能包含 `\n` 或 `\r`；
+- 每个文档对象都有 `comments` 列表；评论 id 从 1 开始，在对象内唯一且升序；
+- `Comment.text` 非空，允许换行；`resolved` 只能是 0 或 1；
+- 文档片段的本地名由创建规则决定，只取决于父对象和所属集合：
+  - 子章节 `section<n>`；
+  - 正文元素 `body<n>`，包括 DocumentText、DocumentList、DocumentTopic；
+  - 列表项 `item<n>`；
+- `n` 在同一父对象的对应集合内唯一，已有编号不重排；
+- 锚点 `section`、`body`、`item` 不是对象，不写入存储，只用于 CLI 定位。
+
 ### 4.13 Children
 
 容器的 `children` 只存子对象的 object hash：
@@ -791,6 +927,7 @@ children:List<ObjectHash>
 - 子对象的 qualified name 在子对象自己的 `qualified_name` 字段里；
 - 列表按 ObjectHash 字节升序排序；
 - 同一个父对象下不能有重复的 ObjectHash；
+- Document/DocumentSection/DocumentList/DocumentTopic 的 `children` 也是按 ObjectHash 排序的全集；语义顺序单独存在 `sections`、`body`、`items` 中；
 - 需要显示名字时，读取子对象并解析其 `qualified_name`；
 - 同一个父对象下不同子对象的 qualified name 必须唯一，这个约束在读取子对象后校验。
 
@@ -821,9 +958,9 @@ DependencyEvidence =
 - 允许循环依赖；
 - `superclass`、`interfaces`、`mixins`、interface 的 `extends`、mixin 的 `on` 逻辑上自动进入显式依赖，不在列表中重复存储。
 
-## 5. 设计文档
+## 5. 原始文本文档
 
-设计文档是纯文本，不含格式版本、类型、长度或其他元数据。
+`docs/` 中保存的是原始 UTF-8 文本文档，不含格式版本、类型、长度或其他元数据。它用于依赖 rationale 等自由文本。
 
 ```text
 .ds/docs/aa/bb/<doc_hash>
@@ -835,7 +972,7 @@ DependencyEvidence =
 doc_hash = SHA-256(text_bytes)
 ```
 
-设计文档有独立的 `docs/` 索引，因此不需要域前缀。相同文本如果也作为符号存在，
+原始文本文档有独立的 `docs/` 索引，因此不需要域前缀。相同文本如果也作为符号存在，
 会产生相同的 hash，但两者位于不同的表和不同的目录中。
 
 - 空文本合法；
@@ -844,15 +981,16 @@ doc_hash = SHA-256(text_bytes)
 - 不存格式版本；
 - 不存设计对象 hash；
 - 不做 Unicode normalization；
-- 以后需要结构化设计文档时，由内容层定义，不改变当前存储类型。
 
-设计对象通过 `design_doc: DocHash` 引用；全零表示没有设计文档。
+源码对象通过 `document: SymbolHash` 引用 `documents` 下的 Document 或 DocumentSection；全零表示没有文档引用。
 
-设计文档不进入 View 树，不进入提交链；它通过设计对象引用间接进入版本闭包。
+`docs/` 中的纯文本文档现在只用于依赖 rationale 等自由文本；源码对象的正文文档改为 `documents` 根下的结构化文档对象。
+
+原始文本文档不进入 View 树，不进入提交链；它通过依赖 rationale 等字段间接进入版本闭包。结构化文档对象位于 `documents` 根下，正常进入 View 树和提交链。
 
 pack 中的 DOC record type 和长度字段只是传输封装，不属于文档内容本身。
 
-设计文档是版本化的：修改文本产生新的 `doc_hash`，每个 `doc_hash` 就是一个版本文档。
+原始文本文档是版本化的：修改文本产生新的 `doc_hash`，每个 `doc_hash` 就是一个版本文档。
 没有单独的文档 commit 链；旧文档由 GC 回收。版本通过引用它的设计对象选择文档。
 
 ## 6. 符号
@@ -936,6 +1074,7 @@ GC 根集合：
 从每个根 View 出发，沿以下引用求可达闭包：
 
 - children；
+- sections / body / items；
 - source；
 - superclass；
 - extends；
@@ -945,7 +1084,7 @@ GC 根集合：
 - on；
 - explicit_dependencies；
 - implicit_dependencies；
-- design_doc。
+- document；
 
 可达对象引用的 DocHash 和 SymbolHash 都保留。
 不可达的 object、commit、doc、symbol 由 GC 删除。
@@ -1251,7 +1390,7 @@ hash 的情况按内部错误处理。
 3. CMT1 的 reserved 字节必须为 0；
 4. kind 与 payload 结构一致；
 5. DSO/CMT payload 必须恰好消费完文件或 pack record，不能有尾部多余字节；
-6. View 没有 qualified_name、parent、source、content_hash、design_doc、dependencies；
+6. View 没有 qualified_name、parent、source、content_hash、document、dependencies；
 7. Directory/File 的 source 必须是 None 或 `PathSource`；Directory 没有 content_hash；
 8. Namespace/Class/Interface/Method/Function/Mixin 的 source 必须是 None 或 `SpanSource`；
 9. Part 的 source 必须是 `SpanSource`，不能没有；
@@ -1264,6 +1403,12 @@ hash 的情况按内部错误处理。
 16. 根 directory 的 parent 必须是 View；其他 directory 的 parent 必须是 directory；
 17. File 的 parent 必须恰好是一个 directory；
 18. 虚拟根 namespace 的 parent 必须是 View；其他 namespace 的 parent 必须是 namespace；
+18a. 根 `documents` 的 parent 必须是 View；其他 document-directory 的 parent 必须是 document-directory；
+18b. Document 的 parent 必须是 document-directory；
+18c. DocumentSection 的 parent 必须是 document 或 document-section；
+18d. DocumentList 的 parent 必须是 document-section、document-topic 或 document-list；
+18e. DocumentText 的 parent 必须是 document-section、document-topic 或 document-list；
+18f. DocumentTopic 的 parent 必须是 document-section；
 19. 顶层 class/interface 的 `namespace` 必须非零；`file` 为零或 file；`module` 为零或 module；
 20. 内部 class/interface 的 `parent` 必须是 class/interface；
 21. Function 的 `namespace` 必须非零；`file` 为零或 file；`module` 为零或 module；
@@ -1288,12 +1433,12 @@ hash 的情况按内部错误处理。
 40. `superclass`、`interfaces`、`mixins`、`extends`、`on` 自动视为显式依赖，不重复存储；
 41. `children` 按 ObjectHash 升序排序且无重复；
 42. 每个 parent 字段对应的父对象 children 必须包含该子对象；
-43. 根 directory 和虚拟根 namespace 必须分别由 View 的 `files`、`namespaces` 引用；
+43. 根 directory、虚拟根 namespace 和根 document directory 必须分别由 View 的 `files`、`namespaces`、`documents` 引用；
 44. 父关系无环；
 45. 同一个父对象下不同子对象的 qualified name 不重复；Part 显示名允许重复；
 46. Part 的 qualified name 本地名是 `part#<content_hash_hex>`；
 47. Method/Function 的 qualified name 含 `#<signature_hash>`；
-48. View 的 `files`、`namespaces` 非零；
+48. View 的 `files`、`namespaces`、`documents` 非零；
 49. View 的 `design` 允许为零；
 50. `source_commit` 非零时，config 中必须有 `source.object_format`；
 51. `source.object_format = "sha1"` 时，source_commit 后 12 字节必须为零；
@@ -1301,7 +1446,21 @@ hash 的情况按内部错误处理。
 53. `source_commit` 非零时不能是 32 字节全零；
 54. Commit 的 `view` 非零且指向 kind=view 的对象；
 55. Commit 的 parent 为零表示根提交；非零时必须存在且无环；
-56. 不允许对象引用不存在的符号或文档。
+56. 不允许对象引用不存在的符号或文档；
+58. Document 的 `sections`、DocumentSection 的 `body`/`sections`、DocumentTopic 的 `paragraphs`、DocumentList 的 `items` 中的引用必须存在，且目标 kind 符合对应集合；
+59. 有序引用的目标必须把当前对象作为 parent，并且必须出现在当前对象的 `children` 中；
+60. 有序引用和 `children` 必须覆盖同一组子对象；
+61. DocumentSection 的 `body` 和 `sections` 不能引用同一对象；
+62. Document/DocumentSection/DocumentList/DocumentTopic 的 `children` 必须与对象图中以它为 parent 的子对象集合一致；
+63. DocumentText 的 `text` 必须是单行非空文本；Document/DocumentSection/DocumentTopic 的 `title` 必须是单行非空文本；
+64. 锚点 `section`、`body`、`item` 不是对象，不能出现在存储、`children` 或有序引用中；
+65. 源码对象的 `document` 为零表示没有文档引用；非零时必须指向 kind=document 或 kind=document-section 的对象；
+66. 文档对象没有 `document` 字段；
+67. `document` 是语义引用，不是 containment；它不要求目标出现在 `children` 中；
+68. 文档对象的 `comments` 按 id 升序排列，id 从 1 开始且不重复；
+69. `Comment.text` 不能为空，允许换行；
+70. `Comment.resolved` 只能是 0（open）或 1（resolved）；
+71. Part 没有 `document` 字段，也不能关联文档对象。
 
 ## 12. 暂缓项
 
@@ -1309,7 +1468,7 @@ hash 的情况按内部错误处理。
 
 1. Design 视图根对象的 kind 和格式（当前 `View.design` 允许为零）；
 2. module 的 kind 和字段（当前 class/function/mixin 保留 module 字段）；
-3. 设计文档以后结构化时的内容格式。
+3. 文档正文的编辑体验和模板化写作规范（当前只提供基础片段操作）。
 
 已明确：
 

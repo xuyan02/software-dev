@@ -747,6 +747,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "design-space",
  "foundry-adapter-policy",
  "foundry-adapter-postgres",
  "foundry-agent-runtime",
@@ -792,6 +793,7 @@ version = "0.1.0"
 dependencies = [
  "foundry-domain",
  "serde",
+ "serde_json",
  "time",
  "uuid",
 ]

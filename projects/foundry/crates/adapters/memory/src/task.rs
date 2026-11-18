@@ -54,6 +54,24 @@ impl MemoryTasks {
         Ok(())
     }
 
+    /// Insert actors for a Task assembled outside the dispatcher (project
+    /// creation or merge-request creation). Stage entry activates them.
+    pub(crate) fn insert_actors(&mut self, actors: &[TaskActorDAO]) -> Result<(), RepoError> {
+        for actor in actors {
+            if !self.tasks.contains_key(&actor.task_id) {
+                return Err(RepoError::NotFound);
+            }
+            let rows = self.actors.entry(actor.task_id).or_default();
+            if rows.iter().any(|existing| {
+                existing.role_key == actor.role_key && existing.account_id == actor.account_id
+            }) {
+                continue;
+            }
+            rows.push(actor.clone());
+        }
+        Ok(())
+    }
+
     fn append(&mut self, events: &[DomainEvent]) {
         for event in events {
             self.seq += 1;
@@ -298,6 +316,7 @@ impl TaskRepository for InMemoryStore {
                     .get(&actor.account_id)
                     .map(|account| account.display_name.clone())
                     .unwrap_or_default(),
+                agent_definition_id: None,
                 active: actor.active,
                 work: actor.work.clone(),
             })

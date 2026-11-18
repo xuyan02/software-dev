@@ -7,8 +7,9 @@
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
     AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, Confidence, EntityStatus, Issue,
-    IssueKind, IssueSeverity, IssueSourceKind, IssueStatus, Project, ProjectRole, ProjectStatus,
-    RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
+    IssueKind, IssueSeverity, IssueSourceKind, IssueStatus, MergeRequestChangeStatus,
+    MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project, ProjectRole,
+    ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
     TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowDefinition,
     WorkflowOption, WorkflowOwner,
 };
@@ -31,6 +32,10 @@ pub struct DesignSpaceElement {
     pub end_line: u32,
     pub has_design: bool,
     pub is_file: bool,
+    /// True for design-structure roots, systems and modules.
+    pub is_structure: bool,
+    /// Module member qualified names; empty for other kinds.
+    pub members: Vec<String>,
 }
 
 /// Everything the tree view needs in one payload.
@@ -43,6 +48,7 @@ pub struct DesignSpaceOverview {
     pub source_commit: String,
     pub file_count: usize,
     pub element_count: usize,
+    pub document_count: usize,
     pub designed_count: usize,
     pub elements: Vec<DesignSpaceElement>,
 }
@@ -58,6 +64,25 @@ pub struct DesignSpaceDetail {
     pub start_line: u32,
     pub end_line: u32,
     pub design: Option<String>,
+    pub comments: Vec<DesignSpaceComment>,
+    /// Direct modules or code members of a system/module.
+    pub members: Vec<DesignSpaceMember>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DesignSpaceMember {
+    pub hash: String,
+    pub qname: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DesignSpaceComment {
+    pub id: u32,
+    pub resolved: bool,
+    pub target: String,
+    pub text: String,
 }
 
 #[derive(Debug, Clone)]
@@ -155,12 +180,51 @@ a { color: var(--accent); }
 .markdown > :first-child { margin-top:0; }
 .markdown > :last-child { margin-bottom:0; }
 .markdown p { margin:8px 0; }
-.markdown h1, .markdown h2, .markdown h3, .markdown h4 {
-  margin:16px 0 8px; line-height:1.3;
+.markdown h1, .markdown h2, .markdown h3, .markdown h4, .markdown h5, .markdown h6 {
+  margin:16px 0 8px; line-height:1.3; scroll-margin-top:12px;
 }
-.markdown h1 { font-size:20px; }
-.markdown h2 { font-size:17px; }
-.markdown h3 { font-size:15px; }
+.markdown h1 { font-size:24px; }
+.markdown h2 { font-size:21px; }
+.markdown h3 { font-size:18px; }
+.markdown h4 { font-size:17px; }
+.markdown h5, .markdown h6 { font-size:16px; }
+.doc-view { display:flex; flex-direction:column; gap:12px; }
+.doc-toc-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.doc-toc-head strong { font-size:13px; }
+.doc-toc-head button { padding:3px 8px; font-size:12px; }
+.doc-toc { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:10px 14px; }
+.doc-toc ul { list-style:none; margin:0; padding:0; }
+.doc-toc li { margin:1px 0; }
+.doc-toc a { color:var(--accent); text-decoration:none; font-size:13px; }
+.doc-toc a:hover { text-decoration:underline; }
+.doc-toc[hidden] { display:none; }
+.doc-body { min-width:0; }
+.structure-members { margin-top:14px; border-top:1px solid var(--line); padding-top:10px; }
+.structure-members h3 { margin:0 0 8px; font-size:14px; }
+.structure-members ul { list-style:none; margin:0; padding:0; }
+.structure-members li { margin:4px 0; font-size:13px; overflow-wrap:anywhere; }
+.doc-comment-chip { display:inline-flex; align-items:center; gap:2px; margin-left:5px;
+                    padding:1px 4px; border:1px solid var(--line); border-radius:999px;
+                    background:var(--panel); color:var(--accent); font-size:11px;
+                    line-height:1; vertical-align:middle; cursor:pointer; }
+.doc-comment-chip:hover { background:var(--accent-soft); border-color:var(--accent); }
+.doc-comment-chip svg { display:block; }
+.doc-comment-chip-count { font-weight:700; }
+.doc-comment-popover { position:fixed; z-index:80; width:min(340px, calc(100vw - 24px));
+                       max-height:60vh; overflow:auto; padding:10px 12px;
+                       background:var(--panel); border:1px solid var(--line);
+                       border-radius:8px; box-shadow:0 12px 32px rgba(0,0,0,.18); }
+.doc-comment-popover-head { display:flex; align-items:center; justify-content:space-between;
+                            gap:10px; margin-bottom:6px; }
+.doc-comment-popover-head span { color:var(--muted); font-size:12px; }
+.doc-comment { padding:9px 11px; margin:8px 0; color:var(--fg);
+               background:var(--bg); border:1px solid var(--line);
+               border-left:3px solid var(--accent); border-radius:6px; }
+.doc-comment[data-resolved="true"] { color:var(--muted); border-left-color:var(--muted); }
+.doc-comment-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px; }
+.doc-comment-head code { color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
+.doc-comment-body { margin-top:6px; line-height:1.55; overflow-wrap:anywhere; }
 .markdown ul, .markdown ol { margin:8px 0; padding-left:22px; }
 .markdown li { margin:2px 0; }
 .markdown pre { background:var(--bg); border:1px solid var(--line); border-radius:6px;
@@ -253,6 +317,8 @@ legend { padding:0 6px; color:var(--muted); font-size:13px; }
 button, .button { font:inherit; background:var(--accent); color:#fff; border:0; border-radius:6px;
                   padding:8px 16px; cursor:pointer; text-decoration:none; display:inline-block; }
 .button.secondary, button.secondary { background:transparent; color:var(--accent); border:1px solid var(--line); }
+button.link { background:none; color:var(--accent); border:0; padding:0; cursor:pointer; }
+button.link:hover { text-decoration:underline; }
 button.danger { background:transparent; color:#cf222e; border:1px solid #cf222e; padding:4px 10px; }
 .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
 .stats { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin:20px 0 8px; }
@@ -304,6 +370,10 @@ main.wide { max-width:1500px; padding:24px 28px 40px; }
                   background:var(--bg); border:1px solid var(--line); border-radius:6px;
                   padding:7px 9px; }
 .ds-tools-row { display:flex; gap:6px; }
+.ds-branch { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+.ds-branch label { flex:none; }
+.ds-branch select { flex:1; min-width:0; font:inherit; color:var(--fg); background:var(--bg);
+                    border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
 .ds-tools-row button { flex:1; padding:5px 8px; font-size:12px; }
 .ds-tree { overflow:auto; padding:8px 10px 16px; font-size:13px; }
 .ds-list { display:flex; flex-direction:column; gap:1px; }
@@ -428,6 +498,57 @@ fn display_percent_encoded(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+fn document_headings(input: &str) -> Vec<(usize, String, usize)> {
+    let normalized = input.replace("\r\n", "\n");
+    let mut headings = Vec::new();
+    let mut in_code = false;
+    let mut index = 0usize;
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            continue;
+        }
+        if let Some((level, rest)) = markdown_heading(trimmed) {
+            index += 1;
+            headings.push((
+                level,
+                strip_doc_comment_markers(rest).trim_end().to_string(),
+                index,
+            ));
+        }
+    }
+    headings
+}
+
+fn document_view(input: &str) -> String {
+    let headings = document_headings(input);
+    let body = markdown_to_html(input);
+    if headings.is_empty() {
+        return format!(r#"<div class="doc-view"><div class="markdown doc-body">{body}</div></div>"#);
+    }
+    let items = headings
+        .iter()
+        .map(|(level, text, index)| {
+            let indent = level.saturating_sub(1) * 14;
+            format!(
+                r##"<li style="padding-left:{indent}px"><a href="#md-h-{index}">{}</a></li>"##,
+                inline_markdown(text, 0)
+            )
+        })
+        .collect::<String>();
+    format!(
+        r#"<div class="doc-view">
+<div class="doc-toc-head"><strong>目录</strong><button type="button" class="secondary" onclick="var n=document.getElementById('doc-toc'); n.hidden=!n.hidden; this.textContent=n.hidden?'显示目录':'隐藏目录';">隐藏目录</button></div>
+<nav class="doc-toc" id="doc-toc"><ul>{items}</ul></nav>
+<div class="markdown doc-body">{body}</div>
+</div>"#
+    )
+}
+
 /// A small Markdown subset for Issue comments: headings, lists, code blocks,
 /// inline code, emphasis, links and blockquotes. Raw HTML is always escaped.
 fn markdown_to_html(input: &str) -> String {
@@ -438,6 +559,7 @@ fn markdown_to_html(input: &str) -> String {
     let mut list: Option<&'static str> = None;
     let mut code: Option<(String, Vec<&str>)> = None;
     let mut section_open = false;
+    let mut heading_index = 0usize;
     let mut index = 0;
 
     while index < lines.len() {
@@ -497,8 +619,9 @@ fn markdown_to_html(input: &str) -> String {
         if let Some((level, rest)) = markdown_heading(trimmed) {
             flush_markdown_paragraph(&mut out, &mut paragraph);
             close_markdown_list(&mut out, &mut list);
+            heading_index += 1;
             out.push_str(&format!(
-                "<h{level}>{}</h{level}>",
+                r#"<h{level} id="md-h-{heading_index}">{}</h{level}>"#,
                 inline_markdown(rest, 0)
             ));
             index += 1;
@@ -834,10 +957,27 @@ fn inline_markdown(text: &str, depth: usize) -> String {
                 out.push_str("<br>");
                 index += 1;
             }
+            '{' => {
+                if let Some((ids, end)) = doc_comment_marker(&characters, index) {
+                    let count = ids.split(',').count();
+                    let count_html = if count > 1 {
+                        format!(r#"<span class="doc-comment-chip-count">{count}</span>"#)
+                    } else {
+                        String::new()
+                    };
+                    out.push_str(&format!(
+                        r#"<button type="button" class="doc-comment-chip" data-comments="{ids}" aria-label="查看 {count} 条设计评论" title="查看评论"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 2.5h12v8.5H7.2L3.5 13.5V11H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M4.5 5.5h7M4.5 8h5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>{count_html}</button>"#
+                    ));
+                    index = end;
+                } else {
+                    out.push('{');
+                    index += 1;
+                }
+            }
             _ => {
                 let start = index;
                 while index < characters.len()
-                    && !matches!(characters[index], '`' | '[' | '*' | '~' | '\n')
+                    && !matches!(characters[index], '`' | '[' | '*' | '~' | '\n' | '{')
                 {
                     index += 1;
                 }
@@ -846,6 +986,52 @@ fn inline_markdown(text: &str, depth: usize) -> String {
             }
         }
     }
+    out
+}
+
+fn doc_comment_marker(characters: &[char], start: usize) -> Option<(String, usize)> {
+    const PREFIX: &str = "{{comments:";
+    let prefix: Vec<char> = PREFIX.chars().collect();
+    if !characters[start..].starts_with(&prefix) {
+        return None;
+    }
+    let mut index = start + prefix.len();
+    let mut ids = String::new();
+    while index < characters.len() && characters[index] != '}' {
+        let character = characters[index];
+        if !(character.is_ascii_digit() || character == ',') {
+            return None;
+        }
+        ids.push(character);
+        index += 1;
+    }
+    if index + 1 >= characters.len()
+        || characters[index] != '}'
+        || characters[index + 1] != '}'
+        || ids.is_empty()
+        || ids.starts_with(',')
+        || ids.ends_with(',')
+        || ids.contains(",,")
+    {
+        return None;
+    }
+    Some((ids, index + 2))
+}
+
+fn strip_doc_comment_markers(text: &str) -> String {
+    const PREFIX: &str = "{{comments:";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(PREFIX) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + PREFIX.len()..];
+        let Some(end) = after.find("}}") else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
     out
 }
 
@@ -1017,6 +1203,7 @@ enum Section {
     Tasks,
     Projects,
     DesignSpace,
+    MergeRequests,
     Workflows,
     Accounts,
     Agents,
@@ -1101,6 +1288,19 @@ fn layout_page(
                 Section::DesignSpace,
                 &format!("/projects/{}/design-space", project.id),
                 "设计空间",
+            )
+        })
+        .unwrap_or_default();
+
+    let merge_requests_nav = ctx
+        .current
+        .as_ref()
+        .map(|project| {
+            nav_item(
+                active,
+                Section::MergeRequests,
+                &format!("/projects/{}/merge-requests", project.id),
+                "设计空间合并请求",
             )
         })
         .unwrap_or_default();
@@ -1211,6 +1411,7 @@ fn layout_page(
   <div class="nav-group">
     <p class="nav-heading">承诺空间</p>
     {design_space_nav}
+    {merge_requests_nav}
     {project_document_nav}
     {requirements_nav}
     {architecture_nav}
@@ -1269,6 +1470,7 @@ fn layout_page(
             String::new()
         },
         design_space_nav = design_space_nav,
+        merge_requests_nav = merge_requests_nav,
         project_document_nav = project_document_nav,
         requirements_nav = requirements_nav,
         display_name = escape(&ctx.viewer.display_name),
@@ -1640,6 +1842,42 @@ fn render_task_tree(
 }
 
 pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> String {
+    let actor_name = |actor: &foundry_domain::TaskActor| {
+        let name = escape(&actor.display_name);
+        match (ctx.viewer.is_admin(), actor.agent_definition_id) {
+            (true, Some(agent_id)) => format!(
+                r#"<a href="/agents/{agent_id}/logs">{name}</a>"#
+            ),
+            _ => name,
+        }
+    };
+    let active_agents = task
+        .actors
+        .iter()
+        .filter(|actor| actor.active)
+        .map(|actor| {
+            format!(
+                r#"<li><code>{role}</code> · {name}{work}</li>"#,
+                role = escape(actor.role_key.as_str()),
+                name = actor_name(actor),
+                work = actor
+                    .work
+                    .as_deref()
+                    .map(|work| format!(" · {}", escape(work)))
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let active_agents = if active_agents.is_empty() {
+        r#"<p class="hint">当前阶段没有活跃智能体。</p>"#.to_string()
+    } else {
+        format!("<ul>{}</ul>", active_agents.join(""))
+    };
+    let stage = task
+        .stage
+        .as_ref()
+        .map(|stage| escape(stage.as_str()))
+        .unwrap_or_else(|| "—".to_string());
     let role_rows = if task.role_specs.is_empty() {
         r#"<tr><td colspan="4" class="empty">流程没有声明角色。</td></tr>"#.to_string()
     } else {
@@ -1653,7 +1891,7 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
                     .map(|actor| {
                         format!(
                             "{} {}",
-                            escape(&actor.display_name),
+                            actor_name(actor),
                             if actor.active {
                                 r#"<span class="badge">活跃</span>"#
                             } else {
@@ -1752,10 +1990,44 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
         .parent_id
         .map(|id| format!(r#"<a href="/tasks/{id}"><code>{id}</code></a>"#))
         .unwrap_or_else(|| "无".to_string());
+    let recovery = if task
+        .stage
+        .as_ref()
+        .is_some_and(|stage| stage.as_str().ends_with("failed"))
+    {
+        format!(
+            r#"<h2>失败处理</h2>
+<div class="approval-actions">
+<form class="inline-form" method="post" action="/tasks/{id}/retry"><button type="submit">重试</button></form>
+<form class="inline-form" method="post" action="/tasks/{id}/abandon"><button class="secondary" type="submit">放弃</button></form>
+</div>"#,
+            id = task.id
+        )
+    } else {
+        String::new()
+    };
     let refresh = task_refresh_script(
         &format!("/tasks/{}/state", task.id),
         &task_fingerprint(task),
     );
+    let description = if task.description.trim().is_empty() {
+        r#"<p class="hint">未填写任务内容。</p>"#.to_string()
+    } else {
+        markdown_to_html(&task.description)
+    };
+    let input_block = if task.input.is_null()
+        || task.input.as_object().is_some_and(|value| value.is_empty())
+    {
+        String::new()
+    } else {
+        format!(
+            r#"<details class="card"><summary>任务参数</summary><pre>{}</pre></details>"#,
+            escape(
+                &serde_json::to_string_pretty(&task.input)
+                    .unwrap_or_else(|_| task.input.to_string())
+            )
+        )
+    };
     let body = format!(
         r#"<p><a href="/tasks">← 返回任务列表</a></p>
 <h1>{title}</h1>
@@ -1766,6 +2038,14 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
   <span>父任务 {parent}</span>
   <span>更新 {updated}</span>
 </div>
+<h2>当前阶段与活跃智能体</h2>
+<div class="card">
+  <p>当前阶段 <code>{stage}</code></p>
+  {active_agents}
+</div>
+<h2>任务内容</h2>
+<div class="card markdown">{description}</div>
+{input_block}
 <h2>角色与成员</h2>
 <table>
 <thead><tr><th>角色</th><th>类型</th><th>人数</th><th>Actor</th></tr></thead>
@@ -1785,23 +2065,24 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
 <table>
 <thead><tr><th>事件</th><th>Actor</th><th>时间</th></tr></thead>
 <tbody>{operation_rows}</tbody>
-</table>{refresh}"#,
+</table>
+{recovery}{refresh}"#,
         title = escape(&task.title),
         state = task_state_label(task.state),
         dispatch = task_dispatch_label(task.dispatch_state),
         workflow = escape(task.workflow.as_str()),
         version = task.workflow_version,
-        stage = task
-            .stage
-            .as_ref()
-            .map(|stage| escape(stage.as_str()))
-            .unwrap_or_else(|| "—".to_string()),
+        stage = stage,
+        active_agents = active_agents,
         parent = parent,
         updated = task
             .updated_at
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default(),
         refresh = refresh,
+        recovery = recovery,
+        description = description,
+        input_block = input_block,
     );
     layout(ctx, Section::Tasks, &task.title, &body)
 }
@@ -3245,8 +3526,6 @@ pub fn projects_page(
     );
     let git_field = input_field("git_repository", "Git 仓库 *", "", true);
     let git_branch_field = input_field("git_branch", "Git 分支 *", "main", true);
-    let design_space_branch_field =
-        input_field("design_space_branch", "设计空间分支 *", "main", true);
 
     let body = format!(
         r#"<h1>项目</h1>
@@ -3261,10 +3540,7 @@ pub fn projects_page(
   {name}
   {description}
   {git_field}
-  <div class="grid">
-    {git_branch_field}
-    {design_space_branch_field}
-  </div>
+  {git_branch_field}
   {root_field}
   <p class="hint">创建者成为项目 Owner。项目名称可以修改。</p>
   <div class="actions"><button type="submit">创建项目</button></div>
@@ -3381,10 +3657,7 @@ pub fn project_page(
     {status}
   </div>
   {description}
-  <div class="grid">
-    {git_branch}
-    {design_space_branch}
-  </div>
+  {git_branch}
   <p class="hint">归档后项目只读。恢复为活跃后才能继续编辑和变更成员。</p>
   <div class="actions"><button type="submit">保存设置</button></div>
 </form>
@@ -3412,12 +3685,6 @@ pub fn project_page(
                 None,
             ),
             git_branch = input_field("git_branch", "Git 分支", &project.git_branch, true),
-            design_space_branch = input_field(
-                "design_space_branch",
-                "设计空间分支",
-                &project.design_space_branch,
-                true,
-            ),
             handle = input_field("handle", "账号 handle", "", true),
             role = role_field,
         )
@@ -3505,6 +3772,30 @@ fn language_chip(lang: &str) -> &str {
     }
 }
 
+fn is_document_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "document-directory"
+            | "document"
+            | "document-section"
+            | "document-list"
+            | "document-text"
+            | "document-topic"
+    )
+}
+
+fn document_chip(kind: &str) -> &'static str {
+    match kind {
+        "document-directory" => "DOC DIR",
+        "document" => "DOC",
+        "document-section" => "SEC",
+        "document-list" => "LIST",
+        "document-text" => "TEXT",
+        "document-topic" => "TOPIC",
+        _ => "DOC",
+    }
+}
+
 fn element_kind_label(kind: &str) -> &str {
     match kind {
         "function" => "函数",
@@ -3523,6 +3814,12 @@ fn element_kind_label(kind: &str) -> &str {
         "file" => "文件",
         "binary_file" => "二进制文件",
         "text_file" => "文本文件",
+        "document-directory" => "文档目录",
+        "document" => "文档",
+        "document-section" => "章节",
+        "document-list" => "列表",
+        "document-text" => "文本",
+        "document-topic" => "标题块",
         other => other,
     }
 }
@@ -3532,9 +3829,34 @@ pub fn design_space_page(
     ctx: &ConsoleContext,
     project: &Project,
     overview: &DesignSpaceOverview,
+    branches: &[String],
+    selected_branch: &str,
 ) -> String {
     let tree_url = format!("/projects/{}/design-space/tree", project.id);
     let element_url = format!("/projects/{}/design-space/elements/", project.id);
+    let branch_options = branches
+        .iter()
+        .map(|branch| {
+            format!(
+                r#"<option value="{branch}"{selected}>{branch}</option>"#,
+                branch = escape(branch),
+                selected = if branch == selected_branch { " selected" } else { "" },
+            )
+        })
+        .collect::<String>();
+    let branch_switch = if branches.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<form class="ds-branch" method="get" action="/projects/{id}/design-space">
+<label for="ds-branch">分支</label>
+<select id="ds-branch" name="branch" onchange="if(this.form.requestSubmit) this.form.requestSubmit(); else this.form.submit();">{options}</select>
+<noscript><button class="secondary" type="submit">切换</button></noscript>
+</form>"#,
+            id = project.id,
+            options = branch_options,
+        )
+    };
     let version = match &overview.version {
         Some(version) => format!(
             r#"分支 <code>{branch}</code> · 版本 <code>{version}</code> · 源码 <code>{commit}</code>"#,
@@ -3562,16 +3884,19 @@ pub fn design_space_page(
   <div class="ds-stats">
     <div class="ds-stat"><b>{files}</b><span>文件</span></div>
     <div class="ds-stat"><b>{elements}</b><span>元素</span></div>
+    <div class="ds-stat"><b>{documents}</b><span>文档</span></div>
     <div class="ds-stat"><b>{designed}</b><span>已有设计</span></div>
     <div class="ds-stat"><b>{coverage}%</b><span>覆盖率</span></div>
   </div>
 </header>
 <div class="ds-shell" id="ds-shell"
      data-project-id="{id}"
+     data-branch="{selected_branch}"
      data-tree-url="{tree_url}"
      data-element-url="{element_url}">
   <aside class="ds-pane ds-tree-pane">
     <div class="ds-tools">
+      {branch_switch}
       <input id="ds-search" type="search" placeholder="搜索元素、文件或路径…" autocomplete="off" spellcheck="false">
       <div class="ds-tools-row">
         <button class="secondary" type="button" id="ds-expand">展开全部</button>
@@ -3594,10 +3919,13 @@ pub fn design_space_page(
         version = version,
         files = overview.file_count,
         elements = overview.element_count,
+        documents = overview.document_count,
         designed = overview.designed_count,
         coverage = coverage,
         tree_url = escape(&tree_url),
         element_url = escape(&element_url),
+        selected_branch = escape(selected_branch),
+        branch_switch = branch_switch,
     );
     let mut html = layout_wide(ctx, Section::DesignSpace, &project.name, &body);
     html = html.replace("</body>", &format!("{DESIGN_SPACE_SCRIPT}</body>"));
@@ -3630,10 +3958,16 @@ pub fn design_space_unavailable_page(
 
 /// One element's detail fragment: design tab plus a lazily loaded source tab.
 pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> String {
+    let is_document = is_document_kind(&detail.kind);
     let chip = if detail.kind == "file" {
         r#"<span class="ds-chip file">FILE</span>"#.to_string()
     } else if detail.kind == "directory" {
         r#"<span class="ds-chip">目录</span>"#.to_string()
+    } else if is_document {
+        format!(
+            r#"<span class="ds-chip">{}</span>"#,
+            escape(document_chip(&detail.kind))
+        )
     } else if detail.lang.is_empty() {
         r#"<span class="ds-chip">概念</span>"#.to_string()
     } else {
@@ -3644,6 +3978,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
     };
     let lines_label = if detail.kind == "directory" {
         "目录规则".to_string()
+    } else if is_document {
+        "文档".to_string()
     } else if detail.path.is_empty() {
         "无源码锚点".to_string()
     } else if detail.start_line == 0 {
@@ -3656,7 +3992,13 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
     } else {
         format!("{} · {}", escape(&detail.path), lines_label)
     };
-    let has_source = !detail.path.is_empty() && detail.kind != "directory";
+    let has_source = !is_document
+        && !detail.path.is_empty()
+        && detail.kind != "directory"
+        && !matches!(
+            detail.kind.as_str(),
+            "system" | "module" | "design-structure"
+        );
     let source_tabs = if has_source {
         r#"<button type="button" data-ds-tab="source">源码</button>"#.to_string()
     } else {
@@ -3685,7 +4027,47 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
     } else {
         String::new()
     };
+    let members = if detail.members.is_empty() {
+        String::new()
+    } else {
+        let rows = detail
+            .members
+            .iter()
+            .map(|member| {
+                format!(
+                    r#"<li><span class="badge">{kind}</span> <code>{qname}</code> {name}</li>"#,
+                    kind = escape(&member.kind),
+                    qname = escape(&member.qname),
+                    name = escape(&member.name),
+                )
+            })
+            .collect::<String>();
+        format!(r#"<section class="structure-members"><h3>成员</h3><ul>{rows}</ul></section>"#)
+    };
+    let comments = if detail.comments.is_empty() {
+        String::new()
+    } else {
+        let rows = detail
+            .comments
+            .iter()
+            .map(|comment| {
+                format!(
+                    r#"<div class="doc-comment" data-comment="{id}" data-resolved="{resolved}">
+  <div class="doc-comment-head"><span class="badge">{status}</span><strong>评论 {id}</strong><code>{target}</code></div>
+  <div class="doc-comment-body">{text}</div>
+</div>"#,
+                    resolved = if comment.resolved { "true" } else { "false" },
+                    status = if comment.resolved { "已解决" } else { "未解决" },
+                    id = comment.id,
+                    target = escape(&comment.target),
+                    text = escape(&comment.text).replace("\n", "<br>"),
+                )
+            })
+            .collect::<String>();
+        format!(r#"<div id="doc-comment-store" hidden>{rows}</div>"#)
+    };
     let design = match &detail.design {
+        Some(text) if !text.trim().is_empty() && detail.kind == "document" => document_view(text),
         Some(text) if !text.trim().is_empty() => format!(
             r#"<div class="markdown">{}</div>"#,
             markdown_to_html(text)
@@ -3693,6 +4075,9 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         Some(_) => r#"<div class="ds-empty">设计为空。</div>"#.to_string(),
         None if detail.kind == "file" => {
             r#"<div class="ds-empty">文件对象没有设计文本，可以查看源码。</div>"#.to_string()
+        }
+        None if matches!(detail.kind.as_str(), "system" | "module" | "design-structure") => {
+            r#"<div class="ds-empty">该系统或模块还没有关联设计文档。</div>"#.to_string()
         }
         None => r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>ds describe</code> 补充。</div>"#
             .to_string(),
@@ -3711,6 +4096,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
     {source_tabs}
   </div>
   <div class="ds-panel" data-ds-panel="design">{design}</div>
+  {members}
+  {comments}
   {source_panel}
 </div>"#,
         hash = escape(&detail.hash),
@@ -3735,6 +4122,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
             "缺失"
         },
         design = design,
+        members = members,
+        comments = comments,
     )
 }
 
@@ -3792,6 +4181,249 @@ pub fn design_space_source_error(message: &str) -> String {
     format!(r#"<div class="ds-source-error">{}</div>"#, escape(message))
 }
 
+// ---------------------------------------------------------------------------
+// Design-space merge requests
+// ---------------------------------------------------------------------------
+
+pub fn merge_requests_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    requests: &[MergeRequestReview],
+    branches: &[String],
+    error: Option<&str>,
+) -> String {
+    let rows = if requests.is_empty() {
+        r#"<tr><td colspan="5" class="empty">还没有合并请求。</td></tr>"#.to_string()
+    } else {
+        requests
+            .iter()
+            .map(|review| {
+                let request = &review.merge_request;
+                format!(
+                    r#"<tr>
+<td><a href="/projects/{project}/merge-requests/{id}">{title}</a></td>
+<td><code>{source}</code> → <code>{target}</code></td>
+<td><span class="badge">{status}</span></td>
+<td>{stage}</td>
+<td>{created}</td>
+</tr>"#,
+                    project = project.id,
+                    id = request.id,
+                    title = escape(&request.title),
+                    source = escape(&request.source_branch),
+                    target = escape(&request.target_branch),
+                    status = merge_request_status_label(review.status),
+                    stage = review
+                        .task
+                        .stage
+                        .as_ref()
+                        .map(|stage| escape(stage.as_str()))
+                        .unwrap_or_else(|| "—".to_string()),
+                    created = request
+                        .created_at
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let error = error
+        .map(|message| format!(r#"<div class="card">{}</div>"#, escape(message)))
+        .unwrap_or_default();
+    let branch_options = branches
+        .iter()
+        .map(|branch| format!(r#"<option value="{0}">{0}</option>"#, escape(branch)))
+        .collect::<String>();
+    let branch_list = if branches.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<datalist id="mr-branches">{branch_options}</datalist>"#)
+    };
+    let create_form = if ctx.can_contribute() {
+        format!(
+            r#"<details class="card">
+<summary>新建设计空间合并请求</summary>
+<form method="post" action="/projects/{id}/merge-requests">
+  <div class="field"><label for="mr-title">标题</label><input id="mr-title" name="title" required></div>
+  <div class="field"><label for="mr-description">说明</label><textarea id="mr-description" name="description"></textarea></div>
+  <div class="field"><label for="mr-source">源分支</label><input id="mr-source" name="source_branch" list="mr-branches" required></div>
+  <div class="field"><label for="mr-target">目标分支</label><input id="mr-target" name="target_branch" list="mr-branches" value="{target}" required></div>
+  {branch_list}
+  <button type="submit">创建设计空间合并请求</button>
+</form>
+</details>"#,
+            id = project.id,
+            target = escape(&project.design_space_branch),
+            branch_list = branch_list,
+        )
+    } else {
+        String::new()
+    };
+    let body = format!(
+        r#"<p><a href="/projects/{id}">← {name}</a></p>
+<h1>设计空间合并请求</h1>
+<p class="sub">设计空间合并请求的审批、评论和操作都在关联任务中完成。</p>
+{error}
+{create_form}
+<table>
+<thead><tr><th>标题</th><th>分支</th><th>状态</th><th>任务阶段</th><th>创建时间</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>"#,
+        id = project.id,
+        name = escape(&project.name),
+        create_form = create_form,
+        error = error,
+        rows = rows,
+    );
+    layout(ctx, Section::MergeRequests, &project.name, &body)
+}
+
+pub fn merge_request_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    detail: &MergeRequestDetail,
+) -> String {
+    let request = &detail.merge_request;
+    let task = &detail.task;
+    let changes = if detail.changes.is_empty() {
+        r#"<tr><td colspan="3" class="empty">没有对象差异。</td></tr>"#.to_string()
+    } else {
+        detail
+            .changes
+            .iter()
+            .map(|change| {
+                format!(
+                    r#"<tr><td>{status}</td><td><code>{qname}</code></td><td>{kind}</td></tr>"#,
+                    status = merge_request_change_label(change.status),
+                    qname = escape(&change.qname),
+                    kind = escape(&change.kind),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let actions = if task.allowed_operations.is_empty() {
+        r#"<p class="hint">当前账号没有可执行的审核操作。审核由关联任务中绑定的真人审核人完成。</p>"#
+            .to_string()
+    } else {
+        task.allowed_operations
+            .iter()
+            .map(|operation| {
+                format!(
+                    r#"<form class="inline-form" method="post" action="/projects/{project}/merge-requests/{id}/operations">
+<input type="hidden" name="operation" value="{operation}">
+<input type="hidden" name="idempotency_key" value="design-space-mr:{id}:{operation}">
+<button type="submit">{label}</button>
+</form>"#,
+                    project = project.id,
+                    id = request.id,
+                    operation = escape(operation.name.as_str()),
+                    label = escape(&operation.display_name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let comments = if task.comments.is_empty() {
+        r#"<p class="hint">还没有评论。</p>"#.to_string()
+    } else {
+        task.comments
+            .iter()
+            .map(|comment| {
+                format!(
+                    r#"<div class="card"><div class="meta"><strong>{author}</strong><span>{at}</span></div><div class="markdown">{body}</div></div>"#,
+                    author = escape(&comment.author_display_name),
+                    at = comment
+                        .created_at
+                        .format(&time::format_description::well_known::Rfc3339)
+                        .unwrap_or_default(),
+                    body = markdown_to_html(&comment.body),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let description = if request.description.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="card markdown">{}</div>"#,
+            markdown_to_html(&request.description)
+        )
+    };
+    let body = format!(
+        r#"<p><a href="/projects/{project}/merge-requests">← 返回设计空间合并请求</a></p>
+<h1>{title}</h1>
+<p class="sub"><span class="badge">{status}</span> 任务阶段 <code>{stage}</code></p>
+<div class="details">
+  <dt>源分支</dt><dd>{source} <code>{source_commit}</code></dd>
+  <dt>目标分支</dt><dd>{target} <code>{target_commit}</code></dd>
+  <dt>合并提交</dt><dd>{merge_commit}</dd>
+  <dt>审核任务</dt><dd><a href="/tasks/{task_id}">{task_title}</a></dd>
+  <dt>创建者</dt><dd>{created_by}</dd>
+</div>
+{description}
+<h2>审核</h2>
+<div class="approval-actions">{actions}</div>
+<h2>变更</h2>
+<table>
+<thead><tr><th>状态</th><th>对象</th><th>类型</th></tr></thead>
+<tbody>{changes}</tbody>
+</table>
+<h2>评论</h2>
+{comments}
+<form class="card" method="post" action="/projects/{project}/merge-requests/{id}/comments">
+  <div class="field"><label for="mr-comment">评论</label><textarea id="mr-comment" name="body" required></textarea></div>
+  <button type="submit">发表评论</button>
+</form>"#,
+        project = project.id,
+        id = request.id,
+        title = escape(&request.title),
+        status = merge_request_status_label(detail.status),
+        stage = task
+            .stage
+            .as_ref()
+            .map(|stage| escape(stage.as_str()))
+            .unwrap_or_else(|| "—".to_string()),
+        source = escape(&request.source_branch),
+        source_commit = escape(&request.source_commit),
+        target = escape(&request.target_branch),
+        target_commit = escape(&request.target_commit),
+        merge_commit = request
+            .merge_commit
+            .as_deref()
+            .map(escape)
+            .unwrap_or_else(|| "—".to_string()),
+        task_id = task.id,
+        task_title = escape(&task.title),
+        created_by = request.created_by,
+        description = description,
+        actions = actions,
+        changes = changes,
+        comments = comments,
+    );
+    layout(ctx, Section::MergeRequests, &request.title, &body)
+}
+
+fn merge_request_status_label(status: MergeRequestStatus) -> &'static str {
+    match status {
+        MergeRequestStatus::Reviewing => "审核中",
+        MergeRequestStatus::Approved => "已批准",
+        MergeRequestStatus::Merged => "已合并",
+        MergeRequestStatus::Rejected => "已拒绝",
+        MergeRequestStatus::Closed => "已关闭",
+    }
+}
+
+fn merge_request_change_label(status: MergeRequestChangeStatus) -> &'static str {
+    match status {
+        MergeRequestChangeStatus::Added => "新增",
+        MergeRequestChangeStatus::Modified => "修改",
+        MergeRequestChangeStatus::Removed => "删除",
+    }
+}
+
 const DESIGN_SPACE_SCRIPT: &str = r##"<script>
 (() => {
   const shell = document.getElementById('ds-shell');
@@ -3801,7 +4433,12 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   const searchEl = document.getElementById('ds-search');
   const expandBtn = document.getElementById('ds-expand');
   const collapseBtn = document.getElementById('ds-collapse');
-  const treeUrl = shell.dataset.treeUrl;
+  const branch = shell.dataset.branch || '';
+  const withBranch = (url) => {
+    if (!branch) return url;
+    return url + (url.includes('?') ? '&' : '?') + 'branch=' + encodeURIComponent(branch);
+  };
+  const treeUrl = withBranch(shell.dataset.treeUrl);
   const elementUrl = shell.dataset.elementUrl;
   const storeKey = 'foundry.ds.tree.v2.' + shell.dataset.projectId;
   const glyphs = {
@@ -3815,9 +4452,14 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   const fileIcon = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3 1.5h6.2L13 5.3v9.2H3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M9.2 1.5v3.8H13" fill="none" stroke="currentColor"/></svg>';
   const rootIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor"/><path d="M2 6h12M6 6v8" fill="none" stroke="currentColor"/></svg>';
   const langLabel = (lang) => glyphs[lang] || (lang ? lang.slice(0, 4).toUpperCase() : '');
+  const isDocumentKind = (kind) => kind === 'document' || String(kind || '').startsWith('document-');
+  const documentChip = (kind) => ({
+    'document-directory': 'DOC DIR', document: 'DOC', 'document-section': 'SEC',
+    'document-list': 'LIST', 'document-text': 'TEXT', 'document-topic': 'TOPIC'
+  })[kind] || 'DOC';
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
   const baseName = (path) => { const parts = String(path).split('/'); return parts[parts.length - 1] || String(path); };
-  let expanded = new Set(['root', 'view:namespaces']);
+  let expanded = new Set(['root', 'view:namespaces', 'view:documents']);
   try {
     const saved = localStorage.getItem(storeKey);
     if (saved) expanded = new Set(JSON.parse(saved));
@@ -3837,6 +4479,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return node;
   };
   const byName = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN');
+  const byNatural = (a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN', { numeric: true });
 
   function buildNamespaces(elements) {
     const root = { name: '命名空间', path: '', children: new Map(), element: null, count: 0 };
@@ -3857,7 +4500,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
           node.children.set(segment, next);
         }
         node = next;
-        if (index === parts.length - 1) node.element = item;
+        if (index === parts.length - 1 && item.kind === 'document') node.element = item;
       }
     }
     const annotate = (node) => {
@@ -3990,8 +4633,85 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return root;
   }
 
+  function buildDocuments(elements) {
+    const root = { name: '文档', path: '', children: new Map(), element: null, count: 0 };
+    for (const item of elements) {
+      if (!isDocumentKind(item.kind)) continue;
+      if (item.kind !== 'document' && item.kind !== 'document-directory') continue;
+      const qname = String(item.qname || '');
+      if (!qname.startsWith('documents/')) continue;
+      const parts = qname.slice('documents/'.length).split('/').filter(Boolean);
+      if (!parts.length) continue;
+      let node = root;
+      const acc = [];
+      for (let index = 0; index < parts.length; index += 1) {
+        const segment = parts[index];
+        acc.push(segment);
+        let next = node.children.get(segment);
+        if (!next) {
+          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
+          node.children.set(segment, next);
+        }
+        node = next;
+        if (index === parts.length - 1) node.element = item;
+      }
+    }
+    const annotate = (node) => {
+      let count = node.element ? 1 : 0;
+      for (const child of node.children.values()) count += annotate(child);
+      node.count = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
+  function buildStructure(elements) {
+    const byQname = new Map();
+    for (const item of elements) byQname.set(item.qname, item);
+    const rootItem = elements.find((item) => item.kind === 'design-structure');
+    if (!rootItem) return null;
+    const root = { name: '系统与模块', path: 'design', children: new Map(), element: rootItem, members: [], count: 0 };
+    for (const item of elements) {
+      if (!item.isStructure || item.kind === 'design-structure') continue;
+      const qname = String(item.qname || '');
+      if (!qname.startsWith('design/')) continue;
+      const parts = qname.slice('design/'.length).split('/').filter(Boolean);
+      if (!parts.length) continue;
+      let node = root;
+      const acc = [];
+      for (let index = 0; index < parts.length; index += 1) {
+        const segment = parts[index];
+        acc.push(segment);
+        let next = node.children.get(segment);
+        if (!next) {
+          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, members: [], count: 0 };
+          node.children.set(segment, next);
+        }
+        node = next;
+        if (index === parts.length - 1) {
+          node.element = item;
+          node.members = (item.members || []).map((member) => byQname.get(member)).filter(Boolean);
+        }
+      }
+    }
+    const annotate = (node) => {
+      let count = node.element && node.element.kind !== 'design-structure' ? 1 : 0;
+      for (const child of node.children.values()) count += annotate(child);
+      node.count = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
   function chip(item) {
-    const label = item.isFile ? 'FILE' : (item.kind === 'concept' ? '概念' : (langLabel(item.lang) || '—'));
+    let label;
+    if (item.isFile) label = 'FILE';
+    else if (item.isStructure) label = item.kind === 'system' ? 'SYS' : item.kind === 'module' ? 'MOD' : '结构';
+    else if (isDocumentKind(item.kind)) label = documentChip(item.kind);
+    else if (item.kind === 'concept') label = '概念';
+    else label = langLabel(item.lang) || '—';
     const node = el('span', 'ds-chip' + (item.isFile ? ' file' : ''), label);
     node.title = (item.lang ? item.lang + ' · ' : '') + item.kind;
     return node;
@@ -4163,13 +4883,106 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return wrap;
   }
 
+  function documentRow(node, keyPrefix) {
+    const wrap = el('div');
+    const prefix = keyPrefix || '';
+    const key = 'doc:' + prefix + node.path;
+    const open = expanded.has(key);
+    const item = node.element;
+    const hasChildren = node.children.size > 0;
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (item && selected === item.hash) row.classList.add('active');
+    if (item) row.dataset.hash = item.hash;
+    row.appendChild(caret(hasChildren, key));
+    if (item) {
+      row.appendChild(chip(item));
+      const name = el('span', 'ds-name', item.name || shortName(item.qname));
+      name.title = item.qname || item.name;
+      row.appendChild(name);
+      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+    } else {
+      const glyph = el('span', 'ds-folder');
+      glyph.innerHTML = hasChildren ? folderIcon : fileIcon;
+      row.appendChild(glyph);
+      const name = el('span', 'ds-name', node.name);
+      name.title = node.path;
+      row.appendChild(name);
+      row.appendChild(el('span', 'ds-count', countLabel(node.count, '文档')));
+    }
+    row.addEventListener('click', () => {
+      if (item) select(item);
+      else if (hasChildren) toggle(key);
+    });
+    wrap.appendChild(row);
+    if (open && hasChildren) {
+      const kids = el('div', 'ds-children');
+      for (const child of [...node.children.values()].sort(byNatural)) {
+        kids.appendChild(documentRow(child, prefix));
+      }
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
+  function structureMemberRow(item) {
+    const row = el('div', 'ds-row');
+    if (selected === item.hash) row.classList.add('active');
+    row.dataset.hash = item.hash;
+    row.appendChild(el('span', 'ds-caret empty'));
+    row.appendChild(chip(item));
+    const name = el('span', 'ds-name', shortName(item.name));
+    name.title = item.qname || item.name;
+    row.appendChild(name);
+    row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+    row.addEventListener('click', () => select(item));
+    return row;
+  }
+
+  function structureRow(node, keyPrefix) {
+    const wrap = el('div');
+    const prefix = keyPrefix || '';
+    const key = 'st:' + prefix + node.path;
+    const open = expanded.has(key);
+    const item = node.element;
+    const hasChildren = node.children.size > 0 || node.members.length > 0;
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (item && selected === item.hash) row.classList.add('active');
+    if (item) row.dataset.hash = item.hash;
+    row.appendChild(caret(hasChildren, key));
+    if (item) {
+      row.appendChild(chip(item));
+      const name = el('span', 'ds-name', item.name || shortName(item.qname));
+      name.title = item.qname || item.name;
+      row.appendChild(name);
+      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+      row.appendChild(el('span', 'ds-count', countLabel(node.count, '模块')));
+    } else {
+      const glyph = el('span', 'ds-folder');
+      glyph.innerHTML = folderIcon;
+      row.appendChild(glyph);
+      row.appendChild(el('span', 'ds-name', node.name));
+    }
+    row.addEventListener('click', () => {
+      if (item) select(item);
+      else if (hasChildren) toggle(key);
+    });
+    wrap.appendChild(row);
+    if (open && hasChildren) {
+      const kids = el('div', 'ds-children');
+      for (const child of [...node.children.values()].sort(byName)) kids.appendChild(structureRow(child, prefix));
+      for (const member of node.members) kids.appendChild(structureMemberRow(member));
+      wrap.appendChild(kids);
+    }
+    return wrap;
+  }
+
   function searchRow(item) {
     const row = el('div', 'ds-row');
     if (selected === item.hash) row.classList.add('active');
     row.dataset.hash = item.hash;
     row.appendChild(el('span', 'ds-caret empty'));
     row.appendChild(chip(item));
-    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : shortName(item.name));
+    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : (isDocumentKind(item.kind) ? item.name : shortName(item.name)));
     name.title = item.isFile ? item.path : item.name;
     row.appendChild(name);
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
@@ -4180,8 +4993,12 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   }
 
   function renderSearch() {
-    const matches = data.elements.filter((item) =>
-      (item.name + ' ' + (item.qname || '') + ' ' + item.path).toLowerCase().includes(query));
+    const matches = data.elements.filter((item) => {
+      if (isDocumentKind(item.kind) && item.kind !== 'document' && item.kind !== 'document-directory') {
+        return false;
+      }
+      return (item.name + ' ' + (item.qname || '') + ' ' + item.path).toLowerCase().includes(query);
+    });
     if (!matches.length) {
       treeEl.replaceChildren(el('div', 'ds-empty', '没有匹配的元素'));
       return;
@@ -4206,6 +5023,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
         '设计空间还没有元素。用 ds create 创建概念元素并 ds push 后刷新页面。'));
       return;
     }
+    const documentRoot = buildDocuments(data.elements);
+    const structureRoot = buildStructure(data.elements);
     const list = el('div', 'ds-list');
     list.appendChild(virtualRow(
       'root',
@@ -4241,6 +5060,36 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
             }
           ));
         }
+        if (structureRoot && structureRoot.count) {
+          kids.appendChild(virtualRow(
+            'view:structure',
+            '系统与模块',
+            countLabel(structureRoot.count, '项'),
+            folderIcon,
+            () => {
+              const structure = el('div', 'ds-list');
+              for (const child of [...structureRoot.children.values()].sort(byName)) {
+                structure.appendChild(structureRow(child));
+              }
+              return structure;
+            }
+          ));
+        }
+        if (documentRoot.count) {
+          kids.appendChild(virtualRow(
+            'view:documents',
+            '文档',
+            countLabel(documentRoot.count, '文档'),
+            folderIcon,
+            () => {
+              const documents = el('div', 'ds-list');
+              for (const child of [...documentRoot.children.values()].sort(byNatural)) {
+                documents.appendChild(documentRow(child));
+              }
+              return documents;
+            }
+          ));
+        }
         return kids;
       }
     ));
@@ -4249,6 +5098,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
 
   async function select(item) {
     if (!item || !item.hash) return;
+    closeCommentPopover();
     selected = item.hash;
     for (const row of document.querySelectorAll('.ds-row.active')) row.classList.remove('active');
     for (const row of document.querySelectorAll('.ds-row[data-hash="' + CSS.escape(item.hash) + '"]')) {
@@ -4256,7 +5106,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     }
     detailEl.replaceChildren(el('div', 'ds-loading', '加载元素…'));
     try {
-      const response = await fetch(elementUrl + encodeURIComponent(item.hash), { headers: { accept: 'text/html' } });
+      const response = await fetch(withBranch(elementUrl + encodeURIComponent(item.hash)), { headers: { accept: 'text/html' } });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       detailEl.innerHTML = await response.text();
       bindTabs();
@@ -4277,6 +5127,77 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       });
     });
   }
+
+  let commentPopover = null;
+  function closeCommentPopover() {
+    if (commentPopover) commentPopover.hidden = true;
+  }
+  function ensureCommentPopover() {
+    if (commentPopover) return commentPopover;
+    commentPopover = document.createElement('div');
+    commentPopover.className = 'doc-comment-popover';
+    commentPopover.id = 'doc-comment-popover';
+    commentPopover.hidden = true;
+    commentPopover.addEventListener('click', (event) => event.stopPropagation());
+    document.body.appendChild(commentPopover);
+    return commentPopover;
+  }
+  function openCommentPopover(chip) {
+    const ids = String(chip.dataset.comments || '').split(',').filter(Boolean);
+    const store = detailEl.querySelector('#doc-comment-store');
+    if (!ids.length || !store) return;
+    const cards = [];
+    let unresolved = 0;
+    for (const id of ids) {
+      const card = store.querySelector('.doc-comment[data-comment="' + CSS.escape(id) + '"]');
+      if (!card) continue;
+      cards.push(card.cloneNode(true));
+      if (card.getAttribute('data-resolved') !== 'true') unresolved += 1;
+    }
+    if (!cards.length) return;
+    const popover = ensureCommentPopover();
+    const head = document.createElement('div');
+    head.className = 'doc-comment-popover-head';
+    const title = document.createElement('strong');
+    title.textContent = '设计评论';
+    const summary = document.createElement('span');
+    summary.textContent = unresolved ? (unresolved + ' 条未解决 / 共 ' + cards.length + ' 条') : ('已全部解决 / 共 ' + cards.length + ' 条');
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'link';
+    close.textContent = '关闭';
+    close.addEventListener('click', closeCommentPopover);
+    head.append(title, summary, close);
+    popover.replaceChildren(head);
+    for (const card of cards) popover.appendChild(card);
+    popover.hidden = false;
+    const rect = chip.getBoundingClientRect();
+    const width = popover.offsetWidth;
+    const height = popover.offsetHeight;
+    let left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+    let top = rect.bottom + 6;
+    if (top + height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - height - 6);
+    }
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+  }
+  detailEl.addEventListener('click', (event) => {
+    const chip = event.target.closest('.doc-comment-chip');
+    if (!chip) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openCommentPopover(chip);
+  });
+  document.addEventListener('click', (event) => {
+    if (!commentPopover || commentPopover.hidden) return;
+    if (event.target.closest('.doc-comment-chip') || event.target.closest('#doc-comment-popover')) return;
+    closeCommentPopover();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeCommentPopover();
+  });
+  window.addEventListener('resize', closeCommentPopover);
 
   function loadSource() {
     const panel = detailEl.querySelector('[data-ds-panel="source"]');
@@ -4490,6 +5411,13 @@ pub fn agent_logs_page(
   const empty = document.getElementById('agent-log-empty');
   let known = "__FINGERPRINT__";
   let busy = false;
+  let refreshing = true;
+  const toggle = document.getElementById('agent-log-toggle');
+  const refresh = document.getElementById('agent-log-refresh');
+  const setRefreshing = (value) => {
+    refreshing = value;
+    if (toggle) toggle.textContent = value ? '停止自动刷新' : '开始自动刷新';
+  };
   const atBottom = () => pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
   const update = async () => {
     const state = await fetch('/agents/' + id + '/logs/state', {
@@ -4512,11 +5440,21 @@ pub fn agent_logs_page(
     if (bottom) pre.scrollTop = pre.scrollHeight;
   };
   const tick = async () => {
-    if (busy || document.hidden) return;
+    if (!refreshing || busy || document.hidden) return;
     busy = true;
     try { await update(); } catch (_) {}
     busy = false;
   };
+  if (refresh) refresh.addEventListener('click', async () => {
+    if (busy) return;
+    busy = true;
+    try { await update(); } catch (_) {}
+    busy = false;
+  });
+  if (toggle) toggle.addEventListener('click', () => {
+    setRefreshing(!refreshing);
+    if (refreshing) tick();
+  });
   setInterval(tick, 2000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
   pre.scrollTop = pre.scrollHeight;
@@ -4525,11 +5463,10 @@ pub fn agent_logs_page(
         .replace("__ID__", &definition.id.to_string())
         .replace("__FINGERPRINT__", fingerprint);
     let body = format!(
-        r#"<p class="hint"><a href="/agents">← 返回智能体</a> · <a href="/agents/{id}/logs">刷新</a></p>
+        r#"<p class="hint"><a href="/agents">← 返回智能体</a> · <button type="button" class="link" id="agent-log-refresh">刷新</button> · <button type="button" class="link" id="agent-log-toggle">停止自动刷新</button></p>
 <h1>{name} 日志</h1>
 <p class="sub"><code>@{account}</code> · <code>{role}</code> · 最近 256 KB</p>
 {content}{script}"#,
-        id = definition.id,
         name = escape(&definition.name),
         account = escape(&definition.account_handle),
         role = escape(&definition.role),
@@ -5072,7 +6009,7 @@ mod tests {
         let html = markdown_to_html(
             "## 标题\n\n**粗体** 和 `code`\n\n- 一\n- 二\n\n```js\nalert(1)\n```\n\n[链接](https://example.com)\n<script>",
         );
-        assert!(html.contains("<h2>标题</h2>"));
+        assert!(html.contains(r#"<h2 id="md-h-1">标题</h2>"#));
         assert!(html.contains("<strong>粗体</strong>"));
         assert!(html.contains("<code>code</code>"));
         assert!(html.contains("<li>一</li>"));
@@ -5123,7 +6060,6 @@ mod tests {
         let html = projects_page(&ctx, &[], &[], None);
         assert!(html.contains(r#"name="git_repository""#));
         assert!(html.contains(r#"name="git_branch""#));
-        assert!(html.contains(r#"name="design_space_branch""#));
         assert!(html.contains("Git 仓库"));
     }
 
@@ -5316,6 +6252,7 @@ mod tests {
             source_commit: "cd".repeat(20),
             file_count: 4,
             element_count: 12,
+            document_count: 5,
             designed_count: 3,
             elements: vec![DesignSpaceElement {
                 hash: "ef".repeat(32),
@@ -5328,9 +6265,17 @@ mod tests {
                 end_line: 9,
                 has_design: true,
                 is_file: false,
+                is_structure: false,
+                members: Vec::new(),
             }],
         };
-        let html = design_space_page(&ctx, &project, &overview);
+        let html = design_space_page(
+            &ctx,
+            &project,
+            &overview,
+            &["source".to_string()],
+            "source",
+        );
         assert!(html.contains("id=\"ds-shell\""));
         assert!(html.contains(&format!(
             "data-tree-url=\"/projects/{}/design-space/tree\"",
@@ -5348,6 +6293,8 @@ mod tests {
                 start_line: 3,
                 end_line: 9,
                 design: Some("<script>alert(1)</script>".to_string()),
+                comments: Vec::new(),
+                members: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -5392,6 +6339,8 @@ mod tests {
                 start_line: 0,
                 end_line: 0,
                 design: Some("登录流程".to_string()),
+                comments: Vec::new(),
+                members: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -5401,6 +6350,162 @@ mod tests {
         assert!(!html.contains("data-source-url"));
     }
 
+    #[test]
+    fn document_detail_renders_content_without_a_source_tab() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "登录".to_string(),
+                lang: String::new(),
+                kind: "document-section".to_string(),
+                path: "documents/design/technical/section1".to_string(),
+                start_line: 0,
+                end_line: 0,
+                design: Some("## 登录\n\n登录使用 OAuth。".to_string()),
+                comments: Vec::new(),
+                members: Vec::new(),
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains("SEC"));
+        assert!(html.contains("章节"));
+        assert!(html.contains("文档"));
+        assert!(html.contains("登录使用 OAuth。"));
+        assert!(html.contains("documents/design/technical/section1"));
+        assert!(!html.contains(r#"data-ds-tab="source""#));
+        assert!(!html.contains("data-source-url"));
+    }
+
+
+    #[test]
+    fn document_detail_has_toc_and_renders_topic_as_bold_text() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "技术设计".to_string(),
+                lang: String::new(),
+                kind: "document".to_string(),
+                path: "documents/design/technical".to_string(),
+                start_line: 0,
+                end_line: 0,
+                design: Some(
+                    "# 概览\n\n正文。\n\n## 类\n\n**职责**\n\n负责示例。".to_string(),
+                ),
+                comments: vec![DesignSpaceComment {
+                    id: 1,
+                    resolved: false,
+                    target: "documents/design/technical/section1".to_string(),
+                    text: "需要补充失败语义".to_string(),
+                }],
+                members: Vec::new(),
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains(r#"class="doc-view""#));
+        assert!(html.contains(r#"id="doc-toc""#));
+        assert!(html.contains("需要补充失败语义"));
+        assert!(html.contains("未解决"));
+        assert!(html.contains(r##"href="#md-h-1""##));
+        assert!(html.contains(r##"href="#md-h-2""##));
+        assert!(html.contains(r##"id="md-h-1""##));
+        assert!(html.contains("<strong>职责</strong>"));
+        assert!(!html.contains("TOPIC"));
+        assert!(!html.contains("文档结构"));
+    }
+
+    #[test]
+    fn module_detail_lists_members() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "核心".to_string(),
+                lang: String::new(),
+                kind: "module".to_string(),
+                path: "design/app/core".to_string(),
+                start_line: 0,
+                end_line: 0,
+                design: None,
+                comments: Vec::new(),
+                members: vec![
+                    DesignSpaceMember {
+                        hash: "aa".repeat(32),
+                        qname: "namespaces/app/Auth".to_string(),
+                        name: "Auth".to_string(),
+                        kind: "class".to_string(),
+                    },
+                    DesignSpaceMember {
+                        hash: "bb".repeat(32),
+                        qname: "design/app/core/parser".to_string(),
+                        name: "解析".to_string(),
+                        kind: "module".to_string(),
+                    },
+                ],
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains("成员"));
+        assert!(html.contains("namespaces/app/Auth"));
+        assert!(html.contains("design/app/core/parser"));
+        assert!(html.contains("还没有关联设计文档"));
+    }
+
+    #[test]
+    fn document_comments_render_as_collapsed_chips() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "技术设计".to_string(),
+                lang: String::new(),
+                kind: "document".to_string(),
+                path: "documents/design/technical".to_string(),
+                start_line: 0,
+                end_line: 0,
+                design: Some(
+                    "# 概览{{comments:1}}\n\n正文。{{comments:2,3}}\n\n## 小节{{comments:4}}"
+                        .to_string(),
+                ),
+                comments: vec![
+                    DesignSpaceComment {
+                        id: 1,
+                        resolved: false,
+                        target: "documents/design/technical/section1".to_string(),
+                        text: "需要补充失败语义".to_string(),
+                    },
+                    DesignSpaceComment {
+                        id: 2,
+                        resolved: true,
+                        target: "documents/design/technical/section2/body1".to_string(),
+                        text: "已处理的评论".to_string(),
+                    },
+                    DesignSpaceComment {
+                        id: 3,
+                        resolved: false,
+                        target: "documents/design/technical/section2/body1".to_string(),
+                        text: "第二条未解决评论".to_string(),
+                    },
+                    DesignSpaceComment {
+                        id: 4,
+                        resolved: false,
+                        target: "documents/design/technical/section3".to_string(),
+                        text: "小节评论".to_string(),
+                    },
+                ],
+                members: Vec::new(),
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains(r#"class="doc-comment-chip" data-comments="1""#));
+        assert!(html.contains(r#"class="doc-comment-chip" data-comments="2,3""#));
+        assert!(html.contains(r#"class="doc-comment-chip" data-comments="4""#));
+        assert!(html.contains(r#"id="doc-comment-store" hidden"#));
+        assert!(html.contains(r#"data-comment="1""#));
+        assert!(html.contains("需要补充失败语义"));
+        assert!(html.contains("第二条未解决评论"));
+        assert!(!html.contains("{{comments:"));
+        assert!(!html.contains("doc-comments"));
+        assert!(html.contains(r##"href="#md-h-1">概览</a>"##));
+        assert!(html.contains(r##"href="#md-h-2">小节</a>"##));
+    }
     #[test]
     fn element_titles_use_short_names() {
         let html = design_space_element(
@@ -5413,6 +6518,8 @@ mod tests {
                 start_line: 3,
                 end_line: 9,
                 design: None,
+                comments: Vec::new(),
+                members: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -5481,7 +6588,93 @@ mod tests {
         assert!(html.contains("Clarifier &lt;script&gt;"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(html.contains("&lt;b&gt;bad&lt;/b&gt;"));
+        assert!(html.contains("id=\"agent-log-refresh\""));
+        assert!(html.contains("id=\"agent-log-toggle\""));
+        assert!(html.contains("停止自动刷新"));
+        assert!(html.contains("开始自动刷新"));
         // The log payload is escaped; only the refresh script is real.
         assert_eq!(html.matches("<script>").count(), 1);
+    }
+
+    #[test]
+    fn merge_request_page_uses_task_operations_and_escapes_content() {
+        use foundry_domain::{
+            AllowedOperation, DesignSpaceMergeRequest, MergeRequestDetail, OperationName, StageKey,
+            Task, TaskDispatchState, WorkflowId,
+        };
+
+        let account = Account::new(
+            "reviewer".to_string(),
+            "Reviewer".to_string(),
+            AccountKind::Human,
+            AccountRole::Member,
+            None,
+            Some("hash".to_string()),
+        )
+        .unwrap();
+        let project =
+            Project::new("Project", None, "git@example.com:test/repo.git", account.id).unwrap();
+        let ctx = ConsoleContext::new(&account, std::slice::from_ref(&project), Some(&project));
+        let now = OffsetDateTime::now_utc();
+        let task = Task {
+            id: Uuid::now_v7(),
+            project_id: project.id,
+            parent_id: None,
+            workflow: WorkflowId::new("design_space_merge"),
+            workflow_version: 1,
+            title: "Review <script>".to_string(),
+            description: "Review task content".to_string(),
+            state: TaskState::InProgress,
+            dispatch_state: TaskDispatchState::Running,
+            stage: Some(StageKey::new("merge")),
+            result: None,
+            input: Default::default(),
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+            dependencies: Vec::new(),
+            role_specs: Vec::new(),
+            actors: Vec::new(),
+            allowed_operations: vec![AllowedOperation {
+                name: OperationName::new("merge:merge"),
+                display_name: "合并".to_string(),
+                description: String::new(),
+            }],
+            comments: Vec::new(),
+            operations: Vec::new(),
+        };
+        let request = DesignSpaceMergeRequest {
+            id: Uuid::now_v7(),
+            project_id: project.id,
+            title: "Land <script>".to_string(),
+            description: String::new(),
+            source_branch: "feature".to_string(),
+            target_branch: "main".to_string(),
+            source_commit: "aa".to_string(),
+            target_commit: "bb".to_string(),
+            task_id: task.id,
+            merge_commit: None,
+            created_by: account.id,
+            created_at: now,
+            updated_at: now,
+        };
+        let html = merge_request_page(
+            &ctx,
+            &project,
+            &MergeRequestDetail {
+                merge_request: request.clone(),
+                task,
+                status: MergeRequestStatus::Approved,
+                changes: Vec::new(),
+            },
+        );
+        assert!(html.contains("Land &lt;script&gt;"));
+        assert!(!html.contains("Land <script>"));
+        assert!(html.contains(&format!(
+            "/projects/{}/merge-requests/{}/operations",
+            project.id, request.id
+        )));
+        assert!(html.contains(r#"value="merge:merge""#));
+        assert!(html.contains("审核任务"));
     }
 }

@@ -34,6 +34,14 @@ pub enum CatalogError {
     MissingFilesRoot,
     #[error("root namespaces is missing or invalid")]
     MissingNamespacesRoot,
+    #[error("root documents is missing or invalid")]
+    MissingDocumentsRoot,
+    #[error("object {object} has an invalid document reference {target}: {message}")]
+    InvalidDocumentReference {
+        object: String,
+        target: String,
+        message: String,
+    },
     #[error("object {0} has an invalid parent reference")]
     InvalidParent(String),
     #[error("object {0} is used as a parent but cannot contain children")]
@@ -55,6 +63,12 @@ pub enum CatalogError {
     InvalidOverride { method: String, message: String },
     #[error("object {object} has invalid dependency: {message}")]
     InvalidDependency { object: String, message: String },
+    #[error("object {object} has invalid module member {target}: {message}")]
+    InvalidModuleMember {
+        object: String,
+        target: String,
+        message: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, CatalogError>;
@@ -155,12 +169,14 @@ impl Catalog {
             .filter(|(name, object)| {
                 **name != qname
                     && (parents_of(object).contains(&qname)
+                        || document_target(object) == Some(qname)
                         || relation_targets(object).contains(&qname)
                         || relation_override(object) == Some(qname)
                         || dependency_lists(object).is_some_and(|(explicit, implicit)| {
                             explicit.iter().any(|dep| dep.target == qname)
                                 || implicit.iter().any(|dep| dep.target == qname)
-                        }))
+                        })
+                        || matches!(&object.payload, ObjectPayload::Module(p) if p.members.contains(&qname)))
             })
             .map(|(name, _)| *name)
             .collect::<Vec<_>>();
@@ -202,6 +218,7 @@ impl Catalog {
         let mut seen = HashSet::new();
         visit(store, view_payload.files, &mut catalog, &mut seen)?;
         visit(store, view_payload.namespaces, &mut catalog, &mut seen)?;
+        visit(store, view_payload.documents, &mut catalog, &mut seen)?;
         if !view_payload.design.is_zero() {
             visit(store, view_payload.design, &mut catalog, &mut seen)?;
         }
@@ -227,6 +244,8 @@ impl Catalog {
         let mut rooted = BTreeSet::new();
         let files = symbol_hash("files");
         let namespaces = symbol_hash("namespaces");
+        let documents = symbol_hash("documents");
+        let design = symbol_hash("design");
 
         for (qname, object) in &self.entries {
             if object_name(object) != Some(*qname) {
@@ -236,11 +255,19 @@ impl Catalog {
             let parents = parents_of(object);
             if parents.is_empty() {
                 if has_view_parent(object) {
-                    if *qname != files && *qname != namespaces {
+                    if *qname != files
+                        && *qname != namespaces
+                        && *qname != documents
+                        && *qname != design
+                    {
                         return Err(CatalogError::InvalidParent(normalize_name(*qname)));
                     }
                     rooted.insert(*qname);
-                } else if *qname != files && *qname != namespaces {
+                } else if *qname != files
+                    && *qname != namespaces
+                    && *qname != documents
+                    && *qname != design
+                {
                     return Err(CatalogError::Orphan(normalize_name(*qname)));
                 }
             }
@@ -270,15 +297,38 @@ impl Catalog {
         if namespaces_object.kind != Kind::Namespace || !has_view_parent(namespaces_object) {
             return Err(CatalogError::MissingNamespacesRoot);
         }
-        if rooted != BTreeSet::from([files, namespaces]) {
+        let documents_object = self
+            .entries
+            .get(&documents)
+            .ok_or(CatalogError::MissingDocumentsRoot)?;
+        if documents_object.kind != Kind::DocumentDirectory || !has_view_parent(documents_object) {
+            return Err(CatalogError::MissingDocumentsRoot);
+        }
+        let design_object = self.entries.get(&design);
+        if let Some(object) = design_object
+            && (object.kind != Kind::DesignStructure || !has_view_parent(object))
+        {
+            return Err(CatalogError::InvalidParentDetail {
+                object: object_label(store, design),
+                message: "design root must be a design structure with a view parent".to_owned(),
+            });
+        }
+        let mut expected_roots = BTreeSet::from([files, namespaces, documents]);
+        if design_object.is_some() {
+            expected_roots.insert(design);
+        }
+        if rooted != expected_roots {
             return Err(CatalogError::InvalidParent("root set".into()));
         }
 
-        // Each object must be reachable from one of the two roots. The edge
+        // Each object must be reachable from one of the roots. The edge
         // construction above already rejects orphans; this catches entries
         // that are only connected to other orphans.
         let mut reachable = BTreeSet::new();
-        let mut queue = vec![files, namespaces];
+        let mut queue = vec![files, namespaces, documents];
+        if design_object.is_some() {
+            queue.push(design);
+        }
         while let Some(qname) = queue.pop() {
             if !reachable.insert(qname) {
                 continue;
@@ -311,6 +361,26 @@ impl Catalog {
             &mut memo,
             &mut visiting,
         )?;
+        let documents_hash = compute(
+            store,
+            &self.entries,
+            &edges,
+            documents,
+            &mut memo,
+            &mut visiting,
+        )?;
+        let design_hash = if design_object.is_some() {
+            compute(
+                store,
+                &self.entries,
+                &edges,
+                design,
+                &mut memo,
+                &mut visiting,
+            )?
+        } else {
+            ObjectHash::ZERO
+        };
 
         let view = DesignObject::new(
             Kind::View,
@@ -318,7 +388,8 @@ impl Catalog {
                 source_commit: self.source_commit,
                 files: files_hash,
                 namespaces: namespaces_hash,
-                design: ObjectHash::ZERO,
+                design: design_hash,
+                documents: documents_hash,
             }),
         );
         let view_hash = object_hash(&view)?;
@@ -395,6 +466,15 @@ fn object_name(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::Function(p) => Some(p.qualified_name),
         ObjectPayload::Part(p) => Some(p.qualified_name),
         ObjectPayload::Mixin(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentDirectory(p) => Some(p.qualified_name),
+        ObjectPayload::Document(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentSection(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentList(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentText(p) => Some(p.qualified_name),
+        ObjectPayload::DocumentTopic(p) => Some(p.qualified_name),
+        ObjectPayload::DesignStructure(p) => Some(p.qualified_name),
+        ObjectPayload::System(p) => Some(p.qualified_name),
+        ObjectPayload::Module(p) => Some(p.qualified_name),
     }
 }
 
@@ -407,7 +487,18 @@ fn children_of(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => &p.children,
         ObjectPayload::Part(p) => &p.children,
         ObjectPayload::Mixin(p) => &p.children,
-        ObjectPayload::View(_) | ObjectPayload::Method(_) | ObjectPayload::Function(_) => &[],
+        ObjectPayload::DocumentDirectory(p) => &p.children,
+        ObjectPayload::Document(p) => &p.children,
+        ObjectPayload::DocumentSection(p) => &p.children,
+        ObjectPayload::DocumentList(p) => &p.children,
+        ObjectPayload::DocumentTopic(p) => &p.children,
+        ObjectPayload::DesignStructure(p) => &p.children,
+        ObjectPayload::System(p) => &p.children,
+        ObjectPayload::Module(p) => &p.children,
+        ObjectPayload::View(_)
+        | ObjectPayload::Method(_)
+        | ObjectPayload::Function(_)
+        | ObjectPayload::DocumentText(_) => &[],
     }
 }
 
@@ -425,8 +516,12 @@ fn parents_of(object: &DesignObject) -> Vec<SymbolHash> {
                 out.push(parent);
             }
         }
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => push_class_parents(&p.parent, &mut out),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => push_class_parents(&p.parent, &mut out),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            push_class_parents(&p.parent, &mut out)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            push_class_parents(&p.parent, &mut out)
+        }
         ObjectPayload::Method(p) => out.push(p.parent),
         ObjectPayload::Function(p) => {
             push_nonzero(p.file, &mut out);
@@ -435,6 +530,23 @@ fn parents_of(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::Part(p) => out.push(p.parent),
         ObjectPayload::Mixin(p) => push_class_parents(&p.parent, &mut out),
+        ObjectPayload::DocumentDirectory(p) => {
+            if let ParentRef::Object(parent) = p.parent {
+                out.push(parent);
+            }
+        }
+        ObjectPayload::Document(p) => out.push(p.parent),
+        ObjectPayload::DocumentSection(p) => out.push(p.parent),
+        ObjectPayload::DocumentList(p) => out.push(p.parent),
+        ObjectPayload::DocumentText(p) => out.push(p.parent),
+        ObjectPayload::DocumentTopic(p) => out.push(p.parent),
+        ObjectPayload::DesignStructure(p) => {
+            if let ParentRef::Object(parent) = p.parent {
+                out.push(parent);
+            }
+        }
+        ObjectPayload::System(p) => out.push(p.parent),
+        ObjectPayload::Module(p) => out.push(p.parent),
         ObjectPayload::View(_) => {}
     }
     out.retain(|hash| !hash.is_zero());
@@ -464,10 +576,30 @@ fn push_nonzero(hash: SymbolHash, out: &mut Vec<SymbolHash>) {
     }
 }
 
+fn document_target(object: &DesignObject) -> Option<SymbolHash> {
+    let target = match &object.payload {
+        ObjectPayload::Directory(p) => p.document,
+        ObjectPayload::File(p) => p.document,
+        ObjectPayload::Namespace(p) => p.document,
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document,
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document,
+        ObjectPayload::Method(p) => p.document,
+        ObjectPayload::Function(p) => p.document,
+        ObjectPayload::Mixin(p) => p.document,
+        ObjectPayload::DesignStructure(p) => p.document,
+        ObjectPayload::System(p) => p.document,
+        ObjectPayload::Module(p) => p.document,
+        _ => return None,
+    };
+    (!target.is_zero()).then_some(target)
+}
+
 fn has_view_parent(object: &DesignObject) -> bool {
     match &object.payload {
         ObjectPayload::Directory(p) => matches!(p.parent, ParentRef::View),
         ObjectPayload::Namespace(p) => matches!(p.parent, ParentRef::View),
+        ObjectPayload::DocumentDirectory(p) => matches!(p.parent, ParentRef::View),
+        ObjectPayload::DesignStructure(p) => matches!(p.parent, ParentRef::View),
         _ => false,
     }
 }
@@ -484,6 +616,14 @@ fn can_contain(object: &DesignObject) -> bool {
             | Kind::InnerInterface
             | Kind::Part
             | Kind::Mixin
+            | Kind::DocumentDirectory
+            | Kind::Document
+            | Kind::DocumentSection
+            | Kind::DocumentList
+            | Kind::DocumentTopic
+            | Kind::DesignStructure
+            | Kind::System
+            | Kind::Module
     )
 }
 
@@ -496,6 +636,14 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.children = children,
         ObjectPayload::Part(p) => p.children = children,
         ObjectPayload::Mixin(p) => p.children = children,
+        ObjectPayload::DocumentDirectory(p) => p.children = children,
+        ObjectPayload::Document(p) => p.children = children,
+        ObjectPayload::DocumentSection(p) => p.children = children,
+        ObjectPayload::DocumentList(p) => p.children = children,
+        ObjectPayload::DocumentTopic(p) => p.children = children,
+        ObjectPayload::DesignStructure(p) => p.children = children,
+        ObjectPayload::System(p) => p.children = children,
+        ObjectPayload::Module(p) => p.children = children,
         ObjectPayload::View(_) => return Err(CatalogError::NotAContainer(Kind::View)),
         ObjectPayload::Method(_) => {
             if !children.is_empty() {
@@ -505,6 +653,11 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::Function(_) => {
             if !children.is_empty() {
                 return Err(CatalogError::NotAContainer(Kind::Function));
+            }
+        }
+        ObjectPayload::DocumentText(_) => {
+            if !children.is_empty() {
+                return Err(CatalogError::NotAContainer(Kind::DocumentText));
             }
         }
     }
@@ -525,22 +678,26 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
         ObjectPayload::View(_) => {}
         ObjectPayload::Directory(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             if let ParentRef::Object(parent) = p.parent {
                 p.parent = ParentRef::Object(map(parent));
             }
         }
         ObjectPayload::File(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             p.parent = map(p.parent);
         }
         ObjectPayload::Namespace(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             if let ParentRef::Object(parent) = p.parent {
                 p.parent = ParentRef::Object(map(parent));
             }
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             rewrite_class_parent(&mut p.parent, mapping);
             p.superclass = map(p.superclass);
             rewrite_symbols(&mut p.interfaces, mapping);
@@ -550,6 +707,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             rewrite_class_parent(&mut p.parent, mapping);
             p.extends = map(p.extends);
             rewrite_dependencies(&mut p.explicit_dependencies, mapping);
@@ -557,6 +715,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
         }
         ObjectPayload::Method(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             p.parent = map(p.parent);
             p.overrides = map(p.overrides);
             rewrite_dependencies(&mut p.explicit_dependencies, mapping);
@@ -564,6 +723,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
         }
         ObjectPayload::Function(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             p.file = map(p.file);
             p.namespace = map(p.namespace);
             p.module = map(p.module);
@@ -578,6 +738,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
         }
         ObjectPayload::Mixin(p) => {
             p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
             rewrite_class_parent(&mut p.parent, mapping);
             rewrite_symbols(&mut p.on, mapping);
             p.superclass = map(p.superclass);
@@ -585,6 +746,55 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
             rewrite_symbols(&mut p.mixins, mapping);
             rewrite_dependencies(&mut p.explicit_dependencies, mapping);
             rewrite_dependencies(&mut p.implicit_dependencies, mapping);
+        }
+        ObjectPayload::DocumentDirectory(p) => {
+            p.qualified_name = map(p.qualified_name);
+            if let ParentRef::Object(parent) = p.parent {
+                p.parent = ParentRef::Object(map(parent));
+            }
+        }
+        ObjectPayload::Document(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            rewrite_symbols(&mut p.sections, mapping);
+        }
+        ObjectPayload::DocumentSection(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            rewrite_symbols(&mut p.body, mapping);
+            rewrite_symbols(&mut p.sections, mapping);
+        }
+        ObjectPayload::DocumentList(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            rewrite_symbols(&mut p.items, mapping);
+        }
+        ObjectPayload::DocumentText(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            rewrite_symbols(&mut p.paragraphs, mapping);
+        }
+        ObjectPayload::DesignStructure(p) => {
+            p.qualified_name = map(p.qualified_name);
+            if let ParentRef::Object(parent) = p.parent {
+                p.parent = ParentRef::Object(map(parent));
+            }
+            p.document = map(p.document);
+        }
+        ObjectPayload::System(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            p.document = map(p.document);
+        }
+        ObjectPayload::Module(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            p.document = map(p.document);
+            rewrite_symbols(&mut p.members, mapping);
         }
     }
 }
@@ -684,8 +894,55 @@ fn validate_semantics(store: &Store, entries: &BTreeMap<SymbolHash, DesignObject
         validate_relation_kinds(store, entries, *qname, object)?;
         validate_dependencies(store, entries, *qname, object)?;
     }
+    validate_document_references(store, entries)?;
+    validate_document_names(store, entries)?;
+    validate_document_links(store, entries)?;
     validate_relation_cycles(store, entries)?;
     validate_overrides(store, entries)?;
+    validate_modules(store, entries)?;
+    Ok(())
+}
+
+fn validate_modules(
+    store: &Store,
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+) -> Result<()> {
+    let mut owners: BTreeMap<SymbolHash, SymbolHash> = BTreeMap::new();
+    for (qname, object) in entries {
+        let ObjectPayload::Module(module) = &object.payload else {
+            continue;
+        };
+        for member in &module.members {
+            let Some(target) = entries.get(member) else {
+                return Err(CatalogError::InvalidModuleMember {
+                    object: object_label(store, *qname),
+                    target: object_label(store, *member),
+                    message: "member does not exist".to_owned(),
+                });
+            };
+            if !matches!(
+                target.kind,
+                Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+            ) {
+                return Err(CatalogError::InvalidModuleMember {
+                    object: object_label(store, *qname),
+                    target: object_label(store, *member),
+                    message: "only top-level classes, interfaces, functions and mixins can be members"
+                        .to_owned(),
+                });
+            }
+            if let Some(owner) = owners.insert(*member, *qname) {
+                return Err(CatalogError::InvalidModuleMember {
+                    object: object_label(store, *qname),
+                    target: object_label(store, *member),
+                    message: format!(
+                        "already belongs to module {}",
+                        object_label(store, owner)
+                    ),
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -774,8 +1031,104 @@ fn validate_parents(
                 store,
                 qname,
                 p.parent,
-                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface],
+                &[
+                    Kind::Class,
+                    Kind::InnerClass,
+                    Kind::Interface,
+                    Kind::InnerInterface,
+                ],
                 "a class or interface",
+            )?;
+        }
+        ObjectPayload::DocumentDirectory(p) => {
+            if let ParentRef::Object(parent) = p.parent {
+                require_target(
+                    entries,
+                    store,
+                    qname,
+                    parent,
+                    &[Kind::DocumentDirectory],
+                    "a document directory",
+                )?;
+            }
+        }
+        ObjectPayload::Document(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DocumentDirectory],
+                "a document directory",
+            )?;
+        }
+        ObjectPayload::DocumentSection(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::Document, Kind::DocumentSection],
+                "a document or section",
+            )?;
+        }
+        ObjectPayload::DocumentList(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[
+                    Kind::DocumentSection,
+                    Kind::DocumentTopic,
+                    Kind::DocumentList,
+                ],
+                "a section, topic, or list",
+            )?;
+        }
+        ObjectPayload::DocumentText(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[
+                    Kind::DocumentSection,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                ],
+                "a section, list, or topic",
+            )?;
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DocumentSection],
+                "a section",
+            )?;
+        }
+        ObjectPayload::DesignStructure(_) => {}
+        ObjectPayload::System(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DesignStructure],
+                "the design structure",
+            )?;
+        }
+        ObjectPayload::Module(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::System, Kind::Module],
+                "a system or module",
             )?;
         }
         ObjectPayload::View(_) => {}
@@ -796,7 +1149,12 @@ fn validate_type_parents(
                 store,
                 qname,
                 *parent,
-                &[Kind::Class, Kind::InnerClass, Kind::Interface, Kind::InnerInterface],
+                &[
+                    Kind::Class,
+                    Kind::InnerClass,
+                    Kind::Interface,
+                    Kind::InnerInterface,
+                ],
                 "a class or interface",
             )?;
         }
@@ -1012,14 +1370,294 @@ pub fn structural_dependencies(object: &DesignObject) -> Vec<SymbolHash> {
 
 fn dependency_lists(object: &DesignObject) -> Option<(&[Dependency], &[Dependency])> {
     match &object.payload {
-        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
-        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            Some((&p.explicit_dependencies, &p.implicit_dependencies))
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            Some((&p.explicit_dependencies, &p.implicit_dependencies))
+        }
         ObjectPayload::Method(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Function(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Part(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         ObjectPayload::Mixin(p) => Some((&p.explicit_dependencies, &p.implicit_dependencies)),
         _ => None,
     }
+}
+
+fn validate_document_references(
+    store: &Store,
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+) -> Result<()> {
+    let mut hashes = BTreeMap::new();
+    for (qname, object) in entries {
+        hashes.insert(*qname, object_hash(object)?);
+    }
+
+    for (qname, object) in entries {
+        match &object.payload {
+            ObjectPayload::DocumentDirectory(p) => {
+                let derived = derived_children(entries, &hashes, *qname);
+                check_children(store, *qname, &p.children, &derived)?;
+                for child in &derived {
+                    let child_object = store.get_object(*child)?;
+                    if !matches!(child_object.kind, Kind::DocumentDirectory | Kind::Document) {
+                        return Err(CatalogError::InvalidDocumentReference {
+                            object: object_label(store, *qname),
+                            target: object_label(store, object_name(&child_object).unwrap_or_default()),
+                            message: "document directory children must be documents or document directories"
+                                .to_owned(),
+                        });
+                    }
+                }
+            }
+            ObjectPayload::Document(p) => {
+                let derived = derived_children(entries, &hashes, *qname);
+                check_children(store, *qname, &p.children, &derived)?;
+                let sections = ordered_ref_hashes(
+                    store,
+                    entries,
+                    *qname,
+                    &p.sections,
+                    "sections",
+                    &[Kind::DocumentSection],
+                )?;
+                check_ordered_refs(store, *qname, "sections", &sections, &derived)?;
+            }
+            ObjectPayload::DocumentSection(p) => {
+                let derived = derived_children(entries, &hashes, *qname);
+                check_children(store, *qname, &p.children, &derived)?;
+                let body = ordered_ref_hashes(
+                    store,
+                    entries,
+                    *qname,
+                    &p.body,
+                    "body",
+                    &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                )?;
+                let sections = ordered_ref_hashes(
+                    store,
+                    entries,
+                    *qname,
+                    &p.sections,
+                    "sections",
+                    &[Kind::DocumentSection],
+                )?;
+                for target in &p.body {
+                    if p.sections.contains(target) {
+                        return Err(CatalogError::InvalidDocumentReference {
+                            object: object_label(store, *qname),
+                            target: object_label(store, *target),
+                            message: "an object cannot be both body and child section".to_owned(),
+                        });
+                    }
+                }
+                let mut all = body;
+                all.extend(sections);
+                check_ordered_refs(store, *qname, "body and sections", &all, &derived)?;
+            }
+            ObjectPayload::DocumentList(p) => {
+                let derived = derived_children(entries, &hashes, *qname);
+                check_children(store, *qname, &p.children, &derived)?;
+                let items = ordered_ref_hashes(
+                    store,
+                    entries,
+                    *qname,
+                    &p.items,
+                    "items",
+                    &[Kind::DocumentText, Kind::DocumentList],
+                )?;
+                check_ordered_refs(store, *qname, "items", &items, &derived)?;
+            }
+            ObjectPayload::DocumentTopic(p) => {
+                let derived = derived_children(entries, &hashes, *qname);
+                check_children(store, *qname, &p.children, &derived)?;
+                let paragraphs = ordered_ref_hashes(
+                    store,
+                    entries,
+                    *qname,
+                    &p.paragraphs,
+                    "paragraphs",
+                    &[Kind::DocumentText, Kind::DocumentList],
+                )?;
+                check_ordered_refs(store, *qname, "paragraphs", &paragraphs, &derived)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn derived_children(
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+    hashes: &BTreeMap<SymbolHash, ObjectHash>,
+    parent: SymbolHash,
+) -> Vec<ObjectHash> {
+    let mut children = entries
+        .iter()
+        .filter(|(_, object)| parents_of(object).contains(&parent))
+        .map(|(qname, _)| hashes[qname])
+        .collect::<Vec<_>>();
+    children.sort();
+    children
+}
+
+fn ordered_ref_hashes(
+    store: &Store,
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+    owner: SymbolHash,
+    refs: &[SymbolHash],
+    what: &str,
+    allowed: &[Kind],
+) -> Result<Vec<ObjectHash>> {
+    let mut out = Vec::with_capacity(refs.len());
+    for target in refs {
+        let object = entries
+            .get(target)
+            .ok_or_else(|| CatalogError::MissingReference {
+                object: object_label(store, owner),
+                target: object_label(store, *target),
+            })?;
+        if !allowed.contains(&object.kind) {
+            return Err(CatalogError::InvalidDocumentReference {
+                object: object_label(store, owner),
+                target: object_label(store, *target),
+                message: format!("{what} references kind {:?}", object.kind),
+            });
+        }
+        if !parents_of(object).contains(&owner) {
+            return Err(CatalogError::InvalidDocumentReference {
+                object: object_label(store, owner),
+                target: object_label(store, *target),
+                message: format!("{what} target does not name this object as its parent"),
+            });
+        }
+        out.push(object_hash(object)?);
+    }
+    Ok(out)
+}
+
+fn check_children(
+    store: &Store,
+    object: SymbolHash,
+    children: &[ObjectHash],
+    derived: &[ObjectHash],
+) -> Result<()> {
+    if children != derived {
+        return Err(CatalogError::InvalidDocumentReference {
+            object: object_label(store, object),
+            target: "<children>".to_owned(),
+            message: "children do not match the objects that name this object as parent".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn check_ordered_refs(
+    store: &Store,
+    owner: SymbolHash,
+    what: &str,
+    refs: &[ObjectHash],
+    derived: &[ObjectHash],
+) -> Result<()> {
+    let mut sorted = refs.to_vec();
+    sorted.sort();
+    if sorted != derived {
+        return Err(CatalogError::InvalidDocumentReference {
+            object: object_label(store, owner),
+            target: "<order>".to_owned(),
+            message: format!("{what} do not cover the same children as the object graph"),
+        });
+    }
+    Ok(())
+}
+
+fn validate_document_names(
+    store: &Store,
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+) -> Result<()> {
+    for (qname, object) in entries {
+        let text = store.get_symbol(*qname)?;
+        let local = text.rsplit('/').next().unwrap_or(&text);
+        let valid = match &object.payload {
+            ObjectPayload::DocumentDirectory(_) | ObjectPayload::Document(_) => {
+                valid_doc_slug(local)
+            }
+            ObjectPayload::DocumentSection(_) => valid_numbered_name(local, "section"),
+            ObjectPayload::DocumentList(p) => {
+                match entries.get(&p.parent).map(|parent| parent.kind) {
+                    Some(Kind::DocumentSection | Kind::DocumentTopic) => {
+                        valid_numbered_name(local, "body")
+                    }
+                    Some(Kind::DocumentList) => valid_numbered_name(local, "item"),
+                    _ => false,
+                }
+            }
+            ObjectPayload::DocumentText(p) => {
+                match entries.get(&p.parent).map(|parent| parent.kind) {
+                    Some(Kind::DocumentSection | Kind::DocumentTopic) => {
+                        valid_numbered_name(local, "body")
+                    }
+                    Some(Kind::DocumentList) => valid_numbered_name(local, "item"),
+                    _ => false,
+                }
+            }
+            ObjectPayload::DocumentTopic(_) => valid_numbered_name(local, "body"),
+            _ => continue,
+        };
+        if !valid {
+            return Err(CatalogError::InvalidDocumentReference {
+                object: text.clone(),
+                target: text,
+                message: "invalid document fragment name".to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn valid_doc_slug(local: &str) -> bool {
+    !local.is_empty()
+        && local
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte))
+}
+
+fn valid_numbered_name(local: &str, prefix: &str) -> bool {
+    let Some(rest) = local.strip_prefix(prefix) else {
+        return false;
+    };
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    rest.parse::<u32>()
+        .map(|value| format!("{prefix}{value}") == local)
+        .unwrap_or(false)
+}
+
+fn validate_document_links(
+    store: &Store,
+    entries: &BTreeMap<SymbolHash, DesignObject>,
+) -> Result<()> {
+    for (qname, object) in entries {
+        let Some(target) = document_target(object) else {
+            continue;
+        };
+        let target_object = entries
+            .get(&target)
+            .ok_or_else(|| CatalogError::MissingReference {
+                object: object_label(store, *qname),
+                target: object_label(store, target),
+            })?;
+        if !matches!(target_object.kind, Kind::Document | Kind::DocumentSection) {
+            return Err(CatalogError::InvalidRelationKind {
+                object: object_label(store, *qname),
+                target: object_label(store, target),
+                actual: target_object.kind,
+                expected: "a document or section",
+            });
+        }
+    }
+    Ok(())
 }
 
 fn validate_relation_cycles(
@@ -1178,7 +1816,7 @@ mod tests {
                 qualified_name: sym(qname),
                 parent,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         )
@@ -1192,8 +1830,20 @@ mod tests {
                 parent,
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
+            }),
+        )
+    }
+
+    fn doc_directory(qname: &str, parent: ParentRef) -> DesignObject {
+        DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: sym(qname),
+                parent,
+                children: vec![],
+                comments: vec![],
             }),
         )
     }
@@ -1206,7 +1856,7 @@ mod tests {
                 parent: sym(parent),
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         )
@@ -1224,7 +1874,7 @@ mod tests {
                 },
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 superclass: SymbolHash::ZERO,
                 interfaces: vec![],
                 mixins: vec![],
@@ -1243,7 +1893,7 @@ mod tests {
                 parent: sym(parent),
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 overrides: SymbolHash::ZERO,
                 explicit_dependencies: vec![],
                 implicit_dependencies: vec![],
@@ -1257,6 +1907,7 @@ mod tests {
         for name in [
             "files",
             "namespaces",
+            "documents",
             "namespaces/app",
             "namespaces/app/Auth",
         ] {
@@ -1268,6 +1919,12 @@ mod tests {
             .unwrap();
         catalog
             .insert(sym("namespaces"), ns("namespaces", ParentRef::View))
+            .unwrap();
+        catalog
+            .insert(
+                sym("documents"),
+                doc_directory("documents", ParentRef::View),
+            )
             .unwrap();
         catalog
             .insert(
@@ -1318,12 +1975,11 @@ mod tests {
         let mut catalog = base_catalog(&store);
         let view1 = catalog.rebuild(&store).unwrap();
 
-        let doc = store.put_doc("class design").unwrap();
         let auth = catalog.get_mut(sym("namespaces/app/Auth")).unwrap();
         let ObjectPayload::Class(p) = &mut auth.payload else {
             panic!("not a class");
         };
-        p.design_doc = doc;
+        p.document = sym("documents/design/technical");
         let view2 = catalog.rebuild(&store).unwrap();
         assert_ne!(view1, view2);
     }
@@ -1355,6 +2011,12 @@ mod tests {
             .unwrap();
         catalog
             .insert(sym("namespaces"), ns("namespaces", ParentRef::View))
+            .unwrap();
+        catalog
+            .insert(
+                sym("documents"),
+                doc_directory("documents", ParentRef::View),
+            )
             .unwrap();
         // Two top-level classes reference each other through their file
         // parent fields. This is malformed input: a class cannot be a file

@@ -1,7 +1,7 @@
 use crate::{
-    ACCEPT_OPERATION, ChildState, DependencyState, OperationName, REJECT_OPERATION,
-    START_OPERATION, TaskActorDAO, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskResult,
-    TaskState, TaskWorkflow, WorkflowContext,
+    ABANDON_OPERATION, ACCEPT_OPERATION, ChildState, DependencyState, OperationName,
+    REJECT_OPERATION, RETRY_OPERATION, START_OPERATION, TaskActorDAO, TaskDAO, TaskError,
+    TaskEvent, TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -73,6 +73,28 @@ pub fn apply(
             // task-actor binding.
             let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
             ctx.complete_task(Some(TaskResult::new("approved")))?;
+            return Ok(ctx.into_mutation());
+        }
+        TaskEvent::Operation { operation, .. } if operation.as_str() == RETRY_OPERATION => {
+            let target = workflow
+                .body()
+                .and_then(|body| {
+                    body.stages
+                        .iter()
+                        .find(|stage| Some(stage.name.as_str()) == task.stage.as_deref())
+                        .and_then(|stage| stage.retry_to.clone())
+                })
+                .ok_or_else(|| {
+                    TaskError::InvalidOperation("task has no retryable failure stage".to_string())
+                })?;
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.enter_stage(&target)?;
+            ctx.set_state(TaskState::InProgress)?;
+            return Ok(ctx.into_mutation());
+        }
+        TaskEvent::Operation { operation, .. } if operation.as_str() == ABANDON_OPERATION => {
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.complete_task(Some(TaskResult::new("abandoned")))?;
             return Ok(ctx.into_mutation());
         }
         TaskEvent::Operation { operation, .. } if operation.as_str() == REJECT_OPERATION => {

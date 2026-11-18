@@ -658,7 +658,7 @@ mod tests {
         let (store, alice, _) = store().await;
         let candidates = store.root_candidates(alice).await.unwrap();
         let ids: Vec<&str> = candidates.iter().map(|option| option.id.as_str()).collect();
-        assert_eq!(ids, vec!["code_summary"]);
+        assert_eq!(ids, vec!["design_consistency_maintenance"]);
         assert_eq!(candidates[0].owner, WorkflowOwner::Platform);
     }
 

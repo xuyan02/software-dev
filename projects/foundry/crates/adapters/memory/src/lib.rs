@@ -19,6 +19,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 mod anchor_document;
+mod merge_request;
 mod requirements_doc;
 mod task;
 mod task_link;
@@ -41,6 +42,7 @@ pub struct InMemoryStore {
     pub(crate) anchor_documents: RwLock<MemoryAnchorDocuments>,
     pub(crate) requirements_docs: RwLock<MemoryRequirementDocs>,
     pub(crate) task_links: RwLock<MemoryTaskLinks>,
+    pub(crate) merge_requests: RwLock<HashMap<Uuid, foundry_domain::DesignSpaceMergeRequestDAO>>,
 }
 
 impl InMemoryStore {
@@ -403,6 +405,10 @@ impl ProjectRepository for InMemoryStore {
             .write()
             .expect("lock poisoned")
             .delete_project(id);
+        self.merge_requests
+            .write()
+            .expect("lock poisoned")
+            .retain(|_, request| request.project_id != id);
         projects.remove(&id);
         Ok(())
     }

@@ -14,13 +14,16 @@
 //!
 //! Node input and output are JSON values. Fixed nodes stay deterministic and do
 //! not write [`History`]. The LLM node adapter owns the conversation history:
-//! it builds the node's user message from the input and the node's declared
-//! output format, records assistant tool calls and tool results, records the
-//! final reply, and parses that reply as JSON to produce the node output.
+//! it renders the node's user prompt from context variables and the previous
+//! node's JSON, records assistant tool calls and tool results, records the final
+//! reply, and parses that reply as JSON to produce the node output. Raw input
+//! JSON is not appended to the user message; templates use `{{input}}` or
+//! `{{input.field}}` when they need it.
 //!
 //! Variables are addressed as `<name>` / `<name>.<field>`. Local variables and
 //! external [`VariableSource`] implementations are all resolved through
-//! [`Context`]. Prompt templates use the same paths inside `{{...}}`.
+//! [`Context`]. Prompt templates use the same paths inside `{{...}}`; `input`
+//! is the one reserved root for the previous node's JSON.
 
 mod agent;
 mod context;

@@ -509,6 +509,90 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn bind_task_actor(
+        &self,
+        task_id: Uuid,
+        role: &str,
+        account_id: Uuid,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/tasks/{task_id}/actors",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({ "role": role, "account_id": account_id }),
+            None,
+        )
+        .await
+    }
+
+    pub async fn spawn_task_children(
+        &self,
+        task_id: Uuid,
+        tasks: Value,
+        sequential: bool,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/tasks/{task_id}/children",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({ "tasks": tasks, "sequential": sequential }),
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_merge_request_for_task(
+        &self,
+        task_id: Uuid,
+        body: Value,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/tasks/{task_id}/merge-requests",
+                self.base_url.trim_end_matches('/')
+            ),
+            body,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_merge_request_for_task(&self, task_id: Uuid) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/api/v1/tasks/{task_id}/merge-request",
+            self.base_url.trim_end_matches('/')
+        ))
+        .await
+    }
+
+    pub async fn merge_merge_request(&self, merge_request_id: Uuid) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/projects/{}/merge-requests/{merge_request_id}/merge",
+                self.base_url.trim_end_matches('/'),
+                self.project_id
+            ),
+            Value::Object(Default::default()),
+            None,
+        )
+        .await
+    }
+
+    pub async fn delete_design_space_branch(&self, branch: &str) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/projects/{}/design-space/branches/delete",
+                self.base_url.trim_end_matches('/'),
+                self.project_id
+            ),
+            serde_json::json!({ "branch": branch }),
+            None,
+        )
+        .await
+    }
+
     pub async fn task_history(&self, task_id: Uuid) -> Result<Value, FoundryError> {
         self.get_scoped(
             &format!(

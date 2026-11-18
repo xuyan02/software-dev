@@ -139,7 +139,7 @@ fn child_changed(
 
 #[test]
 fn workflow_roles_allow_exactly_one_actor() {
-    let workflow = builtin("code_summary");
+    let workflow = builtin("design_space_merge");
     let body = workflow.body().expect("definition body");
     assert_eq!(body.roles.len(), 1);
     for role in &body.roles {
@@ -157,7 +157,9 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         ids,
         vec![
             "architecture_design",
-            "code_summary",
+            "code_summary_group",
+            "design_consistency_maintenance",
+            "design_space_merge",
             "detailed_design",
             "empty",
             "goal_clarification",
@@ -1496,4 +1498,28 @@ fn create_issue_action_emits_issue_create() {
     assert_eq!(child.workflow.as_str(), "goal_clarification");
     assert_eq!(child.title, "项目文档撰写");
     assert_eq!(issue.link_task_id, Some(child.id));
+}
+
+#[test]
+fn group_merge_deletes_its_branch_before_completing() {
+    let workflow = builtin("code_summary_group");
+    let task = task("code_summary_group", TaskState::InProgress, Some("merge"));
+    let task_id = task.id;
+    let merger = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "merger", merger, true)],
+        vec![],
+        vec![],
+    );
+    let merged = operation(&workflow, state, "merge:merge", merger);
+    assert_eq!(merged.task.stage.as_deref(), Some("cleanup"));
+    assert_eq!(merged.task.state, TaskState::InProgress);
+
+    let cleaned = operation(&workflow, aggregate_of(merged), "cleanup:cleaned", merger);
+    assert_eq!(cleaned.task.state, TaskState::Completed);
+    assert_eq!(
+        cleaned.task.result.as_ref().map(TaskResult::as_str),
+        Some("merged")
+    );
 }

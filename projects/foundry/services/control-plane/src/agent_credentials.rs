@@ -79,7 +79,10 @@ async fn handle(
     };
 
     let git = match &state.github {
-        Some(github) if !project.git_repository.trim().is_empty() => {
+        Some(github)
+            if !project.git_repository.trim().is_empty()
+                && project.git_repository.contains("github.com") =>
+        {
             match github.token_for_repo(&project.git_repository).await {
                 Ok(credential) => Some(credential),
                 Err(error) => {

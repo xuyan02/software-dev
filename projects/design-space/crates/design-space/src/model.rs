@@ -130,6 +130,15 @@ pub enum Kind {
     Mixin = 0x0A,
     InnerClass = 0x0C,
     InnerInterface = 0x0D,
+    DocumentDirectory = 0x0E,
+    Document = 0x0F,
+    DocumentSection = 0x10,
+    DocumentList = 0x11,
+    DocumentText = 0x12,
+    DocumentTopic = 0x13,
+    DesignStructure = 0x14,
+    System = 0x15,
+    Module = 0x16,
 }
 
 impl Kind {
@@ -147,6 +156,15 @@ impl Kind {
             0x0A => Self::Mixin,
             0x0C => Self::InnerClass,
             0x0D => Self::InnerInterface,
+            0x0E => Self::DocumentDirectory,
+            0x0F => Self::Document,
+            0x10 => Self::DocumentSection,
+            0x11 => Self::DocumentList,
+            0x12 => Self::DocumentText,
+            0x13 => Self::DocumentTopic,
+            0x14 => Self::DesignStructure,
+            0x15 => Self::System,
+            0x16 => Self::Module,
             _ => return None,
         })
     }
@@ -225,6 +243,7 @@ pub struct ViewPayload {
     pub files: ObjectHash,
     pub namespaces: ObjectHash,
     pub design: ObjectHash,
+    pub documents: ObjectHash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,7 +251,7 @@ pub struct DirectoryPayload {
     pub qualified_name: SymbolHash,
     pub parent: ParentRef,
     pub source: Option<PathSource>,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub children: Vec<ObjectHash>,
 }
 
@@ -242,7 +261,7 @@ pub struct FilePayload {
     pub parent: SymbolHash,
     pub source: Option<PathSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub children: Vec<ObjectHash>,
 }
 
@@ -252,7 +271,7 @@ pub struct NamespacePayload {
     pub parent: ParentRef,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub children: Vec<ObjectHash>,
 }
 
@@ -262,7 +281,7 @@ pub struct ClassPayload {
     pub parent: ClassParent,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub superclass: SymbolHash,
     pub interfaces: Vec<SymbolHash>,
     pub mixins: Vec<SymbolHash>,
@@ -277,7 +296,7 @@ pub struct InterfacePayload {
     pub parent: ClassParent,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub extends: SymbolHash,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
@@ -290,7 +309,7 @@ pub struct MethodPayload {
     pub parent: SymbolHash,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub overrides: SymbolHash,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
@@ -304,7 +323,7 @@ pub struct FunctionPayload {
     pub module: SymbolHash,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
 }
@@ -315,7 +334,6 @@ pub struct PartPayload {
     pub parent: SymbolHash,
     pub source: SpanSource,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
     pub children: Vec<ObjectHash>,
@@ -327,13 +345,117 @@ pub struct MixinPayload {
     pub parent: ClassParent,
     pub source: Option<SpanSource>,
     pub content_hash: Hash32,
-    pub design_doc: DocHash,
+    pub document: SymbolHash,
     pub on: Vec<SymbolHash>,
     pub superclass: SymbolHash,
     pub interfaces: Vec<SymbolHash>,
     pub mixins: Vec<SymbolHash>,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
+    pub children: Vec<ObjectHash>,
+}
+
+/// A comment attached to one document object. Comment ids are local to the
+/// object and increase monotonically.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocComment {
+    pub id: u32,
+    pub text: String,
+    pub resolved: bool,
+}
+
+/// A document directory. `documents` is the root; other directories nest
+/// under it. Document directories are ordered by name, not by a fragment
+/// order list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentDirectoryPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: ParentRef,
+    pub children: Vec<ObjectHash>,
+    pub comments: Vec<DocComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    /// Ordered section references by qualified name.
+    pub sections: Vec<SymbolHash>,
+    pub children: Vec<ObjectHash>,
+    pub comments: Vec<DocComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentSectionPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    /// Ordered body element references by qualified name.
+    pub body: Vec<SymbolHash>,
+    /// Ordered child section references by qualified name.
+    pub sections: Vec<SymbolHash>,
+    pub children: Vec<ObjectHash>,
+    pub comments: Vec<DocComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentListPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    /// Ordered item references by qualified name.
+    pub items: Vec<SymbolHash>,
+    pub children: Vec<ObjectHash>,
+    pub comments: Vec<DocComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTextPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub text: String,
+    pub comments: Vec<DocComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentTopicPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    /// Ordered body paragraph references by qualified name.
+    pub paragraphs: Vec<SymbolHash>,
+    pub children: Vec<ObjectHash>,
+    pub comments: Vec<DocComment>,
+}
+
+/// Root of the logical design structure. Its children are systems.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignStructurePayload {
+    pub qualified_name: SymbolHash,
+    pub parent: ParentRef,
+    pub title: String,
+    pub document: SymbolHash,
+    pub children: Vec<ObjectHash>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    pub document: SymbolHash,
+    pub children: Vec<ObjectHash>,
+}
+
+/// A logical module. `members` are references to top-level code elements;
+/// child modules are containment children.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModulePayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    pub document: SymbolHash,
+    pub members: Vec<SymbolHash>,
     pub children: Vec<ObjectHash>,
 }
 
@@ -351,6 +473,15 @@ pub enum ObjectPayload {
     Function(FunctionPayload),
     Part(PartPayload),
     Mixin(MixinPayload),
+    DocumentDirectory(DocumentDirectoryPayload),
+    Document(DocumentPayload),
+    DocumentSection(DocumentSectionPayload),
+    DocumentList(DocumentListPayload),
+    DocumentText(DocumentTextPayload),
+    DocumentTopic(DocumentTopicPayload),
+    DesignStructure(DesignStructurePayload),
+    System(SystemPayload),
+    Module(ModulePayload),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -378,6 +509,15 @@ impl DesignObject {
             ObjectPayload::Function(_) => Kind::Function,
             ObjectPayload::Part(_) => Kind::Part,
             ObjectPayload::Mixin(_) => Kind::Mixin,
+            ObjectPayload::DocumentDirectory(_) => Kind::DocumentDirectory,
+            ObjectPayload::Document(_) => Kind::Document,
+            ObjectPayload::DocumentSection(_) => Kind::DocumentSection,
+            ObjectPayload::DocumentList(_) => Kind::DocumentList,
+            ObjectPayload::DocumentText(_) => Kind::DocumentText,
+            ObjectPayload::DocumentTopic(_) => Kind::DocumentTopic,
+            ObjectPayload::DesignStructure(_) => Kind::DesignStructure,
+            ObjectPayload::System(_) => Kind::System,
+            ObjectPayload::Module(_) => Kind::Module,
         }
     }
 

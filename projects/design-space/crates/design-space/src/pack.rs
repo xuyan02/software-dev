@@ -385,7 +385,7 @@ mod tests {
                 qualified_name: symbol_hash("files"),
                 parent: ParentRef::View,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         );

@@ -62,9 +62,6 @@ enum Command {
         /// Branch of the git repository (default: main).
         #[arg(long)]
         git_branch: Option<String>,
-        /// Branch of the project design space (default: main).
-        #[arg(long)]
-        design_space_branch: Option<String>,
         /// Id of a published workflow to use for the root task.
         #[arg(long = "root-workflow", default_value = "project")]
         root_workflow: String,
@@ -271,7 +268,6 @@ async fn main() -> Result<()> {
             description,
             git_repository,
             git_branch,
-            design_space_branch,
             root_workflow,
         } => {
             let auth = auth.require()?;
@@ -280,7 +276,6 @@ async fn main() -> Result<()> {
                 "description": description,
                 "git_repository": git_repository,
                 "git_branch": git_branch,
-                "design_space_branch": design_space_branch,
                 "root_workflow_id": root_workflow,
             });
             print_response(

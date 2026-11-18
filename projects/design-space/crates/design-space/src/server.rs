@@ -19,8 +19,8 @@
 
 use crate::catalog::Catalog;
 use crate::model::{
-    Commit, CommitHash, DesignObject, DirectoryPayload, DocHash, GitOid, Hash32, Kind,
-    NamespacePayload, ObjectPayload, ParentRef,
+    Commit, CommitHash, DesignObject, DirectoryPayload, DocumentDirectoryPayload, GitOid, Hash32,
+    Kind, NamespacePayload, ObjectPayload, ParentRef, SymbolHash,
 };
 use crate::remote::{
     FILE_ROOTS, MAX_TRANSFER, collect_files, parse_hash, parse_refs, publish, read_token_file,
@@ -175,6 +175,7 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
     let store = crate::store::Store::open(root)?;
     let files = store.put_symbol("files")?;
     let namespaces = store.put_symbol("namespaces")?;
+    let documents = store.put_symbol("documents")?;
     let mut catalog = Catalog::new(GitOid::ZERO);
     catalog.insert(
         files,
@@ -184,7 +185,7 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
                 qualified_name: files,
                 parent: ParentRef::View,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         ),
@@ -198,8 +199,20 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
                 parent: ParentRef::View,
                 source: None,
                 content_hash: Hash32::ZERO,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
+            }),
+        ),
+    )?;
+    catalog.insert(
+        documents,
+        DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: documents,
+                parent: ParentRef::View,
+                children: vec![],
+                comments: vec![],
             }),
         ),
     )?;
@@ -336,6 +349,18 @@ impl RemoteServer {
         publish(&self.root, relative, bytes)
     }
 
+    pub fn delete_branch(&self, branch: &str) -> Result<()> {
+        if !valid_branch(branch) {
+            bail!("invalid branch name: {branch}");
+        }
+        let path = self.root.join("refs/heads").join(branch);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn write_refs(&self, body: &[u8]) -> Result<()> {
         let body = std::str::from_utf8(body).context("ref update is not UTF-8")?;
         let refs = parse_refs(body)?;
@@ -383,6 +408,7 @@ fn app(collection: Arc<RepoCollection>) -> Router {
     Router::new()
         .route("/repos", get(list_repos).post(create_repo))
         .route("/{repo}/refs", get(get_refs).put(put_refs))
+        .route("/{repo}/refs/{*branch}", axum::routing::delete(delete_ref))
         .route("/{repo}/files", get(list_files))
         .route("/{repo}/files/{*path}", get(get_file).put(put_file))
         .layer(DefaultBodyLimit::max(MAX_TRANSFER))
@@ -511,6 +537,15 @@ async fn put_refs(
 ) -> ApiResult {
     let server = open_repo(&collection, &repo)?;
     server.write_refs(&body).map_err(bad_request)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn delete_ref(
+    State(collection): State<Arc<RepoCollection>>,
+    AxumPath((repo, branch)): AxumPath<(String, String)>,
+) -> ApiResult {
+    let server = open_repo(&collection, &repo)?;
+    server.delete_branch(&branch).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -648,8 +683,8 @@ mod tests {
     use super::*;
     use crate::format::{self, commit_hash, encode_commit, encode_object, object_hash};
     use crate::model::{
-        Commit, CommitHash, DesignObject, DirectoryPayload, DocHash, Kind, ObjectHash,
-        ObjectPayload, ParentRef,
+        Commit, CommitHash, DesignObject, DirectoryPayload, Kind, ObjectHash, ObjectPayload,
+        ParentRef,
     };
     use std::io::Cursor;
     use tempfile::tempdir;
@@ -661,7 +696,7 @@ mod tests {
                 qualified_name: format::symbol_hash(name),
                 parent: ParentRef::View,
                 source: None,
-                design_doc: DocHash::ZERO,
+                document: SymbolHash::ZERO,
                 children: vec![],
             }),
         );

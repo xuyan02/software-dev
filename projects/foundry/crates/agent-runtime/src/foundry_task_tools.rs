@@ -638,3 +638,115 @@ fn pretty(value: Value) -> Result<ToolOutput, ToolError> {
         .map_err(|error| ToolError::Failed(error.to_string()))?;
     Ok(ToolOutput::success(content))
 }
+
+pub struct TaskSpawnChildrenTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TaskSpawnChildrenTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskSpawnChildrenTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "task_spawn_children".to_string(),
+            description: "Create child tasks under the current task. Each child carries its own immutable input. Set sequential=true to chain dependencies and run one child at a time."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["task_id", "tasks"],
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" },
+                    "sequential": { "type": "boolean", "default": false },
+                    "tasks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["workflow", "title", "description"],
+                            "properties": {
+                                "workflow": { "type": "string" },
+                                "title": { "type": "string" },
+                                "description": { "type": "string" },
+                                "input": { "type": "object" }
+                            }
+                        }
+                    }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let task_id = parse_uuid(&arguments, "task_id")?;
+        let tasks = arguments
+            .get("tasks")
+            .cloned()
+            .ok_or_else(|| ToolError::InvalidArguments("missing tasks".to_string()))?;
+        let sequential = arguments
+            .get("sequential")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let created = self
+            .client
+            .spawn_task_children(task_id, tasks, sequential)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(created)
+    }
+}
+
+
+pub struct TaskBindActorTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TaskBindActorTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskBindActorTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "task_bind_actor".to_string(),
+            description: "Bind an active human project member to a human task role. \
+                          Agent accounts are rejected; use task_assign_agent for agent roles."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["task_id", "role", "account_id"],
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" },
+                    "role": { "type": "string" },
+                    "account_id": { "type": "string", "format": "uuid" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let task_id = parse_uuid(&arguments, "task_id")?;
+        let role = parse_string(&arguments, "role")?;
+        let account_id = parse_uuid(&arguments, "account_id")?;
+        let result = self
+            .client
+            .bind_task_actor(task_id, &role, account_id)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(result)
+    }
+}

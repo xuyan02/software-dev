@@ -85,6 +85,7 @@ type AssignedTaskRow = (
     String,
     Option<String>,
     String,
+    serde_json::Value,
     OffsetDateTime,
     Option<Uuid>,
     Option<OffsetDateTime>,
@@ -99,6 +100,7 @@ pub struct AssignedTask {
     pub workflow: String,
     pub stage: Option<String>,
     pub state: String,
+    pub input: serde_json::Value,
     pub updated_at: OffsetDateTime,
     pub last_human_comment_id: Option<Uuid>,
     pub last_human_comment_at: Option<OffsetDateTime>,
@@ -113,7 +115,7 @@ impl PostgresStore {
         definition_id: Uuid,
     ) -> Result<Vec<AssignedTask>, RepoError> {
         let rows: Vec<AssignedTaskRow> = sqlx::query_as(
-            "select t.id, t.project_id, t.title, t.workflow, t.stage, t.state, t.updated_at, \
+            "select t.id, t.project_id, t.title, t.workflow, t.stage, t.state, t.input, t.updated_at, \
                     (select c.id from issue_comments c \
                      join task_links l on l.target_id = c.issue_id \
                      where l.task_id = t.id and c.author_kind = 'human' \
@@ -151,6 +153,7 @@ impl PostgresStore {
                     workflow,
                     stage,
                     state,
+                    input,
                     updated_at,
                     last_human_comment_id,
                     last_human_comment_at,
@@ -161,6 +164,7 @@ impl PostgresStore {
                     workflow,
                     stage,
                     state,
+                    input,
                     updated_at,
                     last_human_comment_id,
                     last_human_comment_at,

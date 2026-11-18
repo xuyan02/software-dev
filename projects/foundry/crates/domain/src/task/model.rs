@@ -98,6 +98,14 @@ pub const ACCEPT_OPERATION: &str = "accept";
 /// document annotation, and the analyst is activated again for revision.
 pub const REJECT_OPERATION: &str = "reject";
 
+/// Reserved platform operation that retries a task parked in a retryable
+/// failure stage. The stage declares `retry_to`.
+pub const RETRY_OPERATION: &str = "retry";
+
+/// Reserved platform operation that gives up on a retryable failure and
+/// completes the task with result `abandoned`.
+pub const ABANDON_OPERATION: &str = "abandon";
+
 impl TaskState {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -180,6 +188,10 @@ pub struct TaskDAO {
     pub workflow: WorkflowId,
     pub workflow_version: u32,
     pub title: String,
+    /// Narrative assignment supplied when the task is created. Unlike the
+    /// title it can describe the work item, scope and expected deliverable.
+    #[serde(default)]
+    pub description: String,
     pub state: TaskState,
     pub stage: Option<StageKey>,
     pub result: Option<TaskResult>,
@@ -192,6 +204,10 @@ pub struct TaskDAO {
     /// the public Task view.
     #[serde(default)]
     pub task_variables: BTreeMap<String, VariableValue>,
+    /// Immutable input supplied when the task was created. Used by tasks that
+    /// process a bounded work item, such as a group of source files.
+    #[serde(default)]
+    pub input: serde_json::Value,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -216,11 +232,13 @@ impl TaskDAO {
             workflow,
             workflow_version,
             title: title.into(),
+            description: String::new(),
             state: TaskState::Pending,
             stage: None,
             result: None,
             stage_variables: BTreeMap::new(),
             task_variables: BTreeMap::new(),
+            input: serde_json::Value::Null,
             created_at: now,
             updated_at: now,
             completed_at: None,
@@ -279,10 +297,14 @@ pub struct Task {
     pub workflow: WorkflowId,
     pub workflow_version: u32,
     pub title: String,
+    #[serde(default)]
+    pub description: String,
     pub state: TaskState,
     pub dispatch_state: TaskDispatchState,
     pub stage: Option<StageKey>,
     pub result: Option<TaskResult>,
+    #[serde(default)]
+    pub input: serde_json::Value,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -318,6 +340,8 @@ pub struct TaskActor {
     pub role_key: RoleKey,
     pub account_id: Uuid,
     pub display_name: String,
+    #[serde(default)]
+    pub agent_definition_id: Option<Uuid>,
     pub active: bool,
     pub work: Option<String>,
 }
