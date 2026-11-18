@@ -9,7 +9,7 @@ use crate::dto::{
     CommentIssueRequest,
     CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest,
     CreateInspectionRequest, CreateMergeRequestForm, CreateMergeRequestRequest, CreateProjectRequest,
-    CreateWorkflowRequest,
+    CreateTriggerRequest, CreateWorkflowRequest, NewTriggerForm, UpdateTriggerRequest,
     DecideAnchorDocumentRequest, DecideRequirementsRequest, DeleteDesignSpaceBranchRequest,
     IssueListQuery, IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse,
     MemberRoleForm, MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm,
@@ -36,8 +36,8 @@ use foundry_app::{
     RemoveProjectMember, RemoveTaskLink, RequirementsApprovalResult, RequirementsApprovalView,
     RequirementsDocumentUseCases, RequirementsDocumentView, RequirementsDraftView,
     ResolveAnchorAnnotation, ResolveRequirementsAnnotation, SaveWorkflowLayout, ServiceError,
-    NewTask, TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer, WorkflowUseCases,
-    hash_token, new_session_token,
+    CreateTrigger, NewTask, TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer,
+    UpdateTrigger, WorkflowUseCases, hash_token, new_session_token,
 };
 use foundry_domain::{
     AccountRole, Actor, AllowedOperation, ApprovalDecision, Issue, OperationName, Project,
@@ -184,6 +184,7 @@ pub struct AppState {
     pub accounts: Arc<dyn AccountUseCases>,
     pub projects: Arc<dyn ProjectUseCases>,
     pub tasks: Arc<dyn TaskUseCases>,
+    pub triggers: Arc<dyn foundry_app::TriggerUseCases>,
     pub agents: Arc<dyn AgentAdminUseCases>,
     pub agent_logs: Arc<foundry_shared::AgentLogFiles>,
     pub workflows: Arc<dyn WorkflowUseCases>,
@@ -1093,10 +1094,16 @@ pub async fn project_page(
     match state.projects.detail(session.account.actor(), id).await {
         Ok(detail) => {
             let members = member_infos(&detail);
+            let triggers = state
+                .triggers
+                .list(session.account.actor(), id)
+                .await
+                .unwrap_or_default();
             Html(foundry_web::project_page(
                 &session.context,
                 &detail.project,
                 &members,
+                &triggers,
                 account_can_manage(&session.account, &detail.project),
                 None,
             ))
@@ -2630,12 +2637,18 @@ async fn project_detail_error(
     match state.projects.detail(session.account.actor(), id).await {
         Ok(detail) => {
             let members = member_infos(&detail);
+            let triggers = state
+                .triggers
+                .list(session.account.actor(), id)
+                .await
+                .unwrap_or_default();
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 Html(foundry_web::project_page(
                     &session.context,
                     &detail.project,
                     &members,
+                    &triggers,
                     account_can_manage(&session.account, &detail.project),
                     Some(&message),
                 )),
@@ -2978,6 +2991,246 @@ async fn enqueue_issue_triage(
         .await
     {
         tracing::warn!(issue_id = %issue.id, task_id = %task.id, %error, "cannot link triage task to issue");
+    }
+}
+
+pub async fn list_triggers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+) -> Result<Json<Vec<foundry_domain::Trigger>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(
+        state
+            .triggers
+            .list(session.account.actor(), project_id)
+            .await?,
+    ))
+}
+
+pub async fn create_trigger(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<CreateTriggerRequest>,
+) -> Result<(StatusCode, Json<foundry_domain::Trigger>), ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let title = body
+        .title_template
+        .unwrap_or_else(|| body.name.clone());
+    let trigger = state
+        .triggers
+        .create(
+            session.account.actor(),
+            CreateTrigger {
+                project_id,
+                name: body.name,
+                description: body.description,
+                workflow_id: body.workflow_id,
+                input: body.input,
+                schedule: body.schedule,
+                title_template: title,
+                description_template: body.description_template.unwrap_or_default(),
+                created_by_id: session.account.id,
+            },
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(trigger)))
+}
+
+pub async fn update_trigger(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<UpdateTriggerRequest>,
+) -> Result<Json<foundry_domain::Trigger>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(
+        state
+            .triggers
+            .update(
+                session.account.actor(),
+                UpdateTrigger {
+                    project_id,
+                    id: trigger_id,
+                    name: body.name,
+                    description: body.description,
+                    input: body.input,
+                    schedule: body.schedule,
+                    title_template: body.title_template,
+                    description_template: body.description_template,
+                    enabled: body.enabled,
+                },
+            )
+            .await?,
+    ))
+}
+
+pub async fn delete_trigger(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    state
+        .triggers
+        .delete(session.account.actor(), project_id, trigger_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn run_trigger(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Result<(StatusCode, Json<foundry_domain::TriggerRun>), ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let run = state
+        .triggers
+        .run(session.account.actor(), project_id, trigger_id)
+        .await?;
+    Ok((StatusCode::CREATED, Json(run)))
+}
+
+pub async fn list_trigger_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<Vec<foundry_domain::TriggerRun>>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    Ok(Json(
+        state
+            .triggers
+            .runs(session.account.actor(), project_id, trigger_id)
+            .await?,
+    ))
+}
+
+pub async fn create_trigger_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<NewTriggerForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let project = match state
+        .projects
+        .get(session.account.actor(), project_id)
+        .await
+    {
+        Ok(project) => project,
+        Err(error) => return auth::web_error(error),
+    };
+    if !can_contribute_to_project(&session.account, &project) {
+        return auth::web_forbidden("当前项目角色不能创建触发器。");
+    }
+    let input = if form.scope.trim().is_empty() {
+        json!({})
+    } else {
+        json!({ "scope": form.scope.trim() })
+    };
+    match state
+        .triggers
+        .create(
+            session.account.actor(),
+            CreateTrigger {
+                project_id,
+                name: form.name.clone(),
+                description: String::new(),
+                workflow_id: form.workflow_id,
+                input,
+                schedule: form.schedule,
+                title_template: form.name,
+                description_template: "由触发器 {trigger} 启动。".to_string(),
+                created_by_id: session.account.id,
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{project_id}")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn run_trigger_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .triggers
+        .run(session.account.actor(), project_id, trigger_id)
+        .await
+    {
+        Ok(run) => Redirect::to(&format!("/tasks/{}", run.task_id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn toggle_trigger_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let trigger = match state
+        .triggers
+        .get(session.account.actor(), project_id, trigger_id)
+        .await
+    {
+        Ok(Some(trigger)) => trigger,
+        Ok(None) => return auth::web_error(ServiceError::not_found("trigger", trigger_id)),
+        Err(error) => return auth::web_error(error),
+    };
+    match state
+        .triggers
+        .update(
+            session.account.actor(),
+            UpdateTrigger {
+                project_id,
+                id: trigger_id,
+                name: None,
+                description: None,
+                input: None,
+                schedule: None,
+                title_template: None,
+                description_template: None,
+                enabled: Some(!trigger.enabled),
+            },
+        )
+        .await
+    {
+        Ok(_) => Redirect::to(&format!("/projects/{project_id}")).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn delete_trigger_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, trigger_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    match state
+        .triggers
+        .delete(session.account.actor(), project_id, trigger_id)
+        .await
+    {
+        Ok(()) => Redirect::to(&format!("/projects/{project_id}")).into_response(),
+        Err(error) => auth::web_error(error),
     }
 }
 

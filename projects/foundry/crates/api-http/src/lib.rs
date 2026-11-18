@@ -127,6 +127,23 @@ pub fn router(state: AppState) -> Router {
             "/projects/{id}/merge-requests/{merge_request_id}/operations",
             post(routes::merge_request_operation_form),
         )
+        .route(
+            "/projects/{id}/inspections",
+            post(routes::create_inspection_form),
+        )
+        .route("/projects/{id}/triggers", post(routes::create_trigger_form))
+        .route(
+            "/projects/{id}/triggers/{trigger_id}/run",
+            post(routes::run_trigger_form),
+        )
+        .route(
+            "/projects/{id}/triggers/{trigger_id}/toggle",
+            post(routes::toggle_trigger_form),
+        )
+        .route(
+            "/projects/{id}/triggers/{trigger_id}/delete",
+            post(routes::delete_trigger_form),
+        )
         .route("/projects/{id}/edit", post(routes::update_project_form))
         .route("/projects/{id}/delete", post(routes::delete_project_form))
         .route("/projects/{id}/members", post(routes::add_member_form))
@@ -284,6 +301,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/{project}/inspections",
             post(routes::create_inspection),
+        )
+        .route(
+            "/api/v1/projects/{project}/triggers",
+            get(routes::list_triggers).post(routes::create_trigger),
+        )
+        .route(
+            "/api/v1/projects/{project}/triggers/{trigger_id}",
+            axum::routing::patch(routes::update_trigger).delete(routes::delete_trigger),
+        )
+        .route(
+            "/api/v1/projects/{project}/triggers/{trigger_id}/run",
+            post(routes::run_trigger),
+        )
+        .route(
+            "/api/v1/projects/{project}/triggers/{trigger_id}/runs",
+            get(routes::list_trigger_runs),
         )
         .route(
             "/api/v1/issues",

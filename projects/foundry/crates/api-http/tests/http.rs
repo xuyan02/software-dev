@@ -14,7 +14,8 @@ use foundry_app::{
     DesignSpaceGatewayError, IssueRepository, IssueService, MergeRequestRepository,
     MergeRequestService, ProjectRepository, ProjectService, RequirementsDocumentService,
     RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases,
-    TaskRepository, TaskService, TaskUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    TaskRepository, TaskService, TaskUseCases, TriggerService,
+    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::{
     Account, AccountKind, AccountRole, ProjectRole, RoleKey, TaskState, WorkflowId,
@@ -207,11 +208,18 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
     dispatcher.dispatch_ready().await.unwrap();
     dispatcher.process_pending(100).await.unwrap();
 
+    let triggers: Arc<dyn TriggerUseCases> = Arc::new(TriggerService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&tasks),
+    ));
     let router = foundry_api_http::router(AppState {
         issues: Arc::new(issues),
         accounts,
         projects,
         tasks: tasks.clone(),
+        triggers,
         agents: Arc::new(MemoryAgentAdmin),
         agent_logs: Arc::new(foundry_shared::AgentLogFiles::new(
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
@@ -1092,6 +1100,72 @@ async fn issue_triage_result_is_structured() {
 }
 
 #[tokio::test]
+async fn triggers_can_be_created_and_run_manually() {
+    let harness = harness().await;
+    let trigger = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/projects/{}/triggers", harness.project_id),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "name": "Daily design check",
+                "workflow_id": "design_inspection",
+                "schedule": "manual",
+                "input": { "scope": "design/app" }
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(trigger["schedule"], "manual");
+    let trigger_id = trigger["id"].as_str().unwrap();
+
+    let listed = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{}/triggers", harness.project_id),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+
+    let run = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/triggers/{trigger_id}/run",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(run["reason"], "manual");
+    let task_id = run["task_id"].as_str().unwrap();
+    let task = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{task_id}"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(task["workflow"], "design_inspection");
+    assert_eq!(task["input"]["scope"], "design/app");
+}
+
+#[tokio::test]
 async fn inspections_create_specialized_tasks() {
     let harness = harness().await;
     let (status, _, body) = send(
@@ -1572,11 +1646,18 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         "Administrator".to_string(),
         Some("setup-pass"),
     ));
+    let triggers: Arc<dyn TriggerUseCases> = Arc::new(TriggerService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&tasks),
+    ));
     let router = foundry_api_http::router(AppState {
         issues: Arc::new(issues),
         accounts: accounts.clone(),
         projects,
         tasks,
+        triggers,
         agents: Arc::new(MemoryAgentAdmin),
         agent_logs: Arc::new(foundry_shared::AgentLogFiles::new(
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),

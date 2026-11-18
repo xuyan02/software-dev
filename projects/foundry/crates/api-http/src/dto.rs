@@ -32,6 +32,48 @@ pub struct CreateInspectionRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateTriggerRequest {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub workflow_id: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+    pub schedule: String,
+    #[serde(default)]
+    pub title_template: Option<String>,
+    #[serde(default)]
+    pub description_template: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateTriggerRequest {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub schedule: Option<String>,
+    #[serde(default)]
+    pub title_template: Option<String>,
+    #[serde(default)]
+    pub description_template: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct NewTriggerForm {
+    pub name: String,
+    pub workflow_id: String,
+    pub schedule: String,
+    #[serde(default)]
+    pub scope: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct TriageIssueRequest {
     pub classification: IssueClassification,
     pub root_cause: String,

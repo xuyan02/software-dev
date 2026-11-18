@@ -39,6 +39,7 @@ mod merge_request;
 mod requirements_doc;
 mod task;
 mod task_link;
+mod trigger;
 mod workflow;
 
 pub use task::*;

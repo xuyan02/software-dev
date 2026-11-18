@@ -22,6 +22,7 @@ mod anchor_document;
 mod merge_request;
 mod requirements_doc;
 mod task;
+mod trigger;
 mod task_link;
 mod workflow;
 
@@ -43,6 +44,8 @@ pub struct InMemoryStore {
     pub(crate) requirements_docs: RwLock<MemoryRequirementDocs>,
     pub(crate) task_links: RwLock<MemoryTaskLinks>,
     pub(crate) merge_requests: RwLock<HashMap<Uuid, foundry_domain::DesignSpaceMergeRequestDAO>>,
+    pub(crate) triggers: RwLock<Vec<foundry_domain::Trigger>>,
+    pub(crate) trigger_runs: RwLock<Vec<foundry_domain::TriggerRun>>,
 }
 
 impl InMemoryStore {

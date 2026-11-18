@@ -22,8 +22,8 @@ use foundry_app::{
     AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
     DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, ProjectService,
     RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
-    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases,
-    WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TriggerService,
+    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::OperationName;
 use foundry_shared::{AgentLogFiles, Config};
@@ -252,11 +252,32 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&store) as Arc<dyn foundry_app::AccountRepository>,
         design_space_gateway,
     ));
+    let trigger_service = Arc::new(TriggerService::new(
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&store),
+        Arc::clone(&tasks),
+    ));
+    let triggers: Arc<dyn TriggerUseCases> = trigger_service.clone();
+    let scheduler = Arc::clone(&trigger_service);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            if let Err(error) = scheduler
+                .run_due(time::OffsetDateTime::now_utc())
+                .await
+            {
+                tracing::warn!(%error, "trigger scheduler sweep failed");
+            }
+        }
+    });
     let state = AppState {
         issues: Arc::new(issues),
         accounts,
         projects,
         tasks,
+        triggers,
         agents,
         agent_logs,
         workflows: workflows_admin,

@@ -11,8 +11,8 @@ use foundry_domain::{
     MergeRequestChangeStatus,
     MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project, ProjectRole,
     ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
-    TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowDefinition,
-    WorkflowOption, WorkflowOwner,
+    TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, Trigger,
+    WorkflowDefinition, WorkflowOption, WorkflowOwner,
 };
 use serde::Serialize;
 
@@ -3623,6 +3623,7 @@ pub fn project_page(
     ctx: &ConsoleContext,
     project: &Project,
     members: &[MemberInfo],
+    triggers: &[Trigger],
     can_manage: bool,
     error: Option<&str>,
 ) -> String {
@@ -3759,33 +3760,84 @@ pub fn project_page(
         String::new()
     };
 
-    let inspection_form = if ctx.can_contribute() {
-        let rows = [
-            ("consistency", "代码-设计一致性检查", "比较代码和设计空间，例如 src 或 design/app"),
-            ("style", "代码风格检查", "检查现有代码风格，例如 src"),
-            ("logic", "代码逻辑检查", "检查现有代码逻辑，例如 src/auth"),
-            ("cohesion", "逻辑聚合度检查", "检查模块内聚和耦合，例如 src/auth"),
-            ("design", "设计检查", "检查设计文档和结构，例如 design/app"),
-        ]
-        .iter()
-        .map(|(kind, label, placeholder)| {
-            format!(
-                r#"<tr><td><strong>{label}</strong></td><td><form class="inline-form" method="post" action="/projects/{id}/inspections"><input type="hidden" name="kind" value="{kind}"><input name="scope" placeholder="{placeholder}"> <button type="submit">立即运行</button></form></td></tr>"#,
-                id = project.id,
-                kind = kind,
-                label = label,
-                placeholder = placeholder,
-            )
-        })
-        .collect::<String>();
+    let trigger_rows = if triggers.is_empty() {
+        r#"<tr><td colspan="6" class="empty">还没有触发器。创建一个设计检查、代码检查或一致性检查触发器。</td></tr>"#.to_string()
+    } else {
+        triggers
+            .iter()
+            .map(|trigger| {
+                let run = if ctx.can_contribute() {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/projects/{project}/triggers/{id}/run"><button type="submit">立即运行</button></form>"#,
+                        project = project.id,
+                        id = trigger.id,
+                    )
+                } else {
+                    String::new()
+                };
+                let manage = if can_manage {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/projects/{project}/triggers/{id}/toggle"><button class="secondary" type="submit">{toggle}</button></form>
+<form class="inline-form" method="post" action="/projects/{project}/triggers/{id}/delete" onsubmit="return confirm('删除这个触发器？');"><button class="danger" type="submit">删除</button></form>"#,
+                        project = project.id,
+                        id = trigger.id,
+                        toggle = if trigger.enabled { "停用" } else { "启用" },
+                    )
+                } else {
+                    String::new()
+                };
+                format!(
+                    r#"<tr><td><strong>{name}</strong><br><code>{workflow}</code></td><td><code>{schedule}</code></td><td>{status}</td><td>{last}</td><td>{next}</td><td class="ds-right">{run}{manage}</td></tr>"#,
+                    name = escape(&trigger.name),
+                    workflow = escape(&trigger.workflow_id),
+                    schedule = escape(&trigger.schedule),
+                    status = if trigger.enabled { "启用" } else { "停用" },
+                    last = trigger
+                        .last_run_at
+                        .map(|at| at.date().to_string())
+                        .unwrap_or_else(|| "—".to_string()),
+                    next = trigger
+                        .next_run_at
+                        .map(|at| at.date().to_string())
+                        .unwrap_or_else(|| "—".to_string()),
+                    run = run,
+                    manage = manage,
+                )
+            })
+            .collect::<String>()
+    };
+    let trigger_form = if can_manage {
         format!(
-            r#"<h2>定时任务</h2>
-<p class="hint">当前支持手动触发；定时调度器接入后会按周期自动创建这些任务。</p>
-<table><thead><tr><th>任务</th><th>手动触发</th></tr></thead><tbody>{rows}</tbody></table>"#
+            r#"<h3>创建触发器</h3>
+<form method="post" action="/projects/{id}/triggers">
+  <div class="grid">
+    <div class="field"><label for="trigger-name">名称</label><input id="trigger-name" name="name" required placeholder="例如 每日设计检查"></div>
+    <div class="field"><label for="trigger-workflow">流程</label><select id="trigger-workflow" name="workflow_id">
+      <option value="design_inspection">设计检查</option>
+      <option value="consistency_inspection">代码-设计一致性检查</option>
+      <option value="style_inspection">代码风格检查</option>
+      <option value="logic_inspection">代码逻辑检查</option>
+      <option value="cohesion_inspection">逻辑聚合度检查</option>
+      <option value="design_consistency_maintenance">技术设计一致性维护</option>
+    </select></div>
+    <div class="field"><label for="trigger-schedule">计划</label><input id="trigger-schedule" name="schedule" required placeholder="manual / every:60 / daily@09:00"></div>
+    <div class="field"><label for="trigger-scope">范围（可选）</label><input id="trigger-scope" name="scope" placeholder="例如 src 或 design/app"></div>
+  </div>
+  <p class="hint">计划使用 UTC；manual 表示只手动运行。</p>
+  <div class="actions"><button type="submit">创建触发器</button></div>
+</form>"#,
+            id = project.id,
         )
     } else {
         String::new()
     };
+    let triggers_section = format!(
+        r#"<h2>触发器</h2><p class="hint">触发器会创建任务；可以按计划运行，也可以点“立即运行”。</p>
+<table><thead><tr><th>名称 / 流程</th><th>计划</th><th>状态</th><th>上次运行</th><th>下次运行</th><th></th></tr></thead><tbody>{rows}</tbody></table>
+{form}"#,
+        rows = trigger_rows,
+        form = trigger_form,
+    );
     let short_id = project.id.to_string()[..8].to_string();
     let design_space_display = escape(&display_percent_encoded(&project.design_space_url));
     let body = format!(
@@ -3804,7 +3856,7 @@ pub fn project_page(
 </dl>
 <h2>描述</h2><div class="card">{description}</div>
 <p><a class="button secondary" href="/projects/{id}/design-space">设计空间</a> <a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a> <a class="button secondary" href="/projects/{id}/documents/design">详细设计</a> <a class="button secondary" href="/projects/{id}/documents/development">开发记录</a> <a class="button secondary" href="/projects/{id}/documents/test_plan">测试计划</a> <a class="button secondary" href="/projects/{id}/documents/test_report">测试报告</a></p>
-{inspection_form}
+{triggers_section}
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>
@@ -3827,7 +3879,7 @@ pub fn project_page(
             .as_deref()
             .map(escape)
             .unwrap_or_else(|| "未填写".to_string()),
-        inspection_form = inspection_form,
+        triggers_section = triggers_section,
         member_rows = member_rows,
         manage = manage,
     );
@@ -6340,7 +6392,7 @@ mod tests {
             Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
         project.design_space_url = "ds://u@h/0b16bc99e483d732".to_string();
         let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
-        let html = project_page(&ctx, &project, &[], false, None);
+        let html = project_page(&ctx, &project, &[], &[], false, None);
         assert!(html.contains("git@example.com:test/repo.git"));
         assert!(html.contains("ds://u@h/0b16bc99e483d732"));
         assert!(html.contains(&project.id.to_string()[..8]));
@@ -6663,11 +6715,11 @@ mod tests {
             Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
         let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
 
-        let manager_html = project_page(&ctx, &project, &[], true, None);
+        let manager_html = project_page(&ctx, &project, &[], &[], true, None);
         assert!(manager_html.contains(&format!("/projects/{}/delete", project.id)));
         assert!(manager_html.contains("删除项目"));
 
-        let member_html = project_page(&ctx, &project, &[], false, None);
+        let member_html = project_page(&ctx, &project, &[], &[], false, None);
         assert!(!member_html.contains("/delete"));
     }
 

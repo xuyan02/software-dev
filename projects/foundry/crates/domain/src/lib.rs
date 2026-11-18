@@ -18,6 +18,7 @@ pub mod requirements_doc;
 pub mod state_machine;
 pub mod task;
 pub mod task_link;
+pub mod trigger;
 pub mod workflow;
 
 pub use account::*;
@@ -34,6 +35,7 @@ pub use requirements_doc::*;
 pub use state_machine::*;
 pub use task::*;
 pub use task_link::*;
+pub use trigger::*;
 pub use workflow::*;
 
 use serde::{Deserialize, Serialize};
