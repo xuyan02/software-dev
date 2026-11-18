@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use foundry_app::ports::DesignSpaceProvisioner;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Start the single local `ds-server` when `design_space_url` is not configured.
@@ -13,10 +13,12 @@ pub async fn start_local(
     root: PathBuf,
     listen: String,
     token_file: PathBuf,
-) -> Result<(tokio::process::Child, String, u16, String), String> {
+) -> Result<(tokio::process::Child, String, u16, String, String), String> {
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("create design-space root {}: {error}", root.display()))?;
-    let token = ensure_token(&token_file)?;
+    let admin_token = ensure_token(&token_file)?;
+    let agent_token_file = agent_token_file(&token_file);
+    let agent_token = ensure_token(&agent_token_file)?;
 
     let listen = normalize_listen(&listen)?;
     let port = listen_port(&listen)?;
@@ -34,6 +36,8 @@ pub async fn start_local(
         .arg("--listen")
         .arg(&listen)
         .arg("--token-file")
+        .arg(&agent_token_file)
+        .arg("--admin-token-file")
         .arg(&token_file);
     command.kill_on_drop(true);
     command.stdout(std::process::Stdio::inherit());
@@ -53,9 +57,9 @@ pub async fn start_local(
         }
         let request = client
             .get(format!("{base}/repos"))
-            .header("Authorization", format!("Bearer {token}"));
+            .header("Authorization", format!("Bearer {admin_token}"));
         if request.send().await.is_ok() {
-            return Ok((child, base, port, token));
+            return Ok((child, base, port, admin_token, agent_token));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -64,6 +68,16 @@ pub async fn start_local(
         "ds-server did not answer within 5s; rebuild it with `cargo build --bins` and retry"
             .to_string(),
     )
+}
+
+pub fn agent_token_file(admin_token_file: &Path) -> PathBuf {
+    let mut path = admin_token_file.to_path_buf();
+    let name = path
+        .file_name()
+        .map(|name| format!("{}.agent", name.to_string_lossy()))
+        .unwrap_or_else(|| "design-space-token.agent".to_string());
+    path.set_file_name(name);
+    path
 }
 
 fn ensure_token(path: &PathBuf) -> Result<String, String> {
@@ -184,5 +198,19 @@ impl DesignSpaceProvisioner for HttpDesignSpaceProvisioner {
             .await
             .map_err(|error| format!("design space response: {error}"))?;
         Ok(format!("{}/{}", self.agent_base, created.name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derives_a_separate_agent_token_file() {
+        let admin = PathBuf::from("/tmp/design-space-token");
+        assert_eq!(
+            agent_token_file(&admin),
+            PathBuf::from("/tmp/design-space-token.agent")
+        );
     }
 }

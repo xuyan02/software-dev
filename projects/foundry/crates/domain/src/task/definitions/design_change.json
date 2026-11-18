@@ -2,7 +2,8 @@
   "schema_version": 1,
   "roles": [
     {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "design_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1}
+    {"name": "design_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "acceptor", "kind": "human", "min_actors": 1, "max_actors": 1}
   ],
   "initial_stage": "analysis",
   "stages": [
@@ -30,7 +31,7 @@
         "failed": {"type": "bool", "display_name": "Failed"}
       },
       "operations": [
-        {"name": "designed", "display_name": "设计修改完成", "description": "设计空间已更新、提交并推送。", "roles": ["designer"], "action": "designed = true"},
+        {"name": "designed", "display_name": "设计修改完成", "description": "设计修改已提交并推送到 design-change/<task-id> 分支。", "roles": ["designer"], "action": "designed = true"},
         {"name": "failed", "display_name": "设计修改失败", "description": "无法完成设计修改。", "roles": ["designer"], "action": "failed = true"}
       ],
       "transitions": [
@@ -42,16 +43,90 @@
       "name": "design_review",
       "active_roles": ["design_reviewer"],
       "vars": {
+        "decision": {"type": "string", "display_name": "Decision"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "设计通过", "description": "设计修改和影响范围通过，并已创建/刷新合并请求。", "roles": ["design_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "设计打回", "description": "设计修改需要继续调整。", "roles": ["design_reviewer"], "action": "decision = 'rejected'"},
+        {"name": "failed", "display_name": "设计审查失败", "description": "无法完成审查或创建合并请求。", "roles": ["design_reviewer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "design"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
       "operations": [
-        {"name": "approved", "display_name": "设计通过", "description": "设计修改和影响范围通过。", "roles": ["design_reviewer"], "action": "decision = 'approved'"},
-        {"name": "rejected", "display_name": "设计打回", "description": "设计修改需要继续调整。", "roles": ["design_reviewer"], "action": "decision = 'rejected'"}
+        {"name": "approved", "display_name": "人类批准", "description": "人类批准当前设计内容和合并请求。", "roles": ["acceptor"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "人类打回", "description": "设计修改需要继续调整。", "roles": ["acceptor"], "action": "decision = 'rejected'"}
       ],
       "transitions": [
-        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'approved'", "to": "merge"},
         {"on": "decision == 'rejected'", "to": "design"}
       ]
+    },
+    {
+      "name": "merge",
+      "active_roles": ["design_reviewer"],
+      "vars": {
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "conflict": {"type": "bool", "display_name": "Conflict"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "merged", "display_name": "合入完成", "description": "设计变更已合入 source。", "roles": ["design_reviewer"], "action": "merged = true"},
+        {"name": "conflict", "display_name": "存在冲突", "description": "source 在审批期间前进，需要 rebase。", "roles": ["design_reviewer"], "action": "conflict = true"},
+        {"name": "failed", "display_name": "合入失败", "description": "无法合入设计变更。", "roles": ["design_reviewer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "merged", "to": "cleanup"},
+        {"on": "conflict", "to": "conflict_resolution"},
+        {"on": "failed", "to": "failed"}
+      ]
+    },
+    {
+      "name": "conflict_resolution",
+      "active_roles": ["designer"],
+      "vars": {
+        "resolved": {"type": "bool", "display_name": "Resolved"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "resolved", "display_name": "冲突已解决", "description": "design-change 分支已 rebase，并刷新合并请求。", "roles": ["designer"], "action": "resolved = true"},
+        {"name": "failed", "display_name": "无法解决", "description": "冲突无法解决。", "roles": ["designer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "resolved", "to": "design_review"},
+        {"on": "failed", "to": "failed"}
+      ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": ["design_reviewer"],
+      "vars": {
+        "cleaned": {"type": "bool", "display_name": "Cleaned"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "cleaned", "display_name": "清理完成", "description": "design-change 临时分支已删除。", "roles": ["design_reviewer"], "action": "cleaned = true"},
+        {"name": "failed", "display_name": "清理失败", "description": "临时分支删除失败。", "roles": ["design_reviewer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "cleaned", "action": "result = 'approved'", "to": "ended"},
+        {"on": "failed", "to": "cleanup_failed"}
+      ]
+    },
+    {
+      "name": "cleanup_failed",
+      "active_roles": [],
+      "retry_to": "cleanup"
     },
     {
       "name": "failed",

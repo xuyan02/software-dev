@@ -94,6 +94,29 @@ impl TaskService {
             .ok_or_else(|| ServiceError::not_found("task", id))
     }
 
+    /// Re-evaluate every task in a project. Used when a project policy toggle
+    /// changes, so tasks already waiting in a human stage pick it up.
+    pub async fn reevaluate_project(&self, project_id: Uuid) -> Result<usize, ServiceError> {
+        let rows = self.repository.list(project_id, TaskFilter::default()).await?;
+        let mut processed = 0;
+        for row in rows {
+            match self
+                .dispatcher
+                .process(row.task.id, Some(TaskCommand::Reevaluate))
+                .await
+            {
+                Ok(()) => processed += 1,
+                Err(error) => tracing::warn!(
+                    task_id = %row.task.id,
+                    project_id = %project_id,
+                    %error,
+                    "cannot re-evaluate task after project policy change"
+                ),
+            }
+        }
+        Ok(processed)
+    }
+
     pub async fn get(
         &self,
         project_id: Uuid,
@@ -666,6 +689,8 @@ pub trait TaskUseCases: Send + Sync {
     /// Resolve the project that owns a task; the task itself never moves.
     async fn project_id(&self, id: Uuid) -> Result<Uuid, ServiceError>;
 
+    async fn reevaluate_project(&self, project_id: Uuid) -> Result<usize, ServiceError>;
+
     async fn get(
         &self,
         project_id: Uuid,
@@ -745,6 +770,10 @@ pub trait TaskUseCases: Send + Sync {
 impl TaskUseCases for TaskService {
     async fn project_id(&self, id: Uuid) -> Result<Uuid, ServiceError> {
         self.project_of(id).await
+    }
+
+    async fn reevaluate_project(&self, project_id: Uuid) -> Result<usize, ServiceError> {
+        self.reevaluate_project(project_id).await
     }
 
     async fn get(

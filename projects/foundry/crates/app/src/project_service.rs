@@ -211,6 +211,11 @@ where
                 .update(command.name, command.description, command.git_branch)
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
+        if let Some(skip_human_review) = command.skip_human_review {
+            project
+                .set_skip_human_review(skip_human_review)
+                .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        }
         if command.status == Some(ProjectStatus::Archived) {
             project
                 .archive()

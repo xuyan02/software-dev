@@ -12,7 +12,17 @@
 2. 读取文档：
    - 项目文档、需求文档等锚点文档：用 `document` 的 `action = "content"` 读取全文，用
      `action = "toc"` 读取章节和锚点 key，用 `action = "annotations_list"` 读取已有标注。
-   - 其他文档：使用该文档类型对应的读取和标注工具。
+   - 设计空间文档：使用 `ds` 命令。先确定分支：
+     - `code_summary_group`：`design-consistency-groups/<task-id>`；
+     - `design_consistency_maintenance`：任务 `input.target_branch`，或当前集成分支。
+     然后执行：
+     ```bash
+     ds checkout <branch> --force
+     ds pull --branch <branch>
+     ds show <qname>
+     ds doc show <qname>
+     ds doc comment list <section>
+     ```
 3. 需要了解背景且工具可用时，用 `task_links_list` 找到当前任务关联的 Issue，再用
    `issue_get` 读取标题、正文和评论。只读取，不发表评论；没有这些工具时，直接依据文档和
    任务详情判断。
@@ -34,6 +44,7 @@
 - 章节缺失或字段为空；
 - 内容是否完整、正确、可度量或可行；
 - 范围、约束、风险、成本、排期或架构决策；
+- 对象关系、依赖、模块划分、基础同步或文档引用是否正确；
 - 文档所表达的决策本身是否正确或完整。
 
 ## 写标注
@@ -43,7 +54,20 @@
 - 项目文档、需求文档等锚点文档：用 `document` 的 `action = "annotate"`；
   `anchor` 传问题所在章节的 key，从 `toc` 获取；无法定位到具体锚点时，标注最近的父章节；
   `quote` 引用原文中的问题短语；`body` 给出具体改写建议。
-- 其他文档：使用该文档类型对应的标注工具。
+- 设计空间文档：用 DS 评论，不修改正文：
+
+  ```bash
+  ds doc comment add <section-qname> --text '原文：...。问题：...。建议改为：...。'
+  ```
+
+  优先使用对象 `document:` 指向的 Section；没有文档 Section 时使用所属 File/Directory 的 Section。
+  评论必须提交并推送到当前分支，否则修改阶段看不到：
+
+  ```bash
+  ds add -A
+  ds commit -m "Design style review comments" --author style-review
+  ds push --branch <branch>
+  ```
 - 对“系统平台原生”这类难以理解的表达，指出它可能表示哪几种意思，再要求改成具体说法或补充定义。
 - 不重复已有标注。
 - 不修改文档正文。
@@ -51,8 +75,10 @@
 ## 结论
 
 1. 调用 `task_allowed_operations`。
-2. 只要写了标注，就必须调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `rejected` 操作名，任务回到撰写阶段。
-3. 一条标注都没写时，才调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的 `approved` 操作名。
+2. 只要写了标注或 DS 评论，就必须调用 `task_operation`，`operation` 使用
+   `task_allowed_operations` 返回的当前阶段 `rejected` 操作名，任务回到修改阶段。
+3. 一条标注/评论都没写时，才调用 `task_operation`，`operation` 使用当前阶段 `approved` 操作名。
+   不要跨阶段选择操作名。
 4. 你不审批、不发布。
 
 ## 不要做的事

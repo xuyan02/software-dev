@@ -388,6 +388,11 @@ where
             .get(project_id)
             .await?
             .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        if project.is_archived() {
+            return Err(ServiceError::Validation(
+                "项目已归档，触发器不能创建任务".to_string(),
+            ));
+        }
         let parent_id = project.root_task_id.ok_or_else(|| {
             ServiceError::Validation("project has no root task".to_string())
         })?;

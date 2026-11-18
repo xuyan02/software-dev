@@ -1,9 +1,9 @@
 //! Design-space merge requests.
 //!
-//! A merge request is only branch/commit metadata plus the review Task that
-//! decides it. Approval state is never stored here: it is derived from the
-//! linked Task state, stage and result. The Task is the source of truth for
-//! reviewers, operations, comments and the audit trail.
+//! A merge request is branch/commit metadata plus the review Task that decides
+//! it. The Task is the source of truth for reviewers, operations, comments and
+//! the audit trail. The approved design content digest is stored here because
+//! it binds the human approval to the content, not to comment metadata.
 
 use crate::{Task, TaskDAO, TaskState};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,17 @@ pub struct DesignSpaceMergeRequestDAO {
     /// Set only after the fast-forward merge succeeded.
     #[serde(default)]
     pub merge_commit: Option<String>,
+    /// Design content digest approved by the human reviewer. Comments are
+    /// excluded so a cleanup commit does not invalidate the approval.
+    #[serde(default)]
+    pub approved_content_digest: Option<String>,
+    /// Source commit whose content was approved.
+    #[serde(default)]
+    pub approved_source_commit: Option<String>,
+    #[serde(default)]
+    pub approved_by: Option<Uuid>,
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    pub approved_at: Option<OffsetDateTime>,
     pub created_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -61,6 +72,11 @@ pub struct DesignSpaceMergeRequest {
     pub target_commit: String,
     pub task_id: Uuid,
     pub merge_commit: Option<String>,
+    pub approved_content_digest: Option<String>,
+    pub approved_source_commit: Option<String>,
+    pub approved_by: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub approved_at: Option<OffsetDateTime>,
     pub created_by: Uuid,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -81,6 +97,10 @@ impl From<DesignSpaceMergeRequestDAO> for DesignSpaceMergeRequest {
             target_commit: value.target_commit,
             task_id: value.task_id,
             merge_commit: value.merge_commit,
+            approved_content_digest: value.approved_content_digest,
+            approved_source_commit: value.approved_source_commit,
+            approved_by: value.approved_by,
+            approved_at: value.approved_at,
             created_by: value.created_by,
             created_at: value.created_at,
             updated_at: value.updated_at,
@@ -197,6 +217,10 @@ mod tests {
             target_commit: "bb".to_string(),
             task_id: Uuid::now_v7(),
             merge_commit: None,
+            approved_content_digest: None,
+            approved_source_commit: None,
+            approved_by: None,
+            approved_at: None,
             created_by: Uuid::now_v7(),
             created_at: now,
             updated_at: now,

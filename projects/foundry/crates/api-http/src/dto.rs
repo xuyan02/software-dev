@@ -308,6 +308,8 @@ pub struct UpdateProjectRequest {
     pub git_branch: Option<String>,
     #[serde(default)]
     pub status: Option<ProjectStatus>,
+    #[serde(default)]
+    pub skip_human_review: Option<bool>,
 }
 
 impl UpdateProjectRequest {
@@ -318,6 +320,7 @@ impl UpdateProjectRequest {
             description: self.description,
             git_branch: self.git_branch,
             status: self.status,
+            skip_human_review: self.skip_human_review,
         }
     }
 }
@@ -393,6 +396,8 @@ pub struct ProjectUpdateForm {
     pub git_branch: String,
     #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub skip_human_review: bool,
 }
 
 impl ProjectUpdateForm {
@@ -407,6 +412,7 @@ impl ProjectUpdateForm {
             } else {
                 Some(parse_project_status(&self.status))
             },
+            skip_human_review: Some(self.skip_human_review),
         }
     }
 }
@@ -1230,6 +1236,13 @@ impl CreateMergeRequestForm {
 
 #[derive(Debug, Deserialize)]
 pub struct MergeRequestOperationForm {
+    pub operation: String,
+    #[serde(default)]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TaskOperationForm {
     pub operation: String,
     #[serde(default)]
     pub idempotency_key: Option<String>,

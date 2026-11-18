@@ -66,9 +66,10 @@ impl ModelGateway for OpenAiCompatibleModel {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let mut last_error = None;
+        let mut rate_limit_attempt = 0u32;
+        let mut transient_attempt = 0u32;
 
-        for attempt in 0..=self.config.max_retries {
+        loop {
             let response = self
                 .client
                 .post(&url)
@@ -79,6 +80,7 @@ impl ModelGateway for OpenAiCompatibleModel {
             match response {
                 Ok(response) => {
                     let status = response.status();
+                    let retry_after = retry_after_delay(response.headers());
                     let text = response
                         .text()
                         .await
@@ -86,36 +88,64 @@ impl ModelGateway for OpenAiCompatibleModel {
                     if status.is_success() {
                         return parse_response(&text);
                     }
-                    last_error = Some(format!("HTTP {status}: {text}"));
-                    if (status.as_u16() == 429 || status.is_server_error())
-                        && attempt < self.config.max_retries
-                    {
-                        sleep_backoff(attempt).await;
+                    let message = format!("HTTP {status}: {text}");
+                    if status.as_u16() == 429 {
+                        // A rate limit is not a terminal failure. Wait and
+                        // retry until the provider admits the request; the
+                        // outer agent/task lifecycle has no useful retry point
+                        // for a 429.
+                        let delay =
+                            retry_after.unwrap_or_else(|| backoff(rate_limit_attempt));
+                        tracing::warn!(
+                            attempt = rate_limit_attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            "LLM rate limited (429); retrying"
+                        );
+                        tokio::time::sleep(delay).await;
+                        rate_limit_attempt = rate_limit_attempt.saturating_add(1);
                         continue;
                     }
-                    return Err(ModelError::Backend(
-                        last_error.unwrap_or_else(|| format!("HTTP {status}")),
-                    ));
+                    if status.is_server_error() && transient_attempt < self.config.max_retries {
+                        sleep_backoff(transient_attempt).await;
+                        transient_attempt = transient_attempt.saturating_add(1);
+                        continue;
+                    }
+                    return Err(ModelError::Backend(message));
                 }
                 Err(error) => {
-                    last_error = Some(error.to_string());
-                    if attempt < self.config.max_retries {
-                        sleep_backoff(attempt).await;
+                    let message = error.to_string();
+                    if transient_attempt < self.config.max_retries {
+                        sleep_backoff(transient_attempt).await;
+                        transient_attempt = transient_attempt.saturating_add(1);
                         continue;
                     }
+                    return Err(ModelError::Backend(message));
                 }
             }
         }
-
-        Err(ModelError::Backend(
-            last_error.unwrap_or_else(|| "request failed".to_string()),
-        ))
     }
 }
 
+fn backoff(attempt: u32) -> Duration {
+    let millis = 250u64
+        .saturating_mul(1u64 << attempt.min(7))
+        .min(60_000);
+    Duration::from_millis(millis)
+}
+
+fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
 async fn sleep_backoff(attempt: u32) {
-    let millis = 250u64 * 2u64.pow(attempt.min(4));
-    tokio::time::sleep(Duration::from_millis(millis)).await;
+    tokio::time::sleep(backoff(attempt)).await;
 }
 
 fn request_body(config: &OpenAiCompatibleConfig, request: &LlmRequest) -> Value {
@@ -299,7 +329,10 @@ mod tests {
     use crate::{LlmParams, ModelProfileRef};
     use axum::Router;
     use axum::extract::Json;
+    use axum::http::{StatusCode, header};
+    use axum::response::IntoResponse;
     use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     async fn mock_server(response: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -323,6 +356,43 @@ mod tests {
             axum::serve(listener, app).await.expect("serve");
         });
         (format!("http://{addr}"), captured)
+    }
+
+    async fn mock_429_then_success() -> (String, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let state = calls.clone();
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let state = state.clone();
+                async move {
+                    let call = state.fetch_add(1, Ordering::SeqCst);
+                    if call < 2 {
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            [(header::RETRY_AFTER, "0")],
+                            "rate limited",
+                        )
+                            .into_response()
+                    } else {
+                        Json(json!({
+                            "choices": [{
+                                "message": { "role": "assistant", "content": "done" }
+                            }]
+                        }))
+                        .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+        (format!("http://{addr}"), calls)
     }
 
     fn request() -> LlmRequest {
@@ -368,6 +438,20 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["tools"][0]["function"]["name"], "echo");
         assert!(body.get("thinking").is_none());
+    }
+
+    #[tokio::test]
+    async fn retries_429_until_the_provider_accepts() {
+        let (base_url, calls) = mock_429_then_success().await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "fallback-model",
+        ))
+        .unwrap();
+        let response = model.complete(request()).await.unwrap();
+        assert_eq!(response.message.content, "done");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

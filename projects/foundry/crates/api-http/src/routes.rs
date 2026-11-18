@@ -13,6 +13,7 @@ use crate::dto::{
     DecideAnchorDocumentRequest, DecideRequirementsRequest, DeleteDesignSpaceBranchRequest,
     IssueListQuery, IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse,
     MemberRoleForm, MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm,
+    TaskOperationForm,
     NewInspectionForm, NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
     PublishWorkflowForm, RejectDocumentForm, RejectRequirementsForm, RenameWorkflowForm,
     RenameWorkflowRequest, RequirementsAnnotationQuery, ResolveAnchorAnnotationRequest,
@@ -40,9 +41,9 @@ use foundry_app::{
     UpdateTrigger, WorkflowUseCases, hash_token, new_session_token,
 };
 use foundry_domain::{
-    AccountRole, Actor, AllowedOperation, ApprovalDecision, Issue, OperationName, Project,
-    ProjectRole, RequirementsAnnotation, Task, TaskLinkKind, TaskLinkRelation, TaskState,
-    WorkflowId, WorkflowLayout,
+    AccountRole, Actor, AllowedOperation, ApprovalDecision, Issue, MergeRequestStatus,
+    OperationName, Project, ProjectRole, RequirementsAnnotation, Task, TaskLinkKind,
+    TaskLinkRelation, TaskState, WorkflowId, WorkflowLayout,
 };
 use foundry_web::MemberInfo;
 use serde_json::{Value, json};
@@ -1472,6 +1473,36 @@ pub async fn merge_request_comment_form(
     }
 }
 
+pub async fn approve_merge_request_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    if let Err(error) = state
+        .merge_requests
+        .approve(&project, merge_request_id, session.account.id)
+        .await
+    {
+        return auth::web_error(error);
+    }
+    Redirect::to(&format!(
+        "/projects/{}/merge-requests/{merge_request_id}",
+        project.id
+    ))
+    .into_response()
+}
+
 pub async fn merge_request_operation_form(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1494,6 +1525,11 @@ pub async fn merge_request_operation_form(
         .rsplit_once(':')
         .map(|(_, name)| name)
         .unwrap_or(operation);
+    if operation_name == "approved" || operation_name == "review_approved" {
+        return auth::web_forbidden(
+            "请使用合并请求页面的批准按钮，以便记录审批的设计内容摘要。",
+        );
+    }
     if operation_name == "merge" {
         match state
             .merge_requests
@@ -1653,6 +1689,21 @@ pub async fn get_merge_request(
         state
             .merge_requests
             .get(&project, merge_request_id, merge_request_viewer(&account))
+            .await?,
+    ))
+}
+
+pub async fn approve_merge_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Result<Json<foundry_domain::MergeRequestReview>, ApiError> {
+    let account = auth::api_account(&state, &headers).await?;
+    let project = state.projects.get(account.actor(), project_id).await?;
+    Ok(Json(
+        state
+            .merge_requests
+            .approve(&project, merge_request_id, account.id)
             .await?,
     ))
 }
@@ -2617,12 +2668,20 @@ pub async fn update_project_form(
         }
         Err(error) => return auth::web_error(error),
     }
+    let reevaluate = form.skip_human_review;
     match state
         .projects
         .update(session.account.actor(), form.into_command(id))
         .await
     {
-        Ok(_) => Redirect::to(&format!("/projects/{id}")).into_response(),
+        Ok(_) => {
+            if reevaluate
+                && let Err(error) = state.tasks.reevaluate_project(id).await
+            {
+                tracing::warn!(project_id = %id, %error, "cannot re-evaluate project tasks");
+            }
+            Redirect::to(&format!("/projects/{id}")).into_response()
+        }
         Err(error) => project_detail_error(&state, &session, id, error).await,
     }
 }
@@ -2825,12 +2884,17 @@ pub async fn update_project(
     Json(body): Json<UpdateProjectRequest>,
 ) -> Result<Json<Project>, ApiError> {
     let session = auth::api_account(&state, &headers).await?;
-    Ok(Json(
-        state
-            .projects
-            .update(session.actor(), body.into_command(id))
-            .await?,
-    ))
+    let reevaluate = body.skip_human_review == Some(true);
+    let project = state
+        .projects
+        .update(session.actor(), body.into_command(id))
+        .await?;
+    if reevaluate
+        && let Err(error) = state.tasks.reevaluate_project(id).await
+    {
+        tracing::warn!(project_id = %id, %error, "cannot re-evaluate project tasks");
+    }
+    Ok(Json(project))
 }
 
 pub async fn delete_project(
@@ -3747,6 +3811,74 @@ pub async fn task_page(
     Html(foundry_web::task_page(&session.context, &task, &links)).into_response()
 }
 
+pub async fn send_task_operation_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Form(form): Form<TaskOperationForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    if !session.can_contribute() {
+        return auth::web_forbidden("当前项目角色不能执行任务操作。");
+    }
+    let task = match state
+        .tasks
+        .get(session.project.id, id, web_task_viewer(&session))
+        .await
+    {
+        Ok(task) => task,
+        Err(error) => return auth::web_error(error),
+    };
+    if task.project_id != session.project.id {
+        return auth::web_error(ServiceError::not_found("task", id));
+    }
+    let operation = form.operation.trim();
+    let operation_name = operation
+        .rsplit_once(':')
+        .map(|(_, name)| name)
+        .unwrap_or(operation);
+    if (operation_name == "approved" || operation_name == "review_approved")
+        && state
+            .merge_requests
+            .has_merge_request(session.project.id, id)
+            .await
+            .unwrap_or(false)
+    {
+        return auth::web_forbidden(
+            "这个任务有关联的合并请求，请从合并请求页面批准并记录设计内容摘要。",
+        );
+    }
+    let idempotency = form
+        .idempotency_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "task-operation:{id}:{operation}:{}",
+                OffsetDateTime::now_utc().unix_timestamp_nanos()
+            )
+        });
+    if let Err(error) = state
+        .tasks
+        .send_operation(
+            session.project.id,
+            id,
+            session.account.id,
+            OperationName::new(operation),
+            idempotency,
+        )
+        .await
+    {
+        return auth::web_error(error);
+    }
+    Redirect::to(&format!("/tasks/{id}")).into_response()
+}
+
 pub async fn retry_task_form(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4054,6 +4186,17 @@ pub async fn bind_task_actor(
             "human task roles require an active human project member",
         ));
     }
+    if !detail
+        .project
+        .role_of(body.account_id)
+        .is_some_and(ProjectRole::can_contribute)
+    {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "viewer_cannot_approve",
+            "human task roles require a project role that can contribute",
+        ));
+    }
     state
         .tasks
         .bind_actor(
@@ -4159,6 +4302,27 @@ pub async fn send_task_operation(
             "use the merge request merge endpoint so the branch is moved",
         ));
     }
+    if (operation_name == "approved" || operation_name == "review_approved")
+        && state
+            .merge_requests
+            .has_merge_request(session.project.id, id)
+            .await?
+    {
+        let task = state
+            .tasks
+            .get(session.project.id, id, task_viewer(&session))
+            .await?;
+        if matches!(
+            task.stage.as_ref().map(|stage| stage.as_str()),
+            Some("review" | "human_review")
+        ) {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "reserved_operation",
+                "use the merge request approve endpoint so the approved content digest is recorded",
+            ));
+        }
+    }
     if operation_name == "approved" {
         let task = state
             .tasks
@@ -4182,6 +4346,40 @@ pub async fn send_task_operation(
                     StatusCode::CONFLICT,
                     "open_annotations",
                     "cannot approve while open annotations remain; reject the task and wait for the author to resolve them",
+                ));
+            }
+        }
+    }
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    if task.workflow.as_str() == "design_change" {
+        let stage = task.stage.as_ref().map(|stage| stage.as_str());
+        if operation_name == "approved"
+            && stage == Some("design_review")
+            && !state
+                .merge_requests
+                .has_merge_request(session.project.id, id)
+                .await?
+        {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "merge_request_required",
+                "create the design-change merge request before approving the review",
+            ));
+        }
+        if operation_name == "merged" && stage == Some("merge") {
+            let merged = state
+                .merge_requests
+                .for_task(&session.project, id, task_viewer(&session))
+                .await?
+                .is_some_and(|detail| detail.status == MergeRequestStatus::Merged);
+            if !merged {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "merge_request_not_merged",
+                    "merge the design-change MR through the merge request endpoint first",
                 ));
             }
         }

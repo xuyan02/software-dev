@@ -77,6 +77,10 @@ pub struct Project {
     /// Branch of the project's design space.
     #[serde(default = "default_branch")]
     pub design_space_branch: String,
+    /// Test/development switch: auto-approve human review stages for this
+    /// project's tasks. Normal workflow transitions still run.
+    #[serde(default)]
+    pub skip_human_review: bool,
     pub status: ProjectStatus,
     #[serde(default)]
     pub root_task_id: Option<Uuid>,
@@ -137,6 +141,7 @@ impl Project {
             git_branch: DEFAULT_BRANCH.to_owned(),
             design_space_url: String::new(),
             design_space_branch: DESIGN_SPACE_BRANCH.to_owned(),
+            skip_human_review: false,
             status: ProjectStatus::Active,
             root_task_id: None,
             members: vec![ProjectMember {
@@ -202,6 +207,26 @@ impl Project {
 
     pub fn is_archived(&self) -> bool {
         self.status == ProjectStatus::Archived
+    }
+
+    /// The design-space branch that may only move through an approved merge.
+    pub fn is_protected_design_branch(&self, branch: &str) -> bool {
+        branch == self.design_space_branch.as_str()
+            || matches!(branch, "source" | "main" | "master")
+    }
+
+    pub fn set_skip_human_review(
+        &mut self,
+        skip_human_review: bool,
+    ) -> Result<(), ProjectValidationError> {
+        if self.is_archived() {
+            return Err(ProjectValidationError(vec![
+                "archived projects cannot be edited".to_string(),
+            ]));
+        }
+        self.skip_human_review = skip_human_review;
+        self.touch();
+        Ok(())
     }
 
     pub fn update(

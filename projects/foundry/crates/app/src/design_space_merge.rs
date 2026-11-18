@@ -13,7 +13,8 @@ use async_trait::async_trait;
 use foundry_domain::{
     AccountKind, Actor, DESIGN_SPACE_MERGE_OPERATION, DesignSpaceMergeRequestDAO, DomainEvent,
     DomainEventKind, MergeRequestChange, MergeRequestDetail, MergeRequestReview,
-    MergeRequestStatus, OperationName, Project, RoleKey, TaskActorDAO, TaskDAO, WorkflowId,
+    MergeRequestStatus, OperationName, Project, RoleKey, TaskActorDAO, TaskDAO, TaskState,
+    WorkflowId,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -67,6 +68,13 @@ pub trait DesignSpaceGateway: Send + Sync {
         project: &Project,
         branch: &str,
     ) -> Result<Option<String>, DesignSpaceGatewayError>;
+
+    /// Digest of design content at `commit`, excluding review comments.
+    async fn content_digest(
+        &self,
+        project: &Project,
+        commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError>;
 
     async fn is_ancestor(
         &self,
@@ -122,6 +130,14 @@ impl DesignSpaceGateway for UnavailableDesignSpaceGateway {
         _project: &Project,
         _branch: &str,
     ) -> Result<Option<String>, DesignSpaceGatewayError> {
+        Err(unavailable())
+    }
+
+    async fn content_digest(
+        &self,
+        _project: &Project,
+        _commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError> {
         Err(unavailable())
     }
 
@@ -223,6 +239,16 @@ pub trait MergeRequestRepository: Send + Sync {
         project_id: Uuid,
         id: Uuid,
         merge_commit: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, RepoError>;
+
+    async fn save_approval(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        content_digest: &str,
+        source_commit: &str,
+        approved_by: Uuid,
         now: OffsetDateTime,
     ) -> Result<bool, RepoError>;
 }
@@ -350,6 +376,10 @@ impl MergeRequestService {
             target_commit,
             task_id,
             merge_commit: None,
+            approved_content_digest: None,
+            approved_source_commit: None,
+            approved_by: None,
+            approved_at: None,
             created_by: account_id,
             created_at: now,
             updated_at: now,
@@ -469,6 +499,10 @@ impl MergeRequestService {
             target_commit,
             task_id: task.id,
             merge_commit: None,
+            approved_content_digest: None,
+            approved_source_commit: None,
+            approved_by: None,
+            approved_at: None,
             created_by: account_id,
             created_at: now,
             updated_at: now,
@@ -486,6 +520,14 @@ impl MergeRequestService {
                 error = %error,
                 "merge request created but review task initialization failed"
             );
+        }
+        if project.skip_human_review {
+            self.approve(project, merge_request_id, reviewer).await?;
+            self.merge(project, merge_request_id, reviewer).await?;
+            let updated = self.load(project.id, merge_request_id).await?;
+            return self
+                .view(project, &updated, TaskViewer::member(account_id))
+                .await;
         }
         self.view(project, &merge_request, TaskViewer::member(account_id))
             .await
@@ -554,6 +596,84 @@ impl MergeRequestService {
         })
     }
 
+    /// Record a human approval of the current design content and send the
+    /// approved operation on the review Task.
+    ///
+    /// The approval is bound to a content digest that excludes comments. The
+    /// subsequent mandatory comment cleanup is therefore allowed to create a
+    /// new commit without asking the human to approve the same content twice.
+    pub async fn approve(
+        &self,
+        project: &Project,
+        id: Uuid,
+        account_id: Uuid,
+    ) -> Result<MergeRequestReview, ServiceError> {
+        let request = self.load(project.id, id).await?;
+        let viewer = TaskViewer::member(account_id);
+        let task = self.tasks.get(project.id, request.task_id, viewer).await?;
+        if request.merge_commit.is_some() || task.state == TaskState::Completed {
+            return Err(ServiceError::Validation(
+                "合并请求已经结束，不能再审批".to_string(),
+            ));
+        }
+        let approved_operation = task
+            .allowed_operations
+            .iter()
+            .find(|operation| {
+                let name = operation.name.as_str();
+                name.ends_with(":approved") || name.ends_with(":review_approved")
+            })
+            .map(|operation| operation.name.as_str().to_string())
+            .ok_or_else(|| {
+                ServiceError::Forbidden(
+                    "当前账号不是这个合并请求的真人审核人，或当前阶段不能审批".to_string(),
+                )
+            })?;
+        let source_head = self
+            .design_space
+            .branch_head(project, &request.source_branch)
+            .await?
+            .ok_or_else(|| {
+                ServiceError::Validation(format!("源分支不存在: {}", request.source_branch))
+            })?;
+        if source_head != request.source_commit {
+            return Err(ServiceError::Validation(
+                "源分支在合并请求刷新后又有新提交；请先刷新合并请求".to_string(),
+            ));
+        }
+        let digest = self
+            .design_space
+            .content_digest(project, &request.source_commit)
+            .await?;
+        if !self
+            .repository
+            .save_approval(
+                project.id,
+                request.id,
+                &digest,
+                &request.source_commit,
+                account_id,
+                OffsetDateTime::now_utc(),
+            )
+            .await?
+        {
+            return Err(ServiceError::Validation(
+                "合并请求已经结束，不能再审批".to_string(),
+            ));
+        }
+        self.tasks
+            .send_operation(
+                project.id,
+                request.task_id,
+                account_id,
+                OperationName::new(approved_operation),
+                format!("design-space-approval:{}:{}", request.id, request.source_commit),
+            )
+            .await?;
+        let updated = self.load(project.id, id).await?;
+        self.view(project, &updated, viewer).await
+    }
+
     /// Fast-forward the target branch, then record the merge as a Task
     /// operation. The branch move is the only external side effect; the Task
     /// remains the approval and audit source.
@@ -606,14 +726,51 @@ impl MergeRequestService {
         }
 
         if request.merge_commit.is_none() {
-            let comments = self
+            let source_head = self
                 .design_space
-                .comment_count(project, &request.source_commit)
-                .await?;
-            if comments > 0 {
-                return Err(ServiceError::Validation(format!(
-                    "源分支还有 {comments} 条设计评论；合并前请清理评论并刷新合并请求"
-                )));
+                .branch_head(project, &request.source_branch)
+                .await?
+                .ok_or_else(|| {
+                    ServiceError::Validation(format!(
+                        "源分支不存在: {}",
+                        request.source_branch
+                    ))
+                })?;
+            if source_head != request.source_commit {
+                return Err(ServiceError::Validation(
+                    "源分支在合并请求刷新后又有新提交；请先刷新合并请求".to_string(),
+                ));
+            }
+            // Integration branches are temporary review branches: comments are
+            // allowed to travel with them. Only a protected branch requires a
+            // human-approved, comment-free source, because comments must never
+            // enter it.
+            if project.is_protected_design_branch(&request.target_branch) {
+                if !project.skip_human_review {
+                    let approved = request.approved_content_digest.as_deref().ok_or_else(|| {
+                        ServiceError::Validation(
+                            "合并到受保护分支前需要人类审批设计内容".to_string(),
+                        )
+                    })?;
+                    let current = self
+                        .design_space
+                        .content_digest(project, &request.source_commit)
+                        .await?;
+                    if current != approved {
+                        return Err(ServiceError::Validation(
+                            "审批后设计内容发生变化；需要重新审批".to_string(),
+                        ));
+                    }
+                }
+                let comments = self
+                    .design_space
+                    .comment_count(project, &request.source_commit)
+                    .await?;
+                if comments > 0 {
+                    return Err(ServiceError::Validation(format!(
+                        "源分支还有 {comments} 条设计评论；合并到受保护分支前请清理评论并刷新合并请求"
+                    )));
+                }
             }
             self.design_space
                 .fast_forward(
@@ -655,6 +812,11 @@ impl MergeRequestService {
     }
 
     pub async fn delete_branch(&self, project: &Project, branch: &str) -> Result<(), ServiceError> {
+        if project.is_protected_design_branch(branch) {
+            return Err(ServiceError::Forbidden(format!(
+                "受保护分支不能删除: {branch}"
+            )));
+        }
         Ok(self.design_space.delete_branch(project, branch).await?)
     }
 

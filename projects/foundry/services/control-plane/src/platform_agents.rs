@@ -761,7 +761,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: CONSISTENCY_STYLE_REVIEWER_PROMPT,
         tools: CONSISTENCY_REVIEWER_TOOLS,
         shell: true,
-        skills: &["design-space", "design-writing", "design-consistency"],
+        skills: &["design-space", "style-review"],
     },
     PlatformTemplate {
         id: "design-consistency-conflict-resolver",
@@ -781,7 +781,7 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: GROUP_STYLE_REVIEWER_PROMPT,
         tools: CONSISTENCY_REVIEWER_TOOLS,
         shell: true,
-        skills: &["design-space", "design-writing", "design-consistency"],
+        skills: &["design-space", "style-review"],
     },
     PlatformTemplate {
         id: "code-summary-content-reviewer",
@@ -837,9 +837,9 @@ const TEMPLATES: &[PlatformTemplate] = &[
         id: "design-change-reviewer",
         name: "Design Change Reviewer",
         role: "design_change:design_reviewer",
-        description: "Reviews a design change",
+        description: "Reviews a design change, creates its MR and merges it after human approval",
         system_prompt: DESIGN_CHANGE_REVIEWER_PROMPT,
-        tools: ISSUE_REVIEW_TOOLS,
+        tools: DESIGN_CHANGE_REVIEW_TOOLS,
         shell: true,
         skills: &["design-space", "design-writing", "issue-loop"],
     },
@@ -1039,6 +1039,20 @@ const ISSUE_REVIEW_TOOLS: &[&str] = &[
     "task_comment",
     "task_history",
 ];
+const DESIGN_CHANGE_REVIEW_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "issue_create",
+    "issue_list",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "merge_request",
+];
 const ISSUE_MERGER_TOOLS: &[&str] = &[
     "project",
     "shell",
@@ -1053,25 +1067,25 @@ const ISSUE_MERGER_TOOLS: &[&str] = &[
 ];
 
 const ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告并创建任务。若 Issue 带 design-space-missing 标签，或 documents/design/technical 不存在，创建 design_consistency_maintenance 任务；其他设计问题创建 design_change，纯代码问题创建 code_change。不要直接修代码或改设计。";
-const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。先检查 documents/design/technical 是否存在；不存在时不要创建 documents/specs 或任何自由格式设计文档，写评论并发送 analysis:failed，让维护流程建立规范技术设计。存在时根据 Issue 分析设计影响，更新 documents/design/technical、documents/design/directory、documents/design/namespace，提交并推送 source 分支；不要改代码。";
-const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查智能体。检查设计修改是否真正解决 Issue、是否与需求和架构一致；不审文风，不直接修改设计。";
+const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。先检查 documents/design/technical 是否存在；不存在时不要创建 documents/specs 或任何自由格式设计文档，写评论并发送 analysis:failed，让维护流程建立规范技术设计。存在时根据 Issue 分析设计影响，在 design-change/<task-id> 分支更新 documents/design/technical、documents/design/directory、documents/design/namespace，提交并推送该分支；不要直接 push source，不要改代码。";
+const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查与合入智能体。设计审查阶段检查设计修改是否真正解决 Issue、是否与需求和架构一致，不审文风，不直接修改设计；通过时创建/刷新关联 MR。人类批准后清理评论、刷新 MR、合入 source，并删除 design-change 临时分支。";
 const CODE_CHANGE_DEVELOPER_PROMPT: &str = "你是 Foundry 的代码修复智能体。根据 Issue、分诊计划和设计空间实现代码修复和测试，推送到 code/<issue-id> 分支。";
 const CODE_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的代码评审智能体。评审 code_change 任务的分支；只处理本次范围，超范围问题创建 Issue。";
-const CODE_CHANGE_TESTER_PROMPT: &str = "你是 Foundry 的代码验证智能体。检出 code_change 分支，运行测试和验收检查，记录证据。";
-const CODE_CHANGE_MERGER_PROMPT: &str = "你是 Foundry 的代码合入智能体。把已验证的 code_change 分支合入目标分支，并将 Issue 标记为 resolved。";
+const CODE_CHANGE_TESTER_PROMPT: &str = "你是 Foundry 的代码验证智能体。检出 code_change 分支，运行测试和验收检查，在任务评论中记录命令、分支 head 提交和结果。";
+const CODE_CHANGE_MERGER_PROMPT: &str = "你是 Foundry 的代码合入智能体。只有人类批准后才能合入；合入前确认 code_change 分支 head 仍是 tester 记录的提交。合入目标分支、把 Issue 标记为 resolved，并在 cleanup 阶段删除 code_change 临时分支。";
 
 const GROUP_SUMMARY_PROMPT: &str = "你是 Foundry 的 CodeSummary 组智能体。只处理当前任务 input.files 指定的文件，复用或创建组 MR，完成后自动提交。";
 const CONSISTENCY_SCANNER_PROMPT: &str = "你是 Foundry 的技术设计一致性扫描智能体。按当前 dispatch 阶段执行基础同步、变化扫描、分组和子任务创建。";
 const CONSISTENCY_INTEGRATOR_PROMPT: &str = "你是 Foundry 的集成分支智能体。按当前阶段创建集成 MR、修复集成内容、执行最终合入和删除集成分支。";
 const CONSISTENCY_ARCHITECT_PROMPT: &str = "你是 Foundry 的模块架构师。按当前阶段执行结构盘点、逐系统模块合成和结构问题修复。使用 ds structure 命令；先草稿、机械校验、独立批判，再落库。不要合并 MR。";
 const CONSISTENCY_STRUCTURE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计结构审查智能体。只审查系统/模块划分、成员唯一归属、层级、覆盖和模块文档与成员的对应关系；不审文风，不修改正文。发现问题写评论并打回。";
-const CONSISTENCY_STYLE_REVIEWER_PROMPT: &str = "你是 Foundry 的模块文档文风审查智能体。只审查系统和模块文档的文字，不审查结构或成员关系；发现问题写评论并打回。";
+const CONSISTENCY_STYLE_REVIEWER_PROMPT: &str = "你是 Foundry 的模块文档文风审查智能体。只审查系统和模块文档的语言与表达，不审查内容完整性、正确性、设计判断、结构或成员关系；不因内容问题打回。发现问题写 DS 评论并打回。";
 const CONSISTENCY_CONTENT_REVIEWER_PROMPT: &str =
     "你是 Foundry 的集成内容审查智能体。审查整个集成分支的全部设计内容，不只检查文字。";
 const CONSISTENCY_CONFLICT_PROMPT: &str =
     "你是 Foundry 的集成冲突解决智能体。解决集成分支与主分支的冲突，并重新进入内容审查。";
 const GROUP_STYLE_REVIEWER_PROMPT: &str =
-    "你是 Foundry 的设计文风审查智能体。只检查设计文字，发现问题写 review comment 并打回。";
+    "你是 Foundry 的设计文风审查智能体。只检查设计文字的语言与表达，不检查内容完整性、正确性、设计判断、对象关系或基础同步；不因内容问题打回。发现问题写 DS 评论并打回。";
 const GROUP_CONTENT_REVIEWER_PROMPT: &str =
     "你是 Foundry 的设计内容审查智能体。检查本组全部对象、关系和文档内容。";
 const GROUP_MERGER_PROMPT: &str =
@@ -1164,7 +1178,7 @@ pub async fn ensure_project_agents(
         Err(error) => tracing::warn!(error = %error, "cannot list projects for PM provisioning"),
     }
 
-    reconcile_platform_agent_definitions(store.as_ref(), &supervisor).await;
+    reconcile_platform_agent_definitions(store.as_ref(), &supervisor, &base_url, &model).await;
 
     if !has_api_key {
         tracing::warn!(
@@ -1280,6 +1294,8 @@ fn pm_command(
 async fn reconcile_platform_agent_definitions(
     store: &PostgresStore,
     supervisor: &Arc<AgentSupervisor>,
+    base_url: &str,
+    model_name: &str,
 ) {
     let definitions = match store.list_agent_definitions().await {
         Ok(definitions) => definitions,
@@ -1319,8 +1335,8 @@ async fn reconcile_platform_agent_definitions(
             account_handle: definition.account_handle.clone(),
             role: definition.role.clone(),
             project_id: definition.project_id,
-            model_base_url: definition.model_base_url.clone(),
-            model_name: definition.model_name.clone(),
+            model_base_url: base_url.to_string(),
+            model_name: model_name.to_string(),
             api_key_env: definition.api_key_env.clone(),
             system_prompt: template.system_prompt.to_string(),
             tools: template.tools.iter().map(|tool| tool.to_string()).collect(),
@@ -1384,6 +1400,24 @@ async fn ensure_agent_account(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn design_style_reviewers_load_the_style_skill() {
+        for id in [
+            "code-summary-style-reviewer",
+            "design-consistency-style-reviewer",
+        ] {
+            let template = template(id).unwrap_or_else(|| panic!("missing template {id}"));
+            assert!(
+                template.skills.contains(&"style-review"),
+                "{id} must load style-review"
+            );
+            assert!(
+                !template.skills.contains(&"design-writing"),
+                "{id} must not load the content writing guide"
+            );
+        }
+    }
 
     #[test]
     fn writer_template_loads_the_writing_guide() {

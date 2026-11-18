@@ -255,22 +255,45 @@ CodeSummary 组模式，只处理任务 input 中的 `files`：
 - 用 `merge_request` 工具 `create_for_task` 创建或复用 MR；
 - 由 CodeSummary 运行时结束后自动发送 `summary:submitted` 或 `summary:failed`。
 
-打回后重新进入 summary 时，复用同一个组分支和同一个 MR，读取 Task comment 和 DS 文档 comment 进行修改。
+打回后重新进入 summary 时，复用同一个组分支和同一个 MR，读取已提交到组分支的 DS 文档 open 评论进行修改；只写在 Task comment 里的意见不会进入 CodeSummary 的修改上下文。
 
 ### style_review（style_reviewer）
 
-只检查设计文字的文风，不检查对象关系、文档引用或基础同步。发现问题写 comment，发送 `style_review:rejected`；否则 `style_review:approved`。
+只检查设计文字的文风，不检查对象关系、文档引用或基础同步。
+
+1. 检出组分支，评论必须提交到组分支，否则 summary 修改阶段看不到：
+
+```bash
+ds checkout design-consistency-groups/<task-id> --force
+ds pull --branch design-consistency-groups/<task-id>
+```
+
+2. 发现问题时用 `ds doc comment add <section> --text ...` 写评论。
+3. 提交并推送评论：
+
+```bash
+ds add -A
+ds commit -m "Group style review comments" --author design-consistency
+ds push --branch design-consistency-groups/<task-id>
+```
+
+4. 有阻塞问题发送 `style_review:rejected`；没有写任何新评论才发送 `style_review:approved`。
 
 ### content_review（content_reviewer）
 
-检查本组全部设计内容：对象、关系、文档、文档引用、遗漏、删除和重命名。发现问题写 comment，发送 `content_review:rejected`；否则 `content_review:approved`。
+检查本组全部设计内容：对象、关系、文档、文档引用、遗漏、删除和重命名。
+
+1. 同样检出并拉取 `design-consistency-groups/<task-id>`。
+2. 发现问题写 DS 评论，然后 `ds add -A`、`ds commit`、`ds push` 到组分支。
+3. 有阻塞问题发送 `content_review:rejected`；没有写任何新评论才发送 `content_review:approved`。
 
 ### merge（merger）
 
 1. 用 `merge_request` 工具 `get_for_task` 找到本组 MR；
 2. 用 `merge` action 合入集成分支；
-3. 冲突发送 `merge:conflict`；
-4. 其他失败发送 `merge:failed`。
+3. 组 MR 的目标是临时集成分支，**允许携带评论**，不要在组 merge 前删除评论；
+4. 冲突发送 `merge:conflict`；
+5. 其他失败发送 `merge:failed`。
 
 ### cleanup（merger）
 

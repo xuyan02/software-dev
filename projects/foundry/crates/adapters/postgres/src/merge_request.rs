@@ -7,52 +7,46 @@ use foundry_domain::{DesignSpaceMergeRequestDAO, DomainEvent, TaskActorDAO, Task
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-type MergeRequestRow = (
-    Uuid,
-    Uuid,
-    String,
-    String,
-    String,
-    String,
-    String,
-    String,
-    Uuid,
-    Option<String>,
-    Uuid,
-    OffsetDateTime,
-    OffsetDateTime,
-);
+#[derive(sqlx::FromRow)]
+struct MergeRequestRow {
+    id: Uuid,
+    project_id: Uuid,
+    title: String,
+    description: String,
+    source_branch: String,
+    target_branch: String,
+    source_commit: String,
+    target_commit: String,
+    task_id: Uuid,
+    merge_commit: Option<String>,
+    approved_content_digest: Option<String>,
+    approved_source_commit: Option<String>,
+    approved_by: Option<Uuid>,
+    approved_at: Option<OffsetDateTime>,
+    created_by: Uuid,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
+}
 
 fn row_to_merge_request(row: MergeRequestRow) -> DesignSpaceMergeRequestDAO {
-    let (
-        id,
-        project_id,
-        title,
-        description,
-        source_branch,
-        target_branch,
-        source_commit,
-        target_commit,
-        task_id,
-        merge_commit,
-        created_by,
-        created_at,
-        updated_at,
-    ) = row;
     DesignSpaceMergeRequestDAO {
-        id,
-        project_id,
-        title,
-        description,
-        source_branch,
-        target_branch,
-        source_commit,
-        target_commit,
-        task_id,
-        merge_commit,
-        created_by,
-        created_at,
-        updated_at,
+        id: row.id,
+        project_id: row.project_id,
+        title: row.title,
+        description: row.description,
+        source_branch: row.source_branch,
+        target_branch: row.target_branch,
+        source_commit: row.source_commit,
+        target_commit: row.target_commit,
+        task_id: row.task_id,
+        merge_commit: row.merge_commit,
+        approved_content_digest: row.approved_content_digest,
+        approved_source_commit: row.approved_source_commit,
+        approved_by: row.approved_by,
+        approved_at: row.approved_at,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
     }
 }
 
@@ -84,8 +78,10 @@ impl MergeRequestRepository for PostgresStore {
         sqlx::query(
             "insert into design_space_merge_requests \
              (id, project_id, title, description, source_branch, target_branch, \
-              source_commit, target_commit, task_id, merge_commit, created_by, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+              source_commit, target_commit, task_id, merge_commit, \
+              approved_content_digest, approved_source_commit, approved_by, approved_at, \
+              created_by, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(merge_request.id)
         .bind(merge_request.project_id)
@@ -97,6 +93,10 @@ impl MergeRequestRepository for PostgresStore {
         .bind(&merge_request.target_commit)
         .bind(merge_request.task_id)
         .bind(&merge_request.merge_commit)
+        .bind(&merge_request.approved_content_digest)
+        .bind(&merge_request.approved_source_commit)
+        .bind(merge_request.approved_by)
+        .bind(merge_request.approved_at)
         .bind(merge_request.created_by)
         .bind(merge_request.created_at)
         .bind(merge_request.updated_at)
@@ -112,8 +112,10 @@ impl MergeRequestRepository for PostgresStore {
         sqlx::query(
             "insert into design_space_merge_requests \
              (id, project_id, title, description, source_branch, target_branch, \
-              source_commit, target_commit, task_id, merge_commit, created_by, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+              source_commit, target_commit, task_id, merge_commit, \
+              approved_content_digest, approved_source_commit, approved_by, approved_at, \
+              created_by, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
         )
         .bind(merge_request.id)
         .bind(merge_request.project_id)
@@ -125,6 +127,10 @@ impl MergeRequestRepository for PostgresStore {
         .bind(&merge_request.target_commit)
         .bind(merge_request.task_id)
         .bind(&merge_request.merge_commit)
+        .bind(&merge_request.approved_content_digest)
+        .bind(&merge_request.approved_source_commit)
+        .bind(merge_request.approved_by)
+        .bind(merge_request.approved_at)
         .bind(merge_request.created_by)
         .bind(merge_request.created_at)
         .bind(merge_request.updated_at)
@@ -141,7 +147,9 @@ impl MergeRequestRepository for PostgresStore {
     ) -> Result<Option<DesignSpaceMergeRequestDAO>, RepoError> {
         let row: Option<MergeRequestRow> = sqlx::query_as(
             "select id, project_id, title, description, source_branch, target_branch, \
-             source_commit, target_commit, task_id, merge_commit, created_by, created_at, updated_at \
+             source_commit, target_commit, task_id, merge_commit, \
+              approved_content_digest, approved_source_commit, approved_by, approved_at, \
+              created_by, created_at, updated_at \
              from design_space_merge_requests where project_id = $1 and task_id = $2",
         )
         .bind(project_id)
@@ -184,7 +192,9 @@ impl MergeRequestRepository for PostgresStore {
     ) -> Result<Option<DesignSpaceMergeRequestDAO>, RepoError> {
         let row: Option<MergeRequestRow> = sqlx::query_as(
             "select id, project_id, title, description, source_branch, target_branch, \
-             source_commit, target_commit, task_id, merge_commit, created_by, created_at, updated_at \
+             source_commit, target_commit, task_id, merge_commit, \
+              approved_content_digest, approved_source_commit, approved_by, approved_at, \
+              created_by, created_at, updated_at \
              from design_space_merge_requests where project_id = $1 and id = $2",
         )
         .bind(project_id)
@@ -198,7 +208,9 @@ impl MergeRequestRepository for PostgresStore {
     async fn list(&self, project_id: Uuid) -> Result<Vec<DesignSpaceMergeRequestDAO>, RepoError> {
         let rows: Vec<MergeRequestRow> = sqlx::query_as(
             "select id, project_id, title, description, source_branch, target_branch, \
-             source_commit, target_commit, task_id, merge_commit, created_by, created_at, updated_at \
+             source_commit, target_commit, task_id, merge_commit, \
+              approved_content_digest, approved_source_commit, approved_by, approved_at, \
+              created_by, created_at, updated_at \
              from design_space_merge_requests where project_id = $1 \
              order by created_at desc",
         )
@@ -223,6 +235,33 @@ impl MergeRequestRepository for PostgresStore {
         .bind(project_id)
         .bind(id)
         .bind(merge_commit)
+        .bind(now)
+        .execute(self.pool())
+        .await
+        .map_err(map_write_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn save_approval(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        content_digest: &str,
+        source_commit: &str,
+        approved_by: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, RepoError> {
+        let result = sqlx::query(
+            "update design_space_merge_requests \
+             set approved_content_digest = $3, approved_source_commit = $4, \
+                 approved_by = $5, approved_at = $6, updated_at = $6 \
+             where project_id = $1 and id = $2 and merge_commit is null",
+        )
+        .bind(project_id)
+        .bind(id)
+        .bind(content_digest)
+        .bind(source_commit)
+        .bind(approved_by)
         .bind(now)
         .execute(self.pool())
         .await

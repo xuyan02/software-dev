@@ -342,6 +342,28 @@ impl DesignSpaceGateway for RemoteDesignSpaceGateway {
         .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
     }
 
+    async fn content_digest(
+        &self,
+        project: &Project,
+        commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError> {
+        let (_, store) = self.open_store(project).await?;
+        let commit = Self::commit(commit)?;
+        tokio::task::spawn_blocking(move || {
+            let commit = store
+                .get_commit(commit)
+                .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?;
+            let catalog = Catalog::load(&store, commit.view)
+                .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?;
+            catalog
+                .content_digest()
+                .map(|digest| digest.to_hex())
+                .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))
+        })
+        .await
+        .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+    }
+
     async fn fast_forward(
         &self,
         project: &Project,

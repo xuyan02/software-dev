@@ -120,7 +120,7 @@ openai_model = "deepseek-chat"
 | `design_space_url` | 无 | 外部 `ds-server` 的 HTTP 地址；不配置时控制平面启动本地 `ds-server` |
 | `design_space_root` | `~/.foundry/design-spaces` | 本地 `ds-server` 的仓库集合根目录；每个项目一个子仓库 |
 | `design_space_listen` | `0.0.0.0:7700` | 本地 `ds-server` 的监听地址；必须能被 agent 容器访问 |
-| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 Bearer token 文件；不存在时自动生成 |
+| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 admin token 文件；同目录下 `.agent` 文件自动生成给 Agent 使用 |
 | `design_space_agent_url` | 自动检测的宿主 IP + 端口 | 写入项目 `design_space_url` 的 agent 侧地址 |
 | `editor_dir` | `web/workflow-editor/dist` | 流程编辑器的构建产物目录 |
 | `github_app_id` | 无 | GitHub App ID；用于签发短期仓库 token |

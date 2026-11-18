@@ -38,7 +38,8 @@ doc mkdir/create/section add/text add/text set/list add/list item add/comment ad
 ```bash
 ds-server --root <repos-root>                     # HTTP, 默认 127.0.0.1:7700
 ds-server --root <repos-root> --listen 0.0.0.0:7700
-ds-server --root <repos-root> --token-file <token-file>   # 启用 Bearer 认证
+ds-server --root <repos-root> --token-file <agent-token> --admin-token-file <admin-token>
+                                                          # Agent token 只能写临时分支；admin token 可移动受保护分支
 ds-server --stdio --root <repo-dir>               # SSH 传输协议（单个仓库）
 ```
 
@@ -682,7 +683,7 @@ PUT  /<repo>/files/<relative>     <- file bytes
 - 服务端校验路径必须是 canonical 的 `<kind>/<aa>/<bb>/<hash>`，并校验上传内容与
   hash 一致；refs 只能指向已上传的 commit；
 - 仓库必须已存在于 `<repos-root>/<repo>`；服务端不会自动创建仓库；
-- HTTP 未配置 `--token-file` 时不认证；配置后所有请求都必须带
+- HTTP 未配置 token 时不认证；配置后所有请求都必须带
   `Authorization: Bearer <token>`，否则返回 401；
 - token 文件只包含一个 token，首尾空白会被忽略，token 内不能有空白或控制字符；
 - 客户端用 `ds remote add <url> --token-file <path>` 配置 token 文件路径，

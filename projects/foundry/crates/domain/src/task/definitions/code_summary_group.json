@@ -180,7 +180,7 @@
         }
       ],
       "transitions": [
-        {"on": "resolved", "to": "style_review"},
+        {"on": "resolved", "to": "summary"},
         {"on": "failed", "to": "failed"}
       ]
     },

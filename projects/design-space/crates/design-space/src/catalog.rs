@@ -8,6 +8,7 @@
 use crate::format::{object_hash, symbol_hash, validate_object};
 use crate::model::*;
 use crate::store::{Store, StoreError};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Debug, thiserror::Error)]
@@ -203,6 +204,27 @@ impl Catalog {
         }
         self.entries = entries;
         Ok(())
+    }
+
+    /// A digest of the design content, deliberately excluding review comments
+    /// and the derived child-hash lists.
+    ///
+    /// A human approves design content, not comment metadata. Clearing
+    /// comments changes the objects that carry them and the derived child
+    /// hashes of their ancestors, so neither may participate in the digest.
+    /// Everything semantic (names, titles, text, sections, members,
+    /// dependencies, relations) remains included.
+    pub fn content_digest(&self) -> Result<Hash32> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"design-content-v1");
+        for (qname, object) in &self.entries {
+            let mut stripped = object.clone();
+            strip_review_metadata(&mut stripped);
+            let hash = object_hash(&stripped)?;
+            hasher.update(qname.0.0);
+            hasher.update(hash.0.0);
+        }
+        Ok(Hash32(hasher.finalize().into()))
     }
 
     /// Load every object reachable from a View root.
@@ -452,6 +474,38 @@ fn compute(
     visiting.remove(&qname);
     memo.insert(qname, hash);
     Ok(hash)
+}
+
+/// Remove fields that are review metadata or derived from child object hashes.
+/// Comments change child hashes, so derived child lists must not influence a
+/// content digest; every semantic reference is still present in the payload.
+fn strip_review_metadata(object: &mut DesignObject) {
+    match &mut object.payload {
+        ObjectPayload::DocumentDirectory(p) => {
+            p.comments.clear();
+            p.children.clear();
+        }
+        ObjectPayload::Document(p) => {
+            p.comments.clear();
+            p.children.clear();
+        }
+        ObjectPayload::DocumentSection(p) => {
+            p.comments.clear();
+            p.children.clear();
+        }
+        ObjectPayload::DocumentList(p) => {
+            p.comments.clear();
+            p.children.clear();
+        }
+        ObjectPayload::DocumentText(p) => {
+            p.comments.clear();
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            p.comments.clear();
+            p.children.clear();
+        }
+        _ => {}
+    }
 }
 
 fn object_name(object: &DesignObject) -> Option<SymbolHash> {
@@ -1899,6 +1953,57 @@ mod tests {
                 implicit_dependencies: vec![],
             }),
         )
+    }
+
+    fn doc_section(qname: &str, title: &str, comments: Vec<DocComment>) -> DesignObject {
+        DesignObject::new(
+            Kind::DocumentSection,
+            ObjectPayload::DocumentSection(DocumentSectionPayload {
+                qualified_name: sym(qname),
+                parent: sym("documents/design/technical"),
+                title: title.to_string(),
+                body: vec![],
+                sections: vec![],
+                children: vec![],
+                comments,
+            }),
+        )
+    }
+
+    #[test]
+    fn content_digest_ignores_comment_metadata_but_not_design_text() {
+        let qname = "documents/design/technical/section1";
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        catalog
+            .insert(
+                sym(qname),
+                doc_section(
+                    qname,
+                    "登录",
+                    vec![DocComment {
+                        id: 1,
+                        text: "需要补充错误码".to_string(),
+                        resolved: false,
+                    }],
+                ),
+            )
+            .unwrap();
+        let initial = catalog.content_digest().unwrap();
+
+        let object = catalog.get_mut(sym(qname)).unwrap();
+        let ObjectPayload::DocumentSection(section) = &mut object.payload else {
+            unreachable!();
+        };
+        section.comments[0].text = "已处理".to_string();
+        section.comments[0].resolved = true;
+        assert_eq!(catalog.content_digest().unwrap(), initial);
+
+        let object = catalog.get_mut(sym(qname)).unwrap();
+        let ObjectPayload::DocumentSection(section) = &mut object.payload else {
+            unreachable!();
+        };
+        section.title = "认证".to_string();
+        assert_ne!(catalog.content_digest().unwrap(), initial);
     }
 
     fn base_catalog(store: &Store) -> Catalog {

@@ -398,6 +398,17 @@ impl DesignSpaceAccess {
         Ok(count)
     }
 
+    fn content_digest_blocking(&self, project: &Project, commit: &str) -> Result<String, String> {
+        let path = self.repo_path(project)?;
+        let store = Store::open(&path).map_err(display)?;
+        let loaded = load_commit_catalog(&store, commit)?;
+        loaded
+            .catalog
+            .content_digest()
+            .map(|digest| digest.to_hex())
+            .map_err(display)
+    }
+
     fn delete_branch_blocking(
         &self,
         project: &Project,
@@ -568,6 +579,20 @@ impl DesignSpaceGateway for DesignSpaceAccess {
         let project = project.clone();
         let commit = commit.to_owned();
         tokio::task::spawn_blocking(move || access.comment_count_blocking(&project, &commit))
+            .await
+            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+            .map_err(DesignSpaceGatewayError::Backend)
+    }
+
+    async fn content_digest(
+        &self,
+        project: &Project,
+        commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError> {
+        let access = self.clone();
+        let project = project.clone();
+        let commit = commit.to_owned();
+        tokio::task::spawn_blocking(move || access.content_digest_blocking(&project, &commit))
             .await
             .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
             .map_err(DesignSpaceGatewayError::Backend)

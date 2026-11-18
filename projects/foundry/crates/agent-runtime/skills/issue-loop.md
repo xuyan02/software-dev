@@ -177,7 +177,7 @@ ds pull --branch source
 
 ## 3. design_change
 
-任务 input 包含 `issue_id`。设计任务直接修改 `source` 分支；设计审查阶段检查最新 `source`。
+任务 input 包含 `issue_id`。设计变更走独立分支 `design-change/<task-id>`，经 agent review、人类审批、MR merge，最后删除临时分支。不得直接 push `source`。
 
 ### analysis（designer）
 
@@ -196,14 +196,15 @@ ds show documents/design/technical
 - `task_comment` 写明“规范技术设计不存在，应由 design_consistency_maintenance 建立”；
 - 发送 `analysis:failed`。
 
-3. 更新设计空间：
+3. 从最新 `source` 创建设计变更分支：
+
 ```bash
-cd /work/<project-id>/ds
-ds checkout source --force
+ds checkout design-change/<task-id> --create --force
 ds pull --branch source
 ```
-3. 确定受影响的系统、模块、对象、文档和接口。
-4. `task_comment` 写分析结论，发送 `analysis:analyzed`。
+
+4. 确定受影响的系统、模块、对象、文档和接口。
+5. `task_comment` 写分析结论，发送 `analysis:analyzed`。
 
 ### design（designer）
 
@@ -212,17 +213,58 @@ ds pull --branch source
    - 目录设计使用 `documents/design/directory`；
    - 命名空间设计使用 `documents/design/namespace`；
    - 不要创建 `documents/specs` 等临时示例目录。
-2. 提交并推送 `source`：
+2. 提交并推送设计变更分支：
+
 ```bash
 ds add -A
 ds commit -m "Design change for issue <issue-id>" --author design-change
-ds push --branch source
+ds push --branch design-change/<task-id>
 ```
+
 3. `task_comment` 写设计摘要、受影响对象、实现约束，发送 `design:designed`。
 
 ### design_review（design_reviewer）
 
-检查设计是否真正解决 Issue、是否与需求/架构一致、是否引入新的边界问题。发现问题写评论并发送 `design_review:rejected`；通过发送 `design_review:approved`。
+1. 检出并拉取 `design-change/<task-id>`，检查设计是否真正解决 Issue、是否与需求/架构一致、是否引入新的边界问题。
+2. 发现问题：写 DS 评论，`ds add -A`、`ds commit`、`ds push` 到设计变更分支，发送 `design_review:rejected`。
+3. 通过时：用 `merge_request` 工具 `create_for_task` 创建或刷新 MR：
+   - source_branch = `design-change/<task-id>`
+   - target_branch = `source`
+   - title = `Design change: <issue title>`
+4. MR 创建/刷新成功后发送 `design_review:approved`；失败发送 `design_review:failed`。
+
+### human_review（acceptor）
+
+人类在 MR 页面审批。Agent 不执行此阶段，也不能代替人类批准。
+
+### merge（design_reviewer）
+
+1. 检出设计变更分支并拉取最新提交。
+2. 清理该分支上的设计评论：
+
+```bash
+ds doc comment clear
+```
+
+如有评论被删除：
+
+```bash
+ds add -A
+ds commit -m "Remove review comments before merge" --author design-change
+ds push --branch design-change/<task-id>
+```
+
+3. 用 `merge_request` 工具 `create_for_task` 刷新 MR head。
+4. 用 `merge_request` 工具 `merge` 合入 `source`。
+5. 成功发送 `merge:merged`；冲突发送 `merge:conflict`；失败发送 `merge:failed`。
+
+### conflict_resolution（designer）
+
+把 `design-change/<task-id>` rebase 到最新 `source`，解决冲突，推送并刷新 MR，发送 `conflict_resolution:resolved`；无法解决发送 `conflict_resolution:failed`。
+
+### cleanup（design_reviewer）
+
+用 `merge_request` 工具 `delete_branch` 删除 `design-change/<task-id>`；成功发送 `cleanup:cleaned`，失败发送 `cleanup:failed`。
 
 ## 4. code_change
 
@@ -265,19 +307,28 @@ git -C /work/<project-id>/repo push -u origin code/<issue-id>
 
 ### test（tester）
 
-检出 `code/<issue-id>`，运行测试和验收检查，记录命令与结果。通过发送 `test:passed`；失败发送 `test:failed`。
+检出 `code/<issue-id>`，运行测试和验收检查，记录命令、提交 hash 与结果。通过发送 `test:passed`；失败发送 `test:failed`。
+
+### human_review（acceptor）
+
+人类验收 `code/<issue-id>` 的提交范围、测试证据和 Issue 验收标准。Agent 不执行此阶段，也不能代替人类批准。
 
 ### merge（merger）
 
-1. 将 `code/<issue-id>` 合入目标分支：
+1. 核对 `code/<issue-id>` 的 head 必须是 tester 记录的同一个提交；如果分支在测试后前进，停止并发送 `merge:failed`。
+2. 将 `code/<issue-id>` 合入目标分支：
 ```bash
 git -C /work/<project-id>/repo checkout <project.git_branch>
 git -C /work/<project-id>/repo pull --ff-only
 git -C /work/<project-id>/repo merge --ff-only code/<issue-id>
 git -C /work/<project-id>/repo push origin <project.git_branch>
 ```
-2. 用 `issue_transition` 将 Issue 推进到 `resolved`，resolution 写清代码分支、合入提交、测试证据。
-3. 发送 `merge:merged`；失败发送 `merge:failed`。
+3. 用 `issue_transition` 将 Issue 推进到 `resolved`，resolution 写清代码分支、合入提交、测试证据。
+4. 发送 `merge:merged`；失败发送 `merge:failed`。
+
+### cleanup（merger）
+
+删除远程临时分支 `code/<issue-id>`，成功发送 `cleanup:cleaned`；失败发送 `cleanup:failed`。
 
 ## 5. 失败和重试
 

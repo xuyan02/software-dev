@@ -15,9 +15,13 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:7700")]
     listen: SocketAddr,
 
-    /// Require `Authorization: Bearer <token>`; token is read from this file.
+    /// Agent token: may write temporary branches and files, not protected branches.
     #[arg(long)]
     token_file: Option<PathBuf>,
+
+    /// Control-plane token: may create repositories and move protected branches.
+    #[arg(long)]
+    admin_token_file: Option<PathBuf>,
 
     /// Serve the SSH transport protocol on stdin/stdout.
     #[arg(long)]
@@ -43,6 +47,9 @@ fn run() -> Result<()> {
         let mut collection = RepoCollection::open(args.root)?;
         if let Some(path) = args.token_file {
             collection = collection.with_token_file(&path)?;
+        }
+        if let Some(path) = args.admin_token_file {
+            collection = collection.with_admin_token_file(&path)?;
         }
         serve_http(collection, args.listen)
     }

@@ -96,6 +96,10 @@ struct ConfigFile {
     github_app_private_key_file: Option<String>,
     github_api_base: Option<String>,
     shell_image: Option<String>,
+    /// Deprecated: human-review skipping is a project setting on the project
+    /// page. Accepted and ignored so an older config file still starts.
+    #[serde(default)]
+    skip_human_review: Option<bool>,
 }
 
 /// TOML authors often quote the App ID even though GitHub shows a number.
@@ -232,6 +236,7 @@ impl Config {
             .design_space_agent_url
             .map(|value| value.trim().trim_end_matches('/').to_string())
             .filter(|value| !value.is_empty());
+        let _ = file.skip_human_review;
         Ok(Self {
             addr,
             database_url,

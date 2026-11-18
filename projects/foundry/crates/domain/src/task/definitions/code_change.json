@@ -4,6 +4,7 @@
     {"name": "developer", "kind": "agent", "min_actors": 1, "max_actors": 1},
     {"name": "code_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
     {"name": "tester", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "acceptor", "kind": "human", "min_actors": 1, "max_actors": 1},
     {"name": "merger", "kind": "agent", "min_actors": 1, "max_actors": 1}
   ],
   "initial_stage": "plan",
@@ -66,8 +67,23 @@
         {"name": "failed", "display_name": "测试未通过", "description": "测试或验收未通过。", "roles": ["tester"], "action": "decision = 'failed'"}
       ],
       "transitions": [
-        {"on": "decision == 'passed'", "to": "merge"},
+        {"on": "decision == 'passed'", "to": "human_review"},
         {"on": "decision == 'failed'", "to": "implement"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "人类批准", "description": "人类验收代码修改和测试证据。", "roles": ["acceptor"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "人类打回", "description": "人类要求继续修改。", "roles": ["acceptor"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "merge"},
+        {"on": "decision == 'rejected'", "to": "implement"}
       ]
     },
     {
@@ -83,8 +99,29 @@
       ],
       "transitions": [
         {"on": "failed", "action": "result = 'failed'", "to": "failed"},
-        {"on": "merged", "action": "result = 'completed'", "to": "ended"}
+        {"on": "merged", "to": "cleanup"}
       ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": ["merger"],
+      "vars": {
+        "cleaned": {"type": "bool", "display_name": "Cleaned"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "cleaned", "display_name": "分支清理完成", "description": "code/<issue-id> 临时分支已删除。", "roles": ["merger"], "action": "cleaned = true"},
+        {"name": "failed", "display_name": "分支清理失败", "description": "临时分支删除失败。", "roles": ["merger"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "cleaned", "action": "result = 'completed'", "to": "ended"},
+        {"on": "failed", "to": "cleanup_failed"}
+      ]
+    },
+    {
+      "name": "cleanup_failed",
+      "active_roles": [],
+      "retry_to": "cleanup"
     },
     {
       "name": "failed",

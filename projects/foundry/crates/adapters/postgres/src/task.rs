@@ -11,7 +11,8 @@ use foundry_domain::{
     AccountKind, Actor, ChildState, DependencyState, DocumentReviewLinkAction, DomainEvent,
     DomainEventKind, Issue, IssueKind, IssueSource, IssueSourceKind, TaskActorDAO, TaskAggregate,
     TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskIssueCreate, TaskLink, TaskLinkKind,
-    TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState, WorkflowId,
+    RoleKind, TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState, TaskWorkflow,
+    WorkflowId,
 };
 use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
@@ -404,6 +405,12 @@ impl TaskDispatcher for PostgresTaskDispatcher {
             .await
             .map_err(db_error)?;
             if rows.is_empty() {
+                if self
+                    .try_auto_approve_human_review(&mut tx, &mut aggregate)
+                    .await?
+                {
+                    continue;
+                }
                 break;
             }
 
@@ -548,7 +555,140 @@ impl TaskDispatcher for PostgresTaskDispatcher {
     }
 }
 
+/// Pick the approval operation an enabled `skip_human_review` switch should
+/// send. Only stages whose active roles are human review roles qualify.
+fn auto_approval_operation(
+    workflow: &dyn TaskWorkflow,
+    task: &TaskDAO,
+) -> Option<(foundry_domain::OperationName, Vec<String>)> {
+    let stage_name = task.stage.as_ref().map(|stage| stage.as_str())?;
+    let stage = workflow.stage(stage_name)?;
+    if stage.active_roles.is_empty() {
+        return None;
+    }
+    let humanish = |role: &str| {
+        workflow
+            .roles()
+            .iter()
+            .find(|spec| spec.name == role)
+            .is_some_and(|spec| {
+                spec.kind == RoleKind::Human
+                    || matches!(role, "acceptor" | "approver")
+            })
+    };
+    if !stage.active_roles.iter().all(|role| humanish(role)) {
+        return None;
+    }
+    let approval = stage
+        .operations
+        .iter()
+        .find(|operation| operation.name == "approved")
+        .or_else(|| {
+            stage
+                .operations
+                .iter()
+                .find(|operation| operation.name.ends_with("approved"))
+        })?;
+    if approval.roles.is_empty() || !approval.roles.iter().all(|role| humanish(role)) {
+        return None;
+    }
+    Some((
+        foundry_domain::OperationName::new(format!("{stage_name}:{}", approval.name)),
+        approval.roles.clone(),
+    ))
+}
+
 impl PostgresTaskDispatcher {
+    /// When `skip_human_review` is enabled, send the stage's human approval
+    /// operation once for the current stage visit. The operation still runs
+    /// through the normal workflow action and transition; only the human's
+    /// decision is supplied automatically.
+    async fn try_auto_approve_human_review(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        aggregate: &mut TaskAggregate,
+    ) -> Result<bool, TaskDispatchError> {
+        if aggregate.task.state.is_terminal() {
+            return Ok(false);
+        }
+        let skip_human_review: Option<bool> = sqlx::query_scalar(
+            "select skip_human_review from projects where id = $1",
+        )
+        .bind(aggregate.task.project_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        if !skip_human_review.unwrap_or(false) {
+            return Ok(false);
+        }
+        let Some(stage_name) = aggregate.task.stage.as_ref().map(|stage| stage.to_string()) else {
+            return Ok(false);
+        };
+        let workflow = self
+            .workflows
+            .pinned(&foundry_domain::WorkflowVersionRef {
+                workflow_id: aggregate.task.workflow.clone(),
+                version: aggregate.task.workflow_version,
+            })
+            .await
+            .map_err(TaskDispatchError::from)?
+            .ok_or_else(|| {
+                TaskDispatchError::Rejected(format!(
+                    "workflow {} version {} is not registered",
+                    aggregate.task.workflow, aggregate.task.workflow_version
+                ))
+            })?;
+        let Some((operation, approval_roles)) = auto_approval_operation(&*workflow, &aggregate.task)
+        else {
+            return Ok(false);
+        };
+        let Some(actor) = aggregate.actors.iter().find(|actor| {
+            actor.active
+                && approval_roles
+                    .iter()
+                    .any(|role| role == actor.role_key.as_str())
+        }) else {
+            return Ok(false);
+        };
+        let Some(Actor::Human { .. }) = load_actor(tx, actor.account_id).await? else {
+            return Ok(false);
+        };
+        let key = format!(
+            "auto-approve:{}:{}:{}",
+            aggregate.task.id,
+            aggregate.task.workflow_version,
+            aggregate.task.updated_at.unix_timestamp_nanos()
+        );
+        let duplicate: Option<i32> = sqlx::query_scalar(
+            "select 1 from task_operations where task_id = $1 and idempotency_key = $2",
+        )
+        .bind(aggregate.task.id)
+        .bind(&key)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_error)?;
+        if duplicate.is_some() {
+            return Ok(false);
+        }
+        self.apply_command(
+            tx,
+            aggregate,
+            TaskCommand::SendOperation {
+                actor_id: actor.account_id,
+                operation: operation.clone(),
+                idempotency_key: key,
+            },
+        )
+        .await?;
+        tracing::info!(
+            task_id = %aggregate.task.id,
+            stage = %stage_name,
+            operation = %operation.as_str(),
+            "human review auto-approved by skip_human_review"
+        );
+        Ok(true)
+    }
+
     async fn apply_command(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1135,4 +1275,52 @@ fn task_error(error: TaskError) -> TaskDispatchError {
 
 fn db_error(error: sqlx::Error) -> TaskDispatchError {
     TaskDispatchError::Backend(error.to_string())
+}
+
+#[cfg(test)]
+mod auto_approval_tests {
+    use super::*;
+    use foundry_domain::builtin_workflows;
+
+    fn task_for(stage: &str) -> TaskDAO {
+        let mut task = TaskDAO::new(
+            Uuid::now_v7(),
+            None,
+            WorkflowId::new("test"),
+            1,
+            "task",
+            OffsetDateTime::now_utc(),
+        );
+        task.stage = Some(foundry_domain::StageKey::new(stage));
+        task
+    }
+
+    #[test]
+    fn selects_human_approval_operations_only() {
+        let workflows = builtin_workflows();
+        let find = |id: &str| {
+            workflows
+                .iter()
+                .find(|workflow| workflow.id() == id)
+                .unwrap_or_else(|| panic!("missing workflow {id}"))
+        };
+
+        let (code_change, roles) =
+            auto_approval_operation(find("code_change"), &task_for("human_review")).unwrap();
+        assert_eq!(code_change.as_str(), "human_review:approved");
+        assert_eq!(roles, vec!["acceptor".to_string()]);
+
+        let (design_change, _) =
+            auto_approval_operation(find("design_change"), &task_for("human_review")).unwrap();
+        assert_eq!(design_change.as_str(), "human_review:approved");
+
+        let (merge, _) =
+            auto_approval_operation(find("design_space_merge"), &task_for("review")).unwrap();
+        assert_eq!(merge.as_str(), "review:review_approved");
+
+        assert!(
+            auto_approval_operation(find("code_change"), &task_for("code_review")).is_none()
+        );
+        assert!(auto_approval_operation(find("iteration"), &task_for("review")).is_none());
+    }
 }

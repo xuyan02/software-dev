@@ -16,10 +16,13 @@ use std::sync::{Arc, Mutex};
 
 const SOURCE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const TARGET: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const OTHER: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 
 #[derive(Default)]
 struct FakeGateway {
     target: Mutex<String>,
+    source: Mutex<String>,
+    digest: Mutex<String>,
     comments: AtomicUsize,
 }
 
@@ -29,7 +32,11 @@ impl DesignSpaceGateway for FakeGateway {
         &self,
         _project: &foundry_domain::Project,
     ) -> Result<Vec<String>, DesignSpaceGatewayError> {
-        Ok(vec!["main".to_string(), "feature".to_string()])
+        Ok(vec![
+            "main".to_string(),
+            "feature".to_string(),
+            "integration".to_string(),
+        ])
     }
 
     async fn branch_head(
@@ -38,10 +45,18 @@ impl DesignSpaceGateway for FakeGateway {
         branch: &str,
     ) -> Result<Option<String>, DesignSpaceGatewayError> {
         Ok(Some(match branch {
-            "main" => self.target.lock().unwrap().clone(),
-            "feature" => SOURCE.to_string(),
+            "main" | "integration" => self.target.lock().unwrap().clone(),
+            "feature" => self.source.lock().unwrap().clone(),
             _ => return Ok(None),
         }))
+    }
+
+    async fn content_digest(
+        &self,
+        _project: &foundry_domain::Project,
+        _commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError> {
+        Ok(self.digest.lock().unwrap().clone())
     }
 
     async fn is_ancestor(
@@ -111,6 +126,10 @@ struct Harness {
 }
 
 async fn harness() -> Harness {
+    harness_with_skip(false).await
+}
+
+async fn harness_with_skip(skip_human_review: bool) -> Harness {
     let store = Arc::new(InMemoryStore::new());
     store.seed_builtin_workflows().unwrap();
     let events = Arc::new(InMemoryEventSink::new());
@@ -177,8 +196,11 @@ async fn harness() -> Harness {
     ));
     let gateway = Arc::new(FakeGateway {
         target: Mutex::new(TARGET.to_string()),
+        source: Mutex::new(SOURCE.to_string()),
+        digest: Mutex::new("test-content-digest".to_string()),
         comments: AtomicUsize::new(0),
     });
+    project.skip_human_review = skip_human_review;
     let service = MergeRequestService::new(
         Arc::clone(&store) as Arc<dyn MergeRequestRepository>,
         tasks.clone(),
@@ -205,6 +227,29 @@ impl foundry_app::DesignSpaceProvisioner for TestDesignSpaces {
     async fn create_design_space(&self, repo: &str, _branch: &str) -> Result<String, String> {
         Ok(format!("http://test/{repo}"))
     }
+}
+
+#[tokio::test]
+async fn skip_human_review_auto_approves_and_merges_a_new_request() {
+    let harness = harness_with_skip(true).await;
+    let view = harness
+        .service
+        .create(
+            &harness.project,
+            harness.admin.id,
+            CreateDesignSpaceMergeRequest {
+                title: "Skip review".to_string(),
+                description: String::new(),
+                source_branch: "feature".to_string(),
+                target_branch: "main".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(view.status, MergeRequestStatus::Merged);
+    assert_eq!(view.task.state, foundry_domain::TaskState::Completed);
+    assert_eq!(view.task.result.as_ref().unwrap().as_str(), "merged");
+    assert_eq!(harness.gateway.target.lock().unwrap().as_str(), SOURCE);
 }
 
 #[tokio::test]
@@ -245,14 +290,8 @@ async fn approval_and_merge_are_task_operations() {
     );
 
     harness
-        .tasks
-        .send_operation(
-            harness.project.id,
-            task_id,
-            harness.reviewer.id,
-            OperationName::new("review_approved"),
-            "approve-1".to_string(),
-        )
+        .service
+        .approve(&harness.project, request_id, harness.reviewer.id)
         .await
         .unwrap();
     let detail = harness
@@ -319,14 +358,8 @@ async fn merge_refuses_a_source_branch_with_comments() {
         .await
         .unwrap();
     harness
-        .tasks
-        .send_operation(
-            harness.project.id,
-            view.merge_request.task_id,
-            harness.reviewer.id,
-            OperationName::new("review_approved"),
-            "approve-comments".to_string(),
-        )
+        .service
+        .approve(&harness.project, view.merge_request.id, harness.reviewer.id)
         .await
         .unwrap();
     harness.gateway.comments.store(2, Ordering::SeqCst);
@@ -345,6 +378,127 @@ async fn merge_refuses_a_source_branch_with_comments() {
         .await
         .unwrap();
     assert_eq!(merged.status, MergeRequestStatus::Merged);
+}
+
+#[tokio::test]
+async fn merge_rejects_design_content_changed_after_approval() {
+    let harness = harness().await;
+    let view = harness
+        .service
+        .create(
+            &harness.project,
+            harness.admin.id,
+            CreateDesignSpaceMergeRequest {
+                title: "Approved then changed".to_string(),
+                description: String::new(),
+                source_branch: "feature".to_string(),
+                target_branch: "main".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    harness
+        .service
+        .approve(&harness.project, view.merge_request.id, harness.reviewer.id)
+        .await
+        .unwrap();
+    *harness.gateway.digest.lock().unwrap() = "changed-content-digest".to_string();
+    harness.gateway.comments.store(0, Ordering::SeqCst);
+    let error = harness
+        .service
+        .merge(&harness.project, view.merge_request.id, harness.reviewer.id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("审批后设计内容发生变化"), "{error}");
+    assert_eq!(harness.gateway.target.lock().unwrap().as_str(), TARGET);
+}
+
+#[tokio::test]
+async fn merge_allows_comments_when_target_is_an_integration_branch() {
+    let harness = harness().await;
+    let view = harness
+        .service
+        .create(
+            &harness.project,
+            harness.admin.id,
+            CreateDesignSpaceMergeRequest {
+                title: "Group summary".to_string(),
+                description: String::new(),
+                source_branch: "feature".to_string(),
+                target_branch: "integration".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    harness
+        .tasks
+        .send_operation(
+            harness.project.id,
+            view.merge_request.task_id,
+            harness.reviewer.id,
+            OperationName::new("review_approved"),
+            "approve-integration".to_string(),
+        )
+        .await
+        .unwrap();
+    harness.gateway.comments.store(3, Ordering::SeqCst);
+    let merged = harness
+        .service
+        .merge(&harness.project, view.merge_request.id, harness.reviewer.id)
+        .await
+        .unwrap();
+    assert_eq!(merged.status, MergeRequestStatus::Merged);
+    assert_eq!(harness.gateway.target.lock().unwrap().as_str(), SOURCE);
+}
+
+#[tokio::test]
+async fn merge_refuses_a_source_branch_that_moved_after_the_request_was_refreshed() {
+    let harness = harness().await;
+    let view = harness
+        .service
+        .create(
+            &harness.project,
+            harness.admin.id,
+            CreateDesignSpaceMergeRequest {
+                title: "Stale source".to_string(),
+                description: String::new(),
+                source_branch: "feature".to_string(),
+                target_branch: "main".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    harness
+        .service
+        .approve(&harness.project, view.merge_request.id, harness.reviewer.id)
+        .await
+        .unwrap();
+    *harness.gateway.source.lock().unwrap() = OTHER.to_string();
+    let error = harness
+        .service
+        .merge(&harness.project, view.merge_request.id, harness.reviewer.id)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("刷新"), "{error}");
+    assert_eq!(harness.gateway.target.lock().unwrap().as_str(), TARGET);
+}
+
+#[tokio::test]
+async fn protected_design_branches_cannot_be_deleted() {
+    let harness = harness().await;
+    for branch in ["source", "main", "master"] {
+        let error = harness
+            .service
+            .delete_branch(&harness.project, branch)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("受保护分支"), "{error}");
+    }
+    harness
+        .service
+        .delete_branch(&harness.project, "feature")
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

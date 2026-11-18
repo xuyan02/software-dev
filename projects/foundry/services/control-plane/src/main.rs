@@ -75,17 +75,34 @@ async fn main() -> anyhow::Result<()> {
         design_space_agent_base,
         design_space_root,
         design_space_token,
+        design_space_agent_token,
     ) = match &config.design_space_url {
         Some(url) => {
             let agent_base = config
                 .design_space_agent_url
                 .clone()
                 .unwrap_or_else(|| url.clone());
-            let token = design_space::read_token(&config.design_space_token_file);
-            (None, url.clone(), agent_base, None, token)
+            let admin_token = design_space::read_token(&config.design_space_token_file);
+            let agent_token = design_space::read_token(&design_space::agent_token_file(
+                &config.design_space_token_file,
+            ));
+            if agent_token.is_none() {
+                tracing::warn!(
+                    path = %design_space::agent_token_file(&config.design_space_token_file).display(),
+                    "design-space agent token is missing; agents will not be able to write the design space"
+                );
+            }
+            (
+                None,
+                url.clone(),
+                agent_base,
+                None,
+                admin_token,
+                agent_token,
+            )
         }
         None => {
-            let (child, base, port, token) = design_space::start_local(
+            let (child, base, port, admin_token, agent_token) = design_space::start_local(
                 config.design_space_root.clone(),
                 config.design_space_listen.clone(),
                 config.design_space_token_file.clone(),
@@ -102,7 +119,8 @@ async fn main() -> anyhow::Result<()> {
                 base,
                 agent_base,
                 Some(config.design_space_root.clone()),
-                Some(token),
+                Some(admin_token),
+                Some(agent_token),
             )
         }
     };
@@ -296,7 +314,7 @@ async fn main() -> anyhow::Result<()> {
         auth: credential_auth,
         store: Arc::clone(&store),
         github,
-        ds_token: design_space_token,
+        ds_token: design_space_agent_token,
     };
     let app = foundry_api_http::router(state).merge(agent_credentials::router(credentials));
     tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));

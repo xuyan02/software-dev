@@ -164,9 +164,10 @@ const SUMMARY_PROMPT: &str = r#"总结工作项。
 
 const FIX_PROMPT: &str = r#"修改工作项。
 当前工作项：kind={{input.kind}}，path={{input.path}}。
+需要处理的文档 Sections：{{input.sections}}
 
-Review 未通过。请查看评论列表，处理当前工作项的 open 评论。
-根据 kind 和 path 找到相关文档 Section，对每个 Section 运行 ds doc comment list，只处理 open 评论；重新读源码、调用方和文档，修正对象、关系或文档；完成实际修改后 resolve 评论。
+Review 未通过。请对每个 Section 运行 ds doc comment list，只处理 open 评论；这些 Section 是 Review 明确指出的阻塞位置，不要跳过。
+重新读源码、调用方和文档，修正对象、关系或文档；完成实际修改后 resolve 评论。
 不要假 resolve；评论不成立时写说明理由的评论并保留原评论；不要输出 Review 结论；不要 ds add、ds commit 或 ds push。
 输出 JSON：{"ok":true}
 只返回这个 JSON 对象。"#;
@@ -964,6 +965,65 @@ fn rework_sections_for(ctx: &Context, path: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Put a rejected file or directory back on the work queue. `review_all`
+/// unstages it from the index, so a later `ds status` no longer offers it as
+/// pending; without this explicit queue the summary graph would go straight
+/// back to `review_all`, see the same open comment, and fail with
+/// `{"failed":true}`.
+fn enqueue_rework(
+    ctx: &mut Context,
+    kind: &str,
+    path: &str,
+    sections: &[String],
+) -> Result<(), NodeError> {
+    let mut by_path = ctx
+        .var::<std::collections::BTreeMap<String, Vec<String>>>("rework_sections")
+        .unwrap_or_default();
+    by_path.insert(path.to_owned(), sections.to_vec());
+    ctx.set_var("rework_sections", by_path)?;
+
+    let (key, queue) = if kind == "directory" {
+        (
+            "rework_directories",
+            ctx.var::<Vec<String>>("rework_directories")
+                .unwrap_or_default(),
+        )
+    } else {
+        (
+            "rework_files",
+            ctx.var::<Vec<String>>("rework_files").unwrap_or_default(),
+        )
+    };
+    let mut queue = queue;
+    if !queue.iter().any(|queued| queued == path) {
+        queue.push(path.to_owned());
+    }
+    ctx.set_var(key, queue)?;
+    Ok(())
+}
+
+fn take_rework_item(ctx: &mut Context) -> Result<Option<WorkItem>, NodeError> {
+    for (key, kind) in [
+        ("rework_directories", "directory"),
+        ("rework_files", "file"),
+    ] {
+        let mut queue = ctx.var::<Vec<String>>(key).unwrap_or_default();
+        if queue.is_empty() {
+            continue;
+        }
+        let path = queue.remove(0);
+        ctx.set_var(key, queue)?;
+        let mut item = if kind == "directory" {
+            WorkItem::directory(path.clone())
+        } else {
+            WorkItem::file(path.clone())
+        };
+        item.sections = rework_sections_for(ctx, &path);
+        return Ok(Some(item));
+    }
+    Ok(None)
+}
+
 async fn stage_deletions(
     shell: &Arc<dyn Shell>,
     workspace: &str,
@@ -1001,6 +1061,11 @@ async fn stage_deletions(
 impl Node for SelectItemNode {
     async fn run(&self, _input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let workspace = workspace(ctx)?;
+        if let Some(item) = take_rework_item(ctx)? {
+            tracing::info!(kind = %item.kind, path = %item.path, "selected rework item");
+            ctx.set_var("current_item", item.clone())?;
+            return json_result(&item);
+        }
         if let Ok(mut directories) = ctx.var::<Vec<String>>("group_pending_directories")
             && let Some(path) = directories.first().cloned()
         {
@@ -1444,12 +1509,12 @@ impl Node for ApplyAllNode {
         let workspace = workspace(ctx)?;
         let signature = format!("all:{input}");
         if no_progress(ctx, signature)? {
-            return Ok(json!({"failed":true}));
+            return Err(NodeError::failed(
+                "review_all returned the same blocking verdict again; no rework progress"
+                    .to_owned(),
+            ));
         }
 
-        let mut sections = ctx
-            .var::<std::collections::BTreeMap<String, Vec<String>>>("rework_sections")
-            .unwrap_or_default();
         let mut any = false;
         for item in &verdict.files {
             ds_ok(
@@ -1458,7 +1523,7 @@ impl Node for ApplyAllNode {
                 format!("unstage --file {}", q(&item.path)),
             )
             .await?;
-            sections.insert(item.path.clone(), item.sections.clone());
+            enqueue_rework(ctx, "file", &item.path, &item.sections)?;
             any = true;
         }
         for item in &verdict.directories {
@@ -1468,13 +1533,14 @@ impl Node for ApplyAllNode {
                 format!("unstage --directory {}", q(&item.path)),
             )
             .await?;
-            sections.insert(item.path.clone(), item.sections.clone());
+            enqueue_rework(ctx, "directory", &item.path, &item.sections)?;
             any = true;
         }
         if !any {
-            return Ok(json!({"failed":true}));
+            return Err(NodeError::failed(
+                "review_all rejected but returned no files or directories to rework".to_owned(),
+            ));
         }
-        ctx.set_var("rework_sections", sections)?;
         Ok(json!({"next":"select"}))
     }
 
@@ -1659,9 +1725,29 @@ mod tests {
         assert!(fix.contains("kind=directory"));
         assert!(fix.contains("path=src"));
         assert!(fix.contains("Review 未通过"));
-        assert!(!fix.contains("需要处理的 Sections"));
-        assert!(!fix.contains("docs/s"));
+        assert!(fix.contains("需要处理的文档 Sections"));
+        assert!(fix.contains("docs/s"));
         assert!(!fix.contains("Input (JSON)"));
+    }
+
+    #[test]
+    fn rejected_review_items_are_requeued_for_fix() {
+        let mut ctx = Context::new();
+        enqueue_rework(&mut ctx, "file", "src/main.rs", &["docs/main".to_string()]).unwrap();
+        enqueue_rework(&mut ctx, "directory", "src", &["docs/src".to_string()]).unwrap();
+        enqueue_rework(&mut ctx, "file", "src/main.rs", &["docs/main".to_string()]).unwrap();
+
+        let directory = take_rework_item(&mut ctx).unwrap().unwrap();
+        assert_eq!(directory.kind, "directory");
+        assert_eq!(directory.path, "src");
+        assert_eq!(directory.sections, vec!["docs/src"]);
+
+        let file = take_rework_item(&mut ctx).unwrap().unwrap();
+        assert_eq!(file.kind, "file");
+        assert_eq!(file.path, "src/main.rs");
+        assert_eq!(file.sections, vec!["docs/main"]);
+
+        assert!(take_rework_item(&mut ctx).unwrap().is_none());
     }
 
     #[test]

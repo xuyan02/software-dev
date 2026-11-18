@@ -26,15 +26,17 @@
       "active_roles": [],
       "vars": {
         "consistency_done": {"type": "bool", "display_name": "Consistency done"},
-        "design_done": {"type": "bool", "display_name": "Design done"}
+        "design_done": {"type": "bool", "display_name": "Design done"},
+        "inspection_failed": {"type": "bool", "display_name": "Inspection failed"}
       },
       "events": [
         {
           "event": "child.state_changed",
-          "action": "if event.child.workflow == 'consistency_inspection' and event.child.state == 'completed' { consistency_done = true } if event.child.workflow == 'design_inspection' and event.child.state == 'completed' { design_done = true }"
+          "action": "if event.child.workflow == 'consistency_inspection' and event.child.state == 'completed' { if event.child.result == 'completed' { consistency_done = true } else { inspection_failed = true } } if event.child.workflow == 'design_inspection' and event.child.state == 'completed' { if event.child.result == 'completed' { design_done = true } else { inspection_failed = true } }"
         }
       ],
       "transitions": [
+        {"on": "inspection_failed", "action": "result = 'failed'", "to": "failed"},
         {"on": "consistency_done and design_done", "action": "result = 'completed'", "to": "ended"}
       ]
     },

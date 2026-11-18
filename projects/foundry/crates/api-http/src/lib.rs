@@ -55,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/state", get(routes::tasks_state))
         .route("/tasks/{id}", get(routes::task_page))
         .route("/tasks/{id}/state", get(routes::task_state))
+        .route("/tasks/{id}/operations", post(routes::send_task_operation_form))
         .route("/tasks/{id}/retry", post(routes::retry_task_form))
         .route("/tasks/{id}/abandon", post(routes::abandon_task_form))
         .route(
@@ -118,6 +119,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/projects/{id}/merge-requests/{merge_request_id}",
             get(routes::merge_request_page),
+        )
+        .route(
+            "/projects/{id}/merge-requests/{merge_request_id}/approve",
+            post(routes::approve_merge_request_form),
         )
         .route(
             "/projects/{id}/merge-requests/{merge_request_id}/comments",
@@ -289,6 +294,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/projects/{project}/merge-requests/{merge_request_id}",
             get(routes::get_merge_request),
+        )
+        .route(
+            "/api/v1/projects/{project}/merge-requests/{merge_request_id}/approve",
+            post(routes::approve_merge_request),
         )
         .route(
             "/api/v1/projects/{project}/merge-requests/{merge_request_id}/merge",

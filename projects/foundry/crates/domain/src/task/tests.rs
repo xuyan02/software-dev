@@ -1511,6 +1511,27 @@ fn create_issue_action_emits_issue_create() {
 }
 
 #[test]
+fn group_conflict_resolution_reruns_summary() {
+    let workflow = builtin("code_summary_group");
+    let task = task(
+        "code_summary_group",
+        TaskState::InProgress,
+        Some("conflict_resolution"),
+    );
+    let task_id = task.id;
+    let resolver = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "conflict_resolver", resolver, true)],
+        vec![],
+        vec![],
+    );
+    let resolved = operation(&workflow, state, "conflict_resolution:resolved", resolver);
+    assert_eq!(resolved.task.stage.as_deref(), Some("summary"));
+    assert_eq!(resolved.task.state, TaskState::InProgress);
+}
+
+#[test]
 fn group_merge_deletes_its_branch_before_completing() {
     let workflow = builtin("code_summary_group");
     let task = task("code_summary_group", TaskState::InProgress, Some("merge"));
@@ -1542,6 +1563,7 @@ fn code_change_runs_through_review_test_and_merge() {
     let developer = Uuid::now_v7();
     let reviewer = Uuid::now_v7();
     let tester = Uuid::now_v7();
+    let acceptor = Uuid::now_v7();
     let merger = Uuid::now_v7();
     let state = aggregate(
         task,
@@ -1549,6 +1571,7 @@ fn code_change_runs_through_review_test_and_merge() {
             actor(task_id, "developer", developer, false),
             actor(task_id, "code_reviewer", reviewer, false),
             actor(task_id, "tester", tester, false),
+            actor(task_id, "acceptor", acceptor, false),
             actor(task_id, "merger", merger, false),
         ],
         vec![],
@@ -1566,9 +1589,15 @@ fn code_change_runs_through_review_test_and_merge() {
     assert_eq!(mutation.task.stage.as_deref(), Some("test"));
     state = aggregate_of(mutation);
     let mutation = operation(&workflow, state, "test:passed", tester);
+    assert_eq!(mutation.task.stage.as_deref(), Some("human_review"));
+    state = aggregate_of(mutation);
+    let mutation = operation(&workflow, state, "human_review:approved", acceptor);
     assert_eq!(mutation.task.stage.as_deref(), Some("merge"));
     state = aggregate_of(mutation);
     let mutation = operation(&workflow, state, "merge:merged", merger);
+    assert_eq!(mutation.task.stage.as_deref(), Some("cleanup"));
+    state = aggregate_of(mutation);
+    let mutation = operation(&workflow, state, "cleanup:cleaned", merger);
     assert_eq!(mutation.task.state, TaskState::Completed);
     assert_eq!(
         mutation.task.result.as_ref().map(TaskResult::as_str),
@@ -1583,11 +1612,13 @@ fn design_change_runs_through_analysis_design_and_review() {
     let task_id = task.id;
     let designer = Uuid::now_v7();
     let reviewer = Uuid::now_v7();
+    let acceptor = Uuid::now_v7();
     let state = aggregate(
         task,
         vec![
             actor(task_id, "designer", designer, false),
             actor(task_id, "design_reviewer", reviewer, false),
+            actor(task_id, "acceptor", acceptor, false),
         ],
         vec![],
         vec![],
@@ -1597,7 +1628,13 @@ fn design_change_runs_through_analysis_design_and_review() {
     assert_eq!(state.task.stage.as_deref(), Some("design"));
     state = aggregate_of(operation(&workflow, state, "design:designed", designer));
     assert_eq!(state.task.stage.as_deref(), Some("design_review"));
-    let mutation = operation(&workflow, state, "design_review:approved", reviewer);
+    state = aggregate_of(operation(&workflow, state, "design_review:approved", reviewer));
+    assert_eq!(state.task.stage.as_deref(), Some("human_review"));
+    state = aggregate_of(operation(&workflow, state, "human_review:approved", acceptor));
+    assert_eq!(state.task.stage.as_deref(), Some("merge"));
+    state = aggregate_of(operation(&workflow, state, "merge:merged", reviewer));
+    assert_eq!(state.task.stage.as_deref(), Some("cleanup"));
+    let mutation = operation(&workflow, state, "cleanup:cleaned", reviewer);
     assert_eq!(mutation.task.state, TaskState::Completed);
     assert_eq!(
         mutation.task.result.as_ref().map(TaskResult::as_str),
@@ -1665,5 +1702,51 @@ fn daily_check_waits_for_both_inspections() {
     assert_eq!(
         state.task.result.as_ref().map(TaskResult::as_str),
         Some("completed")
+    );
+}
+
+#[test]
+fn daily_check_fails_when_an_inspection_is_abandoned() {
+    let workflow = builtin("daily_check");
+    let task = task("daily_check", TaskState::Pending, None);
+    let task_id = task.id;
+    let dispatcher = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "dispatcher", dispatcher, false)],
+        vec![],
+        vec![],
+    );
+    let created = aggregate_of(apply(&workflow, state, TaskEvent::Created, now()).unwrap());
+    let state = aggregate_of(operation(&workflow, created, "dispatch:dispatched", dispatcher));
+
+    let completed = apply(
+        &workflow,
+        state,
+        TaskEvent::ChildStateChanged {
+            child_id: Uuid::now_v7(),
+            child_workflow: WorkflowId::new("consistency_inspection"),
+            child_state: TaskState::Completed,
+            result: Some(TaskResult::new("completed")),
+        },
+        now(),
+    )
+    .unwrap();
+    let failed = apply(
+        &workflow,
+        aggregate_of(completed),
+        TaskEvent::ChildStateChanged {
+            child_id: Uuid::now_v7(),
+            child_workflow: WorkflowId::new("design_inspection"),
+            child_state: TaskState::Completed,
+            result: Some(TaskResult::new("abandoned")),
+        },
+        now(),
+    )
+    .unwrap();
+    assert_eq!(failed.task.stage.as_deref(), Some("failed"));
+    assert_eq!(
+        failed.task.result.as_ref().map(TaskResult::as_str),
+        None
     );
 }

@@ -83,6 +83,7 @@ pub struct UpdateProject {
     pub description: Option<Option<String>>,
     pub git_branch: Option<String>,
     pub status: Option<ProjectStatus>,
+    pub skip_human_review: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

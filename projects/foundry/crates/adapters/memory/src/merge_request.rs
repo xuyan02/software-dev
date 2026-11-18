@@ -135,4 +135,31 @@ impl MergeRequestRepository for InMemoryStore {
         request.updated_at = now;
         Ok(true)
     }
+
+    async fn save_approval(
+        &self,
+        project_id: Uuid,
+        id: Uuid,
+        content_digest: &str,
+        source_commit: &str,
+        approved_by: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<bool, RepoError> {
+        let mut requests = self.merge_requests.write().expect("lock poisoned");
+        let Some(request) = requests
+            .get_mut(&id)
+            .filter(|request| request.project_id == project_id)
+        else {
+            return Ok(false);
+        };
+        if request.merge_commit.is_some() {
+            return Ok(false);
+        }
+        request.approved_content_digest = Some(content_digest.to_string());
+        request.approved_source_commit = Some(source_commit.to_string());
+        request.approved_by = Some(approved_by);
+        request.approved_at = Some(now);
+        request.updated_at = now;
+        Ok(true)
+    }
 }

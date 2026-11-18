@@ -321,6 +321,8 @@ button, .button { font:inherit; background:var(--accent); color:#fff; border:0; 
 button.link { background:none; color:var(--accent); border:0; padding:0; cursor:pointer; }
 button.link:hover { text-decoration:underline; }
 button.danger { background:transparent; color:#cf222e; border:1px solid #cf222e; padding:4px 10px; }
+button.danger.solid { background:#cf222e; color:#fff; padding:6px 14px; font-weight:600; }
+button.danger.solid:hover { background:#a40e26; border-color:#a40e26; }
 .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
 .stats { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin:20px 0 8px; }
 .stat { display:flex; flex-direction:column; gap:2px; padding:16px 18px; border:1px solid var(--line);
@@ -525,6 +527,29 @@ fn document_headings(input: &str) -> Vec<(usize, String, usize)> {
     headings
 }
 
+fn toc_label(text: &str) -> String {
+    let text = text.trim();
+    let contains_path = !text.contains(' ')
+        && (text.starts_with("namespaces/")
+            || text.starts_with("files/")
+            || text.starts_with("documents/")
+            || text.starts_with("design/")
+            || text.starts_with("src/")
+            || text.starts_with("tests/")
+            || text.starts_with("docs/")
+            || text.contains("::")
+            || text.matches('/').count() >= 2);
+    if contains_path {
+        let local = text.rsplit_once("::").map(|(_, local)| local).unwrap_or(text);
+        return local
+            .rsplit_once('/')
+            .map(|(_, local)| local)
+            .unwrap_or(local)
+            .to_string();
+    }
+    text.to_string()
+}
+
 fn document_view(input: &str) -> String {
     let headings = document_headings(input);
     let body = markdown_to_html(input);
@@ -537,7 +562,7 @@ fn document_view(input: &str) -> String {
             let indent = level.saturating_sub(1) * 14;
             format!(
                 r##"<li style="padding-left:{indent}px"><a href="#md-h-{index}">{}</a></li>"##,
-                inline_markdown(text, 0)
+                inline_markdown(&toc_label(text), 0)
             )
         })
         .collect::<String>();
@@ -1879,6 +1904,25 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
         .as_ref()
         .map(|stage| escape(stage.as_str()))
         .unwrap_or_else(|| "—".to_string());
+    let task_operations = if task.allowed_operations.is_empty() {
+        r#"<p class="hint">当前账号没有可执行的任务操作。</p>"#.to_string()
+    } else {
+        task.allowed_operations
+            .iter()
+            .map(|operation| {
+                format!(
+                    r#"<form class="inline-form" method="post" action="/tasks/{id}/operations">
+<input type="hidden" name="operation" value="{operation}">
+<button type="submit">{label}</button>
+</form>"#,
+                    id = task.id,
+                    operation = escape(operation.name.as_str()),
+                    label = escape(&operation.display_name),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let role_rows = if task.role_specs.is_empty() {
         r#"<tr><td colspan="4" class="empty">流程没有声明角色。</td></tr>"#.to_string()
     } else {
@@ -2043,6 +2087,9 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
 <div class="card">
   <p>当前阶段 <code>{stage}</code></p>
   {active_agents}
+  <h3>可执行操作</h3>
+  {task_operations}
+  <p class="hint">有关联合并请求的审批请从 <a href="/projects/{project_id}/merge-requests">项目合并请求</a> 页面完成。</p>
 </div>
 <h2>任务内容</h2>
 <div class="card markdown">{description}</div>
@@ -2075,6 +2122,8 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
         version = task.workflow_version,
         stage = stage,
         active_agents = active_agents,
+        task_operations = task_operations,
+        project_id = task.project_id,
         parent = parent,
         updated = task
             .updated_at
@@ -3719,13 +3768,17 @@ pub fn project_page(
         );
         format!(
             r#"<h2>项目设置</h2>
-<form method="post" action="/projects/{id}">
+<form method="post" action="/projects/{id}/edit">
   <div class="grid">
     {name}
     {status}
   </div>
   {description}
   {git_branch}
+  <div class="field">
+    <label><input type="checkbox" name="skip_human_review" value="true"{skip_checked}> 跳过人工审查</label>
+    <p class="hint">测试开关：开启后本项目所有人工审查阶段自动批准；merge、cleanup、测试和检查仍正常执行。</p>
+  </div>
   <p class="hint">归档后项目只读。恢复为活跃后才能继续编辑和变更成员。</p>
   <div class="actions"><button type="submit">保存设置</button></div>
 </form>
@@ -3741,7 +3794,7 @@ pub fn project_page(
 <h2>删除项目</h2>
 <form method="post" action="/projects/{id}/delete" onsubmit="return confirm('删除项目会永久删除项目及其任务、需求、议题、简报、成员和事件记录，且无法恢复。确定继续吗？');">
   <p class="hint">只有项目 Owner 或全局管理员可以删除项目。删除后无法恢复。</p>
-  <div class="actions"><button class="danger" type="submit">删除项目</button></div>
+  <div class="actions"><button class="danger solid" type="submit">删除项目</button></div>
 </form>"#,
             id = project.id,
             name = input_field("name", "名称", &project.name, true),
@@ -3753,6 +3806,7 @@ pub fn project_page(
                 None,
             ),
             git_branch = input_field("git_branch", "Git 分支", &project.git_branch, true),
+            skip_checked = if project.skip_human_review { " checked" } else { "" },
             handle = input_field("handle", "账号 handle", "", true),
             role = role_field,
         )
@@ -3813,6 +3867,7 @@ pub fn project_page(
   <div class="grid">
     <div class="field"><label for="trigger-name">名称</label><input id="trigger-name" name="name" required placeholder="例如 每日设计检查"></div>
     <div class="field"><label for="trigger-workflow">流程</label><select id="trigger-workflow" name="workflow_id">
+      <option value="daily_check">日常检查</option>
       <option value="design_inspection">设计检查</option>
       <option value="consistency_inspection">代码-设计一致性检查</option>
       <option value="style_inspection">代码风格检查</option>
@@ -3851,6 +3906,7 @@ pub fn project_page(
   <dt>Git 分支</dt><dd><code>{git_branch}</code></dd>
   <dt>设计空间</dt><dd>{design_space_display}</dd>
   <dt>设计空间分支</dt><dd><code>{design_space_branch}</code></dd>
+  <dt>跳过人工审查</dt><dd>{skip_human_review}</dd>
   <dt>成员</dt><dd class="plain">{member_count}</dd>
   <dt>版本</dt><dd class="plain">{version}</dd>
 </dl>
@@ -3871,6 +3927,7 @@ pub fn project_page(
         git_branch = escape(&project.git_branch),
         design_space_display = design_space_display,
         design_space_branch = escape(&project.design_space_branch),
+        skip_human_review = if project.skip_human_review { "开启" } else { "关闭" },
         short_id = short_id,
         member_count = members.len(),
         version = project.version,
@@ -4458,17 +4515,30 @@ pub fn merge_request_page(
         task.allowed_operations
             .iter()
             .map(|operation| {
-                format!(
-                    r#"<form class="inline-form" method="post" action="/projects/{project}/merge-requests/{id}/operations">
+                let name = operation.name.as_str();
+                let approved = name.ends_with(":approved") || name.ends_with(":review_approved");
+                if approved {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/projects/{project}/merge-requests/{id}/approve">
+<button type="submit">{label}</button>
+</form>"#,
+                        project = project.id,
+                        id = request.id,
+                        label = escape(&operation.display_name),
+                    )
+                } else {
+                    format!(
+                        r#"<form class="inline-form" method="post" action="/projects/{project}/merge-requests/{id}/operations">
 <input type="hidden" name="operation" value="{operation}">
 <input type="hidden" name="idempotency_key" value="design-space-mr:{id}:{operation}">
 <button type="submit">{label}</button>
 </form>"#,
-                    project = project.id,
-                    id = request.id,
-                    operation = escape(operation.name.as_str()),
-                    label = escape(&operation.display_name),
-                )
+                        project = project.id,
+                        id = request.id,
+                        operation = escape(name),
+                        label = escape(&operation.display_name),
+                    )
+                }
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -4648,7 +4718,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
           node.children.set(segment, next);
         }
         node = next;
-        if (index === parts.length - 1 && item.kind === 'document') node.element = item;
+        if (index === parts.length - 1) node.element = item;
       }
     }
     const annotate = (node) => {
@@ -6550,6 +6620,15 @@ mod tests {
 
 
     #[test]
+    fn toc_shortens_qualified_names_but_keeps_prose_titles() {
+        assert_eq!(toc_label("namespaces/taskboard_utils/format_points"), "format_points");
+        assert_eq!(toc_label("src/domain/task.rs"), "task.rs");
+        assert_eq!(toc_label("namespaces/app/Auth::login"), "login");
+        assert_eq!(toc_label("用户 / 客户 / 账户"), "用户 / 客户 / 账户");
+        assert_eq!(toc_label("登录流程"), "登录流程");
+    }
+
+    #[test]
     fn document_detail_has_toc_and_renders_topic_as_bold_text() {
         let html = design_space_element(
             &DesignSpaceDetail {
@@ -6718,6 +6797,9 @@ mod tests {
         let manager_html = project_page(&ctx, &project, &[], &[], true, None);
         assert!(manager_html.contains(&format!("/projects/{}/delete", project.id)));
         assert!(manager_html.contains("删除项目"));
+        assert!(manager_html.contains(r#"class="danger solid""#));
+        assert!(manager_html.contains(r#"name="skip_human_review""#));
+        assert!(manager_html.contains(&format!("/projects/{}/edit", project.id)));
 
         let member_html = project_page(&ctx, &project, &[], &[], false, None);
         assert!(!member_html.contains("/delete"));
@@ -6826,6 +6908,10 @@ mod tests {
             target_commit: "bb".to_string(),
             task_id: task.id,
             merge_commit: None,
+            approved_content_digest: None,
+            approved_source_commit: None,
+            approved_by: None,
+            approved_at: None,
             created_by: account.id,
             created_at: now,
             updated_at: now,

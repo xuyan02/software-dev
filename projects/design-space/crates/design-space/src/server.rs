@@ -30,7 +30,7 @@ use anyhow::{Context, Result, bail};
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path as AxumPath, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path as AxumPath, Request, State};
 use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -50,7 +50,23 @@ const MAX_PATH: usize = 4096;
 #[derive(Debug, Clone)]
 pub struct RepoCollection {
     root: PathBuf,
-    token_hash: Option<[u8; 32]>,
+    /// Token given to task agents. It may write temporary branches and files,
+    /// but it may not move a protected branch.
+    agent_token_hash: Option<[u8; 32]>,
+    /// Control-plane token. It may move any branch and create repositories.
+    admin_token_hash: Option<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthRole {
+    Agent,
+    Admin,
+}
+
+impl AuthRole {
+    pub fn is_admin(self) -> bool {
+        self == Self::Admin
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,7 +94,8 @@ impl RepoCollection {
         fs::create_dir_all(&root)?;
         Ok(Self {
             root,
-            token_hash: None,
+            agent_token_hash: None,
+            admin_token_hash: None,
         })
     }
 
@@ -120,12 +137,39 @@ impl RepoCollection {
 
     pub fn with_token_file(mut self, path: &Path) -> Result<Self> {
         let token = read_token_file(path)?;
-        self.token_hash = Some(hash_token(&token));
+        self.agent_token_hash = Some(hash_token(&token));
         Ok(self)
     }
 
+    pub fn with_admin_token_file(mut self, path: &Path) -> Result<Self> {
+        let token = read_token_file(path)?;
+        self.admin_token_hash = Some(hash_token(&token));
+        Ok(self)
+    }
+
+    pub fn auth_role(&self, headers: &HeaderMap) -> Option<AuthRole> {
+        if self.agent_token_hash.is_none() && self.admin_token_hash.is_none() {
+            return Some(AuthRole::Admin);
+        }
+        let token = bearer_token(headers)?;
+        let token = hash_token(&token);
+        if self
+            .admin_token_hash
+            .is_some_and(|expected| constant_time_eq(&expected, &token))
+        {
+            return Some(AuthRole::Admin);
+        }
+        if self
+            .agent_token_hash
+            .is_some_and(|expected| constant_time_eq(&expected, &token))
+        {
+            return Some(AuthRole::Agent);
+        }
+        None
+    }
+
     pub fn authorized(&self, headers: &HeaderMap) -> bool {
-        authorized(headers, self.token_hash)
+        self.auth_role(headers).is_some()
     }
 
     pub fn repos(&self) -> Result<Vec<String>> {
@@ -421,10 +465,11 @@ fn app(collection: Arc<RepoCollection>) -> Router {
 
 async fn require_auth(
     State(collection): State<Arc<RepoCollection>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
-    if collection.authorized(request.headers()) {
+    if let Some(role) = collection.auth_role(request.headers()) {
+        request.extensions_mut().insert(role);
         return next.run(request).await;
     }
     let mut response = (StatusCode::UNAUTHORIZED, "unauthorized\n").into_response();
@@ -439,20 +484,27 @@ fn hash_token(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }
 
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    Some(token.trim().to_owned())
+}
+
+fn protected_branch(branch: &str) -> bool {
+    matches!(branch, "source" | "main" | "master")
+}
+
 fn authorized(headers: &HeaderMap, expected: Option<[u8; 32]>) -> bool {
     let Some(expected) = expected else {
         return true;
     };
-    let Some(value) = headers.get(AUTHORIZATION) else {
+    let Some(token) = bearer_token(headers) else {
         return false;
     };
-    let Ok(value) = value.to_str() else {
-        return false;
-    };
-    let Some((scheme, token)) = value.split_once(' ') else {
-        return false;
-    };
-    scheme.eq_ignore_ascii_case("Bearer") && constant_time_eq(&expected, &hash_token(token))
+    constant_time_eq(&expected, &hash_token(&token))
 }
 
 fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
@@ -483,8 +535,12 @@ struct CreateRepoRequest {
 
 async fn create_repo(
     State(collection): State<Arc<RepoCollection>>,
+    Extension(role): Extension<AuthRole>,
     Json(body): Json<CreateRepoRequest>,
 ) -> ApiResult {
+    if !role.is_admin() {
+        return Ok((StatusCode::FORBIDDEN, "admin token required\n").into_response());
+    }
     let branch = body.branch.as_deref().unwrap_or("main");
     let created = collection
         .create(&body.name, branch)
@@ -532,9 +588,26 @@ async fn get_refs(
 
 async fn put_refs(
     State(collection): State<Arc<RepoCollection>>,
+    Extension(role): Extension<AuthRole>,
     AxumPath(repo): AxumPath<String>,
     body: Bytes,
 ) -> ApiResult {
+    if role == AuthRole::Agent {
+        let text = std::str::from_utf8(&body)
+            .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+        let refs = parse_refs(text)
+            .map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+        if refs
+            .iter()
+            .any(|(branch, _)| protected_branch(branch))
+        {
+            return Ok((
+                StatusCode::FORBIDDEN,
+                "agent token may not move a protected branch\n",
+            )
+                .into_response());
+        }
+    }
     let server = open_repo(&collection, &repo)?;
     server.write_refs(&body).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -542,8 +615,16 @@ async fn put_refs(
 
 async fn delete_ref(
     State(collection): State<Arc<RepoCollection>>,
+    Extension(role): Extension<AuthRole>,
     AxumPath((repo, branch)): AxumPath<(String, String)>,
 ) -> ApiResult {
+    if role == AuthRole::Agent && protected_branch(&branch) {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            "agent token may not delete a protected branch\n",
+        )
+            .into_response());
+    }
     let server = open_repo(&collection, &repo)?;
     server.delete_branch(&branch).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -830,6 +911,39 @@ mod tests {
             collection.create("beta", "bad branch"),
             Err(CreateRepoError::InvalidBranch(_))
         ));
+    }
+
+    #[test]
+    fn separates_agent_and_admin_tokens() {
+        let dir = tempdir().unwrap();
+        let agent_token = dir.path().join("agent-token");
+        let admin_token = dir.path().join("admin-token");
+        std::fs::write(&agent_token, "agent-secret\n").unwrap();
+        std::fs::write(&admin_token, "admin-secret\n").unwrap();
+        let collection = RepoCollection::open(dir.path().join("repos"))
+            .unwrap()
+            .with_token_file(&agent_token)
+            .unwrap()
+            .with_admin_token_file(&admin_token)
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        assert_eq!(collection.auth_role(&headers), None);
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer agent-secret"));
+        assert_eq!(collection.auth_role(&headers), Some(AuthRole::Agent));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
+        assert_eq!(collection.auth_role(&headers), Some(AuthRole::Admin));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer wrong"));
+        assert_eq!(collection.auth_role(&headers), None);
+    }
+
+    #[test]
+    fn only_the_default_branches_are_protected() {
+        assert!(protected_branch("source"));
+        assert!(protected_branch("main"));
+        assert!(protected_branch("master"));
+        assert!(!protected_branch("feature"));
+        assert!(!protected_branch("design-change/task"));
     }
 
     #[test]

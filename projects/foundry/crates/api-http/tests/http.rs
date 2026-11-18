@@ -56,6 +56,14 @@ impl DesignSpaceGateway for TestMergeGateway {
         }))
     }
 
+    async fn content_digest(
+        &self,
+        _project: &foundry_domain::Project,
+        _commit: &str,
+    ) -> Result<String, DesignSpaceGatewayError> {
+        Ok("test-content-digest".to_string())
+    }
+
     async fn is_ancestor(
         &self,
         _project: &foundry_domain::Project,
@@ -1163,6 +1171,33 @@ async fn triggers_can_be_created_and_run_manually() {
     .await;
     assert_eq!(task["workflow"], "design_inspection");
     assert_eq!(task["input"]["scope"], "design/app");
+
+    body_json(
+        &harness.router,
+        json_request(
+            "PATCH",
+            &format!("/api/v1/projects/{}", harness.project_id),
+            Some(&harness.admin_token),
+            None,
+            json!({ "status": "archived" }),
+        ),
+    )
+    .await;
+    let (status, _, _) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/triggers/{trigger_id}/run",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -4394,24 +4429,23 @@ async fn merge_request_approval_and_merge_use_the_review_task() {
     .await;
     assert_eq!(created["status"], "reviewing");
     let merge_request_id = created["merge_request"]["id"].as_str().unwrap().to_string();
-    let task_id = created["task"]["id"].as_str().unwrap().to_string();
 
     let reviewer_token = login(&harness.router, "reviewer", "reviewer-password").await;
     let (status, _, body) = send(
         &harness.router,
         json_request(
             "POST",
-            &format!("/api/v1/tasks/{task_id}/operations"),
+            &format!(
+                "/api/v1/projects/{}/merge-requests/{merge_request_id}/approve",
+                harness.project_id
+            ),
             Some(&reviewer_token),
             None,
-            json!({
-                "operation": "review:review_approved",
-                "idempotency_key": "mr-approve-1"
-            }),
+            json!({}),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let detail = body_json(
         &harness.router,
