@@ -11,10 +11,12 @@ use clap::Parser;
 use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    FoundryClient, MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool,
-    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool, TaskGetTool, TaskHistoryTool,
-    TaskOperationTool, TaskSpawnChildrenTool, TaskStartTool, TasksReadyListTool, ToolError,
-    ToolRegistry, compose_system_prompt,
+    FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueTransitionTool,
+    MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
+    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool,
+    TaskGetTool, TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
+    TaskSpawnChildrenTool, TaskStartTool, TasksReadyListTool, ToolError, ToolRegistry,
+    compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
 use graph_agent::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
@@ -732,6 +734,27 @@ fn build_tools(
             }
             "task_spawn_children" => {
                 tools.register(Arc::new(TaskSpawnChildrenTool::new(Arc::clone(client))));
+            }
+            "task_add_link" => {
+                tools.register(Arc::new(TaskAddLinkTool::new(Arc::clone(client))));
+            }
+            "task_remove_link" => {
+                tools.register(Arc::new(TaskRemoveLinkTool::new(Arc::clone(client))));
+            }
+            "task_links_list" => {
+                tools.register(Arc::new(TaskLinksListTool::new(Arc::clone(client))));
+            }
+            "issue_get" => {
+                tools.register(Arc::new(IssueGetTool::new(Arc::clone(client))));
+            }
+            "issue_comment" => {
+                tools.register(Arc::new(IssueCommentTool::new(Arc::clone(client))));
+            }
+            "issue_create" => {
+                tools.register(Arc::new(IssueCreateTool::new(Arc::clone(client))));
+            }
+            "issue_transition" => {
+                tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));
             }
             "merge_request" => {
                 tools.register(Arc::new(MergeRequestTool::new(Arc::clone(client))));

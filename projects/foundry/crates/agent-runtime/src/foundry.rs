@@ -311,6 +311,37 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn create_issue(&self, body: Value) -> Result<Value, FoundryError> {
+        self.post(
+            &format!("{}/api/v1/issues", self.base_url.trim_end_matches('/')),
+            body,
+            None,
+        )
+        .await
+    }
+
+    pub async fn transition_issue(
+        &self,
+        issue_id: Uuid,
+        to: &str,
+        resolution: Option<&str>,
+        duplicate_of: Option<Uuid>,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/issues/{issue_id}/transitions",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({
+                "to": to,
+                "resolution": resolution,
+                "duplicate_of": duplicate_of,
+            }),
+            None,
+        )
+        .await
+    }
+
     pub async fn get_issue(&self, issue_id: Uuid) -> Result<Value, FoundryError> {
         self.get(&format!(
             "{}/api/v1/issues/{issue_id}",

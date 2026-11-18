@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "design_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "analysis",
+  "stages": [
+    {
+      "name": "analysis",
+      "active_roles": ["designer"],
+      "vars": {
+        "analyzed": {"type": "bool", "display_name": "Analyzed"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "analyzed", "display_name": "设计影响分析完成", "description": "受影响的系统、模块、对象和设计变更范围已明确。", "roles": ["designer"], "action": "analyzed = true"},
+        {"name": "failed", "display_name": "分析失败", "description": "无法完成设计影响分析。", "roles": ["designer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "analyzed", "to": "design"}
+      ]
+    },
+    {
+      "name": "design",
+      "active_roles": ["designer"],
+      "vars": {
+        "designed": {"type": "bool", "display_name": "Designed"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "designed", "display_name": "设计修改完成", "description": "设计空间已更新、提交并推送。", "roles": ["designer"], "action": "designed = true"},
+        {"name": "failed", "display_name": "设计修改失败", "description": "无法完成设计修改。", "roles": ["designer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "designed", "to": "design_review"}
+      ]
+    },
+    {
+      "name": "design_review",
+      "active_roles": ["design_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "设计通过", "description": "设计修改和影响范围通过。", "roles": ["design_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "设计打回", "description": "设计修改需要继续调整。", "roles": ["design_reviewer"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "action": "result = 'approved'", "to": "ended"},
+        {"on": "decision == 'rejected'", "to": "design"}
+      ]
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "analysis"
+    }
+  ]
+}

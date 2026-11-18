@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "developer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "code_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "tester", "kind": "agent", "min_actors": 1, "max_actors": 1},
+    {"name": "merger", "kind": "agent", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "plan",
+  "stages": [
+    {
+      "name": "plan",
+      "active_roles": ["developer"],
+      "vars": {
+        "planned": {"type": "bool", "display_name": "Planned"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "planned", "display_name": "修复计划完成", "description": "代码修复范围和验证计划已明确。", "roles": ["developer"], "action": "planned = true"},
+        {"name": "failed", "display_name": "计划失败", "description": "无法形成修复计划。", "roles": ["developer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "planned", "to": "implement"}
+      ]
+    },
+    {
+      "name": "implement",
+      "active_roles": ["developer"],
+      "vars": {
+        "implemented": {"type": "bool", "display_name": "Implemented"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "implemented", "display_name": "代码修改完成", "description": "代码和测试已提交并推送。", "roles": ["developer"], "action": "implemented = true"},
+        {"name": "failed", "display_name": "开发失败", "description": "无法完成代码修改。", "roles": ["developer"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "implemented", "to": "code_review"}
+      ]
+    },
+    {
+      "name": "code_review",
+      "active_roles": ["code_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "代码评审通过", "description": "代码修改、范围和证据通过。", "roles": ["code_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "代码评审打回", "description": "代码修改需要继续调整。", "roles": ["code_reviewer"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "test"},
+        {"on": "decision == 'rejected'", "to": "implement"}
+      ]
+    },
+    {
+      "name": "test",
+      "active_roles": ["tester"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "passed", "display_name": "测试通过", "description": "行为和验收验证通过。", "roles": ["tester"], "action": "decision = 'passed'"},
+        {"name": "failed", "display_name": "测试未通过", "description": "测试或验收未通过。", "roles": ["tester"], "action": "decision = 'failed'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'passed'", "to": "merge"},
+        {"on": "decision == 'failed'", "to": "implement"}
+      ]
+    },
+    {
+      "name": "merge",
+      "active_roles": ["merger"],
+      "vars": {
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "merged", "display_name": "合入完成", "description": "代码已合入目标分支，Issue 可标记为已解决。", "roles": ["merger"], "action": "merged = true"},
+        {"name": "failed", "display_name": "合入失败", "description": "代码无法合入目标分支。", "roles": ["merger"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "action": "result = 'failed'", "to": "failed"},
+        {"on": "merged", "action": "result = 'completed'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "plan"
+    }
+  ]
+}

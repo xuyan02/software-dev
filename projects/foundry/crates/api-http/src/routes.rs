@@ -34,13 +34,13 @@ use foundry_app::{
     RemoveProjectMember, RemoveTaskLink, RequirementsApprovalResult, RequirementsApprovalView,
     RequirementsDocumentUseCases, RequirementsDocumentView, RequirementsDraftView,
     ResolveAnchorAnnotation, ResolveRequirementsAnnotation, SaveWorkflowLayout, ServiceError,
-    TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer, WorkflowUseCases, hash_token,
-    new_session_token,
+    NewTask, TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer, WorkflowUseCases,
+    hash_token, new_session_token,
 };
 use foundry_domain::{
-    AccountRole, AllowedOperation, ApprovalDecision, OperationName, Project, ProjectRole,
-    RequirementsAnnotation, Task, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowId,
-    WorkflowLayout,
+    AccountRole, Actor, AllowedOperation, ApprovalDecision, Issue, OperationName, Project,
+    ProjectRole, RequirementsAnnotation, Task, TaskLinkKind, TaskLinkRelation, TaskState,
+    WorkflowId, WorkflowLayout,
 };
 use foundry_web::MemberInfo;
 use serde_json::{Value, json};
@@ -2929,6 +2929,56 @@ fn member_infos(detail: &ProjectDetail) -> Vec<MemberInfo> {
 // Issues
 // ---------------------------------------------------------------------------
 
+async fn enqueue_issue_triage(
+    state: &AppState,
+    actor: Actor,
+    account_id: Uuid,
+    project_id: Uuid,
+    issue: &Issue,
+) {
+    let task = state
+        .tasks
+        .create_task(
+            project_id,
+            NewTask {
+                workflow: "issue_triage".to_string(),
+                title: format!("分诊：{}", issue.title),
+                description: format!(
+                    "对 Issue {} 进行分诊：判断问题类型、根因和下一步任务，并把分诊结论写回 Issue。",
+                    issue.id
+                ),
+                input: json!({ "issue_id": issue.id }),
+            },
+            account_id,
+        )
+        .await;
+    let task = match task {
+        Ok(task) => task,
+        Err(error) => {
+            tracing::warn!(issue_id = %issue.id, %error, "cannot create issue triage task");
+            return;
+        }
+    };
+    if let Err(error) = state
+        .task_links
+        .add(
+            actor,
+            AddTaskLink {
+                task_id: task.id,
+                kind: TaskLinkKind::Issue,
+                target_id: Some(issue.id),
+                url: None,
+                title: issue.title.clone(),
+                relation: TaskLinkRelation::References,
+                metadata: json!({ "issue_id": issue.id, "source": "issue-triage" }),
+            },
+        )
+        .await
+    {
+        tracing::warn!(issue_id = %issue.id, task_id = %task.id, %error, "cannot link triage task to issue");
+    }
+}
+
 pub async fn create_issue(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2940,6 +2990,14 @@ pub async fn create_issue(
         .issues
         .create(session.actor(), body.into_command(session.project.id))
         .await?;
+    enqueue_issue_triage(
+        &state,
+        session.actor(),
+        session.account.id,
+        session.project.id,
+        &issue,
+    )
+    .await;
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
@@ -2997,7 +3055,15 @@ pub async fn transition_issue(
     Json(body): Json<TransitionIssueRequest>,
 ) -> Result<Json<foundry_domain::Issue>, ApiError> {
     let session = auth::api_session(&state, &headers).await?;
-    require_dispose(&session)?;
+    let agent_may_advance = session.account.kind == foundry_domain::AccountKind::Agent
+        && session.project.member(session.account.id).is_some();
+    if !session.account.is_admin() && !session.can_dispose() && !agent_may_advance {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only a project maintainer, administrator or project agent can transition issues",
+        ));
+    }
     Ok(Json(
         state
             .issues
@@ -3043,7 +3109,17 @@ pub async fn create_issue_form(
         )
         .await
     {
-        Ok(issue) => Redirect::to(&format!("/issues/{}", issue.id)).into_response(),
+        Ok(issue) => {
+            enqueue_issue_triage(
+                &state,
+                session.account.actor(),
+                session.account.id,
+                session.project.id,
+                &issue,
+            )
+            .await;
+            Redirect::to(&format!("/issues/{}", issue.id)).into_response()
+        }
         Err(ServiceError::Validation(message)) | Err(ServiceError::Forbidden(message)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(foundry_web::new_issue_page(

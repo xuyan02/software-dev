@@ -21,6 +21,9 @@ const DESIGN_SPACE_MERGE: &str = include_str!("../definitions/design_space_merge
 const CODE_SUMMARY_GROUP: &str = include_str!("../definitions/code_summary_group.json");
 const DESIGN_CONSISTENCY_MAINTENANCE: &str =
     include_str!("../definitions/design_consistency_maintenance.json");
+const ISSUE_TRIAGE: &str = include_str!("../definitions/issue_triage.json");
+const DESIGN_CHANGE: &str = include_str!("../definitions/design_change.json");
+const CODE_CHANGE: &str = include_str!("../definitions/code_change.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("empty", "Empty (no-op)", EMPTY),
@@ -69,6 +72,9 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Technical design consistency",
         DESIGN_CONSISTENCY_MAINTENANCE,
     ),
+    ("issue_triage", "Issue triage", ISSUE_TRIAGE),
+    ("design_change", "Design change", DESIGN_CHANGE),
+    ("code_change", "Code change", CODE_CHANGE),
 ];
 
 /// Builtin workflows currently offered as project root tasks.

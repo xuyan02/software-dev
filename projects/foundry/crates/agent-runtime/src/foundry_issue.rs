@@ -156,3 +156,114 @@ fn pretty(value: Value) -> Result<ToolOutput, ToolError> {
         .map_err(|error| ToolError::Failed(error.to_string()))?;
     Ok(ToolOutput::success(content))
 }
+
+pub struct IssueCreateTool {
+    client: Arc<FoundryClient>,
+}
+
+impl IssueCreateTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for IssueCreateTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "issue_create".to_string(),
+            description: "Create a project Issue to report a defect, design problem, requirement problem or other finding."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["title", "description", "kind"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["feedback", "bug", "question", "idea", "task_request", "incident"] },
+                    "severity": { "type": "string", "enum": ["s1", "s2", "s3", "s4"] },
+                    "area": { "type": "string" },
+                    "labels": { "type": "array", "items": { "type": "string" } },
+                    "environment": { "type": "string" },
+                    "affected_versions": { "type": "array", "items": { "type": "string" } },
+                    "reproduction": { "type": "string" },
+                    "expected": { "type": "string" },
+                    "actual": { "type": "string" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let mut body = arguments;
+        if let Some(object) = body.as_object_mut() {
+            object.retain(|_, value| !value.is_null());
+        }
+        let issue = self
+            .client
+            .create_issue(body)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(issue)
+    }
+}
+
+pub struct IssueTransitionTool {
+    client: Arc<FoundryClient>,
+}
+
+impl IssueTransitionTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for IssueTransitionTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "issue_transition".to_string(),
+            description: "Move an Issue to another status. Agents may start work or resolve an Issue; rejection, duplicate and closure are human dispositions."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["issue_id", "to"],
+                "properties": {
+                    "issue_id": { "type": "string", "format": "uuid" },
+                    "to": { "type": "string", "enum": ["in_progress", "resolved", "rejected", "duplicate", "closed", "open"] },
+                    "resolution": { "type": "string" },
+                    "duplicate_of": { "type": "string", "format": "uuid" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let issue_id = parse_uuid(&arguments, "issue_id")?;
+        let to = arguments
+            .get("to")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("missing to".to_string()))?;
+        let resolution = arguments.get("resolution").and_then(Value::as_str);
+        let duplicate_of = arguments
+            .get("duplicate_of")
+            .and_then(Value::as_str)
+            .map(|value| value.parse::<Uuid>())
+            .transpose()
+            .map_err(|_| ToolError::InvalidArguments("invalid duplicate_of".to_string()))?;
+        let issue = self
+            .client
+            .transition_issue(issue_id, to, resolution, duplicate_of)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(issue)
+    }
+}
