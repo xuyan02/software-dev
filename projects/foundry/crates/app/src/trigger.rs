@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use foundry_domain::{
-    Actor, ProjectRole, Trigger, TriggerRun, TriggerRunReason, TriggerSchedule,
+    AccountKind, Actor, ProjectRole, Trigger, TriggerRun, TriggerRunReason, TriggerSchedule,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -22,6 +22,7 @@ pub const SCHEDULABLE_WORKFLOWS: &[&str] = &[
     "cohesion_inspection",
     "consistency_inspection",
     "design_inspection",
+    "daily_check",
     "design_consistency_maintenance",
 ];
 
@@ -157,6 +158,9 @@ where
             .await?
             .ok_or_else(|| ServiceError::not_found("project", project_id))?;
         if account.is_admin() {
+            return Ok(());
+        }
+        if account.kind == AccountKind::Agent && project.member(account.id).is_some() {
             return Ok(());
         }
         let role = project

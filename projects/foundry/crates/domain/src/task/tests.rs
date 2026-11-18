@@ -161,6 +161,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "code_summary_group",
             "cohesion_inspection",
             "consistency_inspection",
+            "daily_check",
             "design_change",
             "design_consistency_maintenance",
             "design_inspection",
@@ -178,6 +179,7 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "requirements_analysis",
             "requirements_discovery",
             "roadmap",
+            "software_development",
             "style_inspection",
             "test_execution",
             "test_planning",
@@ -1600,5 +1602,68 @@ fn design_change_runs_through_analysis_design_and_review() {
     assert_eq!(
         mutation.task.result.as_ref().map(TaskResult::as_str),
         Some("approved")
+    );
+}
+
+#[test]
+fn software_development_starts_and_enters_running() {
+    let workflow = builtin("software_development");
+    let task = task("software_development", TaskState::Pending, None);
+    let task_id = task.id;
+    let setup = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "project_setup", setup, false)],
+        vec![],
+        vec![],
+    );
+    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+    assert_eq!(created.task.stage.as_deref(), Some("setup"));
+    let state = aggregate_of(created);
+    let ready = operation(&workflow, state, "setup:ready", setup);
+    assert_eq!(ready.task.stage.as_deref(), Some("running"));
+    assert_eq!(ready.task.state, TaskState::InProgress);
+}
+
+#[test]
+fn daily_check_waits_for_both_inspections() {
+    let workflow = builtin("daily_check");
+    let task = task("daily_check", TaskState::Pending, None);
+    let task_id = task.id;
+    let dispatcher = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "dispatcher", dispatcher, false)],
+        vec![],
+        vec![],
+    );
+    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+    let state = aggregate_of(created);
+    let dispatched = operation(&workflow, state, "dispatch:dispatched", dispatcher);
+    assert_eq!(dispatched.task.stage.as_deref(), Some("waiting"));
+    let mut state = aggregate_of(dispatched);
+
+    for (workflow_id, child_id) in [
+        ("consistency_inspection", Uuid::now_v7()),
+        ("design_inspection", Uuid::now_v7()),
+    ] {
+        let mutation = apply(
+            &workflow,
+            state,
+            TaskEvent::ChildStateChanged {
+                child_id,
+                child_workflow: WorkflowId::new(workflow_id),
+                child_state: TaskState::Completed,
+                result: Some(TaskResult::new("completed")),
+            },
+            now(),
+        )
+        .unwrap();
+        state = aggregate_of(mutation);
+    }
+    assert_eq!(state.task.state, TaskState::Completed);
+    assert_eq!(
+        state.task.result.as_ref().map(TaskResult::as_str),
+        Some("completed")
     );
 }

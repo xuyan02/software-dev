@@ -1549,7 +1549,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        26
+        28
     );
 
     let created = body_json(
@@ -2350,7 +2350,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 26);
+    assert_eq!(platform.len(), 28);
     assert!(
         platform
             .iter()
@@ -2518,7 +2518,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 27);
+    assert_eq!(own.as_array().unwrap().len(), 29);
 }
 
 #[tokio::test]

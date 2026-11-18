@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "dispatcher", "kind": "agent", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["dispatcher"],
+      "vars": {
+        "dispatched": {"type": "bool", "display_name": "Dispatched"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "dispatched", "display_name": "检查任务已创建", "description": "一致性检查和设计检查任务已创建。", "roles": ["dispatcher"], "action": "dispatched = true"},
+        {"name": "failed", "display_name": "创建检查任务失败", "description": "无法创建检查子任务。", "roles": ["dispatcher"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "dispatched", "to": "waiting"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": [],
+      "vars": {
+        "consistency_done": {"type": "bool", "display_name": "Consistency done"},
+        "design_done": {"type": "bool", "display_name": "Design done"}
+      },
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'consistency_inspection' and event.child.state == 'completed' { consistency_done = true } if event.child.workflow == 'design_inspection' and event.child.state == 'completed' { design_done = true }"
+        }
+      ],
+      "transitions": [
+        {"on": "consistency_done and design_done", "action": "result = 'completed'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "dispatch"
+    }
+  ]
+}

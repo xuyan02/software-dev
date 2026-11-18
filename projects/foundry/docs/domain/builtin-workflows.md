@@ -9,7 +9,9 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | id | 标题 | 用途 | 状态 |
 |---|---|---|---|
 | `empty` | Empty (no-op) | 不声明阶段和角色；用于测试和空 Task | 已实现 |
-| `project` | Project lifecycle | 项目根 Task，串起从项目文档撰写到迭代的完整生命周期 | 已实现 |
+| `project` | Project lifecycle | 旧项目生命周期模板（不再是根流程） | 已实现 |
+| `software_development` | Software development | 唯一的项目根流程；初始化日常检查触发器并进入长期运行 | 已实现 |
+| `daily_check` | Daily check | 创建代码-设计一致性检查和设计检查子任务 | 已实现 |
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
@@ -41,7 +43,7 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 
 ## 技术设计一致性维护
 
-`design_consistency_maintenance` 是项目根流程。`dispatch` 阶段由 Scanner 智能体完成基础同步、变化扫描和分组，并创建 `code_summary_group` 子任务。子任务串行执行，依次经过 summary、文风审查、内容审查、合入集成分支和删除组分支。
+`software_development` 是唯一的项目根流程；`design_consistency_maintenance` 作为可被触发器或子任务调用的流程保留。`dispatch` 阶段由 Scanner 智能体完成基础同步、变化扫描和分组，并创建 `code_summary_group` 子任务。子任务串行执行，依次经过 summary、文风审查、内容审查、合入集成分支和删除组分支。
 
 所有组完成后，模块架构师依次执行 `structure_survey`（盘点系统和元素）和 `structure_synthesis`（逐系统划分模块、绑定唯一成员、写模块文档），然后由独立的结构审查和文风审查两个阶段把关。通过后创建集成分支到 DS 主分支的最终 MR，进行集成内容审查和人类审批；合入前清理设计评论，合入后删除集成分支。
 
@@ -245,3 +247,32 @@ Issue 是问题的唯一记录；Issue 创建后自动生成 `issue_triage` 任�
 | `design_inspection` | `design_inspector` | 设计文档、系统/模块边界、接口、依赖 |
 
 检查智能体不修改代码或设计；发现问题通过 `issue_create` 上报。Issue 创建后自动进入 `issue_triage`，由分诊智能体决定生成设计或开发任务。
+
+## 软件开发根流程
+
+`software_development` 是新建项目时唯一可选的根流程：
+
+```text
+setup（project_setup 智能体）
+  → running
+```
+
+`setup` 阶段创建一个名为“日常检查”的项目触发器：
+
+```json
+{
+  "name": "日常检查",
+  "workflow_id": "daily_check",
+  "schedule": "daily@09:00",
+  "input": {}
+}
+```
+
+如果同名触发器已存在则复用。创建成功后根任务进入 `running` 并长期保持运行；用户可以在项目页手动运行触发器。
+
+`daily_check` 由触发器创建，调度阶段按顺序创建两个子任务：
+
+1. `consistency_inspection`：代码-设计一致性检查；
+2. `design_inspection`：设计检查。
+
+两个子任务完成后 `daily_check` 完成。子任务发现的问题通过 Issue 进入分诊和设计/开发闭环。

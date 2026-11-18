@@ -409,3 +409,42 @@ impl Tool for TriggerCreateTool {
         pretty(trigger)
     }
 }
+
+
+pub struct TriggerListTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TriggerListTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TriggerListTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "trigger_list".to_string(),
+            description: "List project triggers. Use it before creating a default trigger."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let triggers = self
+            .client
+            .list_triggers()
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(triggers)
+    }
+}

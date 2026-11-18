@@ -319,6 +319,15 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn list_triggers(&self) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/api/v1/projects/{}/triggers",
+            self.base_url.trim_end_matches('/'),
+            self.project_id
+        ))
+        .await
+    }
+
     pub async fn create_trigger(&self, body: Value) -> Result<Value, FoundryError> {
         self.post(
             &format!(

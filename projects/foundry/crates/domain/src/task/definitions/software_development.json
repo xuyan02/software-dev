@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "project_setup", "kind": "agent", "min_actors": 1, "max_actors": 1}
+  ],
+  "initial_stage": "setup",
+  "stages": [
+    {
+      "name": "setup",
+      "active_roles": ["project_setup"],
+      "vars": {
+        "ready": {"type": "bool", "display_name": "Ready"},
+        "failed": {"type": "bool", "display_name": "Failed"}
+      },
+      "operations": [
+        {"name": "ready", "display_name": "项目初始化完成", "description": "日常检查触发器已创建，项目进入运行阶段。", "roles": ["project_setup"], "action": "ready = true"},
+        {"name": "failed", "display_name": "项目初始化失败", "description": "无法创建默认触发器。", "roles": ["project_setup"], "action": "failed = true"}
+      ],
+      "transitions": [
+        {"on": "failed", "to": "failed"},
+        {"on": "ready", "to": "running"}
+      ]
+    },
+    {
+      "name": "running",
+      "active_roles": []
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "setup"
+    }
+  ]
+}

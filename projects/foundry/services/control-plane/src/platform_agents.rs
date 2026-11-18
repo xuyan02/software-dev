@@ -933,7 +933,48 @@ const TEMPLATES: &[PlatformTemplate] = &[
         shell: true,
         skills: &["design-space", "code-inspection"],
     },
+    PlatformTemplate {
+        id: "software-development-setup",
+        name: "Software Development Setup",
+        role: "software_development:project_setup",
+        description: "Creates the default daily-check trigger and enters the running stage",
+        system_prompt: SOFTWARE_DEVELOPMENT_SETUP_PROMPT,
+        tools: SOFTWARE_DEVELOPMENT_SETUP_TOOLS,
+        shell: false,
+        skills: &["software-development"],
+    },
+    PlatformTemplate {
+        id: "daily-check-dispatcher",
+        name: "Daily Check Dispatcher",
+        role: "daily_check:dispatcher",
+        description: "Creates the consistency and design inspection tasks for a daily check",
+        system_prompt: DAILY_CHECK_DISPATCHER_PROMPT,
+        tools: DAILY_CHECK_TOOLS,
+        shell: false,
+        skills: &["software-development"],
+    },
 ];
+
+const SOFTWARE_DEVELOPMENT_SETUP_TOOLS: &[&str] = &[
+    "project",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "trigger_create",
+    "trigger_list",
+];
+const DAILY_CHECK_TOOLS: &[&str] = &[
+    "project",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_spawn_children",
+];
+
+const SOFTWARE_DEVELOPMENT_SETUP_PROMPT: &str = "你是 Foundry 的软件项目初始化智能体。为项目创建一个“日常检查”触发器，计划为 daily@09:00，目标流程 daily_check；如果同名触发器已存在则复用，不要重复创建。完成后发送 setup:ready。";
+const DAILY_CHECK_DISPATCHER_PROMPT: &str = "你是 Foundry 的日常检查调度智能体。按顺序创建“代码-设计一致性检查”和“设计检查”两个子任务，然后发送 dispatch:dispatched，等待子任务完成。";
 
 const INSPECTION_TOOLS: &[&str] = &[
     "project",

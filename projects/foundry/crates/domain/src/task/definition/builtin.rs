@@ -29,6 +29,8 @@ const LOGIC_INSPECTION: &str = include_str!("../definitions/logic_inspection.jso
 const COHESION_INSPECTION: &str = include_str!("../definitions/cohesion_inspection.json");
 const CONSISTENCY_INSPECTION: &str = include_str!("../definitions/consistency_inspection.json");
 const DESIGN_INSPECTION: &str = include_str!("../definitions/design_inspection.json");
+const DAILY_CHECK: &str = include_str!("../definitions/daily_check.json");
+const SOFTWARE_DEVELOPMENT: &str = include_str!("../definitions/software_development.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("empty", "Empty (no-op)", EMPTY),
@@ -77,6 +79,8 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Technical design consistency",
         DESIGN_CONSISTENCY_MAINTENANCE,
     ),
+    ("software_development", "Software development", SOFTWARE_DEVELOPMENT),
+    ("daily_check", "Daily check", DAILY_CHECK),
     ("issue_triage", "Issue triage", ISSUE_TRIAGE),
     ("design_change", "Design change", DESIGN_CHANGE),
     ("code_change", "Code change", CODE_CHANGE),
@@ -92,7 +96,7 @@ const SOURCES: &[(&str, &str, &str)] = &[
 ];
 
 /// Builtin workflows currently offered as project root tasks.
-pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &["design_consistency_maintenance"];
+pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &["software_development"];
 
 pub fn is_enabled_root_workflow(id: &str) -> bool {
     ENABLED_ROOT_WORKFLOWS.contains(&id)
