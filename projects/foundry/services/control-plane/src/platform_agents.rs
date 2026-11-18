@@ -972,6 +972,7 @@ const ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "task_spawn_children",
     "task_add_link",
     "task_links_list",
+    "trigger_create",
 ];
 const ISSUE_CHANGE_TOOLS: &[&str] = &[
     "project",
@@ -1065,6 +1066,7 @@ const CONSISTENCY_AGENT_TOOLS: &[&str] = &[
     "task_comment",
     "task_history",
     "merge_request",
+    "trigger_create",
 ];
 const GROUP_MERGER_TOOLS: &[&str] = &[
     "project",

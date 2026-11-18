@@ -319,6 +319,19 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn create_trigger(&self, body: Value) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/projects/{}/triggers",
+                self.base_url.trim_end_matches('/'),
+                self.project_id
+            ),
+            body,
+            None,
+        )
+        .await
+    }
+
     pub async fn set_issue_triage(
         &self,
         issue_id: Uuid,

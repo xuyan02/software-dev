@@ -361,3 +361,51 @@ impl Tool for IssueTriageResultTool {
         pretty(issue)
     }
 }
+
+
+pub struct TriggerCreateTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TriggerCreateTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TriggerCreateTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "trigger_create".to_string(),
+            description: "Create a project trigger that schedules or manually runs a workflow Task."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["name", "workflow_id", "schedule"],
+                "properties": {
+                    "name": { "type": "string" },
+                    "description": { "type": "string" },
+                    "workflow_id": { "type": "string" },
+                    "schedule": { "type": "string" },
+                    "input": { "type": "object" },
+                    "title_template": { "type": "string" },
+                    "description_template": { "type": "string" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let trigger = self
+            .client
+            .create_trigger(arguments)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(trigger)
+    }
+}

@@ -12,6 +12,7 @@
 - 不要直接发送 `merge` operation；组 MR 和最终 MR 必须走 `merge_request` 工具的 `merge` action，确保分支移动。
 - 基础同步只更新 File/Directory 和 `source_commit`，不产生设计文字。
 - 设计评论只用于审查过程，不得进入主分支；在最终 `merge` 阶段清理，不要在审查或人类批准前删除。
+- 需要周期检查时可以用 `trigger_create` 为项目创建触发器；触发器和任务一样受项目权限约束。
 
 ## 2. 根任务阶段
 
