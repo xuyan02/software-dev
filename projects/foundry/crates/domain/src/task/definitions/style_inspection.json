@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "name": "style_inspector",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    }
+  ],
+  "initial_stage": "inspect",
+  "stages": [
+    {
+      "name": "inspect",
+      "active_roles": [
+        "style_inspector"
+      ],
+      "vars": {
+        "completed": {
+          "type": "bool",
+          "display_name": "Completed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "completed",
+          "display_name": "代码风格检查完成",
+          "description": "检查现有代码的命名、格式、惯例和可读性。",
+          "roles": [
+            "style_inspector"
+          ],
+          "action": "completed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "代码风格检查失败",
+          "description": "无法完成检查。",
+          "roles": [
+            "style_inspector"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "failed",
+          "action": "result = 'failed'",
+          "to": "failed"
+        },
+        {
+          "on": "completed",
+          "action": "result = 'completed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "inspect"
+    }
+  ]
+}

@@ -16,6 +16,21 @@ use uuid::Uuid;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+pub struct NewInspectionForm {
+    pub kind: String,
+    #[serde(default)]
+    pub scope: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateInspectionRequest {
+    /// style, logic, cohesion, consistency or design.
+    pub kind: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct LoginRequest {
     pub handle: String,
     pub password: String,

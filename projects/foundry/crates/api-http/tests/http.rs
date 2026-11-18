@@ -1039,6 +1039,26 @@ async fn the_editor_serves_assets_and_falls_back_to_the_spa() {
 }
 
 #[tokio::test]
+async fn inspections_create_specialized_tasks() {
+    let harness = harness().await;
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/projects/{}/inspections", harness.project_id),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({ "kind": "consistency", "scope": "src" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let body: Value = serde_json::from_str(&body).expect("task json");
+    assert_eq!(body["workflow"], "consistency_inspection");
+    assert_eq!(body["input"]["scope"], "src");
+}
+
+#[tokio::test]
 async fn creating_an_issue_enqueues_a_triage_task() {
     let harness = harness().await;
     let issue = body_json(
@@ -1402,7 +1422,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        21
+        26
     );
 
     let created = body_json(
@@ -2196,7 +2216,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 21);
+    assert_eq!(platform.len(), 26);
     assert!(
         platform
             .iter()
@@ -2364,7 +2384,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 22);
+    assert_eq!(own.as_array().unwrap().len(), 27);
 }
 
 #[tokio::test]

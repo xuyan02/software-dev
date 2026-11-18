@@ -282,6 +282,10 @@ pub fn router(state: AppState) -> Router {
             post(routes::delete_design_space_branch),
         )
         .route(
+            "/api/v1/projects/{project}/inspections",
+            post(routes::create_inspection),
+        )
+        .route(
             "/api/v1/issues",
             get(routes::list_issues).post(routes::create_issue),
         )

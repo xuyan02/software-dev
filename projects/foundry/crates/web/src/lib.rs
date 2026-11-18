@@ -3732,6 +3732,28 @@ pub fn project_page(
         String::new()
     };
 
+    let inspection_form = if ctx.can_contribute() {
+        format!(
+            r#"<h2>代码检查</h2>
+<form method="post" action="/projects/{id}/inspections">
+  <div class="grid">
+    <div class="field"><label for="inspection-kind">检查类型</label><select id="inspection-kind" name="kind">
+      <option value="consistency">代码-设计一致性检查</option>
+      <option value="style">代码风格检查</option>
+      <option value="logic">代码逻辑检查</option>
+      <option value="cohesion">逻辑聚合度检查</option>
+      <option value="design">设计检查</option>
+    </select></div>
+    <div class="field"><label for="inspection-scope">范围（可选）</label><input id="inspection-scope" name="scope" placeholder="例如 src/auth 或 design/app/core"></div>
+  </div>
+  <p class="hint">启动一个独立的检查任务；检查发现的问题会创建 Issue 并进入分诊。</p>
+  <div class="actions"><button type="submit">启动检查</button></div>
+</form>"#,
+            id = project.id,
+        )
+    } else {
+        String::new()
+    };
     let short_id = project.id.to_string()[..8].to_string();
     let design_space_display = escape(&display_percent_encoded(&project.design_space_url));
     let body = format!(
@@ -3750,6 +3772,7 @@ pub fn project_page(
 </dl>
 <h2>描述</h2><div class="card">{description}</div>
 <p><a class="button secondary" href="/projects/{id}/design-space">设计空间</a> <a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a> <a class="button secondary" href="/projects/{id}/documents/design">详细设计</a> <a class="button secondary" href="/projects/{id}/documents/development">开发记录</a> <a class="button secondary" href="/projects/{id}/documents/test_plan">测试计划</a> <a class="button secondary" href="/projects/{id}/documents/test_report">测试报告</a></p>
+{inspection_form}
 <h2>成员</h2>
 <table>
 <thead><tr><th>账号</th><th>类型</th><th>状态</th><th>项目角色</th><th></th></tr></thead>
@@ -3772,6 +3795,7 @@ pub fn project_page(
             .as_deref()
             .map(escape)
             .unwrap_or_else(|| "未填写".to_string()),
+        inspection_form = inspection_form,
         member_rows = member_rows,
         manage = manage,
     );

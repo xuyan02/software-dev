@@ -29,6 +29,11 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `issue_triage` | Issue triage | 分诊 Issue、判断根因、创建设计/开发任务 | 已实现 |
 | `design_change` | Design change | 分析设计影响、修改设计空间、设计审查 | 已实现 |
 | `code_change` | Code change | 修复计划、实现、代码评审、测试、合入 | 已实现 |
+| `style_inspection` | Code style inspection | 检查现有代码风格并上报 Issue | 已实现 |
+| `logic_inspection` | Code logic inspection | 检查现有代码逻辑并上报 Issue | 已实现 |
+| `cohesion_inspection` | Code cohesion inspection | 检查内聚/耦合并上报 Issue | 已实现 |
+| `consistency_inspection` | Code-design consistency inspection | 检查代码与设计空间一致性并上报 Issue | 已实现 |
+| `design_inspection` | Design inspection | 检查设计文档、边界和接口并上报 Issue | 已实现 |
 | `requirements_baseline` | Requirements baseline | 固定一批已批准需求并生成基线 | 计划 |
 | `change_request` | Change request | 影响分析、验证计划、批准、关闭 | 计划 |
 | `incident_response` | Incident response | 分级、止损、修复、复盘 | 计划 |
@@ -226,3 +231,17 @@ Issue 是问题的唯一记录；Issue 创建后自动生成 `issue_triage` 任�
 - 不需要修改：写分诊报告，建议拒绝或补充信息，由人类处置。
 
 `design_change` 经过 `analysis → design → design_review`，设计修改直接提交到设计空间 `source` 分支。`code_change` 经过 `plan → implement → code_review → test → merge`，代码在 `code/<issue-id>` 分支开发，评审和测试通过后合入目标分支，并把 Issue 推进到 `resolved`。
+
+## 代码检查任务
+
+项目页的“代码检查”表单会创建独立的检查任务。每类检查使用自己的角色和智能体：
+
+| 流程 | 角色 | 检查重点 |
+|---|---|---|
+| `style_inspection` | `style_inspector` | 命名、格式、惯例、可读性 |
+| `logic_inspection` | `logic_inspector` | 正确性、边界、错误处理、并发、资源 |
+| `cohesion_inspection` | `cohesion_inspector` | 内聚性、耦合度、职责边界 |
+| `consistency_inspection` | `consistency_inspector` | 代码与设计空间的一致性 |
+| `design_inspection` | `design_inspector` | 设计文档、系统/模块边界、接口、依赖 |
+
+检查智能体不修改代码或设计；发现问题通过 `issue_create` 上报。Issue 创建后自动进入 `issue_triage`，由分诊智能体决定生成设计或开发任务。

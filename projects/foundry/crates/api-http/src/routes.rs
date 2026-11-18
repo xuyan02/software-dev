@@ -8,11 +8,12 @@ use crate::dto::{
     ApproveRequirementsForm, AssignAgentRequest, BindTaskActorRequest, CommentIssueForm,
     CommentIssueRequest,
     CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest,
-    CreateMergeRequestForm, CreateMergeRequestRequest, CreateProjectRequest, CreateWorkflowRequest,
+    CreateInspectionRequest, CreateMergeRequestForm, CreateMergeRequestRequest, CreateProjectRequest,
+    CreateWorkflowRequest,
     DecideAnchorDocumentRequest, DecideRequirementsRequest, DeleteDesignSpaceBranchRequest,
     IssueListQuery, IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse,
     MemberRoleForm, MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm,
-    NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
+    NewInspectionForm, NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
     PublishWorkflowForm, RejectDocumentForm, RejectRequirementsForm, RenameWorkflowForm,
     RenameWorkflowRequest, RequirementsAnnotationQuery, ResolveAnchorAnnotationRequest,
     ResolveRequirementsAnnotationRequest, SaveDraftRequest, SelectProjectForm,
@@ -2977,6 +2978,114 @@ async fn enqueue_issue_triage(
     {
         tracing::warn!(issue_id = %issue.id, task_id = %task.id, %error, "cannot link triage task to issue");
     }
+}
+
+pub async fn create_inspection_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Form(form): Form<NewInspectionForm>,
+) -> Response {
+    let session = match auth::web_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let project = match state
+        .projects
+        .get(session.account.actor(), project_id)
+        .await
+    {
+        Ok(project) => project,
+        Err(error) => return auth::web_error(error),
+    };
+    if !can_contribute_to_project(&session.account, &project) {
+        return auth::web_forbidden("当前项目角色不能启动检查。");
+    }
+    let (workflow, title) = match form.kind.trim() {
+        "style" => ("style_inspection", "代码风格检查"),
+        "logic" => ("logic_inspection", "代码逻辑检查"),
+        "cohesion" => ("cohesion_inspection", "逻辑聚合度检查"),
+        "consistency" => ("consistency_inspection", "代码-设计一致性检查"),
+        "design" => ("design_inspection", "设计检查"),
+        _ => return auth::web_forbidden("未知的检查类型。"),
+    };
+    let scope = form.scope.trim().to_string();
+    let description = if scope.is_empty() {
+        format!("对项目执行{title}，检查现有代码/设计并把问题上报为 Issue。")
+    } else {
+        format!("对范围 {scope} 执行{title}，把问题上报为 Issue。")
+    };
+    match state
+        .tasks
+        .create_task(
+            project_id,
+            NewTask {
+                workflow: workflow.to_string(),
+                title: title.to_string(),
+                description,
+                input: json!({ "scope": scope }),
+            },
+            session.account.id,
+        )
+        .await
+    {
+        Ok(task) => Redirect::to(&format!("/tasks/{}", task.id)).into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn create_inspection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<Uuid>,
+    Json(body): Json<CreateInspectionRequest>,
+) -> Result<(StatusCode, Json<Task>), ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let project = state
+        .projects
+        .get(session.account.actor(), project_id)
+        .await?;
+    if !can_contribute_to_project(&session.account, &project) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "current project role cannot start inspections",
+        ));
+    }
+    let (workflow, title) = match body.kind.trim() {
+        "style" => ("style_inspection", "代码风格检查"),
+        "logic" => ("logic_inspection", "代码逻辑检查"),
+        "cohesion" => ("cohesion_inspection", "逻辑聚合度检查"),
+        "consistency" => ("consistency_inspection", "代码-设计一致性检查"),
+        "design" => ("design_inspection", "设计检查"),
+        other => {
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unknown_inspection",
+                format!("unknown inspection kind: {other}"),
+            ));
+        }
+    };
+    let scope = body.scope.unwrap_or_default();
+    let description = if scope.trim().is_empty() {
+        format!("对项目执行{title}，检查现有代码/设计并把问题上报为 Issue。")
+    } else {
+        format!("对范围 {scope} 执行{title}，把问题上报为 Issue。")
+    };
+    let task = state
+        .tasks
+        .create_task(
+            project_id,
+            NewTask {
+                workflow: workflow.to_string(),
+                title: title.to_string(),
+                description,
+                input: json!({ "scope": scope }),
+            },
+            session.account.id,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(task)))
 }
 
 pub async fn create_issue(

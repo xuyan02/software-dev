@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {
+      "name": "design_inspector",
+      "kind": "agent",
+      "min_actors": 1,
+      "max_actors": 1
+    }
+  ],
+  "initial_stage": "inspect",
+  "stages": [
+    {
+      "name": "inspect",
+      "active_roles": [
+        "design_inspector"
+      ],
+      "vars": {
+        "completed": {
+          "type": "bool",
+          "display_name": "Completed"
+        },
+        "failed": {
+          "type": "bool",
+          "display_name": "Failed"
+        }
+      },
+      "operations": [
+        {
+          "name": "completed",
+          "display_name": "设计检查完成",
+          "description": "检查设计文档、系统/模块边界、接口和依赖。",
+          "roles": [
+            "design_inspector"
+          ],
+          "action": "completed = true"
+        },
+        {
+          "name": "failed",
+          "display_name": "设计检查失败",
+          "description": "无法完成检查。",
+          "roles": [
+            "design_inspector"
+          ],
+          "action": "failed = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "failed",
+          "action": "result = 'failed'",
+          "to": "failed"
+        },
+        {
+          "on": "completed",
+          "action": "result = 'completed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "failed",
+      "active_roles": [],
+      "retry_to": "inspect"
+    }
+  ]
+}

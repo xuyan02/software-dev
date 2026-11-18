@@ -24,6 +24,11 @@ const DESIGN_CONSISTENCY_MAINTENANCE: &str =
 const ISSUE_TRIAGE: &str = include_str!("../definitions/issue_triage.json");
 const DESIGN_CHANGE: &str = include_str!("../definitions/design_change.json");
 const CODE_CHANGE: &str = include_str!("../definitions/code_change.json");
+const STYLE_INSPECTION: &str = include_str!("../definitions/style_inspection.json");
+const LOGIC_INSPECTION: &str = include_str!("../definitions/logic_inspection.json");
+const COHESION_INSPECTION: &str = include_str!("../definitions/cohesion_inspection.json");
+const CONSISTENCY_INSPECTION: &str = include_str!("../definitions/consistency_inspection.json");
+const DESIGN_INSPECTION: &str = include_str!("../definitions/design_inspection.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("empty", "Empty (no-op)", EMPTY),
@@ -75,6 +80,15 @@ const SOURCES: &[(&str, &str, &str)] = &[
     ("issue_triage", "Issue triage", ISSUE_TRIAGE),
     ("design_change", "Design change", DESIGN_CHANGE),
     ("code_change", "Code change", CODE_CHANGE),
+    ("style_inspection", "Code style inspection", STYLE_INSPECTION),
+    ("logic_inspection", "Code logic inspection", LOGIC_INSPECTION),
+    ("cohesion_inspection", "Code cohesion inspection", COHESION_INSPECTION),
+    (
+        "consistency_inspection",
+        "Code-design consistency inspection",
+        CONSISTENCY_INSPECTION,
+    ),
+    ("design_inspection", "Design inspection", DESIGN_INSPECTION),
 ];
 
 /// Builtin workflows currently offered as project root tasks.

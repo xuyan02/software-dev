@@ -883,7 +883,76 @@ const TEMPLATES: &[PlatformTemplate] = &[
         shell: true,
         skills: &["issue-loop"],
     },
+    PlatformTemplate {
+        id: "style-inspection",
+        name: "Code Style Inspector",
+        role: "style_inspection:style_inspector",
+        description: "Inspects existing code style and reports Issues",
+        system_prompt: STYLE_INSPECTION_PROMPT,
+        tools: INSPECTION_TOOLS,
+        shell: true,
+        skills: &["code-inspection"],
+    },
+    PlatformTemplate {
+        id: "logic-inspection",
+        name: "Code Logic Inspector",
+        role: "logic_inspection:logic_inspector",
+        description: "Inspects existing code logic and reports Issues",
+        system_prompt: LOGIC_INSPECTION_PROMPT,
+        tools: INSPECTION_TOOLS,
+        shell: true,
+        skills: &["code-inspection"],
+    },
+    PlatformTemplate {
+        id: "cohesion-inspection",
+        name: "Code Cohesion Inspector",
+        role: "cohesion_inspection:cohesion_inspector",
+        description: "Inspects cohesion and coupling and reports Issues",
+        system_prompt: COHESION_INSPECTION_PROMPT,
+        tools: INSPECTION_TOOLS,
+        shell: true,
+        skills: &["code-inspection"],
+    },
+    PlatformTemplate {
+        id: "consistency-inspection",
+        name: "Code Design Consistency Inspector",
+        role: "consistency_inspection:consistency_inspector",
+        description: "Compares existing code with the design space and reports Issues",
+        system_prompt: CONSISTENCY_INSPECTION_PROMPT,
+        tools: INSPECTION_TOOLS,
+        shell: true,
+        skills: &["design-space", "code-inspection"],
+    },
+    PlatformTemplate {
+        id: "design-inspection",
+        name: "Design Inspector",
+        role: "design_inspection:design_inspector",
+        description: "Inspects design documents, module boundaries and dependencies",
+        system_prompt: DESIGN_INSPECTION_PROMPT,
+        tools: INSPECTION_TOOLS,
+        shell: true,
+        skills: &["design-space", "code-inspection"],
+    },
 ];
+
+const INSPECTION_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "issue_create",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+];
+
+const STYLE_INSPECTION_PROMPT: &str = "你是 Foundry 的代码风格检查智能体。检查现有代码的命名、格式、惯例和可读性，把可操作的问题用 issue_create 上报，不要直接改代码。";
+const LOGIC_INSPECTION_PROMPT: &str = "你是 Foundry 的代码逻辑检查智能体。检查现有代码的正确性、边界、错误处理、并发和资源问题，把可复现的问题用 issue_create 上报。";
+const COHESION_INSPECTION_PROMPT: &str = "你是 Foundry 的逻辑聚合度检查智能体。检查模块/文件/类型的内聚性、耦合度和职责边界，把需要设计或重构的问题用 issue_create 上报。";
+const CONSISTENCY_INSPECTION_PROMPT: &str = "你是 Foundry 的代码-设计一致性检查智能体。比较现有代码与设计空间的系统/模块/对象/文档，把设计缺失、设计过时和代码漂移用 issue_create 上报。";
+const DESIGN_INSPECTION_PROMPT: &str = "你是 Foundry 的设计检查智能体。检查设计文档、系统/模块边界、接口和依赖，把设计问题用 issue_create 上报，不直接修改设计。";
 
 const ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "project",
