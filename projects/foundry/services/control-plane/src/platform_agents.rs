@@ -813,7 +813,137 @@ const TEMPLATES: &[PlatformTemplate] = &[
         shell: true,
         skills: &["design-space", "design-consistency"],
     },
+    PlatformTemplate {
+        id: "issue-triage",
+        name: "Issue Triage",
+        role: "issue_triage:triage",
+        description: "Classifies Issues, determines root cause and creates design/development tasks",
+        system_prompt: ISSUE_TRIAGE_PROMPT,
+        tools: ISSUE_TRIAGE_TOOLS,
+        shell: true,
+        skills: &["design-space", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "design-change-designer",
+        name: "Design Change Designer",
+        role: "design_change:designer",
+        description: "Analyzes an Issue and updates the design space",
+        system_prompt: DESIGN_CHANGE_DESIGNER_PROMPT,
+        tools: ISSUE_CHANGE_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "design-change-reviewer",
+        name: "Design Change Reviewer",
+        role: "design_change:design_reviewer",
+        description: "Reviews a design change",
+        system_prompt: DESIGN_CHANGE_REVIEWER_PROMPT,
+        tools: ISSUE_REVIEW_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "code-change-developer",
+        name: "Code Change Developer",
+        role: "code_change:developer",
+        description: "Plans and implements a code fix for an Issue",
+        system_prompt: CODE_CHANGE_DEVELOPER_PROMPT,
+        tools: ISSUE_CHANGE_TOOLS,
+        shell: true,
+        skills: &["issue-loop"],
+    },
+    PlatformTemplate {
+        id: "code-change-reviewer",
+        name: "Code Change Reviewer",
+        role: "code_change:code_reviewer",
+        description: "Reviews a code fix and reports out-of-scope issues",
+        system_prompt: CODE_CHANGE_REVIEWER_PROMPT,
+        tools: ISSUE_REVIEW_TOOLS,
+        shell: true,
+        skills: &["issue-loop"],
+    },
+    PlatformTemplate {
+        id: "code-change-tester",
+        name: "Code Change Tester",
+        role: "code_change:tester",
+        description: "Verifies a code fix against the Issue acceptance",
+        system_prompt: CODE_CHANGE_TESTER_PROMPT,
+        tools: ISSUE_REVIEW_TOOLS,
+        shell: true,
+        skills: &["issue-loop"],
+    },
+    PlatformTemplate {
+        id: "code-change-merger",
+        name: "Code Change Merger",
+        role: "code_change:merger",
+        description: "Merges a verified code fix and resolves the Issue",
+        system_prompt: CODE_CHANGE_MERGER_PROMPT,
+        tools: ISSUE_MERGER_TOOLS,
+        shell: true,
+        skills: &["issue-loop"],
+    },
 ];
+
+const ISSUE_TRIAGE_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "issue_transition",
+    "issue_create",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "task_spawn_children",
+    "task_add_link",
+    "task_links_list",
+];
+const ISSUE_CHANGE_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+];
+const ISSUE_REVIEW_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "issue_create",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+];
+const ISSUE_MERGER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "issue_get",
+    "issue_comment",
+    "issue_transition",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+];
+
+const ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告，并创建 design_change/code_change 子任务。不要直接修代码或改设计。";
+const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。根据 Issue 分析设计影响，更新设计空间，提交并推送 source 分支；不要改代码。";
+const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查智能体。检查设计修改是否真正解决 Issue、是否与需求和架构一致；不审文风，不直接修改设计。";
+const CODE_CHANGE_DEVELOPER_PROMPT: &str = "你是 Foundry 的代码修复智能体。根据 Issue、分诊计划和设计空间实现代码修复和测试，推送到 code/<issue-id> 分支。";
+const CODE_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的代码评审智能体。评审 code_change 任务的分支；只处理本次范围，超范围问题创建 Issue。";
+const CODE_CHANGE_TESTER_PROMPT: &str = "你是 Foundry 的代码验证智能体。检出 code_change 分支，运行测试和验收检查，记录证据。";
+const CODE_CHANGE_MERGER_PROMPT: &str = "你是 Foundry 的代码合入智能体。把已验证的 code_change 分支合入目标分支，并将 Issue 标记为 resolved。";
 
 const GROUP_SUMMARY_PROMPT: &str = "你是 Foundry 的 CodeSummary 组智能体。只处理当前任务 input.files 指定的文件，复用或创建组 MR，完成后自动提交。";
 const CONSISTENCY_SCANNER_PROMPT: &str = "你是 Foundry 的技术设计一致性扫描智能体。按当前 dispatch 阶段执行基础同步、变化扫描、分组和子任务创建。";

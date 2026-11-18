@@ -1039,6 +1039,69 @@ async fn the_editor_serves_assets_and_falls_back_to_the_spa() {
 }
 
 #[tokio::test]
+async fn creating_an_issue_enqueues_a_triage_task() {
+    let harness = harness().await;
+    let issue = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "title": "Login fails",
+                "description": "The login button does nothing",
+                "kind": "bug",
+                "severity": "s2"
+            }),
+        ),
+    )
+    .await;
+    let issue_id = issue["id"].as_str().unwrap();
+
+    let tasks = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/tasks",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let triage = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["workflow"] == "issue_triage")
+        .expect("triage task");
+    assert_eq!(triage["input"]["issue_id"], issue_id);
+    assert!(triage["description"].as_str().unwrap().contains(issue_id));
+    let task_id = triage["id"].as_str().unwrap();
+
+    let links = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/tasks/{task_id}/links"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert!(
+        links
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| link["kind"] == "issue" && link["target_id"] == issue_id),
+        "{links}"
+    );
+}
+
+#[tokio::test]
 async fn issues_are_isolated_between_projects() {
     let harness = harness().await;
 

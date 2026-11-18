@@ -26,6 +26,9 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `design_space_merge` | Design-space merge | 设计空间合并请求的人类审核与快进合并 | 已实现 |
 | `code_summary_group` | Code summary group | 按文件组总结设计，经过文风和内容审查后自动合入集成分支 | 已实现 |
 | `design_consistency_maintenance` | Technical design consistency | 扫描代码变化、分组、驱动组任务、集成审查、人类审批和最终合入 | 已实现 |
+| `issue_triage` | Issue triage | 分诊 Issue、判断根因、创建设计/开发任务 | 已实现 |
+| `design_change` | Design change | 分析设计影响、修改设计空间、设计审查 | 已实现 |
+| `code_change` | Code change | 修复计划、实现、代码评审、测试、合入 | 已实现 |
 | `requirements_baseline` | Requirements baseline | 固定一批已批准需求并生成基线 | 计划 |
 | `change_request` | Change request | 影响分析、验证计划、批准、关闭 | 计划 |
 | `incident_response` | Incident response | 分级、止损、修复、复盘 | 计划 |
@@ -213,3 +216,13 @@ work (designer)
 - **数据迁移**：在发版时插入显式的新版本，保持 v1 原样。启动时会校验 v1 与嵌入 JSON 一致，不一致直接拒绝启动。
 - **不要**直接改 `crates/domain/src/task/definitions/*.json` 来“修复”线上 v1；那只会让下一次启动失败。
 - 新增内置流程需要同时更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和文档；启动会校验引用完整性。
+
+## Issue 分诊与变更闭环
+
+Issue 是问题的唯一记录；Issue 创建后自动生成 `issue_triage` 任务。分诊智能体读取 Issue、代码和设计证据，判断是代码缺陷、设计缺陷、需求缺陷、测试缺陷、重复、不是问题或需要补充信息。
+
+- 纯代码问题：创建 `code_change` 任务，input 包含 `issue_id`、`code_branch` 和 `fix_plan`；
+- 设计问题：按顺序创建 `design_change` 和依赖它的 `code_change`；
+- 不需要修改：写分诊报告，建议拒绝或补充信息，由人类处置。
+
+`design_change` 经过 `analysis → design → design_review`，设计修改直接提交到设计空间 `source` 分支。`code_change` 经过 `plan → implement → code_review → test → merge`，代码在 `code/<issue-id>` 分支开发，评审和测试通过后合入目标分支，并把 Issue 推进到 `resolved`。
