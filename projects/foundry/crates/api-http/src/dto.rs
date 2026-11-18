@@ -4,8 +4,9 @@ use foundry_app::{
     TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
 };
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, IssueKind, IssueSeverity,
-    IssueSource, IssueSourceKind, IssueStatus, ProjectRole, ProjectStatus, RoleKey, StageKey,
+    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, IssueClassification,
+    IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, IssueTriage,
+    ProjectRole, ProjectStatus, RoleKey, StageKey,
     TaskDispatchState, TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,28 @@ pub struct CreateInspectionRequest {
     pub kind: String,
     #[serde(default)]
     pub scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TriageIssueRequest {
+    pub classification: IssueClassification,
+    pub root_cause: String,
+    pub confidence: IssueConfidence,
+    pub decision: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+impl TriageIssueRequest {
+    pub fn into_triage(self) -> IssueTriage {
+        IssueTriage {
+            classification: self.classification,
+            root_cause: self.root_cause,
+            confidence: self.confidence,
+            decision: self.decision,
+            notes: self.notes,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

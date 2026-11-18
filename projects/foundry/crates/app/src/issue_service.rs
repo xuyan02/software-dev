@@ -3,7 +3,9 @@ use crate::error::ServiceError;
 use crate::ports::{
     Action, ActionContext, EventSink, IssueFilter, IssueRepository, PolicyEngine, Resource,
 };
-use foundry_domain::{Actor, DomainEvent, DomainEventKind, Issue, IssueKind, TransitionEvidence};
+use foundry_domain::{
+    Actor, DomainEvent, DomainEventKind, Issue, IssueKind, IssueTriage, TransitionEvidence,
+};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -115,6 +117,32 @@ where
         Ok(issue)
     }
 
+    pub async fn set_triage(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        id: Uuid,
+        triage: IssueTriage,
+    ) -> Result<Issue, ServiceError> {
+        triage
+            .validate()
+            .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        let mut issue = self.get(project_id, id).await?;
+        self.policy.check(&ActionContext {
+            actor: actor.clone(),
+            action: Action::TriageIssue,
+            resource: Resource::Issue(id),
+        })?;
+        let previous_version = issue.version;
+        issue.triage = Some(triage);
+        issue.version = issue.version.saturating_add(1);
+        issue.updated_at = time::OffsetDateTime::now_utc();
+        self.repository.save(&issue, previous_version).await?;
+        self.emit(DomainEventKind::IssueUpdated, &issue, actor)
+            .await?;
+        Ok(issue)
+    }
+
     pub async fn transition(&self, command: TransitionIssue) -> Result<Issue, ServiceError> {
         let mut issue = self.get(command.project_id, command.id).await?;
         let from = issue.status;
@@ -182,6 +210,13 @@ pub trait IssueUseCases: Send + Sync {
     async fn list(&self, project_id: Uuid, filter: IssueFilter)
     -> Result<Vec<Issue>, ServiceError>;
     async fn comment(&self, command: CommentIssue) -> Result<Issue, ServiceError>;
+    async fn set_triage(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        id: Uuid,
+        triage: IssueTriage,
+    ) -> Result<Issue, ServiceError>;
     async fn transition(&self, command: TransitionIssue) -> Result<Issue, ServiceError>;
 }
 
@@ -210,6 +245,16 @@ where
 
     async fn comment(&self, command: CommentIssue) -> Result<Issue, ServiceError> {
         IssueService::comment(self, command).await
+    }
+
+    async fn set_triage(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        id: Uuid,
+        triage: IssueTriage,
+    ) -> Result<Issue, ServiceError> {
+        IssueService::set_triage(self, actor, project_id, id, triage).await
     }
 
     async fn transition(&self, command: TransitionIssue) -> Result<Issue, ServiceError> {

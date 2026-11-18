@@ -306,3 +306,58 @@ impl Tool for IssueListTool {
         pretty(issues)
     }
 }
+
+
+pub struct IssueTriageResultTool {
+    client: Arc<FoundryClient>,
+}
+
+impl IssueTriageResultTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for IssueTriageResultTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "issue_triage_result".to_string(),
+            description: "Record the structured triage classification, root cause and decision on an Issue."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["issue_id", "classification", "root_cause", "confidence", "decision"],
+                "properties": {
+                    "issue_id": { "type": "string", "format": "uuid" },
+                    "classification": {
+                        "type": "string",
+                        "enum": ["code_defect", "design_defect", "requirement_defect", "test_defect", "not_a_problem", "duplicate", "needs_info", "enhancement", "incident"]
+                    },
+                    "root_cause": { "type": "string" },
+                    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+                    "decision": { "type": "string" },
+                    "notes": { "type": "string" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let issue_id = parse_uuid(&arguments, "issue_id")?;
+        let mut body = arguments.clone();
+        if let Some(object) = body.as_object_mut() {
+            object.remove("issue_id");
+        }
+        let issue = self
+            .client
+            .set_issue_triage(issue_id, body)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(issue)
+    }
+}

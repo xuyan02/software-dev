@@ -7,7 +7,8 @@
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
     AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, Confidence, EntityStatus, Issue,
-    IssueKind, IssueSeverity, IssueSourceKind, IssueStatus, MergeRequestChangeStatus,
+    IssueClassification, IssueConfidence, IssueKind, IssueSeverity, IssueSourceKind, IssueStatus,
+    MergeRequestChangeStatus,
     MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project, ProjectRole,
     ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
     TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, WorkflowDefinition,
@@ -3138,6 +3139,30 @@ pub fn issue_page(
         String::new()
     };
 
+    let triage = issue
+        .triage
+        .as_ref()
+        .map(|triage| {
+            format!(
+                r#"<h2>分诊结论</h2><div class="card">
+<div class="meta"><span class="badge">{classification}</span><span class="badge">置信度 {confidence}</span></div>
+<p><strong>根因</strong>：{root_cause}</p>
+<p><strong>决策</strong>：{decision}</p>
+{notes}
+</div>"#,
+                classification = issue_classification_label(triage.classification),
+                confidence = issue_confidence_label(triage.confidence),
+                root_cause = escape(&triage.root_cause),
+                decision = escape(&triage.decision),
+                notes = triage
+                    .notes
+                    .as_deref()
+                    .filter(|notes| !notes.trim().is_empty())
+                    .map(|notes| format!("<p><strong>说明</strong>：{}</p>", escape(notes)))
+                    .unwrap_or_default(),
+            )
+        })
+        .unwrap_or_default();
     let linked_tasks = if linked_tasks.is_empty() {
         r#"<p class="empty">还没有关联任务。</p>"#.to_string()
     } else {
@@ -3203,6 +3228,7 @@ pub fn issue_page(
 </div>
 <h2>描述</h2><div class="card markdown">{description}</div>
 {bug_details}
+{triage}
 {linked_tasks}
 {resolution}
 {duplicate}
@@ -3234,6 +3260,7 @@ pub fn issue_page(
         id = issue.id,
         description = markdown_to_html(&issue.description),
         bug_details = bug_details,
+        triage = triage,
         linked_tasks = linked_tasks,
         resolution = resolution,
         duplicate = duplicate,
@@ -5988,6 +6015,30 @@ fn issue_status_label(status: IssueStatus) -> &'static str {
         Closed => "已关闭",
         Rejected => "不处理",
         Duplicate => "重复",
+    }
+}
+
+fn issue_classification_label(classification: IssueClassification) -> &'static str {
+    use IssueClassification::*;
+    match classification {
+        CodeDefect => "代码缺陷",
+        DesignDefect => "设计缺陷",
+        RequirementDefect => "需求缺陷",
+        TestDefect => "测试缺陷",
+        NotAProblem => "不是问题",
+        Duplicate => "重复",
+        NeedsInfo => "需要补充信息",
+        Enhancement => "改进",
+        Incident => "事故",
+    }
+}
+
+fn issue_confidence_label(confidence: IssueConfidence) -> &'static str {
+    use IssueConfidence::*;
+    match confidence {
+        High => "高",
+        Medium => "中",
+        Low => "低",
     }
 }
 

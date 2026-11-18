@@ -19,7 +19,7 @@ impl PolicyEngine for DemoPolicy {
     fn check(&self, context: &ActionContext) -> Result<(), PolicyDenied> {
         match (&context.actor, &context.action) {
             (Actor::Human { .. }, _) => Ok(()),
-            (Actor::Agent { .. }, Action::CreateIssue | Action::CommentIssue) => Ok(()),
+            (Actor::Agent { .. }, Action::CreateIssue | Action::CommentIssue | Action::TriageIssue) => Ok(()),
             (Actor::Agent { .. }, Action::TransitionIssue { from, to }) => {
                 if agent_issue_transition_allowed(*from, *to) {
                     Ok(())

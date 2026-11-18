@@ -107,6 +107,7 @@ pub trait EventSink: Send + Sync {
 pub enum Action {
     CreateIssue,
     CommentIssue,
+    TriageIssue,
     TransitionIssue { from: IssueStatus, to: IssueStatus },
 }
 

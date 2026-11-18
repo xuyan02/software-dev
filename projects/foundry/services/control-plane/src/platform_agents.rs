@@ -963,6 +963,7 @@ const ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "issue_transition",
     "issue_create",
     "issue_list",
+    "issue_triage_result",
     "task_get",
     "task_allowed_operations",
     "task_operation",

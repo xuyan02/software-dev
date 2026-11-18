@@ -1039,6 +1039,59 @@ async fn the_editor_serves_assets_and_falls_back_to_the_spa() {
 }
 
 #[tokio::test]
+async fn issue_triage_result_is_structured() {
+    let harness = harness().await;
+    let issue = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "title": "Login fails",
+                "description": "The login button does nothing",
+                "kind": "bug",
+                "severity": "s2"
+            }),
+        ),
+    )
+    .await;
+    let issue_id = issue["id"].as_str().unwrap();
+    let triaged = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/issues/{issue_id}/triage"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "classification": "design_defect",
+                "root_cause": "The design does not define the error path",
+                "confidence": "high",
+                "decision": "Update the design, then fix the code",
+                "notes": "Affects the login module"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(triaged["triage"]["classification"], "design_defect");
+    assert_eq!(triaged["triage"]["confidence"], "high");
+    let fetched = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/issues/{issue_id}"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(fetched["triage"]["root_cause"], "The design does not define the error path");
+}
+
+#[tokio::test]
 async fn inspections_create_specialized_tasks() {
     let harness = harness().await;
     let (status, _, body) = send(

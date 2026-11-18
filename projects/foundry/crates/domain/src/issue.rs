@@ -196,6 +196,81 @@ pub struct TransitionEvidence {
     pub duplicate_of: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueClassification {
+    CodeDefect,
+    DesignDefect,
+    RequirementDefect,
+    TestDefect,
+    NotAProblem,
+    Duplicate,
+    NeedsInfo,
+    Enhancement,
+    Incident,
+}
+
+impl IssueClassification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CodeDefect => "code_defect",
+            Self::DesignDefect => "design_defect",
+            Self::RequirementDefect => "requirement_defect",
+            Self::TestDefect => "test_defect",
+            Self::NotAProblem => "not_a_problem",
+            Self::Duplicate => "duplicate",
+            Self::NeedsInfo => "needs_info",
+            Self::Enhancement => "enhancement",
+            Self::Incident => "incident",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueConfidence {
+    High,
+    Medium,
+    Low,
+}
+
+impl IssueConfidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssueTriage {
+    pub classification: IssueClassification,
+    pub root_cause: String,
+    pub confidence: IssueConfidence,
+    pub decision: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+impl IssueTriage {
+    pub fn validate(&self) -> Result<(), IssueValidationError> {
+        let mut errors = Vec::new();
+        if self.root_cause.trim().is_empty() {
+            errors.push("triage root cause is required".to_string());
+        }
+        if self.decision.trim().is_empty() {
+            errors.push("triage decision is required".to_string());
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(IssueValidationError(errors))
+        }
+    }
+}
+
 /// A discussion object in problem space: something happened, someone wants
 /// something, or something needs an answer.
 ///
@@ -221,6 +296,8 @@ pub struct Issue {
     pub area: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub triage: Option<IssueTriage>,
     // Bug-specific fields. Present only when relevant.
     #[serde(default)]
     pub environment: Option<String>,
@@ -273,6 +350,7 @@ impl Issue {
             impact: None,
             area: None,
             labels: Vec::new(),
+            triage: None,
             environment: None,
             affected_versions: Vec::new(),
             reproduction: None,

@@ -12,7 +12,7 @@ use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes}
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
     FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueListTool,
-    IssueTransitionTool,
+    IssueTransitionTool, IssueTriageResultTool,
     MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
     TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool,
     TaskGetTool, TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
@@ -759,6 +759,9 @@ fn build_tools(
             }
             "issue_transition" => {
                 tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));
+            }
+            "issue_triage_result" => {
+                tools.register(Arc::new(IssueTriageResultTool::new(Arc::clone(client))));
             }
             "merge_request" => {
                 tools.register(Arc::new(MergeRequestTool::new(Arc::clone(client))));

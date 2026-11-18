@@ -19,6 +19,7 @@ use crate::dto::{
     ResolveRequirementsAnnotationRequest, SaveDraftRequest, SelectProjectForm,
     SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, SpawnChildTasksRequest,
     TaskCommentRequest, TaskListQuery, TaskOperationRequest, TransitionIssueRequest,
+    TriageIssueRequest,
     UpdateAccountRequest, UpdateProjectRequest, ValidateWorkflowRequest,
 };
 use crate::error::{anchor_document_error, requirements_error, workflow_error};
@@ -3177,6 +3178,27 @@ pub async fn transition_issue(
         state
             .issues
             .transition(body.into_command(session.project.id, id, session.actor()))
+            .await?,
+    ))
+}
+
+pub async fn triage_issue(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<TriageIssueRequest>,
+) -> Result<Json<foundry_domain::Issue>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    require_contribute(&session)?;
+    Ok(Json(
+        state
+            .issues
+            .set_triage(
+                session.actor(),
+                session.project.id,
+                id,
+                body.into_triage(),
+            )
             .await?,
     ))
 }

@@ -291,6 +291,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/issues/{id}", get(routes::get_issue))
         .route("/api/v1/issues/{id}/comments", post(routes::comment_issue))
+        .route("/api/v1/issues/{id}/triage", post(routes::triage_issue))
         .route(
             "/api/v1/issues/{id}/transitions",
             post(routes::transition_issue),

@@ -319,6 +319,22 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn set_issue_triage(
+        &self,
+        issue_id: Uuid,
+        body: Value,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/issues/{issue_id}/triage",
+                self.base_url.trim_end_matches('/')
+            ),
+            body,
+            None,
+        )
+        .await
+    }
+
     pub async fn create_issue(&self, body: Value) -> Result<Value, FoundryError> {
         self.post(
             &format!("{}/api/v1/issues", self.base_url.trim_end_matches('/')),

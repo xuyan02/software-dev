@@ -59,7 +59,8 @@ ds pull --branch source
    - `needs_info`：缺少复现、环境、期望行为等必要信息；
    - `enhancement`：改进或新需求，需要产品决策；
    - `incident`：生产事故，按事故流程处理。
-6. 在 Issue 写分诊报告（`issue_comment`），至少包含：
+6. 用 `issue_triage_result` 写入结构化分诊结论：classification、root_cause、confidence、decision、notes。
+7. 在 Issue 写分诊报告（`issue_comment`），至少包含：
 
 ```text
 分类: code_defect / design_defect / ...
@@ -71,8 +72,8 @@ ds pull --branch source
 待确认问题: ...
 ```
 
-7. 对需要工作的 Issue，调用 `issue_transition` 将 Issue 从 `open` 推进到 `in_progress`。
-8. 用 `task_spawn_children` 创建后续任务。任务描述必须包含 Issue id、根因、范围、验收标准。
+8. 对需要工作的 Issue，调用 `issue_transition` 将 Issue 从 `open` 推进到 `in_progress`。
+9. 用 `task_spawn_children` 创建后续任务。任务描述必须包含 Issue id、根因、范围、验收标准。
 
 #### 纯代码问题
 
@@ -130,7 +131,7 @@ ds pull --branch source
 - `needs_info`：写清楚缺什么，发送 `issue_triage:needs_info`。
 - `requirement_defect` / `enhancement` / `incident`：当前版本先写分诊报告和建议，发送 `issue_triage:needs_info` 或 `issue_triage:rejected`，不要伪造开发任务。
 
-9. 对每个创建的任务调用 `task_add_link`：
+10. 对每个创建的任务调用 `task_add_link`：
 
 ```json
 {
@@ -142,7 +143,7 @@ ds pull --branch source
 }
 ```
 
-10. 最后发送分诊操作：
+11. 最后发送分诊操作：
 
 - 创建了任务：`issue_triage:routed`
 - 需要补充信息：`issue_triage:needs_info`
