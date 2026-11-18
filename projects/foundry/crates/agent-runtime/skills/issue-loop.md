@@ -76,6 +76,29 @@ ds pull --branch source
 8. 对需要工作的 Issue，调用 `issue_transition` 将 Issue 从 `open` 推进到 `in_progress`。
 9. 用 `task_spawn_children` 创建后续任务。任务描述必须包含 Issue id、根因、范围、验收标准。
 
+#### 整个设计空间缺失
+
+如果 Issue 带有 `design-space-missing` 标签，或分诊确认代码存在但整个设计空间为空：
+
+- 不要创建 `design_change` 或 `code_change`；
+- 创建 `design_consistency_maintenance` 任务；
+- 任务 input 包含 `{ "issue_id": "<issue-id>" }`；
+- 任务描述说明需要从代码建立/补齐设计空间，并处理该 Issue；
+- 将该任务链接回 Issue；
+- 把 Issue 推进到 `in_progress`，发送 `issue_triage:routed`。
+
+```json
+{
+  "sequential": false,
+  "tasks": [{
+    "workflow": "design_consistency_maintenance",
+    "title": "建立设计基线：<Issue 标题>",
+    "description": "处理 Issue <id>：代码存在但设计空间为空，需要扫描代码、创建设计对象和文档。",
+    "input": { "issue_id": "<issue-id>" }
+  }]
+}
+```
+
 #### 纯代码问题
 
 ```json

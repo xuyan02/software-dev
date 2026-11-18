@@ -1052,7 +1052,7 @@ const ISSUE_MERGER_TOOLS: &[&str] = &[
     "task_history",
 ];
 
-const ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告，并创建 design_change/code_change 子任务。不要直接修代码或改设计。";
+const ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告并创建任务。若 Issue 带 design-space-missing 标签或整个设计空间缺失，创建 design_consistency_maintenance 任务；其他设计问题创建 design_change，纯代码问题创建 code_change。不要直接修代码或改设计。";
 const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。根据 Issue 分析设计影响，更新设计空间，提交并推送 source 分支；不要改代码。";
 const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查智能体。检查设计修改是否真正解决 Issue、是否与需求和架构一致；不审文风，不直接修改设计。";
 const CODE_CHANGE_DEVELOPER_PROMPT: &str = "你是 Foundry 的代码修复智能体。根据 Issue、分诊计划和设计空间实现代码修复和测试，推送到 code/<issue-id> 分支。";
