@@ -3020,7 +3020,21 @@ pub fn issue_dashboard(ctx: &ConsoleContext, issues: &[Issue]) -> String {
     layout(ctx, Section::Issues, "议题", &body)
 }
 
-pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
+#[derive(Debug, Clone)]
+pub struct IssueLinkedTask {
+    pub id: String,
+    pub title: String,
+    pub workflow: String,
+    pub stage: String,
+    pub state: String,
+    pub result: String,
+}
+
+pub fn issue_page(
+    ctx: &ConsoleContext,
+    issue: &Issue,
+    linked_tasks: &[IssueLinkedTask],
+) -> String {
     let bug_details = issue_bug_details(issue);
     let resolution = issue
         .resolution
@@ -3124,6 +3138,30 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
         String::new()
     };
 
+    let linked_tasks = if linked_tasks.is_empty() {
+        r#"<p class="empty">还没有关联任务。</p>"#.to_string()
+    } else {
+        let rows = linked_tasks
+            .iter()
+            .map(|task| {
+                format!(
+                    r#"<div class="card"><div class="meta"><a href="/tasks/{id}"><strong>{title}</strong></a><span class="badge">{workflow}</span><span class="badge">{stage}</span><span class="badge">{state}</span>{result}</div></div>"#,
+                    id = escape(&task.id),
+                    title = escape(&task.title),
+                    workflow = escape(&task.workflow),
+                    stage = escape(&task.stage),
+                    state = escape(&task.state),
+                    result = if task.result.is_empty() {
+                        String::new()
+                    } else {
+                        format!("<span class=\"badge\">{}</span>", escape(&task.result))
+                    },
+                )
+            })
+            .collect::<String>();
+        format!("<h2>关联任务</h2>{rows}")
+    };
+
     let history = if issue.history.is_empty() {
         "<li>无状态变更</li>".to_string()
     } else {
@@ -3165,6 +3203,7 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
 </div>
 <h2>描述</h2><div class="card markdown">{description}</div>
 {bug_details}
+{linked_tasks}
 {resolution}
 {duplicate}
 <h2>讨论</h2>
@@ -3195,6 +3234,7 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue) -> String {
         id = issue.id,
         description = markdown_to_html(&issue.description),
         bug_details = bug_details,
+        linked_tasks = linked_tasks,
         resolution = resolution,
         duplicate = duplicate,
         comments = comments,

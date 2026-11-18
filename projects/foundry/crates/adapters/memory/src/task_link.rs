@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use foundry_app::{RepoError, TaskLinkRepository};
-use foundry_domain::TaskLink;
+use foundry_domain::{TaskLink, TaskLinkKind};
 use uuid::Uuid;
 
 use crate::InMemoryStore;
@@ -48,6 +48,22 @@ impl TaskLinkRepository for InMemoryStore {
             .links
             .iter()
             .filter(|link| link.task_id == task_id)
+            .cloned()
+            .collect())
+    }
+
+    async fn list_by_target(
+        &self,
+        kind: TaskLinkKind,
+        target_id: Uuid,
+    ) -> Result<Vec<TaskLink>, RepoError> {
+        Ok(self
+            .task_links
+            .read()
+            .expect("lock poisoned")
+            .links
+            .iter()
+            .filter(|link| link.kind == kind && link.target_id == Some(target_id))
             .cloned()
             .collect())
     }

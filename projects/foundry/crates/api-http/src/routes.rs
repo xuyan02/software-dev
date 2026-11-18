@@ -3143,7 +3143,24 @@ pub async fn issue_page(
         Err(response) => return response,
     };
     match state.issues.get(session.project.id, id).await {
-        Ok(issue) => Html(foundry_web::issue_page(&session.context, &issue)).into_response(),
+        Ok(issue) => {
+            let linked = state
+                .task_links
+                .linked_issue_tasks(session.account.actor(), session.project.id, id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|task| foundry_web::IssueLinkedTask {
+                    id: task.id.to_string(),
+                    title: task.title,
+                    workflow: task.workflow,
+                    stage: task.stage.unwrap_or_default(),
+                    state: task.state,
+                    result: task.result.unwrap_or_default(),
+                })
+                .collect::<Vec<_>>();
+            Html(foundry_web::issue_page(&session.context, &issue, &linked)).into_response()
+        }
         Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
             StatusCode::NOT_FOUND,
             Html(foundry_web::not_found_page(&session.context)),

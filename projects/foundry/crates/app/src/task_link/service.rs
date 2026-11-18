@@ -5,6 +5,7 @@ use foundry_domain::{
     Account, AccountStatus, Actor, DomainEvent, DomainEventKind, ProjectRole, TaskLink,
     TaskLinkKind, TaskLinkRelation,
 };
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -29,6 +30,16 @@ pub struct AddTaskLink {
 pub struct RemoveTaskLink {
     pub task_id: Uuid,
     pub link_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkedTaskView {
+    pub id: Uuid,
+    pub title: String,
+    pub workflow: String,
+    pub stage: Option<String>,
+    pub state: String,
+    pub result: Option<String>,
 }
 
 pub struct TaskLinkService<R, A, T, P, E> {
@@ -114,6 +125,47 @@ where
         )
         .await?;
         Ok(link)
+    }
+
+    pub async fn linked_issue_tasks(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<Vec<LinkedTaskView>, ServiceError> {
+        let account = self.require_account(&actor).await?;
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        if !account.is_admin() && project.member(account.id).is_none() {
+            return Err(ServiceError::Forbidden(
+                "you are not a member of this project".to_string(),
+            ));
+        }
+        let links = self
+            .links
+            .list_by_target(TaskLinkKind::Issue, issue_id)
+            .await?;
+        let mut tasks = Vec::new();
+        for link in links {
+            let Some(task) = self.tasks.get(link.task_id).await? else {
+                continue;
+            };
+            if task.project_id != project_id {
+                continue;
+            }
+            tasks.push(LinkedTaskView {
+                id: task.id,
+                title: task.title,
+                workflow: task.workflow.as_str().to_string(),
+                stage: task.stage.map(|stage| stage.as_str().to_string()),
+                state: task.state.as_str().to_string(),
+                result: task.result.map(|result| result.as_str().to_string()),
+            });
+        }
+        Ok(tasks)
     }
 
     pub async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError> {
@@ -207,6 +259,13 @@ fn task_link_repo_error(error: RepoError) -> ServiceError {
 pub trait TaskLinkUseCases: Send + Sync {
     async fn list(&self, actor: Actor, task_id: Uuid) -> Result<Vec<TaskLink>, ServiceError>;
     async fn add(&self, actor: Actor, command: AddTaskLink) -> Result<TaskLink, ServiceError>;
+    async fn linked_issue_tasks(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<Vec<LinkedTaskView>, ServiceError>;
+
     async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError>;
 }
 
@@ -225,6 +284,15 @@ where
 
     async fn add(&self, actor: Actor, command: AddTaskLink) -> Result<TaskLink, ServiceError> {
         TaskLinkService::add(self, actor, command).await
+    }
+
+    async fn linked_issue_tasks(
+        &self,
+        actor: Actor,
+        project_id: Uuid,
+        issue_id: Uuid,
+    ) -> Result<Vec<LinkedTaskView>, ServiceError> {
+        TaskLinkService::linked_issue_tasks(self, actor, project_id, issue_id).await
     }
 
     async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError> {

@@ -67,6 +67,23 @@ impl TaskLinkRepository for PostgresStore {
         rows.into_iter().map(link_from_row).collect()
     }
 
+    async fn list_by_target(
+        &self,
+        kind: TaskLinkKind,
+        target_id: Uuid,
+    ) -> Result<Vec<TaskLink>, RepoError> {
+        let rows: Vec<TaskLinkRow> = sqlx::query_as(
+            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata \
+             from task_links where kind = $1 and target_id = $2 order by created_at, id",
+        )
+        .bind(kind.as_str())
+        .bind(target_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        rows.into_iter().map(link_from_row).collect()
+    }
+
     async fn get(&self, task_id: Uuid, link_id: Uuid) -> Result<Option<TaskLink>, RepoError> {
         let row: Option<TaskLinkRow> = sqlx::query_as(
             "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata \
