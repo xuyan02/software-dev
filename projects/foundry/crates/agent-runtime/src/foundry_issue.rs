@@ -267,3 +267,42 @@ impl Tool for IssueTransitionTool {
         pretty(issue)
     }
 }
+
+
+pub struct IssueListTool {
+    client: Arc<FoundryClient>,
+}
+
+impl IssueListTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for IssueListTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "issue_list".to_string(),
+            description: "List project Issues. Use it to check for duplicates before creating a new Issue."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let issues = self
+            .client
+            .list_issues()
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(issues)
+    }
+}

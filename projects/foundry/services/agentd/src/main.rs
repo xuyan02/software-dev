@@ -11,7 +11,8 @@ use clap::Parser;
 use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueTransitionTool,
+    FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueListTool,
+    IssueTransitionTool,
     MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
     TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool,
     TaskGetTool, TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
@@ -752,6 +753,9 @@ fn build_tools(
             }
             "issue_create" => {
                 tools.register(Arc::new(IssueCreateTool::new(Arc::clone(client))));
+            }
+            "issue_list" => {
+                tools.register(Arc::new(IssueListTool::new(Arc::clone(client))));
             }
             "issue_transition" => {
                 tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));

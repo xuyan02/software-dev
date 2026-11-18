@@ -311,6 +311,14 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn list_issues(&self) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/api/v1/issues",
+            self.base_url.trim_end_matches('/')
+        ))
+        .await
+    }
+
     pub async fn create_issue(&self, body: Value) -> Result<Value, FoundryError> {
         self.post(
             &format!("{}/api/v1/issues", self.base_url.trim_end_matches('/')),

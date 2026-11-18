@@ -36,7 +36,7 @@ export GIT_TERMINAL_PROMPT=0
 ### 步骤
 
 1. `task_get` 读取当前任务和 input。
-2. `issue_get` 读取 Issue、评论和历史。
+2. `issue_get` 读取 Issue、评论和历史；需要判断重复时调用 `issue_list` 查看同类 Issue。
 3. `project` 读取 `git_repository`、`git_branch`、`design_space_url`。
 4. 必要时更新工作区：
 
