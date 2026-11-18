@@ -76,9 +76,9 @@ ds pull --branch source
 8. 对需要工作的 Issue，调用 `issue_transition` 将 Issue 从 `open` 推进到 `in_progress`。
 9. 用 `task_spawn_children` 创建后续任务。任务描述必须包含 Issue id、根因、范围、验收标准。
 
-#### 整个设计空间缺失
+#### 规范技术设计缺失
 
-如果 Issue 带有 `design-space-missing` 标签，或分诊确认代码存在但整个设计空间为空：
+如果 Issue 带有 `design-space-missing` 标签，或分诊确认代码存在但 `documents/design/technical` 不存在：
 
 - 不要创建 `design_change` 或 `code_change`；
 - 创建 `design_consistency_maintenance` 任务；
@@ -182,7 +182,21 @@ ds pull --branch source
 ### analysis（designer）
 
 1. `issue_get`，读取分诊报告和证据。
-2. 更新设计空间：
+2. 检查规范技术设计是否存在：
+
+```bash
+cd /work/<project-id>/ds
+ds checkout source --force
+ds pull --branch source
+ds show documents/design/technical
+```
+
+如果不存在：
+- 不要创建 `documents/specs` 或其他自由格式设计文档；
+- `task_comment` 写明“规范技术设计不存在，应由 design_consistency_maintenance 建立”；
+- 发送 `analysis:failed`。
+
+3. 更新设计空间：
 ```bash
 cd /work/<project-id>/ds
 ds checkout source --force

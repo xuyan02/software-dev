@@ -77,7 +77,11 @@ export GIT_TERMINAL_PROMPT=0
    - 创建 Issue，标题使用 `设计空间缺失：...`，设置 `labels: ["design-space-missing"]`，说明设计空间为空但代码存在，附上代码提交、源码文件数量、顶层元素数量和范围；
    - 通常聚合成一个 Issue，不要为每个文件创建 Issue；
    - 发送 `inspect:completed`。
-3. 设计空间存在系统/模块时，继续比较：
+3. 代码仓库有源码，但规范技术设计 `documents/design/technical` 不存在：
+   - 创建 Issue，标题使用 `设计缺失：规范技术设计不存在`，设置 `labels: ["design-space-missing"]`；
+   - 说明缺少统一技术设计文档，附上代码范围和证据；
+   - 发送 `inspect:completed`。
+4. 设计空间存在系统/模块时，继续比较：
 
 1. 固定代码提交和设计空间提交/分支。
 2. 找到代码对象与设计对象/文档/模块成员的映射。
