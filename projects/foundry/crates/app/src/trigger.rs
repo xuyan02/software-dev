@@ -204,12 +204,17 @@ where
                 command.workflow_id
             )));
         }
+        let input = if command.input.is_null() {
+            json!({})
+        } else {
+            command.input
+        };
         let trigger = Trigger::new(
             command.project_id,
             command.name,
             command.description,
             command.workflow_id,
-            command.input,
+            input,
             command.schedule,
             command.title_template,
             if command.description_template.trim().is_empty() {
