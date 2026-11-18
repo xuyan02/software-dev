@@ -59,6 +59,7 @@ pub struct SpawnTask {
 /// event-driven work such as Issue triage.
 #[derive(Debug, Clone)]
 pub struct NewTask {
+    pub parent_id: Uuid,
     pub workflow: String,
     pub title: String,
     pub description: String,
@@ -224,9 +225,10 @@ impl TaskService {
             }
         };
         let now = OffsetDateTime::now_utc();
+        let parent = self.load(project_id, spec.parent_id).await?;
         let mut task = TaskDAO::new(
             project_id,
-            None,
+            Some(parent.id),
             reference.workflow_id,
             reference.version,
             spec.title,
@@ -234,17 +236,29 @@ impl TaskService {
         );
         task.description = spec.description;
         task.input = spec.input;
-        let events = [DomainEvent::new(
-            DomainEventKind::TaskCreated,
-            task.id,
-            Actor::System,
-            json!({
-                "workflow": task.workflow,
-                "workflow_version": task.workflow_version,
-                "title": task.title,
-                "parent_id": task.parent_id,
-            }),
-        )];
+        let events = [
+            DomainEvent::new(
+                DomainEventKind::TaskCreated,
+                task.id,
+                Actor::System,
+                json!({
+                    "workflow": task.workflow,
+                    "workflow_version": task.workflow_version,
+                    "title": task.title,
+                    "parent_id": task.parent_id,
+                }),
+            ),
+            DomainEvent::new(
+                DomainEventKind::ChildCreated,
+                parent.id,
+                Actor::System,
+                json!({
+                    "child_id": task.id,
+                    "workflow": task.workflow,
+                    "title": task.title,
+                }),
+            ),
+        ];
         self.repository.insert(&task, &[], &events).await?;
         if let Err(error) = self.dispatcher.process(task.id, None).await {
             tracing::warn!(task_id = %task.id, error = %error, "task created but initialization failed");

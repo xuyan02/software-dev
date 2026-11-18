@@ -383,11 +383,20 @@ where
             object.insert("trigger_name".to_string(), json!(trigger.name));
             object.insert("trigger_reason".to_string(), json!(reason.as_str()));
         }
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let parent_id = project.root_task_id.ok_or_else(|| {
+            ServiceError::Validation("project has no root task".to_string())
+        })?;
         let task = self
             .tasks
             .create_task(
                 project_id,
                 NewTask {
+                    parent_id,
                     workflow: trigger.workflow_id.clone(),
                     title: render_template(&trigger.title_template, &trigger),
                     description: render_template(&trigger.description_template, &trigger),

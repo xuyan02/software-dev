@@ -2949,6 +2949,7 @@ async fn enqueue_issue_triage(
     actor: Actor,
     account_id: Uuid,
     project_id: Uuid,
+    parent_id: Uuid,
     issue: &Issue,
 ) {
     let task = state
@@ -2956,6 +2957,7 @@ async fn enqueue_issue_triage(
         .create_task(
             project_id,
             NewTask {
+                parent_id,
                 workflow: "issue_triage".to_string(),
                 title: format!("分诊：{}", issue.title),
                 description: format!(
@@ -3274,6 +3276,10 @@ pub async fn create_inspection_form(
         .create_task(
             project_id,
             NewTask {
+                parent_id: match project.root_task_id {
+                    Some(parent_id) => parent_id,
+                    None => return auth::web_forbidden("项目没有根任务。"),
+                },
                 workflow: workflow.to_string(),
                 title: title.to_string(),
                 description,
@@ -3331,6 +3337,15 @@ pub async fn create_inspection(
         .create_task(
             project_id,
             NewTask {
+                parent_id: project
+                    .root_task_id
+                    .ok_or_else(|| {
+                        ApiError::new(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "no_root_task",
+                            "project has no root task",
+                        )
+                    })?,
                 workflow: workflow.to_string(),
                 title: title.to_string(),
                 description,
@@ -3353,14 +3368,19 @@ pub async fn create_issue(
         .issues
         .create(session.actor(), body.into_command(session.project.id))
         .await?;
-    enqueue_issue_triage(
-        &state,
-        session.actor(),
-        session.account.id,
-        session.project.id,
-        &issue,
-    )
-    .await;
+    if let Some(parent_id) = session.project.root_task_id {
+        enqueue_issue_triage(
+            &state,
+            session.actor(),
+            session.account.id,
+            session.project.id,
+            parent_id,
+            &issue,
+        )
+        .await;
+    } else {
+        tracing::warn!(issue_id = %issue.id, "cannot enqueue triage: project has no root task");
+    }
     Ok((StatusCode::CREATED, Json(issue)))
 }
 
@@ -3494,14 +3514,19 @@ pub async fn create_issue_form(
         .await
     {
         Ok(issue) => {
-            enqueue_issue_triage(
-                &state,
-                session.account.actor(),
-                session.account.id,
-                session.project.id,
-                &issue,
-            )
-            .await;
+            if let Some(parent_id) = session.project.root_task_id {
+                enqueue_issue_triage(
+                    &state,
+                    session.account.actor(),
+                    session.account.id,
+                    session.project.id,
+                    parent_id,
+                    &issue,
+                )
+                .await;
+            } else {
+                tracing::warn!(issue_id = %issue.id, "cannot enqueue triage: project has no root task");
+            }
             Redirect::to(&format!("/issues/{}", issue.id)).into_response()
         }
         Err(ServiceError::Validation(message)) | Err(ServiceError::Forbidden(message)) => (
