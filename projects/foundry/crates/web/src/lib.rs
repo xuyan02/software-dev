@@ -554,7 +554,7 @@ fn toc_label(text: &str) -> String {
 
 fn document_view(input: &str) -> String {
     let headings = document_headings(input);
-    let body = markdown_to_html(input);
+    let body = document_body_html(input);
     if headings.is_empty() {
         return format!(
             r#"<div class="doc-view"><div class="markdown doc-body">{body}</div></div>"#
@@ -577,6 +577,62 @@ fn document_view(input: &str) -> String {
 <div class="markdown doc-body">{body}</div>
 </div>"#
     )
+}
+
+/// Render document body with one indentation wrapper per heading level.
+/// The heading itself stays at its level; following content is indented so
+/// nested sections are visually distinct from flat paragraphs.
+fn document_body_html(input: &str) -> String {
+    let normalized = input.replace("\r\n", "\n");
+    let mut out = String::new();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut chunk = String::new();
+    let mut heading_index = 0usize;
+    let mut in_code = false;
+    for line in normalized.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code = !in_code;
+            chunk.push_str(line);
+            chunk.push('\n');
+            continue;
+        }
+        if !in_code && let Some((level, rest)) = markdown_heading(trimmed) {
+            flush_doc_chunk(&mut out, &mut chunk);
+            while stack.last().is_some_and(|open| *open >= level) {
+                out.push_str("</div>");
+                stack.pop();
+            }
+            heading_index += 1;
+            out.push_str(&format!(
+                r#"<h{level} id="md-h-{heading_index}">{}</h{level}>"#,
+                inline_markdown(rest.trim_end(), 0)
+            ));
+            if level > 1 {
+                out.push_str(&format!(
+                    r#"<div class="doc-level" style="margin-left:{}px">"#,
+                    (level - 1) * 18
+                ));
+                stack.push(level);
+            }
+            continue;
+        }
+        chunk.push_str(line);
+        chunk.push('\n');
+    }
+    flush_doc_chunk(&mut out, &mut chunk);
+    while !stack.is_empty() {
+        stack.pop();
+        out.push_str("</div>");
+    }
+    out
+}
+
+fn flush_doc_chunk(out: &mut String, chunk: &mut String) {
+    if !chunk.trim().is_empty() {
+        out.push_str(&markdown_to_html(chunk));
+    }
+    chunk.clear();
 }
 
 /// A small Markdown subset for Issue comments: headings, lists, code blocks,
@@ -6675,6 +6731,7 @@ mod tests {
         assert!(html.contains(r##"href="#md-h-1""##));
         assert!(html.contains(r##"href="#md-h-2""##));
         assert!(html.contains(r##"id="md-h-1""##));
+        assert!(html.contains(r#"class="doc-level" style="margin-left:18px""#));
         assert!(html.contains("<strong>职责</strong>"));
         assert!(!html.contains("TOPIC"));
         assert!(!html.contains("文档结构"));

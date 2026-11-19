@@ -1369,6 +1369,18 @@ fn lays_out_technical_design_sections_by_structure() {
             "namespaces/app",
         ],
     );
+    ok(
+        root,
+        &[
+            "create",
+            "method",
+            "login",
+            "--parent",
+            "namespaces/app/Auth",
+            "--signature",
+            "login()",
+        ],
+    );
     ok(root, &["structure", "init"]);
     ok(
         root,
@@ -1406,7 +1418,12 @@ fn lays_out_technical_design_sections_by_structure() {
             "namespaces/app/Session",
         ],
     );
-    for title in ["应用", "核心", "Auth", "Session"] {
+    for title in [
+        "应用",
+        "核心",
+        "namespaces/app/Auth",
+        "namespaces/app/Session",
+    ] {
         ok(
             root,
             &[
@@ -1473,7 +1490,7 @@ fn lays_out_technical_design_sections_by_structure() {
             "add",
             "documents/design/technical/section",
             "--title",
-            "Inner",
+            "namespaces/app/Auth/Inner",
         ],
     );
     ok(
@@ -1501,7 +1518,7 @@ fn lays_out_technical_design_sections_by_structure() {
             "add",
             "documents/design/technical/section",
             "--title",
-            "Entry",
+            "namespaces/app/Entry",
         ],
     );
     ok(
@@ -1511,6 +1528,31 @@ fn lays_out_technical_design_sections_by_structure() {
             "namespaces/app/Entry",
             "--document",
             "documents/design/technical/section6",
+        ],
+    );
+    let login = ok(root, &["ls"])
+        .lines()
+        .find(|line| line.starts_with("namespaces/app/Auth/login#"))
+        .expect("method qname")
+        .to_owned();
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            &login,
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            &login,
+            "--document",
+            "documents/design/technical/section7",
         ],
     );
 
@@ -1532,4 +1574,279 @@ fn lays_out_technical_design_sections_by_structure() {
     assert!(system.contains("document: documents/design/technical/section1"));
     let entry = ok(root, &["show", "namespaces/app/Entry"]);
     assert!(entry.contains("document: documents/design/technical/section1/section2"));
+
+    let login_doc = ok(root, &["show", &login]);
+    assert!(login_doc.contains("document: documents/design/technical/section1/section1/section1/section2"));
+
+    let titles = [
+        ("documents/design/technical/section1", "应用"),
+        ("documents/design/technical/section1/section1", "核心"),
+        ("documents/design/technical/section1/section1/section1", "Auth"),
+        (
+            "documents/design/technical/section1/section1/section1/section1",
+            "Inner",
+        ),
+        (
+            "documents/design/technical/section1/section1/section1/section2",
+            "login",
+        ),
+        ("documents/design/technical/section1/section2", "Entry"),
+    ];
+    for (section, title) in titles {
+        let shown = ok(root, &["show", section]);
+        assert!(shown.contains(&format!("title: {title}")), "{section}: {shown}");
+    }
+}
+
+#[test]
+fn namespace_section_titles_use_short_names() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "namespace", "auth", "--parent", "namespaces/app"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/namespace/section",
+            "--title",
+            "namespaces/app",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/namespace/section1",
+            "--title",
+            "namespaces/app/auth",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app",
+            "--document",
+            "documents/design/namespace/section1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/auth",
+            "--document",
+            "documents/design/namespace/section2",
+        ],
+    );
+
+    ok(root, &["doc", "layout"]);
+    let checked = ok(root, &["doc", "check"]);
+    assert!(checked.contains("document hierarchy ok"));
+
+    let app = ok(root, &["show", "documents/design/namespace/section1"]);
+    assert!(app.contains("title: app"));
+    let auth = ok(root, &["show", "documents/design/namespace/section2"]);
+    assert!(auth.contains("title: auth"));
+}
+
+#[test]
+fn design_principles_section_must_be_first() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "其他",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section1",
+            "--title",
+            "设计原则",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/design/technical/section2/body",
+            "--title",
+            "依赖方向",
+        ],
+    );
+
+    let check = ds(root, &["doc", "check"]);
+    assert!(!check.status.success());
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("must be the first Section")
+    );
+}
+
+#[test]
+fn accepts_design_principles_section_at_the_top() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "设计原则",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section1",
+            "--title",
+            "其他",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/design/technical/section1/body",
+            "--title",
+            "依赖方向",
+        ],
+    );
+    let checked = ok(root, &["doc", "check"]);
+    assert!(checked.contains("document hierarchy ok"));
+}
+
+#[test]
+fn rejects_non_topic_blocks_in_design_principles_section() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "设计原则",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/design/technical/section1/body",
+            "--text",
+            "遵循单一职责原则。",
+        ],
+    );
+
+    let check = ds(root, &["doc", "check"]);
+    assert!(!check.status.success());
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("must contain principle topics only")
+    );
+}
+
+#[test]
+fn rejects_duplicate_design_principles_sections() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "设计原则",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section1",
+            "--title",
+            "其他",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section2",
+            "--title",
+            "设计原则",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/design/technical/section1/body",
+            "--title",
+            "依赖方向",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/design/technical/section3/body",
+            "--title",
+            "并发模型",
+        ],
+    );
+
+    let check = ds(root, &["doc", "check"]);
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("appears 2 times"));
 }

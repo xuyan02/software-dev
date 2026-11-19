@@ -1610,6 +1610,7 @@ fn structure_members(object: &DesignObject) -> &[SymbolHash] {
 }
 
 const TECHNICAL_DESIGN_DOC: &str = "documents/design/technical";
+const DESIGN_PRINCIPLES_SECTION: &str = "设计原则";
 
 #[derive(Debug, Clone)]
 struct DocPlacement {
@@ -1695,7 +1696,7 @@ fn push_element_placement(
     out.push(DocPlacement {
         object: element,
         parent,
-        title: name,
+        title: element_title(&name),
     });
     let mut nested = Vec::new();
     for (qname, object) in catalog.iter() {
@@ -1866,11 +1867,12 @@ fn doc_layout(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
                     .is_some_and(|object| object.kind == Kind::DocumentSection) =>
             {
                 if doc_section_parent(catalog, document) == Some(parent) {
-                    continue;
+                    document
+                } else {
+                    let moved = move_doc_section(ws, catalog, document, parent)?;
+                    changes += 1;
+                    moved
                 }
-                let moved = move_doc_section(ws, catalog, document, parent)?;
-                changes += 1;
-                moved
             }
             _ => {
                 let created = add_doc_section(ws, catalog, parent, &placement.title)?;
@@ -1878,6 +1880,9 @@ fn doc_layout(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
                 created
             }
         };
+        if set_section_title(catalog, section, &placement.title)? {
+            changes += 1;
+        }
         set_document(
             catalog
                 .get_mut(placement.object)
@@ -1885,8 +1890,48 @@ fn doc_layout(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
             section,
         )?;
     }
+
+    let mut namespaces = catalog
+        .iter()
+        .filter(|(_, object)| object.kind == Kind::Namespace)
+        .map(|(qname, _)| qname)
+        .collect::<Vec<_>>();
+    namespaces.sort_by_key(|qname| ws.get_symbol(*qname).unwrap_or_default());
+    for namespace in namespaces {
+        let namespace_text = ws.get_symbol(namespace)?;
+        let Some(object) = catalog.get(namespace) else {
+            continue;
+        };
+        let Some(section) = document_of(object).filter(|section| !section.is_zero()) else {
+            continue;
+        };
+        if !catalog
+            .get(section)
+            .is_some_and(|object| object.kind == Kind::DocumentSection)
+        {
+            continue;
+        }
+        if set_section_title(catalog, section, &local_name(&namespace_text))? {
+            changes += 1;
+        }
+    }
+
     println!("document hierarchy layout: {changes} change(s)");
     Ok(())
+}
+
+fn set_section_title(catalog: &mut Catalog, section: SymbolHash, title: &str) -> Result<bool> {
+    let object = catalog
+        .get_mut(section)
+        .with_context(|| format!("section not found: {}", section.to_hex()))?;
+    let ObjectPayload::DocumentSection(payload) = &mut object.payload else {
+        bail!("not a document section: {}", section.to_hex());
+    };
+    if payload.title == title {
+        return Ok(false);
+    }
+    payload.title = title.to_owned();
+    Ok(true)
 }
 
 fn doc_check(ws: &Workspace, catalog: &Catalog) -> Result<()> {
@@ -1933,6 +1978,101 @@ fn doc_check(ws: &Workspace, catalog: &Catalog) -> Result<()> {
                     .map(|parent| ws.get_symbol(parent).unwrap_or_default())
                     .unwrap_or_else(|| "<none>".to_string()),
                 ws.get_symbol(expected)?
+            ));
+        }
+        if let Some(section) = catalog.get(document)
+            && let ObjectPayload::DocumentSection(payload) = &section.payload
+            && payload.title != placement.title
+        {
+            problems.push(format!(
+                "{}: Section title is {:?}, expected {:?}",
+                ws.get_symbol(placement.object)?,
+                payload.title,
+                placement.title
+            ));
+        }
+    }
+    let mut namespaces = catalog
+        .iter()
+        .filter(|(_, object)| object.kind == Kind::Namespace)
+        .map(|(qname, _)| qname)
+        .collect::<Vec<_>>();
+    namespaces.sort_by_key(|qname| ws.get_symbol(*qname).unwrap_or_default());
+    for namespace in namespaces {
+        let namespace_text = ws.get_symbol(namespace)?;
+        let Some(object) = catalog.get(namespace) else {
+            continue;
+        };
+        let Some(document) = document_of(object).filter(|document| !document.is_zero()) else {
+            continue;
+        };
+        let Some(section) = catalog.get(document) else {
+            problems.push(format!(
+                "{namespace_text}: document {} is not a Section",
+                ws.get_symbol(document).unwrap_or_default()
+            ));
+            continue;
+        };
+        let ObjectPayload::DocumentSection(payload) = &section.payload else {
+            problems.push(format!(
+                "{namespace_text}: document {} is not a Section",
+                ws.get_symbol(document).unwrap_or_default()
+            ));
+            continue;
+        };
+        let expected = local_name(&namespace_text);
+        if payload.title != expected {
+            problems.push(format!(
+                "{namespace_text}: Section title is {:?}, expected short name {:?}",
+                payload.title, expected
+            ));
+        }
+    }
+    if let Some(technical_object) = catalog.get(technical)
+        && let ObjectPayload::Document(document) = &technical_object.payload
+    {
+        let placement_sections = placements
+            .iter()
+            .filter_map(|placement| catalog.get(placement.object).and_then(document_of))
+            .collect::<BTreeSet<_>>();
+        let mut principles = Vec::new();
+        for (index, section) in document.sections.iter().enumerate() {
+            if placement_sections.contains(section) {
+                continue;
+            }
+            if let Some(section_object) = catalog.get(*section)
+                && let ObjectPayload::DocumentSection(payload) = &section_object.payload
+                && payload.title == DESIGN_PRINCIPLES_SECTION
+            {
+                principles.push(index);
+                if !payload.sections.is_empty() {
+                    problems.push(format!(
+                        "{TECHNICAL_DESIGN_DOC}: {DESIGN_PRINCIPLES_SECTION} Section must not contain child Sections"
+                    ));
+                }
+                if payload.body.is_empty()
+                    || payload.body.iter().any(|item| {
+                        catalog
+                            .get(*item)
+                            .is_none_or(|object| object.kind != Kind::DocumentTopic)
+                    })
+                {
+                    problems.push(format!(
+                        "{TECHNICAL_DESIGN_DOC}: {DESIGN_PRINCIPLES_SECTION} Section must contain principle topics only"
+                    ));
+                }
+            }
+        }
+        if principles.len() > 1 {
+            problems.push(format!(
+                "{TECHNICAL_DESIGN_DOC}: {DESIGN_PRINCIPLES_SECTION} Section appears {} times",
+                principles.len()
+            ));
+        } else if let Some(index) = principles.first()
+            && *index != 0
+        {
+            problems.push(format!(
+                "{TECHNICAL_DESIGN_DOC}: {DESIGN_PRINCIPLES_SECTION} Section must be the first Section"
             ));
         }
     }
@@ -3407,6 +3547,13 @@ fn rename_qname(ws: &Workspace, parent: SymbolHash, local: &str) -> Result<Symbo
 
 fn local_name(text: &str) -> String {
     text.rsplit('/').next().unwrap_or(text).to_owned()
+}
+
+/// Human-readable Section title for a code element. Method qnames end in
+/// `#<signature-hash>`; the hash is identity, not a title.
+fn element_title(qname: &str) -> String {
+    let without_hash = qname.split_once('#').map(|(name, _)| name).unwrap_or(qname);
+    local_name(without_hash)
 }
 
 fn dep(dir: Option<PathBuf>, command: DepCommand) -> Result<()> {

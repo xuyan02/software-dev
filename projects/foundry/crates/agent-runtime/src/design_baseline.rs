@@ -47,12 +47,12 @@ const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体�
 - 最终只返回 JSON：{"ok":true}。
 
 执行顺序：
-1. 读运行时代码生成的 inventory，先建立系统；只有复杂度需要时才建立模块。System 和 Module 的定义、创建标准、文档块见 design-writing 技能。
-2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。按 design-writing 的 Module 资格测试决定是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。
-3. 建立 Namespace：按逻辑概念创建 namespaces/*，用 --file 关联源码文件；在命名空间设计文档中给每个 Namespace 建 Section，写“置放……”单句。
+1. 读运行时代码生成的 inventory，先判断是否存在跨对象的统一设计决定。有的话，在技术设计文档中创建顶层 Section“设计原则”（用 documents/design/technical/section 头锚点，插到最前），按 design-writing 1.8 写范围、规则、理由与代价；没有就不建，不写通用口号或实现策略。然后建立系统；只有复杂度需要时才建立模块。System 和 Module 的定义、创建标准、文档块见 design-writing 技能。
+2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。按 design-writing 的 Module 资格测试决定是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。System/Module 如果存在只约束本容器内多个对象的设计原则，写“设计原则”块；单对象规则写进对应对象的块。
+3. 建立 Namespace：按逻辑概念创建 namespaces/*，用 --file 关联源码文件；在命名空间设计文档中给每个 Namespace 建 Section，Section 标题用 Namespace 短名（qname 最后一段），不要用完整 qname；正文写“置放……”单句。
 4. 目录设计：按目录树给 files/ 下每个 Directory 建 Section，写“置放……”单句，覆盖整个子树，不枚举子项。
 5. 文件设计：对每个 File，先用 ds show 查文件内顶层元素所属的 Namespace/Module，再写文件设计目的单句：这个文件在系统/模块中承担什么角色、承载什么能力，不写具体行为或实现细节。例如 main.rs 写“置放命令行程序入口的代码”，不要写“置放实现命令行问候输出的代码”。
-6. 代码元素：逐文件读源码，创建 Class/Interface/Function/Mixin/Method/InnerClass/Part，写 source span、signature、file、关系和依赖；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
+6. 代码元素：逐文件读源码，创建 Class/Interface/Function/Mixin/Method/InnerClass/Part，写 source span、signature、file、关系和依赖；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 必须写“参数与返回值”块：每个参数写名字、类型和含义，返回值写类型、含义和失败语义；没有参数或返回值时写“无参数。”或“无返回值。”。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
 7. 归属：每个顶层元素用 ds structure assign 加入恰好一个系统或模块。简单系统直接加入系统；系统可以同时有模块和直属成员；不允许重复归属、未归属、空系统或空模块。程序入口不单独建模块。
 8. 自检：ds structure unassigned 为空，ds structure check 通过，ds verify 通过；缺什么继续补。
 9. 完成后返回 {"ok":true}。"#;
@@ -74,6 +74,7 @@ const FIX_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体。当�
 - 评论指出的问题真正解决后才 resolve，不要假 resolve。
 - 评论不成立时写说明评论并保留原评论。
 - 修正后同步更新受影响的技术设计、目录设计、命名空间设计，保持 System/Module 文档与成员一致。
+- 设计原则只写跨对象的结构性决定，必须写清范围、规则、理由与代价；通用口号和实现策略不算原则。
 - File 文档写文件在系统/模块中的设计角色或能力；不写具体行为或实现细节。
 - 最终只返回 JSON：{"ok":true}。
 
