@@ -106,11 +106,20 @@ pub struct TaskLink {
     pub url: Option<String>,
     pub title: String,
     pub relation: TaskLinkRelation,
+    /// Whether this link is the Issue's current handling task. Issue links are
+    /// handed off: a new current link deactivates the previous one, which stays
+    /// in the link list as history.
+    #[serde(default = "default_active")]
+    pub active: bool,
     pub created_by: Actor,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     #[serde(default)]
     pub metadata: Value,
+}
+
+fn default_active() -> bool {
+    true
 }
 
 pub fn validate_task_link(link: &TaskLink) -> Validation {
@@ -177,6 +186,7 @@ mod tests {
             url: None,
             title: "澄清".to_string(),
             relation: TaskLinkRelation::Clarifies,
+            active: true,
             created_by: Actor::human("creator"),
             created_at: OffsetDateTime::now_utc(),
             metadata: Value::Null,

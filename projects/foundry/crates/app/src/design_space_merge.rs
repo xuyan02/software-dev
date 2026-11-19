@@ -12,9 +12,8 @@ use crate::{
 use async_trait::async_trait;
 use foundry_domain::{
     AccountKind, Actor, DESIGN_SPACE_MERGE_OPERATION, DesignSpaceMergeRequestDAO, DomainEvent,
-    DomainEventKind, MergeRequestChange, MergeRequestDetail, MergeRequestReview,
-    MergeRequestStatus, OperationName, Project, RoleKey, TaskActorDAO, TaskDAO, TaskState,
-    WorkflowId,
+    DomainEventKind, MergeRequestChange, MergeRequestDetail, MergeRequestReview, OperationName,
+    Project, RoleKey, TaskActorDAO, TaskDAO, TaskState, WorkflowId,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -523,8 +522,17 @@ impl MergeRequestService {
         }
         if project.skip_human_review {
             self.approve(project, merge_request_id, reviewer).await?;
-            self.merge(project, merge_request_id, reviewer).await?;
-            let updated = self.load(project.id, merge_request_id).await?;
+            let mut updated = self.load(project.id, merge_request_id).await?;
+            if updated.merge_commit.is_none() {
+                let task = self
+                    .tasks
+                    .get(project.id, updated.task_id, TaskViewer::member(reviewer))
+                    .await?;
+                if task.stage.as_ref().map(|stage| stage.as_str()) == Some("merge") {
+                    self.merge(project, merge_request_id, reviewer).await?;
+                    updated = self.load(project.id, merge_request_id).await?;
+                }
+            }
             return self
                 .view(project, &updated, TaskViewer::member(account_id))
                 .await;
@@ -616,19 +624,37 @@ impl MergeRequestService {
                 "合并请求已经结束，不能再审批".to_string(),
             ));
         }
-        let approved_operation = task
+        let operation_suffix = |operation: &foundry_domain::AllowedOperation| {
+            operation
+                .name
+                .as_str()
+                .rsplit_once(':')
+                .map(|(_, name)| name.to_string())
+                .unwrap_or_else(|| operation.name.as_str().to_string())
+        };
+        let mechanical_merge = task
+            .allowed_operations
+            .iter()
+            .find(|operation| operation_suffix(operation) == DESIGN_SPACE_MERGE_OPERATION)
+            .map(|operation| operation.name.as_str().to_string());
+        let approval_operation = task
             .allowed_operations
             .iter()
             .find(|operation| {
                 let name = operation.name.as_str();
                 name.ends_with(":approved") || name.ends_with(":review_approved")
             })
-            .map(|operation| operation.name.as_str().to_string())
-            .ok_or_else(|| {
-                ServiceError::Forbidden(
-                    "当前账号不是这个合并请求的真人审核人，或当前阶段不能审批".to_string(),
-                )
-            })?;
+            .map(|operation| operation.name.as_str().to_string());
+        if mechanical_merge.is_none() && approval_operation.is_none() {
+            return Err(ServiceError::Forbidden(
+                "当前账号不是这个合并请求的真人审核人，或当前阶段不能审批".to_string(),
+            ));
+        }
+        let conflict_operation = task
+            .allowed_operations
+            .iter()
+            .find(|operation| operation_suffix(operation) == "conflict")
+            .map(|operation| operation.name.as_str().to_string());
         let source_head = self
             .design_space
             .branch_head(project, &request.source_branch)
@@ -661,13 +687,52 @@ impl MergeRequestService {
                 "合并请求已经结束，不能再审批".to_string(),
             ));
         }
+        if mechanical_merge.is_some() {
+            // Human approval triggers the mechanical merge immediately. A
+            // failed merge (conflict or remaining review comments) is handed
+            // to the conflict resolver; the human approves again afterwards.
+            match self.merge(project, id, account_id).await {
+                Ok(view) => return Ok(view),
+                Err(error) => {
+                    let current = self.load(project.id, id).await?;
+                    if current.merge_commit.is_some() {
+                        return self.view(project, &current, viewer).await;
+                    }
+                    let Some(conflict_operation) = conflict_operation else {
+                        return Err(error);
+                    };
+                    self.tasks
+                        .send_operation(
+                            project.id,
+                            request.task_id,
+                            account_id,
+                            OperationName::new(conflict_operation),
+                            format!(
+                                "design-space-conflict:{}:{}",
+                                request.id, request.source_commit
+                            ),
+                        )
+                        .await?;
+                    let updated = self.load(project.id, id).await?;
+                    return self.view(project, &updated, viewer).await;
+                }
+            }
+        }
+        let Some(approval_operation) = approval_operation else {
+            return Err(ServiceError::Forbidden(
+                "当前账号不是这个合并请求的真人审核人，或当前阶段不能审批".to_string(),
+            ));
+        };
         self.tasks
             .send_operation(
                 project.id,
                 request.task_id,
                 account_id,
-                OperationName::new(approved_operation),
-                format!("design-space-approval:{}:{}", request.id, request.source_commit),
+                OperationName::new(approval_operation),
+                format!(
+                    "design-space-approval:{}:{}",
+                    request.id, request.source_commit
+                ),
             )
             .await?;
         let updated = self.load(project.id, id).await?;
@@ -686,11 +751,6 @@ impl MergeRequestService {
         let request = self.load(project.id, id).await?;
         let viewer = TaskViewer::member(account_id);
         let task = self.tasks.get(project.id, request.task_id, viewer).await?;
-        let status = request.view().status_from(
-            task.state,
-            task.stage.as_ref().map(|stage| stage.as_str()),
-            task.result.as_ref().map(|result| result.as_str()),
-        );
         let merge_operation = task
             .allowed_operations
             .iter()
@@ -712,17 +772,10 @@ impl MergeRequestService {
                 ));
             }
         }
-        if task.state != foundry_domain::TaskState::Completed {
-            if merge_operation.is_none() {
-                return Err(ServiceError::Forbidden(
-                    "当前账号不能合并这个合并请求".to_string(),
-                ));
-            }
-            if request.merge_commit.is_none() && status != MergeRequestStatus::Approved {
-                return Err(ServiceError::Validation(
-                    "合并请求还没有通过审核".to_string(),
-                ));
-            }
+        if task.state != foundry_domain::TaskState::Completed && merge_operation.is_none() {
+            return Err(ServiceError::Forbidden(
+                "当前账号不能合并这个合并请求".to_string(),
+            ));
         }
 
         if request.merge_commit.is_none() {
@@ -731,10 +784,7 @@ impl MergeRequestService {
                 .branch_head(project, &request.source_branch)
                 .await?
                 .ok_or_else(|| {
-                    ServiceError::Validation(format!(
-                        "源分支不存在: {}",
-                        request.source_branch
-                    ))
+                    ServiceError::Validation(format!("源分支不存在: {}", request.source_branch))
                 })?;
             if source_head != request.source_commit {
                 return Err(ServiceError::Validation(

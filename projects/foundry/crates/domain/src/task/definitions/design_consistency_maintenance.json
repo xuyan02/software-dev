@@ -1,54 +1,14 @@
 {
   "schema_version": 1,
   "roles": [
-    {
-      "name": "scanner",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "integrator",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "content_reviewer",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "conflict_resolver",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "acceptor",
-      "kind": "human",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "architect",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "structure_reviewer",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    },
-    {
-      "name": "style_reviewer",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    }
+    {"name": "scanner", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "integrator", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "content_reviewer", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "conflict_resolver", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"},
+    {"name": "architect", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "structure_reviewer", "kind": "agent", "assignment": "design_consistency_maintenance"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "design_consistency_maintenance"}
   ],
   "vars": {
     "expected": {

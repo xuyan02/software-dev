@@ -55,6 +55,8 @@ impl ProjectRole {
 pub struct ProjectMember {
     pub account_id: Uuid,
     pub role: ProjectRole,
+    #[serde(default)]
+    pub revoked_identities: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
     pub added_at: OffsetDateTime,
 }
@@ -147,6 +149,7 @@ impl Project {
             members: vec![ProjectMember {
                 account_id: owner_id,
                 role: ProjectRole::Owner,
+                revoked_identities: Vec::new(),
                 added_at: now,
             }],
             version: 1,
@@ -203,6 +206,38 @@ impl Project {
 
     pub fn role_of(&self, account_id: Uuid) -> Option<ProjectRole> {
         self.member(account_id).map(|member| member.role)
+    }
+
+    /// The first owner is the project creator. The creator starts with every
+    /// human identity and may revoke individual identities.
+    pub fn creator_id(&self) -> Option<Uuid> {
+        self.members
+            .iter()
+            .filter(|member| member.role == ProjectRole::Owner)
+            .min_by_key(|member| (member.added_at, member.account_id))
+            .map(|member| member.account_id)
+    }
+
+    pub fn set_member_identity(
+        &mut self,
+        account_id: Uuid,
+        identity: &str,
+        enabled: bool,
+    ) -> Result<(), ProjectError> {
+        let Some(member) = self
+            .members
+            .iter_mut()
+            .find(|member| member.account_id == account_id)
+        else {
+            return Err(ProjectError::NotAMember(account_id));
+        };
+        member.revoked_identities.retain(|value| value != identity);
+        if !enabled {
+            member.revoked_identities.push(identity.to_string());
+            member.revoked_identities.sort();
+            member.revoked_identities.dedup();
+        }
+        Ok(())
     }
 
     pub fn is_archived(&self) -> bool {
@@ -278,6 +313,7 @@ impl Project {
         self.members.push(ProjectMember {
             account_id,
             role,
+            revoked_identities: Vec::new(),
             added_at: OffsetDateTime::now_utc(),
         });
         self.touch();
@@ -374,6 +410,29 @@ mod tests {
     }
 
     #[test]
+    fn creator_can_revoke_and_restore_an_identity() {
+        let mut project = project();
+        let creator = project.creator_id().expect("creator");
+        project
+            .set_member_identity(creator, "design_space_reviewer", false)
+            .unwrap();
+        assert_eq!(
+            project.member(creator).unwrap().revoked_identities,
+            vec!["design_space_reviewer".to_string()]
+        );
+        project
+            .set_member_identity(creator, "design_space_reviewer", true)
+            .unwrap();
+        assert!(
+            project
+                .member(creator)
+                .unwrap()
+                .revoked_identities
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn branches_can_be_updated_but_not_empty() {
         let mut project = project();
         project
@@ -381,11 +440,7 @@ mod tests {
             .unwrap();
         assert_eq!(project.git_branch, "release");
         assert_eq!(project.design_space_branch, DESIGN_SPACE_BRANCH);
-        assert!(
-            project
-                .update(None, None, Some("  ".to_string()))
-                .is_err()
-        );
+        assert!(project.update(None, None, Some("  ".to_string())).is_err());
     }
 
     #[test]

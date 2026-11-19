@@ -12,7 +12,7 @@ pub use error::ApiError;
 pub use routes::{AppState, EditorAssets, SetupState};
 
 use axum::Router;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -55,7 +55,10 @@ pub fn router(state: AppState) -> Router {
         .route("/tasks/state", get(routes::tasks_state))
         .route("/tasks/{id}", get(routes::task_page))
         .route("/tasks/{id}/state", get(routes::task_state))
-        .route("/tasks/{id}/operations", post(routes::send_task_operation_form))
+        .route(
+            "/tasks/{id}/operations",
+            post(routes::send_task_operation_form),
+        )
         .route("/tasks/{id}/retry", post(routes::retry_task_form))
         .route("/tasks/{id}/abandon", post(routes::abandon_task_form))
         .route(
@@ -214,6 +217,10 @@ pub fn router(state: AppState) -> Router {
             patch(routes::set_project_member_role).delete(routes::remove_project_member),
         )
         .route(
+            "/api/v1/projects/{id}/identities/{identity}",
+            put(routes::set_project_member_identity),
+        )
+        .route(
             "/api/v1/workflows",
             get(routes::list_workflows).post(routes::create_workflow),
         )
@@ -331,6 +338,10 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/issues",
             get(routes::list_issues).post(routes::create_issue),
         )
+        .route(
+            "/api/v1/issues/triage-batch",
+            get(routes::issue_triage_batch),
+        )
         .route("/api/v1/issues/{id}", get(routes::get_issue))
         .route("/api/v1/issues/{id}/comments", post(routes::comment_issue))
         .route("/api/v1/issues/{id}/triage", post(routes::triage_issue))
@@ -370,6 +381,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/tasks/{id}/children",
             post(routes::spawn_task_children),
+        )
+        .route(
+            "/api/v1/tasks/{id}/follow-up",
+            post(routes::create_follow_up_task),
         )
         .route("/api/v1/tasks/{id}/actors", post(routes::bind_task_actor))
         .route(

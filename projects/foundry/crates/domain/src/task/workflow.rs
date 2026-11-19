@@ -19,33 +19,26 @@ use uuid::Uuid;
 pub enum RoleKind {
     Human,
     Agent,
-    Any,
 }
 
 /// A role declared by a workflow definition.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RoleSpec {
+    /// Local role name. Unique within one workflow.
     pub name: String,
     pub kind: RoleKind,
-    #[serde(default)]
-    pub min_actors: u32,
-    #[serde(default)]
-    pub max_actors: Option<u32>,
+    /// For agent roles, the workflow whose agent implementation is required.
+    /// For human roles, the human identity required by this role.
+    pub assignment: String,
 }
 
 impl RoleSpec {
-    pub fn new(
-        name: impl Into<String>,
-        kind: RoleKind,
-        min_actors: u32,
-        max_actors: Option<u32>,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, kind: RoleKind, assignment: impl Into<String>) -> Self {
         Self {
             name: name.into(),
             kind,
-            min_actors,
-            max_actors,
+            assignment: assignment.into(),
         }
     }
 }
@@ -270,7 +263,8 @@ impl<'a> WorkflowContext<'a> {
         }
         match (self.task.state, state) {
             (TaskState::Pending, TaskState::Pending)
-            | (TaskState::InProgress, TaskState::InProgress) => return Ok(()),
+            | (TaskState::InProgress, TaskState::InProgress)
+            | (TaskState::Failed, TaskState::Failed) => return Ok(()),
             (TaskState::Pending, TaskState::InProgress) => {
                 if !self
                     .dependencies
@@ -279,8 +273,11 @@ impl<'a> WorkflowContext<'a> {
                 {
                     return Err(TaskError::DependencyBlocked);
                 }
-                self.require_bound_agent_roles()?;
+                self.require_bound_roles()?;
             }
+            (TaskState::Pending, TaskState::Failed)
+            | (TaskState::InProgress, TaskState::Failed)
+            | (TaskState::Failed, TaskState::InProgress) => {}
             _ => {
                 return Err(TaskError::InvalidEffect(format!(
                     "cannot move from {:?} to {:?}",
@@ -302,22 +299,18 @@ impl<'a> WorkflowContext<'a> {
         Ok(())
     }
 
-    /// A task may enter `in_progress` only after every agent role that requires
-    /// actors has them bound. Later-stage roles are bound before the task
-    /// starts, so this check applies to the whole workflow, not just the
-    /// initial stage.
-    fn require_bound_agent_roles(&self) -> Result<(), TaskError> {
+    /// A task may enter `in_progress` only after every role has exactly one
+    /// actor bound. Later-stage roles are bound before the task starts, so this
+    /// check applies to the whole workflow, not just the initial stage.
+    fn require_bound_roles(&self) -> Result<(), TaskError> {
         let mut unbound = Vec::new();
         for spec in self.workflow.roles() {
-            if spec.kind != RoleKind::Agent || spec.min_actors == 0 {
-                continue;
-            }
             let bound = self
                 .actors
                 .iter()
                 .filter(|actor| actor.role_key.as_str() == spec.name)
                 .count();
-            if bound < spec.min_actors as usize {
+            if bound != 1 {
                 unbound.push(spec.name.clone());
             }
         }
@@ -385,26 +378,6 @@ impl<'a> WorkflowContext<'a> {
     }
 
     fn activate_roles(&mut self, roles: &[String]) -> Result<(), TaskError> {
-        for spec in self.workflow.roles() {
-            let count = self
-                .actors
-                .iter()
-                .filter(|actor| {
-                    actor.active
-                        && actor.role_key.as_str() == spec.name
-                        && roles.iter().any(|role| role == &spec.name)
-                })
-                .count();
-            if let Some(max) = spec.max_actors
-                && count > max as usize
-            {
-                return Err(TaskError::InvalidEffect(format!(
-                    "role {} accepts at most {max} active actors",
-                    spec.name
-                )));
-            }
-        }
-
         let previous: Vec<TaskActorDAO> = self.actors.clone();
         for actor in self.actors.iter_mut() {
             actor.active = false;

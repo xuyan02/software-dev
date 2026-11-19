@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "architect", "kind": "agent", "assignment": "design_baseline"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "design_baseline"},
+    {"name": "content_reviewer", "kind": "agent", "assignment": "design_baseline"},
+    {"name": "integrator", "kind": "agent", "assignment": "design_baseline"},
+    {"name": "acceptor", "kind": "human", "assignment": "design_space_reviewer"}
+  ],
+  "initial_stage": "baseline",
+  "stages": [
+    {
+      "name": "baseline",
+      "active_roles": ["architect"],
+      "vars": {
+        "baselined": {"type": "bool", "display_name": "Baselined"}
+      },
+      "operations": [
+        {"name": "baselined", "display_name": "设计基线完成", "description": "系统、模块、命名空间、目录和代码元素的设计及文档已完成，分支和合并请求已提交。", "roles": ["architect"], "action": "baselined = true"}
+      ],
+      "transitions": [
+        {"on": "baselined", "to": "style_review"}
+      ]
+    },
+    {
+      "name": "style_review",
+      "active_roles": ["style_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "文风通过", "description": "设计文字符合 design-writing 的格式要求。", "roles": ["style_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "文风打回", "description": "设计文字存在需要修改的问题。", "roles": ["style_reviewer"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "content_review"},
+        {"on": "decision == 'rejected'", "to": "fix"}
+      ]
+    },
+    {
+      "name": "content_review",
+      "active_roles": ["content_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "内容通过", "description": "设计体系、覆盖范围和内容与代码一致。", "roles": ["content_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "内容打回", "description": "设计内容存在需要修改的问题。", "roles": ["content_reviewer"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "fix"}
+      ]
+    },
+    {
+      "name": "fix",
+      "active_roles": ["architect"],
+      "vars": {
+        "fixed": {"type": "bool", "display_name": "Fixed"}
+      },
+      "operations": [
+        {"name": "fixed", "display_name": "修复完成", "description": "审查问题已修复并提交。", "roles": ["architect"], "action": "fixed = true"}
+      ],
+      "transitions": [
+        {"on": "fixed", "to": "style_review"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"},
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "conflict": {"type": "bool", "display_name": "Conflict"}
+      },
+      "operations": [
+        {"name": "merge", "display_name": "批准并合入", "description": "人类批准后平台立即机械合入 source。", "roles": ["acceptor"], "action": "merged = true"},
+        {"name": "conflict", "display_name": "合入未完成", "description": "机械合入失败，转智能体解决冲突或清理评论后重新审批。", "roles": ["acceptor"], "action": "conflict = true"},
+        {"name": "rejected", "display_name": "人类打回", "description": "设计基线需要继续修改。", "roles": ["acceptor"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "conflict", "to": "conflict_resolution"},
+        {"on": "merged", "to": "cleanup"},
+        {"on": "decision == 'rejected'", "to": "fix"}
+      ]
+    },
+    {
+      "name": "conflict_resolution",
+      "active_roles": ["integrator"],
+      "vars": {
+        "resolved": {"type": "bool", "display_name": "Resolved"}
+      },
+      "operations": [
+        {"name": "resolved", "display_name": "冲突已解决", "description": "设计基线分支已重新落到最新 source、清理评论并刷新合并请求。", "roles": ["integrator"], "action": "resolved = true"}
+      ],
+      "transitions": [
+        {"on": "resolved", "to": "human_review"}
+      ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": ["integrator"],
+      "vars": {
+        "cleaned": {"type": "bool", "display_name": "Cleaned"}
+      },
+      "operations": [
+        {"name": "cleaned", "display_name": "清理完成", "description": "设计基线临时分支已删除。", "roles": ["integrator"], "action": "cleaned = true"}
+      ],
+      "transitions": [
+        {"on": "cleaned", "action": "result = 'completed'", "to": "ended"}
+      ]
+    }
+  ]
+}

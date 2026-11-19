@@ -1,6 +1,6 @@
 use crate::commands::{
     AddProjectMember, AddProjectMemberByHandle, CreateProject, RemoveProjectMember,
-    SetProjectMemberRole, UpdateProject,
+    SetMemberIdentity, SetProjectMemberRole, UpdateProject,
 };
 use crate::error::ServiceError;
 use crate::ports::{
@@ -203,10 +203,7 @@ where
                 .activate()
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
-        if command.name.is_some()
-            || command.description.is_some()
-            || command.git_branch.is_some()
-        {
+        if command.name.is_some() || command.description.is_some() || command.git_branch.is_some() {
             project
                 .update(command.name, command.description, command.git_branch)
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
@@ -361,6 +358,34 @@ where
         Ok(project)
     }
 
+    pub async fn set_member_identity(
+        &self,
+        actor: Actor,
+        command: SetMemberIdentity,
+    ) -> Result<Project, ServiceError> {
+        let (account, mut project) = self.require_owner(&actor, command.project_id).await?;
+        if project.creator_id() != Some(account.id) {
+            return Err(ServiceError::Unauthorized(
+                "only the project creator can change their identities".to_string(),
+            ));
+        }
+        if command.identity.trim().is_empty() {
+            return Err(ServiceError::Validation("identity is required".to_string()));
+        }
+        let previous_version = project.version;
+        project
+            .set_member_identity(account.id, &command.identity, command.enabled)
+            .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.projects.save(&project, previous_version).await?;
+        self.emit(
+            DomainEventKind::ProjectMemberChanged,
+            &project,
+            account.actor(),
+        )
+        .await?;
+        Ok(project)
+    }
+
     pub async fn remove_member(
         &self,
         actor: Actor,
@@ -467,6 +492,11 @@ pub trait ProjectUseCases: Send + Sync {
         actor: Actor,
         command: SetProjectMemberRole,
     ) -> Result<Project, ServiceError>;
+    async fn set_member_identity(
+        &self,
+        actor: Actor,
+        command: SetMemberIdentity,
+    ) -> Result<Project, ServiceError>;
     async fn remove_member(
         &self,
         actor: Actor,
@@ -534,6 +564,14 @@ where
         command: SetProjectMemberRole,
     ) -> Result<Project, ServiceError> {
         ProjectService::set_member_role(self, actor, command).await
+    }
+
+    async fn set_member_identity(
+        &self,
+        actor: Actor,
+        command: SetMemberIdentity,
+    ) -> Result<Project, ServiceError> {
+        ProjectService::set_member_identity(self, actor, command).await
     }
 
     async fn remove_member(

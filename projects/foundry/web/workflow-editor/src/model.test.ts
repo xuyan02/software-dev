@@ -18,7 +18,7 @@ import type { WorkflowBody } from './types';
 function body(): WorkflowBody {
   return {
     schema_version: 1,
-    roles: [{ name: 'owner', kind: 'human', min_actors: 1, max_actors: null }],
+    roles: [{ name: 'owner', kind: 'human', assignment: 'acceptor' }],
     vars: { attempts: { type: 'int', display_name: '尝试次数', initial: 0 } },
     initial_stage: 'start',
     stages: [

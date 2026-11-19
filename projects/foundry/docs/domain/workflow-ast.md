@@ -31,20 +31,18 @@
 ```json
 {
   "name": "reviewer",
-  "kind": "any",
-  "min_actors": 1,
-  "max_actors": null
+  "kind": "agent",
+  "assignment": "design_baseline"
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
-| `name` | 小写字母开头，只能包含小写字母、数字和下划线 |
-| `kind` | `human` / `agent` / `any`；`any` 同时接受人类和智能体 |
-| `min_actors` | 最少绑定的 actor 数；`0` 表示可留空 |
-| `max_actors` | 最多绑定的 actor 数；`null` 表示不限 |
+| `name` | 小写字母开头，只能包含小写字母、数字和下划线；同一流程内唯一 |
+| `kind` | `human` / `agent` |
+| `assignment` | 智能体角色填需要的 workflow；人类角色填需要的身份（例如 `design_space_reviewer`） |
 
-角色只声明可绑定的种类和数量。具体账户由 Task 的 actor 绑定决定，定义不能指定具体账户。
+一个角色恰好绑定一个 actor。智能体角色由调度器按 `assignment:name` 分配 Agent；人类角色由拥有 `assignment` 身份的人类绑定。具体账户由 Task 的 actor 绑定决定，定义不能指定具体账户。
 
 ## Stage
 
@@ -316,7 +314,7 @@ Error（阻止发布）包括：
 
 - 未知 `schema_version`；没有 stage；超过 200 个 stage、50 个角色、500 条 transition 或 1 MiB 序列化大小。
 - 非法或重复的 stage/role name；stage 名为保留的 `ended`；`initial_stage` 缺失或未知。
-- `active_roles` 引用未声明角色或重复；`max_actors` 非法。
+- `active_roles` 引用未声明角色或重复；`assignment` 缺失或非法。
 - 变量名非法或为保留字；`display_name` 缺失或超长；stage 变量与 task 变量同名；`initial` 与声明类型不匹配。
 - operation 名称非法、重复；`display_name` / `description` 超长；`roles` 为空或不是 `active_roles` 的子集。
 - 同一 stage 重复声明同一 event。
@@ -329,7 +327,6 @@ Warning（允许发布）包括：
 - 不是 `initial_stage`、也没有任何 transition 指向的 stage（`unreachable_stage`）。
 - 没有声明任何 transition 的 dead-end stage（自转移也算 transition）。
 - 声明了 operation 但没有 `active_roles` 的 stage。
-- 角色带 `min_actors = 0`，却被用在声明 operation 的 stage 上。
 - 声明但从未激活的角色；声明但从未被读取的变量。
 - `on` 读取的变量都没有被任何 action 写入，可能永远不会触发（task 变量按整个 workflow 统计）。
 

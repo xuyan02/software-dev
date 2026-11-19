@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "triage", "kind": "agent", "assignment": "triage"}
+  ],
+  "initial_stage": "dispatch",
+  "vars": {
+    "outcome": {"type": "string", "display_name": "Outcome"}
+  },
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["triage"],
+      "operations": [
+        {
+          "name": "completed",
+          "display_name": "分诊完成",
+          "description": "本批 Issue 已分类、合并重复并创建后续任务。",
+          "roles": ["triage"],
+          "action": "outcome = 'completed'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'completed'", "action": "result = 'routed'", "to": "ended"}
+      ]
+    }
+  ]
+}

@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "planner", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "planner", "kind": "agent", "assignment": "roadmap"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "work",
   "stages": [

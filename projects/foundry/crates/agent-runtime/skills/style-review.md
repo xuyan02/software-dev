@@ -14,7 +14,8 @@
      `action = "toc"` 读取章节和锚点 key，用 `action = "annotations_list"` 读取已有标注。
    - 设计空间文档：使用 `ds` 命令。先确定分支：
      - `code_summary_group`：`design-consistency-groups/<task-id>`；
-     - `design_consistency_maintenance`：任务 `input.target_branch`，或当前集成分支。
+     - `design_consistency_maintenance`：任务 `input.target_branch`，或当前集成分支；
+     - `design_baseline`：`design-baseline/<task-id>`。
      然后执行：
      ```bash
      ds checkout <branch> --force

@@ -25,8 +25,8 @@ use foundry_domain::{
     Account, AccountKind, AccountRole, Actor, Confidence, CreateAgentDefinition, DomainEvent,
     DomainEventKind, EntityStatus, Function, Issue, IssueComment, IssueKind, IssueSource,
     IssueSourceKind, Operation, OperationName, Project, ProjectRole, RequirementOp,
-    RequirementsOperation, RoleKey, Story, StoryPriority, TaskDAO, TaskLink, TaskLinkKind,
-    TaskLinkRelation, TaskState, UserModel, WorkflowId,
+    RequirementsOperation, RoleKey, StageKey, Story, StoryPriority, TaskDAO, TaskLink,
+    TaskLinkKind, TaskLinkRelation, TaskState, UserModel, WorkflowId,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -303,7 +303,7 @@ async fn task_workflow_persists_effects_events_and_input_idempotency() {
     }));
 
     // The clarifier role is an agent role with no actor bound and no
-    // assignment. The PM sees the Ready task itself and decides.
+    // assignment. The Task Dispatcher sees the Ready task itself and decides.
     let ready = store.list_ready_tasks(Some(project.id)).await.unwrap();
     let view = ready
         .iter()
@@ -808,6 +808,7 @@ async fn deleting_a_project_removes_scoped_rows_and_events() {
             url: Some("https://example.com/delete".to_string()),
             title: "Reference".to_string(),
             relation: TaskLinkRelation::References,
+            active: false,
             created_by: Actor::System,
             created_at: OffsetDateTime::now_utc(),
             metadata: json!({}),
@@ -1048,4 +1049,56 @@ async fn anchor_document_round_trips_with_annotations() {
         version.snapshot.find_path("goals/g1").unwrap().text,
         "员工可自助查询报销进度"
     );
+}
+
+#[tokio::test]
+async fn ready_tasks_include_pending_role_less_workflows() {
+    let Some(store) = test_store().await else {
+        eprintln!("TEST_DATABASE_URL is unset; skipping Postgres integration test");
+        return;
+    };
+    let store = Arc::new(store);
+    let owner = account("owner");
+    AccountRepository::insert(&*store, &owner).await.unwrap();
+    let mut project = Project::new(
+        format!("Roleless {}", suffix()),
+        None,
+        "git@example.com:test/repo.git",
+        owner.id,
+    )
+    .unwrap();
+    let mut root = TaskDAO::new(
+        project.id,
+        None,
+        WorkflowId::new("software_development"),
+        1,
+        "Software development",
+        OffsetDateTime::now_utc(),
+    );
+    root.state = TaskState::Pending;
+    root.stage = Some(StageKey::new("running"));
+    project.root_task_id = Some(root.id);
+    let event = DomainEvent::new(
+        DomainEventKind::TaskCreated,
+        root.id,
+        Actor::System,
+        json!({
+            "workflow": root.workflow,
+            "workflow_version": root.workflow_version,
+            "title": root.title,
+            "parent_id": null,
+            "dependencies": [],
+        }),
+    );
+    ProjectRepository::insert_with_root(&*store, &project, &root, &[event])
+        .await
+        .unwrap();
+
+    let ready = store.list_ready_tasks(Some(project.id)).await.unwrap();
+    let view = ready
+        .iter()
+        .find(|view| view.task_id == root.id)
+        .expect("role-less task is ready");
+    assert!(view.roles.is_empty());
+    assert_eq!(view.workflow, "software_development");
 }

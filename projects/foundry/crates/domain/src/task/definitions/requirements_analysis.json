@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "analyst", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "requirements_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "feasibility_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "analyst", "kind": "agent", "assignment": "requirements_analysis"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "requirements_analysis"},
+    {"name": "requirements_reviewer", "kind": "agent", "assignment": "requirements_analysis"},
+    {"name": "feasibility_reviewer", "kind": "agent", "assignment": "requirements_analysis"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "work",
   "stages": [

@@ -214,7 +214,7 @@
 
 ### 8.2 只读
 
-- 谁：Agent 账户（包括 PM agent）；非所有者的账户成员；非平台管理员的平台流程查看者；历史版本页。
+- 谁：Agent 账户（包括 Task Dispatcher）；非所有者的账户成员；非平台管理员的平台流程查看者；历史版本页。
 - 数据源：可编辑者看到草稿；不可编辑者看到最新已发布版本。草稿对不可编辑者不可见。
 - 界面：`只读 · vN` 徽标；没有编辑控件；检查器用文档式呈现；没有对象工具栏和连接手柄；stage 图形不可拖动。
 - 只读用户可以选中 stage、operation 标签、边和角色来查看详情，也可以从检查器的 stage 列表进入事件、进入效果和转移，可以复制文本。
@@ -503,7 +503,7 @@ operation 从画布上的标签选中；event、进入效果和转移从检查�
 | event | stage 检查器 `+ 事件` | 第一个未使用的事件类型，action 空 | 新 event | action |
 | 进入效果 | 检查器 `+ set_state` / `+ create_child` | `set_state: in_progress` 或默认子流程 | 新效果 | 对应字段 |
 | 转移 | 从手柄拉线 | `on: "false"`，action 空 | 新转移 | `on` |
-| 角色 | 角色面板 | `min_actors: 1`，`max_actors: null` | 新角色 | 角色检查器 |
+| 角色 | 角色面板 | `kind` 默认人类，`assignment` 必填 | 新角色 | 角色检查器 |
 | 变量 | 任务变量 / stage 变量面板 | 类型 bool，display_name 回退 name | 新变量行 | 新变量名输入 |
 
 ### 12.2 operation
@@ -546,12 +546,11 @@ operation 从画布上的标签选中；event、进入效果和转移从检查�
 
 ### 12.6 角色
 
-- 角色面板表单：name + 类型（人类/智能体/不限）+ 添加。
-- 默认 `min_actors: 1`、`max_actors: null`。
+- 角色面板表单：name + 类型（人类/智能体）+ assignment + 添加。
+- `assignment` 必填：智能体角色填需要执行的 workflow，人类角色填需要的人类身份。
 - name 创建后不可修改。原因：`active_actors('role')` 在脚本里以字符串引用角色，改名无法安全重写脚本。需要改名时新建角色、更新引用、删除旧角色；检查器要解释这一点。
-- 添加后选中新角色，检查器可编辑类型和数量。
-- `max_actors` 留空表示不限；`max_actors < min_actors` 在输入时标红，不等待校验。
-- 角色列表显示本地化摘要，例如“人类 · 至少 1 个 actor”“不限 · 1–3 个 actor”。
+- 添加后选中新角色，检查器可编辑类型和 assignment。
+- 角色列表显示本地化摘要，例如“人类 · design_space_reviewer”“智能体 · design_baseline”。
 
 ### 12.7 变量
 
@@ -682,8 +681,8 @@ RFC 0006 §7.5 要求 stage 面板提供“添加全员确认”模板。当前�
 ### 13.7 角色
 
 - `name`：只读，创建后不可改（原因见 12.6）。
-- 类型：人类/智能体/不限。
-- `min_actors`：≥0；`max_actors`：空表示不限；max < min 时标红。
+- 类型：人类/智能体。
+- `assignment`：智能体角色填 workflow，人类角色填身份；不能为空。
 - 删除：被 `active_roles`、operation.roles 或 `active_actors('<name>')` 脚本引用时禁用，列出引用（可点击定位）。删除不可用时不弹确认。
 - 只读：文档式展示。
 

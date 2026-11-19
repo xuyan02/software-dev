@@ -105,7 +105,7 @@ ds source changes   # 此时应为空
 
 1. 检出并更新集成分支。
 2. 如果 `design` 根不存在，先执行 `ds structure init`（这是唯一允许在本阶段写入的操作）。
-3. 读取构建清单和入口点，识别候选系统：应用、CLI 工具、库。系统粒度只看功能和设计目的；如果 binary 只是 library 的薄入口，并入该 library 所属系统。
+3. 读取构建清单和入口点，按 `design-writing` 的 System、Module 章节识别候选系统。这一步只盘点，不落库。
 4. 列出全部顶层代码元素：
 
 ```bash
@@ -121,7 +121,7 @@ ds structure unassigned
 
 按系统逐个处理草稿，禁止一次性提交整棵树。
 
-1. 对每个系统，先创建/复用系统对象和模块骨架：
+1. 对每个系统，先创建/复用系统对象；只有复杂度需要时才创建模块：
 
 ```bash
 ds structure system create <system> --title '<title>' --document <doc>
@@ -129,9 +129,9 @@ ds structure module create <module> --parent design/<system> --title '<title>' -
 ds structure module create <submodule> --parent design/<system>/<module> --title '<title>' --document <doc>
 ```
 
-2. 逐模块用 `ds structure assign <module> <element...>` 加入成员。一个顶层元素只能属于一个模块；跨模块共用关系用依赖表达，不要重复归属。
-3. 模块可以包含子模块，也可以包含代码元素；不要创建 `utils`、`common`、`misc`、`other` 这类兜底模块。单成员模块必须能说明职责。
-4. 每个系统和模块都要有文档，文档写职责、边界、成员和对外依赖，不重复元素文档。文档先创建或复用，再用 `--document` 关联。
+2. 用 `ds structure assign <system-or-module> <element...>` 加入成员。一个顶层元素恰好属于一个系统或模块；跨容器共用关系用依赖表达，不要重复归属。简单系统可以把元素直接挂在系统下；程序入口不是模块。
+3. 模块资格、复杂度判断、子模块拆分和兜底模块规则见 `design-writing` 的 Module 章节。
+4. 每个系统和模块都要有文档，块内容见 `design-writing` 的 System、Module 章节。文档先创建或复用，再用 `--document` 关联。System/Module 文档不写“组成”“成员”正文块，成员和子模块各自建子 Section。
 5. 每完成一个系统，执行：
 
 ```bash
@@ -154,10 +154,14 @@ ds push --branch design-consistency/<根任务 id>
 
 检查结构本身，不检查文风：
 
-- 每个顶层 Class/Interface/Function/Mixin 是否恰好属于一个模块；
+- 每个顶层 Class/Interface/Function/Mixin 是否恰好属于一个系统或模块；
 - System 是否对应真实交付单位；模块边界是否按功能和设计目的划分，而不是文件/目录映射；
+- 是否为了简单系统强行建模块，是否把程序入口/启动/工具当成模块；
+- 只含一个函数或一个普通类型的模块是否被强行创建；系统是否因为没有模块而被误判为空；
+- 模块本身是否能在不谈成员和子模块的情况下说清定位和功能；
+- 子模块拆分是否基于相对独立的部分，而不是成员数量或目录；
 - 是否存在兜底模块、空模块、无意义层级、职责重叠；
-- 模块文档是否与成员职责一致。
+- System/Module 文档是否只写自身，没有“组成”“成员”正文块或成员清单。
 
 发现问题写 DS 文档评论或任务评论，发送 `structure_review:rejected`；否则 `structure_review:approved`。
 

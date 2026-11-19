@@ -14,8 +14,8 @@ use foundry_app::{
     DesignSpaceGatewayError, IssueRepository, IssueService, MergeRequestRepository,
     MergeRequestService, ProjectRepository, ProjectService, RequirementsDocumentService,
     RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases,
-    TaskRepository, TaskService, TaskUseCases, TriggerService,
-    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    TaskRepository, TaskService, TaskUseCases, TriggerService, TriggerUseCases, WorkflowCatalog,
+    WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::{
     Account, AccountKind, AccountRole, ProjectRole, RoleKey, TaskState, WorkflowId,
@@ -724,7 +724,7 @@ async fn copy_platform_workflow(router: &Router, token: &str, title: &str) -> St
 fn simple_body() -> Value {
     json!({
         "schema_version": 1,
-        "roles": [{ "name": "actor", "kind": "any", "min_actors": 1, "max_actors": null }],
+        "roles": [{ "name": "actor", "kind": "agent", "assignment": "custom" }],
         "initial_stage": "work",
         "stages": [
             {
@@ -751,7 +751,7 @@ fn simple_body() -> Value {
 fn child_body(workflow: &str) -> Value {
     json!({
         "schema_version": 1,
-        "roles": [{ "name": "actor", "kind": "any", "min_actors": 1, "max_actors": null }],
+        "roles": [{ "name": "actor", "kind": "agent", "assignment": "custom" }],
         "initial_stage": "start",
         "stages": [
             {
@@ -1013,8 +1013,8 @@ async fn workflows_console_lists_the_platform_catalog() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("新建流程"));
     assert!(body.contains("Project lifecycle"));
-    assert!(body.contains("Iteration"));
-    assert!(body.contains("/workflows/editor/iteration"));
+    assert!(!body.contains("Iteration"));
+    assert!(!body.contains("/workflows/editor/iteration"));
 }
 
 #[tokio::test]
@@ -1104,7 +1104,10 @@ async fn issue_triage_result_is_structured() {
         ),
     )
     .await;
-    assert_eq!(fetched["triage"]["root_cause"], "The design does not define the error path");
+    assert_eq!(
+        fetched["triage"]["root_cause"],
+        "The design does not define the error path"
+    );
 }
 
 #[tokio::test]
@@ -1201,6 +1204,44 @@ async fn triggers_can_be_created_and_run_manually() {
 }
 
 #[tokio::test]
+async fn project_creation_creates_the_default_daily_check_trigger() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&harness.admin_token),
+            None,
+            json!({
+                "git_repository": "git@example.com:test/repo.git",
+                "name": "Deterministic setup",
+                "root_workflow_id": "software_development"
+            }),
+        ),
+    )
+    .await;
+    let project_id = project["id"].as_str().unwrap();
+    let triggers = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            &format!("/api/v1/projects/{project_id}/triggers"),
+            Some(&harness.admin_token),
+            Some(project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let triggers = triggers.as_array().unwrap();
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0]["workflow_id"], "daily_check");
+    assert_eq!(triggers[0]["description"], "按计划运行设计检查。");
+    assert_eq!(triggers[0]["description_template"], "运行设计检查。");
+    assert_eq!(triggers[0]["schedule"], "daily@09:00");
+}
+
+#[tokio::test]
 async fn inspections_create_specialized_tasks() {
     let harness = harness().await;
     let (status, _, body) = send(
@@ -1221,7 +1262,7 @@ async fn inspections_create_specialized_tasks() {
 }
 
 #[tokio::test]
-async fn creating_an_issue_enqueues_a_triage_task() {
+async fn creating_an_issue_leaves_it_for_the_triage_check_task() {
     let harness = harness().await;
     let issue = body_json(
         &harness.router,
@@ -1240,6 +1281,7 @@ async fn creating_an_issue_enqueues_a_triage_task() {
     )
     .await;
     let issue_id = issue["id"].as_str().unwrap();
+    harness.dispatcher.process_pending(100).await.unwrap();
 
     let tasks = body_json(
         &harness.router,
@@ -1252,35 +1294,24 @@ async fn creating_an_issue_enqueues_a_triage_task() {
         ),
     )
     .await;
-    let triage = tasks
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|task| task["workflow"] == "issue_triage")
-        .expect("triage task");
-    assert_eq!(triage["input"]["issue_id"], issue_id);
-    assert!(triage["description"].as_str().unwrap().contains(issue_id));
-    let task_id = triage["id"].as_str().unwrap();
-
-    let links = body_json(
+    let tasks = tasks.as_array().unwrap();
+    assert!(
+        tasks.iter().all(|task| task["workflow"] != "issue_triage"),
+        "the old per-issue triage task must not be created"
+    );
+    let issue = body_json(
         &harness.router,
         json_request(
             "GET",
-            &format!("/api/v1/tasks/{task_id}/links"),
+            &format!("/api/v1/issues/{issue_id}"),
             Some(&harness.admin_token),
             Some(&harness.project_id),
             json!({}),
         ),
     )
     .await;
-    assert!(
-        links
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|link| link["kind"] == "issue" && link["target_id"] == issue_id),
-        "{links}"
-    );
+    assert_eq!(issue["status"], "open");
+    assert!(issue["triage"].is_null());
 }
 
 #[tokio::test]
@@ -1584,7 +1615,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        28
+        24
     );
 
     let created = body_json(
@@ -2078,6 +2109,32 @@ async fn project_creation_rejects_an_unknown_root_workflow() {
 }
 
 #[tokio::test]
+async fn project_creator_can_revoke_a_human_identity() {
+    let harness = harness().await;
+    let project = body_json(
+        &harness.router,
+        json_request(
+            "PUT",
+            &format!(
+                "/api/v1/projects/{}/identities/acceptor",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            None,
+            json!({ "enabled": false }),
+        ),
+    )
+    .await;
+    let creator = project["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["account_id"] == harness.admin_id.to_string())
+        .unwrap();
+    assert_eq!(creator["revoked_identities"], json!(["acceptor"]));
+}
+
+#[tokio::test]
 async fn task_work_acceptance_flow_advances_the_parent() {
     let harness = harness().await;
     let project_id: Uuid = harness.project_id.parse().unwrap();
@@ -2385,7 +2442,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 28);
+    assert_eq!(platform.len(), 24);
     assert!(
         platform
             .iter()
@@ -2553,7 +2610,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 29);
+    assert_eq!(own.as_array().unwrap().len(), 25);
 }
 
 #[tokio::test]
@@ -4788,8 +4845,7 @@ async fn technical_design_consistency_can_be_a_project_root_workflow() {
     .await;
     assert!(
         task["actors"].as_array().unwrap().iter().any(|actor| {
-            actor["role_key"] == "acceptor"
-                && actor["account_id"] == harness.admin_id.to_string()
+            actor["role_key"] == "acceptor" && actor["account_id"] == harness.admin_id.to_string()
         }),
         "{task}"
     );

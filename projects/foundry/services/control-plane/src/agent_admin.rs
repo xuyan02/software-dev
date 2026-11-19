@@ -1,6 +1,6 @@
 //! Admin service for managed agents.
 //!
-//! Agents are code-defined and project-owned. The PM dispatcher uses this surface to list
+//! Agents are code-defined and project-owned. The Task Dispatcher uses this surface to list
 //! agents/templates and to create/assign agents for unassigned task roles.
 //! Human users do not configure agents.
 
@@ -88,7 +88,7 @@ impl PostgresAgentAdmin {
             .await?
         {
             Some(RoleKind::Agent) => {}
-            Some(_) => {
+            Some(RoleKind::Human) => {
                 return Err(ServiceError::Validation(format!(
                     "role {role_name} in {workflow_id} is not an agent role"
                 )));
@@ -173,8 +173,8 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
         Ok(self.store.list_ready_tasks(project_id).await?)
     }
 
-    async fn ensure_project_pm(&self, project_id: Uuid) {
-        if let Err(error) = platform_agents::ensure_project_pm(
+    async fn ensure_project_dispatcher(&self, project_id: Uuid) {
+        if let Err(error) = platform_agents::ensure_project_dispatcher(
             self.store.as_ref(),
             &self.supervisor,
             project_id,
@@ -183,7 +183,7 @@ impl AgentAdminUseCases for PostgresAgentAdmin {
         )
         .await
         {
-            tracing::warn!(project_id = %project_id, %error, "cannot provision project PM agent");
+            tracing::warn!(project_id = %project_id, %error, "cannot provision project Task Dispatcher");
         }
     }
 

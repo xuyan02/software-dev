@@ -1,6 +1,6 @@
 /** Wire types shared with the control plane's workflow API. */
 
-export type RoleKind = 'human' | 'agent' | 'any';
+export type RoleKind = 'human' | 'agent';
 
 export type TaskState = 'pending' | 'in_progress' | 'completed';
 
@@ -15,8 +15,8 @@ export type EventKind =
 export interface RoleSpec {
   name: string;
   kind: RoleKind;
-  min_actors: number;
-  max_actors?: number | null;
+  /** Agent workflow for agent roles; human identity for human roles. */
+  assignment: string;
 }
 
 export type InitialValue = boolean | number | string;

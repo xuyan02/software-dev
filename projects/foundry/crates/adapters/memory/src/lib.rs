@@ -22,8 +22,8 @@ mod anchor_document;
 mod merge_request;
 mod requirements_doc;
 mod task;
-mod trigger;
 mod task_link;
+mod trigger;
 mod workflow;
 
 use anchor_document::MemoryAnchorDocuments;
@@ -102,6 +102,7 @@ impl InMemoryStore {
                 url: None,
                 title: issue.title.clone(),
                 relation,
+                active: true,
                 created_by: Actor::System,
                 created_at: OffsetDateTime::now_utc(),
                 metadata: serde_json::json!({}),
@@ -146,7 +147,7 @@ impl AgentAdminUseCases for MemoryAgentAdmin {
         Ok(Vec::new())
     }
 
-    async fn ensure_project_pm(&self, _project_id: Uuid) {}
+    async fn ensure_project_dispatcher(&self, _project_id: Uuid) {}
 
     async fn templates(
         &self,

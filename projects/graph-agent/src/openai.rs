@@ -80,22 +80,22 @@ impl ModelGateway for OpenAiCompatibleModel {
             match response {
                 Ok(response) => {
                     let status = response.status();
-                    let retry_after = retry_after_delay(response.headers());
-                    let text = response
-                        .text()
-                        .await
-                        .map_err(|error| ModelError::Backend(error.to_string()))?;
                     if status.is_success() {
+                        let text = response
+                            .text()
+                            .await
+                            .map_err(|error| ModelError::Backend(error.to_string()))?;
                         return parse_response(&text);
                     }
-                    let message = format!("HTTP {status}: {text}");
                     if status.as_u16() == 429 {
                         // A rate limit is not a terminal failure. Wait and
                         // retry until the provider admits the request; the
                         // outer agent/task lifecycle has no useful retry point
-                        // for a 429.
-                        let delay =
-                            retry_after.unwrap_or_else(|| backoff(rate_limit_attempt));
+                        // for a 429. Never turn this response - including a
+                        // dropped or invalid body - into an error.
+                        let delay = retry_after_delay(response.headers())
+                            .unwrap_or_else(|| backoff(rate_limit_attempt));
+                        let _ = response.bytes().await;
                         tracing::warn!(
                             attempt = rate_limit_attempt + 1,
                             delay_ms = delay.as_millis(),
@@ -105,6 +105,11 @@ impl ModelGateway for OpenAiCompatibleModel {
                         rate_limit_attempt = rate_limit_attempt.saturating_add(1);
                         continue;
                     }
+                    let text = response
+                        .text()
+                        .await
+                        .map_err(|error| ModelError::Backend(error.to_string()))?;
+                    let message = format!("HTTP {status}: {text}");
                     if status.is_server_error() && transient_attempt < self.config.max_retries {
                         sleep_backoff(transient_attempt).await;
                         transient_attempt = transient_attempt.saturating_add(1);
@@ -367,7 +372,7 @@ mod tests {
                 let state = state.clone();
                 async move {
                     let call = state.fetch_add(1, Ordering::SeqCst);
-                    if call < 2 {
+                    if call < 30 {
                         (
                             StatusCode::TOO_MANY_REQUESTS,
                             [(header::RETRY_AFTER, "0")],
@@ -451,7 +456,7 @@ mod tests {
         .unwrap();
         let response = model.complete(request()).await.unwrap();
         assert_eq!(response.message.content, "done");
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 31);
     }
 
     #[tokio::test]

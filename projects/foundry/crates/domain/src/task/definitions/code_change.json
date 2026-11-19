@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "developer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "code_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "tester", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "acceptor", "kind": "human", "min_actors": 1, "max_actors": 1},
-    {"name": "merger", "kind": "agent", "min_actors": 1, "max_actors": 1}
+    {"name": "developer", "kind": "agent", "assignment": "code_change"},
+    {"name": "code_reviewer", "kind": "agent", "assignment": "code_change"},
+    {"name": "tester", "kind": "agent", "assignment": "code_change"},
+    {"name": "acceptor", "kind": "human", "assignment": "code_reviewer"},
+    {"name": "merger", "kind": "agent", "assignment": "code_change"}
   ],
   "initial_stage": "plan",
   "stages": [

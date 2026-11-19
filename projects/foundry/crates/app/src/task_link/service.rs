@@ -23,6 +23,9 @@ pub struct AddTaskLink {
     pub url: Option<String>,
     pub title: String,
     pub relation: TaskLinkRelation,
+    /// Make this link the Issue's current handling task, deactivating the
+    /// previous handler while keeping it as history.
+    pub active: bool,
     pub metadata: Value,
 }
 
@@ -40,6 +43,7 @@ pub struct LinkedTaskView {
     pub stage: Option<String>,
     pub state: String,
     pub result: Option<String>,
+    pub active: bool,
 }
 
 pub struct TaskLinkService<R, A, T, P, E> {
@@ -93,6 +97,7 @@ where
             url: command.url,
             title: command.title,
             relation: command.relation,
+            active: command.active,
             created_by: account.actor(),
             created_at: time::OffsetDateTime::now_utc(),
             metadata: command.metadata,
@@ -107,6 +112,12 @@ where
                     .collect::<Vec<_>>()
                     .join("; "),
             ));
+        }
+        if link.active
+            && link.kind == TaskLinkKind::Issue
+            && let Some(target_id) = link.target_id
+        {
+            self.links.deactivate_issue_links(target_id).await?;
         }
         self.links
             .insert(&link)
@@ -163,9 +174,21 @@ where
                 stage: task.stage.map(|stage| stage.as_str().to_string()),
                 state: task.state.as_str().to_string(),
                 result: task.result.map(|result| result.as_str().to_string()),
+                active: link.active,
             });
         }
+        // The current handler is listed first; older links follow as history.
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.active));
         Ok(tasks)
+    }
+
+    /// Called when a task starts: its Issue links become the current handlers,
+    /// and the previous handlers stay in the link list as history.
+    pub async fn handoff_task_issues(&self, task_id: Uuid) -> Result<(), ServiceError> {
+        self.links
+            .activate_task_issue_links(task_id)
+            .await
+            .map_err(ServiceError::from)
     }
 
     pub async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError> {
@@ -266,6 +289,8 @@ pub trait TaskLinkUseCases: Send + Sync {
         issue_id: Uuid,
     ) -> Result<Vec<LinkedTaskView>, ServiceError>;
 
+    async fn handoff_task_issues(&self, task_id: Uuid) -> Result<(), ServiceError>;
+
     async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError>;
 }
 
@@ -297,5 +322,9 @@ where
 
     async fn remove(&self, actor: Actor, command: RemoveTaskLink) -> Result<(), ServiceError> {
         TaskLinkService::remove(self, actor, command).await
+    }
+
+    async fn handoff_task_issues(&self, task_id: Uuid) -> Result<(), ServiceError> {
+        TaskLinkService::handoff_task_issues(self, task_id).await
     }
 }

@@ -20,8 +20,8 @@ use foundry_adapter_postgres::{
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
     AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
-    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, ProjectService,
-    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
+    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, ProjectFilter,
+    ProjectRepository, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
     TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TriggerService,
     TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
@@ -277,6 +277,22 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&tasks),
     ));
     let triggers: Arc<dyn TriggerUseCases> = trigger_service.clone();
+    match ProjectRepository::list(store.as_ref(), ProjectFilter::default()).await {
+        Ok(projects) => {
+            for project in projects {
+                if let Err(error) = triggers.ensure_daily_check(project.id).await {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "cannot ensure default daily-check trigger"
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "cannot list projects to ensure default triggers");
+        }
+    }
     let scheduler = Arc::clone(&trigger_service);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));

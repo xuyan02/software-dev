@@ -21,4 +21,11 @@ pub trait TaskLinkRepository: Send + Sync {
     async fn insert(&self, link: &TaskLink) -> Result<(), RepoError>;
 
     async fn delete(&self, task_id: Uuid, link_id: Uuid) -> Result<(), RepoError>;
+
+    /// Clear the current handling link for an Issue, keeping it as history.
+    async fn deactivate_issue_links(&self, target_id: Uuid) -> Result<(), RepoError>;
+
+    /// Make this task's Issue links the current handlers, deactivating the
+    /// previous handlers for the same Issues.
+    async fn activate_task_issue_links(&self, task_id: Uuid) -> Result<(), RepoError>;
 }

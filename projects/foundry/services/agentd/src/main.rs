@@ -8,19 +8,24 @@
 
 use async_trait::async_trait;
 use clap::Parser;
-use foundry_adapter_postgres::{AssignedTask, PostgresStore, listen_task_changes};
+use foundry_adapter_postgres::{
+    AssignedTask, PostgresStore, listen_issue_changes, listen_task_changes,
+};
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
     FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueListTool,
-    IssueTransitionTool, IssueTriageResultTool, TriggerCreateTool, TriggerListTool,
-    MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
-    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool,
-    TaskGetTool, TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
+    IssueTransitionTool, IssueTriageBatchTool, IssueTriageResultTool, MergeRequestTool,
+    ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool, TaskAllowedOperationsTool,
+    TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool,
+    TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
     TaskSpawnChildrenTool, TaskStartTool, TasksReadyListTool, ToolError, ToolRegistry,
-    compose_system_prompt,
+    TriggerCreateTool, TriggerListTool, compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
-use graph_agent::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
+use graph_agent::{
+    LlmMessage, LlmParams, LlmRequest, ModelGateway, ModelProfileRef, OpenAiCompatibleConfig,
+    OpenAiCompatibleModel,
+};
 use linux_capsule::LinuxCapsule;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -117,13 +122,26 @@ async fn main() -> anyhow::Result<()> {
         run_dispatcher_watcher(Arc::clone(&store), &config, &definition, model, shell).await?;
         return Ok(());
     }
+    if definition.role == "triage_check:checker" {
+        run_triage_check_watcher(Arc::clone(&store), &config, &definition).await?;
+        return Ok(());
+    }
 
     run_agent_watcher(Arc::clone(&store), &config, &definition, model, shell).await?;
     Ok(())
 }
 
 async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
-    let capsule = LinuxCapsule::headless_with_image(config.shell_image.clone()).await?;
+    let workspace = foundry_shared::default_agent_workspace_dir(&config.agent_id.to_string());
+    foundry_shared::ensure_private_dir(&workspace).map_err(|error| {
+        anyhow::anyhow!(
+            "cannot create agent workspace {}: {error}",
+            workspace.display()
+        )
+    })?;
+    let capsule =
+        LinuxCapsule::headless_with_image_and_workspace(config.shell_image.clone(), workspace)
+            .await?;
     Ok(Arc::new(CapsuleShell { capsule }))
 }
 
@@ -211,6 +229,9 @@ async fn run_agent_watcher(
                 _ = tokio::signal::ctrl_c() => return Ok(()),
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
+            // One scan sees every current assignment, so merge a burst of
+            // notifications instead of scanning once per event.
+            while notifications.try_recv().is_ok() {}
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -260,25 +281,177 @@ async fn scan_assigned_tasks(
     }
 }
 
-/// Dispatcher mode: sweep the task pool on startup and after every task change.
-///
-/// The PM does not claim queue Runs. It listens on the Postgres notification
-/// channel and re-queries the task pool; the model decides which agents to
-/// create and which task roles to assign.
-async fn run_dispatcher_watcher(
+/// Triage check mode: a code-driven coordinator that watches the project's
+/// `triage_check` task and starts a `triage` child when Issues need attention.
+async fn run_triage_check_watcher(
     store: Arc<PostgresStore>,
     config: &Config,
     definition: &AgentDefinition,
-    model: Arc<OpenAiCompatibleModel>,
-    shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<()> {
     let client = Arc::new(FoundryClient::new(
         &config.foundry_url,
         &config.foundry_token,
         definition.project_id.to_string(),
     ));
-    let tools = build_tools(definition, &client, shell.clone())?;
-    let runtime = build_runtime(definition, model, tools, shell)?;
+    let mut task_changes = listen_task_changes(&config.database_url).await?;
+    let mut issue_changes = listen_issue_changes(&config.database_url).await?;
+    loop {
+        let _ = store.agent_process_busy(config.agent_id).await;
+        match triage_check_once(&client).await {
+            Ok(()) => {}
+            Err(error) => tracing::warn!(error = %error, "triage check sweep failed"),
+        }
+        let _ = store.agent_process_idle(config.agent_id).await;
+        tokio::select! {
+            _ = task_changes.recv() => {}
+            _ = issue_changes.recv() => {}
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+        }
+        while task_changes.try_recv().is_ok() {}
+        while issue_changes.try_recv().is_ok() {}
+    }
+}
+
+async fn triage_check_once(client: &FoundryClient) -> anyhow::Result<()> {
+    let Some(task) = find_check_task(client).await? else {
+        return Ok(());
+    };
+    if task.get("state").and_then(Value::as_str) != Some("in_progress") {
+        return Ok(());
+    }
+    let task_id = task
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| id.parse::<Uuid>().ok())
+        .ok_or_else(|| anyhow::anyhow!("triage_check task has no id"))?;
+    let stage = task.get("stage").and_then(Value::as_str).unwrap_or("");
+    let pending = pending_issue_count(client).await?;
+    match stage {
+        "check" => {
+            if pending == 0 {
+                client
+                    .send_task_operation(task_id, "check:no_issues", "triage-check-no-issues")
+                    .await?;
+            } else {
+                if let Some(failed) = find_failed_triage_child(client, task_id).await? {
+                    client.retry_task(failed).await?;
+                } else if !has_active_triage_child(client, task_id).await? {
+                    client
+                        .spawn_task_children(
+                            task_id,
+                            json!([{
+                                "workflow": "triage",
+                                "title": "分诊",
+                                "description": "处理当前待分诊 Issue：分类、合并重复并创建后续任务。",
+                                "input": {}
+                            }]),
+                            false,
+                        )
+                        .await?;
+                }
+                client
+                    .send_task_operation(task_id, "check:has_issues", "triage-check-has-issues")
+                    .await?;
+            }
+        }
+        "waiting_issue" => {
+            if pending > 0 {
+                client
+                    .send_task_operation(
+                        task_id,
+                        "waiting_issue:issue_arrived",
+                        "triage-check-issue",
+                    )
+                    .await?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn find_check_task(client: &FoundryClient) -> anyhow::Result<Option<Value>> {
+    let tasks = client.list_tasks(None, "").await?;
+    Ok(tasks
+        .as_array()
+        .and_then(|tasks| {
+            tasks.iter().find(|task| {
+                task.get("workflow").and_then(Value::as_str) == Some("triage_check")
+                    && !matches!(
+                        task.get("state").and_then(Value::as_str),
+                        Some("completed" | "failed")
+                    )
+            })
+        })
+        .cloned())
+}
+
+async fn has_active_triage_child(
+    client: &FoundryClient,
+    check_task_id: Uuid,
+) -> anyhow::Result<bool> {
+    let tasks = client.list_tasks(None, "").await?;
+    let expected = check_task_id.to_string();
+    Ok(tasks.as_array().is_some_and(|tasks| {
+        tasks.iter().any(|task| {
+            task.get("workflow").and_then(Value::as_str) == Some("triage")
+                && task.get("parent_id").and_then(Value::as_str) == Some(expected.as_str())
+                && matches!(
+                    task.get("state").and_then(Value::as_str),
+                    Some("pending" | "in_progress")
+                )
+        })
+    }))
+}
+
+async fn find_failed_triage_child(
+    client: &FoundryClient,
+    check_task_id: Uuid,
+) -> anyhow::Result<Option<Uuid>> {
+    let tasks = client.list_tasks(None, "").await?;
+    let expected = check_task_id.to_string();
+    Ok(tasks.as_array().and_then(|tasks| {
+        tasks.iter().find_map(|task| {
+            let is_triage = task.get("workflow").and_then(Value::as_str) == Some("triage");
+            let is_child = task.get("parent_id").and_then(Value::as_str) == Some(expected.as_str());
+            let failed = task.get("state").and_then(Value::as_str) == Some("failed");
+            if is_triage && is_child && failed {
+                task.get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|id| id.parse::<Uuid>().ok())
+            } else {
+                None
+            }
+        })
+    }))
+}
+
+async fn pending_issue_count(client: &FoundryClient) -> anyhow::Result<usize> {
+    let batch = client.issue_triage_batch().await?;
+    Ok(batch
+        .get("pending")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0))
+}
+
+/// Dispatcher mode: sweep the task pool on startup and after every task change.
+///
+/// Assignment is deterministic: agent roles are matched by their
+/// `workflow:role` key, human roles use the single eligible candidate. The
+/// dispatcher does not call a model.
+async fn run_dispatcher_watcher(
+    store: Arc<PostgresStore>,
+    config: &Config,
+    definition: &AgentDefinition,
+    model: Arc<OpenAiCompatibleModel>,
+    _shell: Option<Arc<dyn Shell>>,
+) -> anyhow::Result<()> {
+    let client = Arc::new(FoundryClient::new(
+        &config.foundry_url,
+        &config.foundry_token,
+        definition.project_id.to_string(),
+    ));
 
     loop {
         let mut notifications = match listen_task_changes(&config.database_url).await {
@@ -291,31 +464,9 @@ async fn run_dispatcher_watcher(
         };
         loop {
             let _ = store.agent_process_busy(config.agent_id).await;
-            let system_prompt = match system_prompt_for(definition) {
-                Ok(prompt) => prompt,
-                Err(error) => {
-                    tracing::warn!(agent = %definition.name, %error, "cannot compose skills");
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
-            };
-            let request = AgentRunRequest::new(
-                definition.name.clone(),
-                String::new(),
-                system_prompt,
-                "Inspect the task pool now: call tasks_ready_list, assign every agent role \
-                 that has no enabled agent, then call task_start for every task.",
-            )
-            .with_project_id(definition.project_id.to_string());
             tracing::info!("dispatcher sweep started");
-            match runtime.run(request).await {
-                Ok(result) => {
-                    let final_message = result.final_message.as_deref().unwrap_or("");
-                    tracing::info!(
-                        final = %truncate(final_message, 500),
-                        "dispatcher sweep finished"
-                    )
-                }
+            match dispatch_once(&client, model.as_ref(), definition.project_id).await {
+                Ok(()) => tracing::info!("dispatcher sweep finished"),
                 Err(error) => tracing::warn!(error = %error, "dispatcher sweep failed"),
             }
             let _ = store.agent_process_idle(config.agent_id).await;
@@ -330,9 +481,285 @@ async fn run_dispatcher_watcher(
                 _ = tokio::signal::ctrl_c() => return Ok(()),
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
+            // A sweep reads the whole ready pool, so intermediate signals add
+            // nothing. Collapse every notification that arrived during the
+            // debounce window into one sweep instead of one per event.
+            while notifications.try_recv().is_ok() {}
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+/// Assign every unbound role of every ready task, then start the tasks whose
+/// roles are all bound. Missing agents/templates or human candidates leave the
+/// task pending.
+async fn dispatch_once(
+    client: &FoundryClient,
+    model: &dyn ModelGateway,
+    project_id: Uuid,
+) -> anyhow::Result<()> {
+    let tasks = client.ready_tasks(Some(project_id)).await?;
+    let Some(tasks) = tasks.as_array() else {
+        return Ok(());
+    };
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let agents = client.dispatch_agents(Some(project_id)).await?;
+    let members = match client.get_project().await {
+        Ok(project) => project
+            .get("members")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        Err(error) => {
+            tracing::warn!(error = %error, "cannot load project members for dispatch");
+            Vec::new()
+        }
+    };
+    let mut assigned_agents: HashMap<String, Uuid> = HashMap::new();
+    if let Some(agents) = agents.as_array() {
+        for agent in agents {
+            let enabled = agent.get("enabled").and_then(Value::as_bool) == Some(true);
+            let role = agent.get("role").and_then(Value::as_str);
+            let id = agent
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<Uuid>().ok());
+            if let (true, Some(role), Some(id)) = (enabled, role, id) {
+                assigned_agents.entry(role.to_string()).or_insert(id);
+            }
+        }
+    }
+
+    for task in tasks {
+        let Some(task_id) = task
+            .get("task_id")
+            .and_then(Value::as_str)
+            .and_then(|id| id.parse::<Uuid>().ok())
+        else {
+            continue;
+        };
+        let title = task.get("title").and_then(Value::as_str).unwrap_or("");
+        let mut complete = true;
+        let roles = task
+            .get("roles")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for role in &roles {
+            let name = role.get("name").and_then(Value::as_str).unwrap_or("");
+            let kind = role.get("kind").and_then(Value::as_str).unwrap_or("");
+            let assignment = role.get("assignment").and_then(Value::as_str).unwrap_or("");
+            if name.is_empty() {
+                complete = false;
+                continue;
+            }
+            match kind {
+                "agent" => {
+                    let bound = role
+                        .get("agent")
+                        .and_then(|agent| agent.get("enabled"))
+                        .and_then(Value::as_bool)
+                        == Some(true);
+                    if bound {
+                        continue;
+                    }
+                    let role_key = format!("{assignment}:{name}");
+                    let agent_id = if let Some(agent_id) = assigned_agents.get(&role_key) {
+                        *agent_id
+                    } else {
+                        let created = match create_agent(client, task_id, &role_key).await {
+                            Ok(agent_id) => agent_id,
+                            Err(error) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    title = %title,
+                                    role = %role_key,
+                                    error = %error,
+                                    "cannot create the agent required by a role"
+                                );
+                                complete = false;
+                                continue;
+                            }
+                        };
+                        assigned_agents.insert(role_key.clone(), created);
+                        created
+                    };
+                    if let Err(error) = client.assign_agent(task_id, &role_key, agent_id).await {
+                        tracing::warn!(
+                            task_id = %task_id,
+                            title = %title,
+                            role = %role_key,
+                            error = %error,
+                            "cannot assign the agent required by a role"
+                        );
+                        complete = false;
+                    }
+                }
+                "human" => {
+                    if role.get("actor").is_some_and(|actor| !actor.is_null()) {
+                        continue;
+                    }
+                    let candidates = role
+                        .get("candidates")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    match candidates.as_slice() {
+                        [candidate] => {
+                            let Some(account_id) =
+                                candidate.as_str().and_then(|id| id.parse::<Uuid>().ok())
+                            else {
+                                complete = false;
+                                continue;
+                            };
+                            if let Err(error) =
+                                client.bind_task_actor(task_id, name, account_id).await
+                            {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    title = %title,
+                                    role = %name,
+                                    error = %error,
+                                    "cannot bind the human required by a role"
+                                );
+                                complete = false;
+                            }
+                        }
+                        [] => {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                title = %title,
+                                role = %name,
+                                identity = %assignment,
+                                "no human holds the identity required by a role"
+                            );
+                            complete = false;
+                        }
+                        _ => {
+                            let candidates = candidates
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .filter_map(|id| id.parse::<Uuid>().ok())
+                                .collect::<Vec<_>>();
+                            match choose_human(model, task, role, &candidates, &members).await {
+                                Some(account_id) => {
+                                    if let Err(error) =
+                                        client.bind_task_actor(task_id, name, account_id).await
+                                    {
+                                        tracing::warn!(
+                                            task_id = %task_id,
+                                            title = %title,
+                                            role = %name,
+                                            error = %error,
+                                            "cannot bind the human chosen by the model"
+                                        );
+                                        complete = false;
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        task_id = %task_id,
+                                        title = %title,
+                                        role = %name,
+                                        identity = %assignment,
+                                        "the model could not choose among human candidates"
+                                    );
+                                    complete = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => complete = false,
+            }
+        }
+        if complete && let Err(error) = client.start_task(task_id).await {
+            tracing::warn!(
+                task_id = %task_id,
+                title = %title,
+                error = %error,
+                "cannot start a dispatched task"
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn create_agent(client: &FoundryClient, task_id: Uuid, role: &str) -> anyhow::Result<Uuid> {
+    let templates = client.dispatch_templates(role).await?;
+    let template = templates
+        .as_array()
+        .and_then(|templates| templates.first())
+        .and_then(|template| template.get("id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("no agent template for role {role}"))?;
+    let created = client
+        .create_agent_from_template(task_id, role, template)
+        .await?;
+    created
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| id.parse::<Uuid>().ok())
+        .ok_or_else(|| anyhow::anyhow!("created agent has no id"))
+}
+
+/// Ask the model to choose one human when a role has several candidates.
+/// The model only sees the task and the candidate list; it cannot invent a
+/// different account.
+async fn choose_human(
+    model: &dyn ModelGateway,
+    task: &Value,
+    role: &Value,
+    candidates: &[Uuid],
+    members: &[Value],
+) -> Option<Uuid> {
+    let mut labels = Vec::new();
+    for candidate in candidates {
+        let id = candidate.to_string();
+        let member = members
+            .iter()
+            .find(|member| member.get("account_id").and_then(Value::as_str) == Some(id.as_str()));
+        let label = member
+            .map(|member| {
+                format!(
+                    "{} ({}, 项目角色 {})",
+                    member
+                        .get("display_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    member.get("handle").and_then(Value::as_str).unwrap_or(""),
+                    member.get("role").and_then(Value::as_str).unwrap_or("")
+                )
+            })
+            .unwrap_or_else(|| id.clone());
+        labels.push(format!("- {id}: {label}"));
+    }
+    let title = task.get("title").and_then(Value::as_str).unwrap_or("");
+    let description = task
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let input = task.get("input").cloned().unwrap_or(Value::Null);
+    let role_name = role.get("name").and_then(Value::as_str).unwrap_or("");
+    let identity = role.get("assignment").and_then(Value::as_str).unwrap_or("");
+    let system = "你是任务调度器。根据任务要求、任务描述和用户输入，在候选者中选择最合适的人。\
+                  只能返回候选者列表中的一个 UUID，不要解释，不要返回其他内容。";
+    let user = format!(
+        "任务：{title}\n描述：{description}\n输入：{input}\n角色：{role_name}\n身份要求：{identity}\n候选者：\n{}\n\
+         只返回一个候选者 UUID。",
+        labels.join("\n")
+    );
+    let request = LlmRequest {
+        model: ModelProfileRef::new(""),
+        params: LlmParams::default(),
+        messages: vec![LlmMessage::system(system), LlmMessage::user(user)],
+        tools: Vec::new(),
+    };
+    let response = model.complete(request).await.ok()?;
+    let chosen = response.message.content.trim().parse::<Uuid>().ok()?;
+    candidates.contains(&chosen).then_some(chosen)
 }
 
 /// Fetch the task and its allowed operations when this agent is one of its
@@ -430,6 +857,11 @@ async fn execute_task(
                 if definition.role.ends_with(":summarizer") {
                     finish_codesummary(&client, task, false).await;
                 }
+                if definition.role == "design_baseline:architect" {
+                    finish_design_baseline(&client, task, false).await;
+                } else if definition.role.starts_with("design_baseline:") {
+                    finish_design_baseline_review(&client, task, definition, false).await;
+                }
                 return Err(anyhow::anyhow!("cannot fetch task credentials: {error}"));
             }
         }
@@ -443,7 +875,8 @@ async fn execute_task(
         system_prompt,
         "Inspect the task and decide what to do.",
     )
-    .with_project_id(task.project_id.to_string());
+    .with_project_id(task.project_id.to_string())
+    .with_stage(task.stage.clone());
     request.task_input = task.input.clone();
     request.context.push(
         "current_task",
@@ -478,6 +911,11 @@ async fn execute_task(
     {
         finish_codesummary(&client, task, succeeded).await;
     }
+    if definition.role == "design_baseline:architect" {
+        finish_design_baseline(&client, task, succeeded).await;
+    } else if definition.role.starts_with("design_baseline:") {
+        finish_design_baseline_review(&client, task, definition, succeeded).await;
+    }
     Ok(())
 }
 
@@ -507,6 +945,80 @@ async fn finish_codesummary(client: &FoundryClient, task: &AssignedTask, succeed
             task_id = %task.task_id,
             error = %error,
             "cannot finish code summary task"
+        ),
+    }
+}
+
+async fn finish_design_baseline(client: &FoundryClient, task: &AssignedTask, succeeded: bool) {
+    if task.workflow.as_str() != "design_baseline" {
+        return;
+    }
+    let Some(stage) = task.stage.as_deref() else {
+        return;
+    };
+    let operation = match (stage, succeeded) {
+        ("baseline", true) => "baselined",
+        ("fix", true) => "fixed",
+        ("baseline" | "fix", false) => "failed",
+        _ => return,
+    };
+    let key = format!(
+        "design-baseline-finish:{}:{}:{}",
+        task.task_id,
+        stage,
+        task.updated_at.unix_timestamp_nanos()
+    );
+    match client
+        .send_task_operation(task.task_id, &format!("{stage}:{operation}"), &key)
+        .await
+    {
+        Ok(_) => tracing::info!(
+            task_id = %task.task_id,
+            operation = %format!("{stage}:{operation}"),
+            "design baseline task finished"
+        ),
+        Err(error) => tracing::warn!(
+            task_id = %task.task_id,
+            error = %error,
+            "cannot finish design baseline task"
+        ),
+    }
+}
+
+async fn finish_design_baseline_review(
+    client: &FoundryClient,
+    task: &AssignedTask,
+    definition: &AgentDefinition,
+    succeeded: bool,
+) {
+    if succeeded
+        || task.workflow.as_str() != "design_baseline"
+        || !definition.role.starts_with("design_baseline:")
+    {
+        return;
+    }
+    let Some(stage) = task.stage.as_deref() else {
+        return;
+    };
+    let key = format!(
+        "design-baseline-review-failed:{}:{}:{}",
+        task.task_id,
+        stage,
+        task.updated_at.unix_timestamp_nanos()
+    );
+    match client
+        .send_task_operation(task.task_id, &format!("{stage}:failed"), &key)
+        .await
+    {
+        Ok(_) => tracing::info!(
+            task_id = %task.task_id,
+            operation = %format!("{stage}:failed"),
+            "design baseline review reported failure"
+        ),
+        Err(error) => tracing::warn!(
+            task_id = %task.task_id,
+            error = %error,
+            "cannot report design baseline review failure"
         ),
     }
 }
@@ -686,7 +1198,29 @@ fn build_runtime(
     tools: ToolRegistry,
     shell: Option<Arc<dyn Shell>>,
 ) -> anyhow::Result<AgentRuntime> {
-    if definition.role.ends_with(":summarizer") {
+    if definition.role == "design_baseline:architect" {
+        let shell = shell.ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent {} is a design baseline agent but has no shell",
+                definition.name
+            )
+        })?;
+        let state_dir = foundry_shared::default_foundry_dir()
+            .join("state")
+            .join("design-baseline");
+        foundry_shared::ensure_private_dir(&state_dir).map_err(|error| {
+            anyhow::anyhow!(
+                "cannot create design baseline state directory {}: {error}",
+                state_dir.display()
+            )
+        })?;
+        Ok(AgentRuntime::new_design_baseline(
+            model,
+            Arc::new(tools),
+            shell,
+            state_dir,
+        ))
+    } else if definition.role.ends_with(":summarizer") {
         let shell = shell.ok_or_else(|| {
             anyhow::anyhow!(
                 "agent {} is a CodeSummary agent but has no shell",
@@ -736,6 +1270,9 @@ fn build_tools(
             "task_spawn_children" => {
                 tools.register(Arc::new(TaskSpawnChildrenTool::new(Arc::clone(client))));
             }
+            "task_create_follow_up" => {
+                tools.register(Arc::new(TaskCreateFollowUpTool::new(Arc::clone(client))));
+            }
             "task_add_link" => {
                 tools.register(Arc::new(TaskAddLinkTool::new(Arc::clone(client))));
             }
@@ -756,6 +1293,9 @@ fn build_tools(
             }
             "issue_list" => {
                 tools.register(Arc::new(IssueListTool::new(Arc::clone(client))));
+            }
+            "issue_triage_batch" => {
+                tools.register(Arc::new(IssueTriageBatchTool::new(Arc::clone(client))));
             }
             "issue_transition" => {
                 tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));

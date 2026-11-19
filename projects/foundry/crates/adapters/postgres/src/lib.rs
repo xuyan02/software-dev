@@ -45,7 +45,7 @@ mod workflow;
 pub use task::*;
 pub use workflow::*;
 
-pub use agents::{AssignedTask, listen_task_changes};
+pub use agents::{AssignedTask, listen_issue_changes, listen_task_changes};
 
 pub(crate) use task_link::insert_task_link_row;
 
@@ -94,8 +94,8 @@ impl PostgresStore {
     }
 
     async fn project_members(&self, project_id: Uuid) -> Result<Vec<ProjectMember>, RepoError> {
-        let rows: Vec<(Uuid, String, OffsetDateTime)> = sqlx::query_as(
-            "select account_id, role, added_at from project_members \
+        let rows: Vec<(Uuid, String, Vec<String>, OffsetDateTime)> = sqlx::query_as(
+            "select account_id, role, revoked_identities, added_at from project_members \
              where project_id = $1 order by added_at",
         )
         .bind(project_id)
@@ -103,10 +103,11 @@ impl PostgresStore {
         .await
         .map_err(backend)?;
         rows.into_iter()
-            .map(|(account_id, role, added_at)| {
+            .map(|(account_id, role, revoked_identities, added_at)| {
                 Ok(ProjectMember {
                     account_id,
                     role: parse_enum(&role)?,
+                    revoked_identities,
                     added_at,
                 })
             })
@@ -120,8 +121,8 @@ impl PostgresStore {
         if project_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let rows: Vec<(Uuid, Uuid, String, OffsetDateTime)> = sqlx::query_as(
-            "select project_id, account_id, role, added_at from project_members \
+        let rows: Vec<(Uuid, Uuid, String, Vec<String>, OffsetDateTime)> = sqlx::query_as(
+            "select project_id, account_id, role, revoked_identities, added_at from project_members \
              where project_id = any($1) order by added_at",
         )
         .bind(project_ids)
@@ -129,10 +130,11 @@ impl PostgresStore {
         .await
         .map_err(backend)?;
         let mut grouped: HashMap<Uuid, Vec<ProjectMember>> = HashMap::new();
-        for (project_id, account_id, role, added_at) in rows {
+        for (project_id, account_id, role, revoked_identities, added_at) in rows {
             grouped.entry(project_id).or_default().push(ProjectMember {
                 account_id,
                 role: parse_enum(&role)?,
+                revoked_identities,
                 added_at,
             });
         }
@@ -145,12 +147,14 @@ impl PostgresStore {
     ) -> Result<(), RepoError> {
         for member in &project.members {
             sqlx::query(
-                "insert into project_members (project_id, account_id, role, added_at) \
-                 values ($1, $2, $3, $4)",
+                "insert into project_members \
+                 (project_id, account_id, role, revoked_identities, added_at) \
+                 values ($1, $2, $3, $4, $5)",
             )
             .bind(project.id)
             .bind(member.account_id)
             .bind(enum_text(&member.role)?)
+            .bind(&member.revoked_identities)
             .bind(member.added_at)
             .execute(&mut **tx)
             .await

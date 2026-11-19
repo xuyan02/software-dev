@@ -25,6 +25,10 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/design-writing.md"),
     },
     Skill {
+        id: "design-content-review",
+        prompt: include_str!("../skills/design-content-review.md"),
+    },
+    Skill {
         id: "code-summary",
         prompt: include_str!("../skills/code-summary.md"),
     },
@@ -325,6 +329,14 @@ mod tests {
         let error = compose_system_prompt("base", &["missing".to_string()]).unwrap_err();
         assert_eq!(error.0, "missing");
     }
+    #[test]
+    fn appends_design_content_review_skill() {
+        let prompt = compose_system_prompt("base", &["design-content-review".to_string()]).unwrap();
+        assert!(prompt.contains("### design-content-review"));
+        assert!(prompt.contains("设计内容评审技能"));
+        assert!(prompt.contains("不要只找设计错误"));
+    }
+
     #[test]
     fn appends_design_writing_skill() {
         let prompt = compose_system_prompt("base", &["design-writing".to_string()]).unwrap();

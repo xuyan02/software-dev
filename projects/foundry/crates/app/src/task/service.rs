@@ -6,7 +6,7 @@ use crate::{
 use foundry_domain::{
     Actor, AllowedOperation, DomainEvent, DomainEventKind, OperationName, StageKey, Task,
     TaskActor, TaskComment, TaskCommentDAO, TaskDAO, TaskDependency, TaskDispatchState,
-    TaskOperation, WorkflowId, WorkflowVersionRef,
+    TaskOperation, TaskState, WorkflowId, WorkflowVersionRef,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -97,7 +97,10 @@ impl TaskService {
     /// Re-evaluate every task in a project. Used when a project policy toggle
     /// changes, so tasks already waiting in a human stage pick it up.
     pub async fn reevaluate_project(&self, project_id: Uuid) -> Result<usize, ServiceError> {
-        let rows = self.repository.list(project_id, TaskFilter::default()).await?;
+        let rows = self
+            .repository
+            .list(project_id, TaskFilter::default())
+            .await?;
         let mut processed = 0;
         for row in rows {
             match self
@@ -238,6 +241,12 @@ impl TaskService {
             ));
         }
         let workflow = WorkflowId::new(spec.workflow.trim());
+        if foundry_domain::is_disabled_workflow(workflow.as_str()) {
+            return Err(ServiceError::Validation(format!(
+                "workflow {} is disabled",
+                workflow.as_str()
+            )));
+        }
         let reference = match self.workflows.latest_visible(None, &workflow).await? {
             WorkflowLookup::Published(reference) => reference,
             WorkflowLookup::Unpublished(id) => {
@@ -293,6 +302,88 @@ impl TaskService {
     /// Create child tasks under `parent_id` in one logical batch. When
     /// `sequential` is true, each child depends on the previous one so only
     /// one group runs at a time.
+    pub async fn create_task_with_dependencies(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        dependencies: Vec<Uuid>,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError> {
+        if spec.title.trim().is_empty() {
+            return Err(ServiceError::Validation(
+                "task title is required".to_string(),
+            ));
+        }
+        if spec.description.trim().is_empty() {
+            return Err(ServiceError::Validation(
+                "task description is required".to_string(),
+            ));
+        }
+        let workflow = WorkflowId::new(spec.workflow.trim());
+        if foundry_domain::is_disabled_workflow(workflow.as_str()) {
+            return Err(ServiceError::Validation(format!(
+                "workflow {} is disabled",
+                workflow.as_str()
+            )));
+        }
+        let reference = match self.workflows.latest_visible(None, &workflow).await? {
+            WorkflowLookup::Published(reference) => reference,
+            WorkflowLookup::Unpublished(id) => {
+                return Err(ServiceError::Unpublished(id.to_string()));
+            }
+            WorkflowLookup::NotFound => {
+                return Err(ServiceError::not_found_named("workflow", workflow.as_str()));
+            }
+        };
+        let now = time::OffsetDateTime::now_utc();
+        let mut task = TaskDAO::new(
+            project_id,
+            Some(spec.parent_id),
+            reference.workflow_id,
+            reference.version,
+            spec.title,
+            now,
+        );
+        task.input = spec.input;
+        let events = [
+            DomainEvent::new(
+                DomainEventKind::TaskCreated,
+                task.id,
+                Actor::System,
+                json!({
+                    "workflow": task.workflow,
+                    "workflow_version": task.workflow_version,
+                    "title": task.title,
+                    "parent_id": task.parent_id,
+                    "dependencies": dependencies,
+                }),
+            ),
+            DomainEvent::new(
+                DomainEventKind::ChildCreated,
+                spec.parent_id,
+                Actor::System,
+                json!({
+                    "child_id": task.id,
+                    "workflow": task.workflow,
+                    "title": task.title,
+                }),
+            ),
+        ];
+        self.repository
+            .insert(&task, &dependencies, &events)
+            .await?;
+        if let Err(error) = self.dispatcher.process(task.id, None).await {
+            tracing::warn!(
+                task_id = %task.id,
+                error = %error,
+                "dependent task created but initialization failed"
+            );
+        }
+        let _ = actor_id;
+        let viewer = TaskViewer::member(actor_id);
+        self.get(project_id, task.id, viewer).await
+    }
+
     pub async fn spawn_children(
         &self,
         project_id: Uuid,
@@ -515,7 +606,7 @@ impl TaskService {
             })?;
 
         let actor_rows = self.repository.actors(task.id).await?;
-        let allowed_operations = if task.state.is_terminal() {
+        let allowed_operations = if task.state.is_terminal() || task.state == TaskState::Failed {
             Vec::new()
         } else {
             let stage = task.stage.as_ref().map(StageKey::as_str).unwrap_or("");
@@ -747,6 +838,14 @@ pub trait TaskUseCases: Send + Sync {
         actor_id: Uuid,
     ) -> Result<Task, ServiceError>;
 
+    async fn create_task_with_dependencies(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        dependencies: Vec<Uuid>,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError>;
+
     async fn bind_actor(
         &self,
         project_id: Uuid,
@@ -847,6 +946,17 @@ impl TaskUseCases for TaskService {
         actor_id: Uuid,
     ) -> Result<Task, ServiceError> {
         self.create_task(project_id, spec, actor_id).await
+    }
+
+    async fn create_task_with_dependencies(
+        &self,
+        project_id: Uuid,
+        spec: NewTask,
+        dependencies: Vec<Uuid>,
+        actor_id: Uuid,
+    ) -> Result<Task, ServiceError> {
+        self.create_task_with_dependencies(project_id, spec, dependencies, actor_id)
+            .await
     }
 
     async fn bind_actor(

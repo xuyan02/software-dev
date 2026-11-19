@@ -37,6 +37,34 @@ pub async fn listen_task_changes(
     Ok(rx)
 }
 
+/// Listen for Issue-change notifications. The returned receiver yields once
+/// per notification; the listener task stops when the receiver is dropped.
+pub async fn listen_issue_changes(
+    database_url: &str,
+) -> Result<tokio::sync::mpsc::Receiver<()>, RepoError> {
+    let mut listener = sqlx::postgres::PgListener::connect(database_url)
+        .await
+        .map_err(backend)?;
+    listener
+        .listen("foundry_issue_changes")
+        .await
+        .map_err(backend)?;
+    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = tx.closed() => break,
+                received = listener.recv() => {
+                    if received.is_err() || tx.send(()).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    Ok(rx)
+}
+
 type DefinitionRow = (
     Uuid,
     String,
@@ -386,10 +414,9 @@ impl PostgresStore {
 
     /// Every Ready task with at least one active agent role.
     ///
-    /// Ready tasks plus started tasks with an active agent role that has no
-    /// usable assignment (for example a review stage that just became active).
-    /// Only active agent roles with `min_actors > 0` are listed. Existing agent
-    /// assignments are included so the PM can skip them.
+    /// Ready tasks plus started tasks with a role that has no usable binding.
+    /// Existing agent assignments and human actors are included so the
+    /// dispatcher can skip them.
     /// In-progress tasks whose transitions should be re-evaluated at startup.
     pub async fn in_progress_task_ids(&self) -> Result<Vec<Uuid>, RepoError> {
         sqlx::query_scalar("select id from tasks where state = 'in_progress' order by created_at")
@@ -408,12 +435,14 @@ impl PostgresStore {
             String,
             String,
             String,
+            String,
             Option<String>,
             String,
             serde_json::Value,
+            serde_json::Value,
         );
         let rows: Vec<Row> = sqlx::query_as(
-            "select t.id, t.project_id, p.name, t.title, t.workflow, t.stage, t.state, v.body \
+            "select t.id, t.project_id, p.name, t.title, t.description, t.workflow, t.stage, t.state, t.input, v.body \
              from tasks t \
              join projects p on p.id = t.project_id \
              join workflow_versions v \
@@ -433,7 +462,19 @@ impl PostgresStore {
         .map_err(backend)?;
 
         let mut ready = Vec::new();
-        for (task_id, project_id, project_name, title, workflow, stage, state, body) in rows {
+        for (
+            task_id,
+            project_id,
+            project_name,
+            title,
+            description,
+            workflow,
+            stage,
+            state,
+            input,
+            body,
+        ) in rows
+        {
             let Some(stage_name) = stage else {
                 continue;
             };
@@ -452,48 +493,69 @@ impl PostgresStore {
             .fetch_all(&self.pool)
             .await
             .map_err(backend)?;
+            let actors: Vec<(String, Uuid)> =
+                sqlx::query_as("select role_key, account_id from task_actors where task_id = $1")
+                    .bind(task_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(backend)?;
+            let creator: Option<(Uuid, Vec<String>)> = sqlx::query_as(
+                "select pm.account_id, pm.revoked_identities \
+                 from project_members pm \
+                 join accounts a on a.id = pm.account_id \
+                 where pm.project_id = $1 and pm.role = 'owner' and a.kind = 'human' \
+                 order by pm.added_at limit 1",
+            )
+            .bind(project_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
 
-            // Bind every agent role in the workflow up front, not only the
-            // roles active in the current stage. The PM sweeps a task once
-            // before it starts; later stages must find their agents already
-            // assigned.
             let mut roles = Vec::new();
             for role in &body.roles {
-                if role.kind != RoleKind::Agent || role.min_actors == 0 {
-                    continue;
-                }
-                let role_name = &role.name;
-                let task_role = format!("{workflow}:{role_name}");
-                let agent = assignments
-                    .iter()
-                    .find(|(assigned_role, ..)| assigned_role == &task_role)
-                    .map(
-                        |(_, agent_definition_id, name, enabled)| AssignedAgentView {
-                            agent_definition_id: *agent_definition_id,
-                            name: name.clone(),
-                            enabled: *enabled,
-                        },
-                    );
+                let role_key = format!("{}:{}", role.assignment, role.name);
+                let (agent, actor, candidates) = match role.kind {
+                    RoleKind::Agent => {
+                        let agent = assignments
+                            .iter()
+                            .find(|(assigned_role, ..)| assigned_role == &role_key)
+                            .map(
+                                |(_, agent_definition_id, name, enabled)| AssignedAgentView {
+                                    agent_definition_id: *agent_definition_id,
+                                    name: name.clone(),
+                                    enabled: *enabled,
+                                },
+                            );
+                        (agent, None, Vec::new())
+                    }
+                    RoleKind::Human => {
+                        let actor = actors
+                            .iter()
+                            .find(|(role_key, _)| role_key == &role.name)
+                            .map(|(_, account_id)| *account_id);
+                        let candidates = creator
+                            .iter()
+                            .filter(|(_, revoked)| !revoked.contains(&role.assignment))
+                            .map(|(account_id, _)| *account_id)
+                            .collect::<Vec<_>>();
+                        (None, actor, candidates)
+                    }
+                };
                 roles.push(ReadyTaskRoleView {
-                    name: role_name.clone(),
-                    task_role,
+                    name: role.name.clone(),
                     kind: role.kind,
-                    min_actors: role.min_actors,
-                    max_actors: role.max_actors,
+                    assignment: role.assignment.clone(),
                     agent,
+                    actor,
+                    candidates,
                 });
             }
-            if roles.is_empty() {
-                continue;
-            }
-            // A started task only re-enters the PM queue when an agent role is
-            // missing a usable assignment. All roles are expected to be bound
-            // before the task starts.
-            if state == "in_progress"
-                && roles
-                    .iter()
-                    .all(|role| role.agent.as_ref().is_some_and(|agent| agent.enabled))
-            {
+
+            let unbound = roles.iter().any(|role| match role.kind {
+                RoleKind::Agent => role.agent.as_ref().is_none_or(|agent| !agent.enabled),
+                RoleKind::Human => role.actor.is_none(),
+            });
+            if state == "in_progress" && (roles.is_empty() || !unbound) {
                 continue;
             }
             ready.push(ReadyTaskView {
@@ -501,8 +563,10 @@ impl PostgresStore {
                 project_name: project_name.clone(),
                 task_id,
                 title: title.clone(),
-                workflow: workflow.clone(),
+                description,
+                workflow,
                 stage: stage_name,
+                input,
                 roles,
             });
         }
@@ -632,28 +696,6 @@ impl PostgresStore {
         .bind(project_id)
         .bind(workflow_id)
         .bind(role)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(backend)?;
-        Ok(row)
-    }
-
-    /// Platform routing for built-in agents when no project binding exists.
-    ///
-    /// The PM agent owns project goal clarification. This is platform policy,
-    /// not user configuration, so it lives here rather than in a settings UI.
-    pub async fn platform_agent_for(
-        &self,
-        workflow_id: &str,
-        role: &str,
-    ) -> Result<Option<(Uuid, String, Uuid)>, RepoError> {
-        if workflow_id != "goal_clarification" || role != "clarifier" {
-            return Ok(None);
-        }
-        let row: Option<(Uuid, String, Uuid)> = sqlx::query_as(
-            "select id, name, account_id from agent_definitions \
-             where name = 'PM Agent' and enabled",
-        )
         .fetch_optional(&self.pool)
         .await
         .map_err(backend)?;

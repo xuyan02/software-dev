@@ -113,6 +113,13 @@ pub struct RemoveProjectMember {
     pub account_id: uuid::Uuid,
 }
 
+#[derive(Debug, Clone)]
+pub struct SetMemberIdentity {
+    pub project_id: uuid::Uuid,
+    pub identity: String,
+    pub enabled: bool,
+}
+
 /// The reporter describes what happened and classifies it at intake.
 #[derive(Debug, Clone)]
 pub struct CreateIssue {

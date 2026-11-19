@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "checker", "kind": "agent", "assignment": "triage_check"}
+  ],
+  "initial_stage": "check",
+  "vars": {
+    "triage_done": {"type": "bool", "display_name": "Triage finished"},
+    "decision": {"type": "string", "display_name": "Decision"}
+  },
+  "stages": [
+    {
+      "name": "check",
+      "active_roles": ["checker"],
+      "operations": [
+        {
+          "name": "has_issues",
+          "display_name": "存在待分诊 Issue",
+          "description": "已创建本轮分诊任务。",
+          "roles": ["checker"],
+          "action": "decision = 'has_issues'"
+        },
+        {
+          "name": "no_issues",
+          "display_name": "没有待分诊 Issue",
+          "description": "当前没有需要分诊的 Issue。",
+          "roles": ["checker"],
+          "action": "decision = 'no_issues'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'has_issues'", "to": "waiting_triage"},
+        {"on": "decision == 'no_issues'", "to": "waiting_issue"}
+      ]
+    },
+    {
+      "name": "waiting_triage",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'triage' and (event.child.state == 'completed' or event.child.state == 'failed') { triage_done = true }"
+        }
+      ],
+      "transitions": [
+        {"on": "triage_done", "action": "triage_done = false", "to": "check"}
+      ]
+    },
+    {
+      "name": "waiting_issue",
+      "active_roles": ["checker"],
+      "operations": [
+        {
+          "name": "issue_arrived",
+          "display_name": "收到 Issue 事件",
+          "description": "有新 Issue 或新评论，重新检查。",
+          "roles": ["checker"],
+          "action": "decision = 'issue_arrived'"
+        }
+      ],
+      "transitions": [
+        {"on": "decision == 'issue_arrived'", "to": "check"}
+      ]
+    }
+  ]
+}

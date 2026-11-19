@@ -1,7 +1,7 @@
 use crate::{
-    ABANDON_OPERATION, ACCEPT_OPERATION, ChildState, DependencyState, OperationName,
-    REJECT_OPERATION, RETRY_OPERATION, START_OPERATION, TaskActorDAO, TaskDAO, TaskError,
-    TaskEvent, TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext,
+    ABANDON_OPERATION, ACCEPT_OPERATION, ChildState, DependencyState, FAILED_OPERATION,
+    OperationName, REJECT_OPERATION, RETRY_OPERATION, START_OPERATION, TaskActorDAO, TaskDAO,
+    TaskError, TaskEvent, TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -75,7 +75,33 @@ pub fn apply(
             ctx.complete_task(Some(TaskResult::new("approved")))?;
             return Ok(ctx.into_mutation());
         }
+        TaskEvent::Operation {
+            operation,
+            actor_id,
+        } if operation.as_str() == FAILED_OPERATION
+            && !declares_failed_operation(workflow, &task) =>
+        {
+            // Failure is a task state, not a workflow stage. The stage stays
+            // unchanged so a retry resumes exactly where the work stopped.
+            let allowed = actors
+                .iter()
+                .any(|actor| actor.account_id == *actor_id && actor.active);
+            if !allowed {
+                return Err(TaskError::Unauthorized(format!(
+                    "actor {actor_id} is not an active actor for failure"
+                )));
+            }
+            let mut ctx = WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+            ctx.set_state(TaskState::Failed)?;
+            return Ok(ctx.into_mutation());
+        }
         TaskEvent::Operation { operation, .. } if operation.as_str() == RETRY_OPERATION => {
+            if task.state == TaskState::Failed {
+                let mut ctx =
+                    WorkflowContext::new(workflow, task, actors, dependencies, children, now);
+                ctx.set_state(TaskState::InProgress)?;
+                return Ok(ctx.into_mutation());
+            }
             let target = workflow
                 .body()
                 .and_then(|body| {
@@ -164,6 +190,12 @@ fn split_stage_operation(operation: &str) -> Result<(Option<&str>, &str), TaskEr
     }
 }
 
+fn declares_failed_operation(workflow: &dyn TaskWorkflow, task: &TaskDAO) -> bool {
+    task.stage
+        .as_ref()
+        .is_some_and(|stage| workflow.has_operation(stage.as_str(), FAILED_OPERATION))
+}
+
 fn authorize_operation(
     workflow: &dyn TaskWorkflow,
     task: &TaskDAO,
@@ -171,6 +203,11 @@ fn authorize_operation(
     operation: &OperationName,
     actor_id: Uuid,
 ) -> Result<(), TaskError> {
+    if task.state == TaskState::Failed {
+        return Err(TaskError::InvalidOperation(
+            "task is failed; retry or abandon it".to_string(),
+        ));
+    }
     let stage = task
         .stage
         .as_ref()

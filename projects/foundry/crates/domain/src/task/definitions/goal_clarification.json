@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "clarifier", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "writer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "content_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "clarifier", "kind": "agent", "assignment": "goal_clarification"},
+    {"name": "writer", "kind": "agent", "assignment": "goal_clarification"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "goal_clarification"},
+    {"name": "content_reviewer", "kind": "agent", "assignment": "goal_clarification"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "clarification",
   "stages": [

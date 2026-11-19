@@ -19,8 +19,9 @@
 
 use crate::catalog::Catalog;
 use crate::model::{
-    Commit, CommitHash, DesignObject, DirectoryPayload, DocumentDirectoryPayload, GitOid, Hash32,
-    Kind, NamespacePayload, ObjectPayload, ParentRef, SymbolHash,
+    Commit, CommitHash, DesignObject, DesignStructurePayload, DirectoryPayload,
+    DocumentDirectoryPayload, DocumentPayload, GitOid, Hash32, Kind, NamespacePayload,
+    ObjectPayload, ParentRef, SymbolHash,
 };
 use crate::remote::{
     FILE_ROOTS, MAX_TRANSFER, collect_files, parse_hash, parse_refs, publish, read_token_file,
@@ -257,6 +258,71 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
                 parent: ParentRef::View,
                 children: vec![],
                 comments: vec![],
+            }),
+        ),
+    )?;
+
+    // Preset design documents and the logical structure root. Creating them
+    // with the repository means design workflows never start from a missing
+    // technical design.
+    let design_dir = store.put_symbol("documents/design")?;
+    catalog.insert(
+        design_dir,
+        DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: design_dir,
+                parent: ParentRef::Object(documents),
+                children: vec![],
+                comments: vec![],
+            }),
+        ),
+    )?;
+    for (qname, title) in [
+        ("documents/design/technical", "技术设计"),
+        ("documents/design/directory", "目录设计"),
+        ("documents/design/namespace", "命名空间设计"),
+    ] {
+        let document = store.put_symbol(qname)?;
+        catalog.insert(
+            document,
+            DesignObject::new(
+                Kind::Document,
+                ObjectPayload::Document(DocumentPayload {
+                    qualified_name: document,
+                    parent: design_dir,
+                    title: title.to_owned(),
+                    sections: vec![],
+                    children: vec![],
+                    comments: vec![],
+                }),
+            ),
+        )?;
+    }
+    let proposals = store.put_symbol("documents/design/proposals")?;
+    catalog.insert(
+        proposals,
+        DesignObject::new(
+            Kind::DocumentDirectory,
+            ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                qualified_name: proposals,
+                parent: ParentRef::Object(design_dir),
+                children: vec![],
+                comments: vec![],
+            }),
+        ),
+    )?;
+    let design = store.put_symbol("design")?;
+    catalog.insert(
+        design,
+        DesignObject::new(
+            Kind::DesignStructure,
+            ObjectPayload::DesignStructure(DesignStructurePayload {
+                qualified_name: design,
+                parent: ParentRef::View,
+                title: "设计结构".to_owned(),
+                document: SymbolHash::ZERO,
+                children: vec![],
             }),
         ),
     )?;
@@ -595,12 +661,9 @@ async fn put_refs(
     if role == AuthRole::Agent {
         let text = std::str::from_utf8(&body)
             .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
-        let refs = parse_refs(text)
-            .map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))?;
-        if refs
-            .iter()
-            .any(|(branch, _)| protected_branch(branch))
-        {
+        let refs =
+            parse_refs(text).map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+        if refs.iter().any(|(branch, _)| protected_branch(branch)) {
             return Ok((
                 StatusCode::FORBIDDEN,
                 "agent token may not move a protected branch\n",
@@ -929,9 +992,15 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         assert_eq!(collection.auth_role(&headers), None);
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer agent-secret"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer agent-secret"),
+        );
         assert_eq!(collection.auth_role(&headers), Some(AuthRole::Agent));
-        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer admin-secret"));
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer admin-secret"),
+        );
         assert_eq!(collection.auth_role(&headers), Some(AuthRole::Admin));
         headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer wrong"));
         assert_eq!(collection.auth_role(&headers), None);

@@ -55,6 +55,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - Namespace 的文档写在 documents/design/namespace 的 Section 里；顶级 Namespace 直接挂在 documents/design/namespace 下，嵌套 Namespace 挂在父 Namespace 的 document Section 下。
 - 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
+- File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
 - Section 标题：代码元素用 qname，目录/文件用源码路径。
 
 写文档的步骤：
@@ -77,7 +78,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 2. 用 ds show files/<path> 看 File 对象和 document: 字段。
 3. 更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；类型挂在 namespace 下，不要建在 File 下面。
 4. 创建缺失的元素，写 source span、关系、document 和依赖。
-5. 给 File 和除 Part 外的每个代码元素写/更新对应的 Section；代码元素的块写成 topic，Directory/File 的单句直接写 Section 正文；不要只返回文本。
+5. 给 File 和除 Part 外的每个代码元素写/更新对应的 Section；代码元素的块写成 topic，Directory 的置放单句和 File 的设计目的单句直接写 Section 正文；File 写设计角色，不写具体行为或实现细节；不要只返回文本。
 
 目录总结工作项：
 1. 用 ds show files/<path> 看目录规则和 document: 字段。
@@ -127,6 +128,7 @@ const FIX_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 修改智能�
 - Namespace 的文档写在 documents/design/namespace 的 Section 里；顶级 Namespace 直接挂在 documents/design/namespace 下，嵌套 Namespace 挂在父 Namespace 的 document Section 下。
 - 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
+- File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
 - Section 标题：代码元素用 qname，目录/文件用源码路径。
 
 输出 JSON：{"ok":true}
@@ -156,7 +158,7 @@ passed=true 表示没有需要阻塞提交的 open 评论。不要返回设计�
 const SUMMARY_PROMPT: &str = r#"总结工作项。
 当前工作项：kind={{input.kind}}，path={{input.path}}。
 
-如果 kind = "file"：读源码，更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；创建缺失元素，写 source span 和关系；给非 Part 元素写 document；给 File 和除 Part 外的每个代码元素写/更新技术设计或目录设计中的 Section。
+如果 kind = "file"：读源码，更新/删除 source 指向该文件的已有 namespace、class、interface、method、function、part、mixin；创建缺失元素，写 source span 和关系；给非 Part 元素写 document；给 File 和除 Part 外的每个代码元素写/更新技术设计或目录设计中的 Section；File Section 写文件的设计角色，不写具体行为或实现细节。
 如果 kind = "directory"：根据直属子项写目录规则，不枚举子项细节；给 Directory 写/更新目录设计中的 Section。
 文档必须通过 ds doc 工具写入，不要只返回设计文本；已有 document: 时复用，没有时按系统规则创建 Section 并关联。
 输出 JSON：{"ok":true}

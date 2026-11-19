@@ -64,7 +64,7 @@ pub enum CatalogError {
     InvalidOverride { method: String, message: String },
     #[error("object {object} has invalid dependency: {message}")]
     InvalidDependency { object: String, message: String },
-    #[error("object {object} has invalid module member {target}: {message}")]
+    #[error("object {object} has invalid structure member {target}: {message}")]
     InvalidModuleMember {
         object: String,
         target: String,
@@ -177,7 +177,11 @@ impl Catalog {
                             explicit.iter().any(|dep| dep.target == qname)
                                 || implicit.iter().any(|dep| dep.target == qname)
                         })
-                        || matches!(&object.payload, ObjectPayload::Module(p) if p.members.contains(&qname)))
+                        || match &object.payload {
+                            ObjectPayload::System(p) => p.members.contains(&qname),
+                            ObjectPayload::Module(p) => p.members.contains(&qname),
+                            _ => false,
+                        })
             })
             .map(|(name, _)| *name)
             .collect::<Vec<_>>();
@@ -843,6 +847,7 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
             p.qualified_name = map(p.qualified_name);
             p.parent = map(p.parent);
             p.document = map(p.document);
+            rewrite_symbols(&mut p.members, mapping);
         }
         ObjectPayload::Module(p) => {
             p.qualified_name = map(p.qualified_name);
@@ -957,16 +962,15 @@ fn validate_semantics(store: &Store, entries: &BTreeMap<SymbolHash, DesignObject
     Ok(())
 }
 
-fn validate_modules(
-    store: &Store,
-    entries: &BTreeMap<SymbolHash, DesignObject>,
-) -> Result<()> {
+fn validate_modules(store: &Store, entries: &BTreeMap<SymbolHash, DesignObject>) -> Result<()> {
     let mut owners: BTreeMap<SymbolHash, SymbolHash> = BTreeMap::new();
     for (qname, object) in entries {
-        let ObjectPayload::Module(module) = &object.payload else {
-            continue;
+        let members = match &object.payload {
+            ObjectPayload::System(system) => &system.members,
+            ObjectPayload::Module(module) => &module.members,
+            _ => continue,
         };
-        for member in &module.members {
+        for member in members {
             let Some(target) = entries.get(member) else {
                 return Err(CatalogError::InvalidModuleMember {
                     object: object_label(store, *qname),
@@ -981,18 +985,16 @@ fn validate_modules(
                 return Err(CatalogError::InvalidModuleMember {
                     object: object_label(store, *qname),
                     target: object_label(store, *member),
-                    message: "only top-level classes, interfaces, functions and mixins can be members"
-                        .to_owned(),
+                    message:
+                        "only top-level classes, interfaces, functions and mixins can be members"
+                            .to_owned(),
                 });
             }
             if let Some(owner) = owners.insert(*member, *qname) {
                 return Err(CatalogError::InvalidModuleMember {
                     object: object_label(store, *qname),
                     target: object_label(store, *member),
-                    message: format!(
-                        "already belongs to module {}",
-                        object_label(store, owner)
-                    ),
+                    message: format!("already belongs to {}", object_label(store, owner)),
                 });
             }
         }

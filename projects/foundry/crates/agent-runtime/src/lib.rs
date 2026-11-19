@@ -7,6 +7,7 @@
 //! `graph-agent`.
 
 pub mod codesummary;
+pub mod design_baseline;
 pub mod context;
 pub mod error;
 pub mod eval;

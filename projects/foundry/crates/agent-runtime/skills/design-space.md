@@ -190,7 +190,7 @@ ds create mixin <name> --namespace <ns> [--on <qname>]... [--superclass <qname>]
 ```
 
 - `part` 的 `<name>` 只是 CLI 的占位参数；qname 由 `<parent>/part#<内容哈希>` 决定，不是本地名；
-- 文档正文用 `ds doc text add <section-or-topic>/body --text ...` 写入；代码对象用 `ds edit <qname> --document <section-qname>` 关联；“未分类实体”等具体组织规则见 CodeSummary 提示词。
+- 文档正文用 `ds doc text add <section-or-topic>/body --text ...` 写入；代码对象用 `ds edit <qname> --document <section-qname>` 关联；System/Module/成员的组织规则见 `design-writing` 技能。
 - `--interface`、`--mixin`、`--on` 可以重复；
 - 关系目标可以暂时不存在，最后用 `ds verify` 解析。
 
@@ -314,26 +314,40 @@ ds push --branch <branch>
 - 根 qname 固定为 `design`；
 - 系统 qname 为 `design/<system>`；
 - 模块 qname 为 `<system-or-module>/<module>`；
-- 模块成员只引用顶层 Class/Interface/Function/Mixin；一个元素只能属于一个模块；
+- System 和 Module 的成员只引用顶层 Class/Interface/Function/Mixin；一个元素恰好属于一个 System 或 Module；
+- 系统可以同时有 Module 和直属成员，不要求二选一；
 - 子模块通过 parent 关系嵌套，不要写进 members。
 
 ```bash
 ds structure init
 ds structure system create app --title '应用' --document <doc-section>
 ds structure module create core --parent design/app --title '核心' --document <doc-section>
+ds structure assign design/app namespaces/app/EntryFunction
 ds structure assign design/app/core namespaces/app/Auth namespaces/app/Session
 ds structure unassign design/app/core namespaces/app/Session
 ds structure list
+ds structure show design/app
 ds structure show design/app/core
 ds structure unassigned
 ds structure check
 ```
 
-`ds structure check` 会检查成员存在、唯一归属、空模块、空系统、所有顶层元素已归属；它和 `ds verify` 一样是提交前必须通过的检查。
+`ds structure check` 会检查成员存在、唯一归属、空模块、空系统、所有顶层元素已归属；它和 `ds verify` 一样是提交前必须通过的检查。系统没有模块但有直属成员是合法的。
+
+System/Module 的创建标准、复杂度判断和文档内容见 `design-writing` 技能。
 
 ## 6. 文档写作
 
 每种对象的文档写什么、格式是什么，由 `design-writing` 技能规定。本技能只负责 ds 对象模型、qname、命令、文档位置和 staging。
+
+技术设计文档的 Section 层级必须与 `design` 结构树一致。用代码保证，不靠人工：
+
+```bash
+ds doc layout   # 按结构树创建/移动 Section
+ds doc check    # 校验 Section 层级
+```
+
+提交前 `ds doc check` 必须通过。
 
 ## 7. 常见错误
 
@@ -385,3 +399,34 @@ ds diff --staged
 ds commit -m "summarize data-core value"
 ds push --branch master
 ```
+
+## 9. 引用
+
+设计文档、评论和提案中可以嵌入引用，渲染为超链接。引用不是 DS 对象，
+只是文本约定，不参与 `ds verify`、`ds doc check` 或对象图。
+
+```text
+[[<target>|<label>]]
+```
+
+| target | 指向 |
+|---|---|
+| `issue:<uuid>` | Issue |
+| `task:<uuid>` | Task |
+| `ds:<qname>` | 设计空间对象、文档或章节 |
+| `code:<path>[:<start>-<end>]` | 源码位置 |
+
+示例：
+
+```text
+[[issue:01a1f3fe-909a-735b-bab8-8c8e1789a5ca|设计缺失]]
+[[ds:namespaces/app/Auth|Auth]]
+[[ds:documents/design/proposals/draft-7f3a2c9e|会话状态重构草案]]
+[[task:01a1f3fe-c18e-709d-9f2e-075ea5bf3165|建立设计基线]]
+[[code:src/auth.rs:120-160|src/auth.rs:120-160]]
+```
+
+- `<label>` 省略时显示目标名称或 qname；
+- 目标不存在时不阻止保存，渲染为未解析链接或普通文本；
+- 参考文献显示字面量 `[[...]]` 时用反斜杠转义：`\[\[...]]`；
+- 引用可以出现在文档 text、topic 段落、list item 和评论中。

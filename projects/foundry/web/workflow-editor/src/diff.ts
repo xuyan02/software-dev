@@ -141,15 +141,8 @@ function roleChanges(before: RoleSpec, after: RoleSpec): string[] {
   if (before.kind !== after.kind) {
     changes.push(`kind ${before.kind} → ${after.kind}`);
   }
-  if (before.min_actors !== after.min_actors) {
-    changes.push(`min_actors ${before.min_actors} → ${after.min_actors}`);
-  }
-  const beforeMax = before.max_actors ?? null;
-  const afterMax = after.max_actors ?? null;
-  if (beforeMax !== afterMax) {
-    changes.push(
-      `max_actors ${beforeMax ?? '不限'} → ${afterMax ?? '不限'}`,
-    );
+  if (before.assignment !== after.assignment) {
+    changes.push(`assignment ${before.assignment} → ${after.assignment}`);
   }
   return changes;
 }

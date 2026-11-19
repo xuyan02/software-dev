@@ -9,10 +9,10 @@ use foundry_app::{
 };
 use foundry_domain::{
     AccountKind, Actor, ChildState, DependencyState, DocumentReviewLinkAction, DomainEvent,
-    DomainEventKind, Issue, IssueKind, IssueSource, IssueSourceKind, TaskActorDAO, TaskAggregate,
-    TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskIssueCreate, TaskLink, TaskLinkKind,
-    RoleKind, TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState, TaskWorkflow,
-    WorkflowId,
+    DomainEventKind, Issue, IssueKind, IssueSource, IssueSourceKind, RoleKind, TaskActorDAO,
+    TaskAggregate, TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskIssueCreate, TaskLink,
+    TaskLinkKind, TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState,
+    TaskWorkflow, WorkflowId,
 };
 use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
@@ -172,52 +172,50 @@ impl TaskRepository for PostgresStore {
         .map_err(backend)?;
 
         rows.into_iter()
-            .map(
-                |row| {
-                    let TaskListSqlRow {
+            .map(|row| {
+                let TaskListSqlRow {
+                    id,
+                    project_id,
+                    parent_id,
+                    workflow,
+                    workflow_version,
+                    title,
+                    description,
+                    state,
+                    stage,
+                    result,
+                    stage_variables,
+                    task_variables,
+                    input,
+                    created_at,
+                    updated_at,
+                    completed_at,
+                    dependencies_ready,
+                } = row;
+                Ok(TaskListRow {
+                    task: TaskDAO {
                         id,
                         project_id,
                         parent_id,
-                        workflow,
-                        workflow_version,
+                        workflow: WorkflowId::new(workflow),
+                        workflow_version: workflow_version.max(0) as u32,
                         title,
                         description,
-                        state,
-                        stage,
-                        result,
-                        stage_variables,
-                        task_variables,
+                        state: parse_enum(&state)?,
+                        stage: stage.map(foundry_domain::StageKey::new),
+                        result: result.map(TaskResult::new),
+                        stage_variables: serde_json::from_value(stage_variables)
+                            .map_err(|error| RepoError::Backend(error.to_string()))?,
+                        task_variables: serde_json::from_value(task_variables)
+                            .map_err(|error| RepoError::Backend(error.to_string()))?,
                         input,
                         created_at,
                         updated_at,
                         completed_at,
-                        dependencies_ready,
-                    } = row;
-                    Ok(TaskListRow {
-                        task: TaskDAO {
-                            id,
-                            project_id,
-                            parent_id,
-                            workflow: WorkflowId::new(workflow),
-                            workflow_version: workflow_version.max(0) as u32,
-                            title,
-                            description,
-                            state: parse_enum(&state)?,
-                            stage: stage.map(foundry_domain::StageKey::new),
-                            result: result.map(TaskResult::new),
-                            stage_variables: serde_json::from_value(stage_variables)
-                                .map_err(|error| RepoError::Backend(error.to_string()))?,
-                            task_variables: serde_json::from_value(task_variables)
-                                .map_err(|error| RepoError::Backend(error.to_string()))?,
-                            input,
-                            created_at,
-                            updated_at,
-                            completed_at,
-                        },
-                        dependencies_ready,
-                    })
-                },
-            )
+                    },
+                    dependencies_ready,
+                })
+            })
             .collect()
     }
 
@@ -572,8 +570,7 @@ fn auto_approval_operation(
             .iter()
             .find(|spec| spec.name == role)
             .is_some_and(|spec| {
-                spec.kind == RoleKind::Human
-                    || matches!(role, "acceptor" | "approver")
+                spec.kind == RoleKind::Human || matches!(role, "acceptor" | "approver")
             })
     };
     if !stage.active_roles.iter().all(|role| humanish(role)) {
@@ -611,13 +608,12 @@ impl PostgresTaskDispatcher {
         if aggregate.task.state.is_terminal() {
             return Ok(false);
         }
-        let skip_human_review: Option<bool> = sqlx::query_scalar(
-            "select skip_human_review from projects where id = $1",
-        )
-        .bind(aggregate.task.project_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(db_error)?;
+        let skip_human_review: Option<bool> =
+            sqlx::query_scalar("select skip_human_review from projects where id = $1")
+                .bind(aggregate.task.project_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db_error)?;
         if !skip_human_review.unwrap_or(false) {
             return Ok(false);
         }
@@ -638,7 +634,8 @@ impl PostgresTaskDispatcher {
                     aggregate.task.workflow, aggregate.task.workflow_version
                 ))
             })?;
-        let Some((operation, approval_roles)) = auto_approval_operation(&*workflow, &aggregate.task)
+        let Some((operation, approval_roles)) =
+            auto_approval_operation(&*workflow, &aggregate.task)
         else {
             return Ok(false);
         };
@@ -780,6 +777,23 @@ impl PostgresTaskDispatcher {
                     return Err(TaskDispatchError::Rejected(format!(
                         "workflow {} has no role {role}",
                         aggregate.task.workflow
+                    )));
+                }
+                let existing: Option<Uuid> = sqlx::query_scalar(
+                    "select account_id from task_actors \
+                     where task_id = $1 and role_key = $2",
+                )
+                .bind(aggregate.task.id)
+                .bind(role.as_str())
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(map_write_error)?;
+                if let Some(existing) = existing {
+                    if existing == account_id {
+                        return Ok(());
+                    }
+                    return Err(TaskDispatchError::Rejected(format!(
+                        "role {role} already has an actor"
                     )));
                 }
 
@@ -1071,6 +1085,7 @@ async fn persist_created_issues(
             url: None,
             title: issue.title.clone(),
             relation,
+            active: true,
             created_by: Actor::System,
             created_at: OffsetDateTime::now_utc(),
             metadata: json!({}),
@@ -1310,17 +1325,18 @@ mod auto_approval_tests {
         assert_eq!(code_change.as_str(), "human_review:approved");
         assert_eq!(roles, vec!["acceptor".to_string()]);
 
-        let (design_change, _) =
-            auto_approval_operation(find("design_change"), &task_for("human_review")).unwrap();
-        assert_eq!(design_change.as_str(), "human_review:approved");
+        // MR-backed design workflows merge mechanically when the MR is
+        // approved, so there is no human "approved" task operation to
+        // auto-send here.
+        assert!(
+            auto_approval_operation(find("design_change"), &task_for("human_review")).is_none()
+        );
 
         let (merge, _) =
             auto_approval_operation(find("design_space_merge"), &task_for("review")).unwrap();
         assert_eq!(merge.as_str(), "review:review_approved");
 
-        assert!(
-            auto_approval_operation(find("code_change"), &task_for("code_review")).is_none()
-        );
+        assert!(auto_approval_operation(find("code_change"), &task_for("code_review")).is_none());
         assert!(auto_approval_operation(find("iteration"), &task_for("review")).is_none());
     }
 }

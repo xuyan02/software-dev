@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "summarizer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "content_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "merger", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "conflict_resolver", "kind": "agent", "min_actors": 1, "max_actors": 1}
+    {"name": "summarizer", "kind": "agent", "assignment": "code_summary_group"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "code_summary_group"},
+    {"name": "content_reviewer", "kind": "agent", "assignment": "code_summary_group"},
+    {"name": "merger", "kind": "agent", "assignment": "code_summary_group"},
+    {"name": "conflict_resolver", "kind": "agent", "assignment": "code_summary_group"}
   ],
   "initial_stage": "summary",
   "stages": [

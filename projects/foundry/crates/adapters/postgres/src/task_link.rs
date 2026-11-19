@@ -16,8 +16,8 @@ pub(crate) async fn insert_task_link_row(
 ) -> Result<(), RepoError> {
     sqlx::query(
         "insert into task_links \
-         (id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         (id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata, active) \
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(link.id)
     .bind(link.task_id)
@@ -29,6 +29,7 @@ pub(crate) async fn insert_task_link_row(
     .bind(serde_json::to_value(&link.created_by).map_err(backend)?)
     .bind(link.created_at)
     .bind(link.metadata.clone())
+    .bind(link.active)
     .execute(&mut **tx)
     .await
     .map_err(|error| match error {
@@ -51,13 +52,14 @@ type TaskLinkRow = (
     Value,
     OffsetDateTime,
     Value,
+    bool,
 );
 
 #[async_trait]
 impl TaskLinkRepository for PostgresStore {
     async fn list(&self, task_id: Uuid) -> Result<Vec<TaskLink>, RepoError> {
         let rows: Vec<TaskLinkRow> = sqlx::query_as(
-            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata \
+            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata, active \
              from task_links where task_id = $1 order by created_at, id",
         )
         .bind(task_id)
@@ -73,7 +75,7 @@ impl TaskLinkRepository for PostgresStore {
         target_id: Uuid,
     ) -> Result<Vec<TaskLink>, RepoError> {
         let rows: Vec<TaskLinkRow> = sqlx::query_as(
-            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata \
+            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata, active \
              from task_links where kind = $1 and target_id = $2 order by created_at, id",
         )
         .bind(kind.as_str())
@@ -86,7 +88,7 @@ impl TaskLinkRepository for PostgresStore {
 
     async fn get(&self, task_id: Uuid, link_id: Uuid) -> Result<Option<TaskLink>, RepoError> {
         let row: Option<TaskLinkRow> = sqlx::query_as(
-            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata \
+            "select id, task_id, kind, target_id, url, title, relation, created_by, created_at, metadata, active \
              from task_links where task_id = $1 and id = $2",
         )
         .bind(task_id)
@@ -117,6 +119,54 @@ impl TaskLinkRepository for PostgresStore {
         }
         Ok(())
     }
+
+    async fn deactivate_issue_links(&self, target_id: Uuid) -> Result<(), RepoError> {
+        sqlx::query(
+            "update task_links set active = false \
+             where kind = 'issue' and target_id = $1 and active",
+        )
+        .bind(target_id)
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    async fn activate_task_issue_links(&self, task_id: Uuid) -> Result<(), RepoError> {
+        let issue_ids: Vec<Uuid> = sqlx::query_scalar(
+            "select target_id from task_links \
+             where task_id = $1 and kind = 'issue' and target_id is not null",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        if issue_ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        for issue_id in issue_ids {
+            sqlx::query(
+                "update task_links set active = false \
+                 where kind = 'issue' and target_id = $1 and active",
+            )
+            .bind(issue_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+            sqlx::query(
+                "update task_links set active = true \
+                 where task_id = $1 and kind = 'issue' and target_id = $2",
+            )
+            .bind(task_id)
+            .bind(issue_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(())
+    }
 }
 
 fn link_from_row(row: TaskLinkRow) -> Result<TaskLink, RepoError> {
@@ -130,6 +180,7 @@ fn link_from_row(row: TaskLinkRow) -> Result<TaskLink, RepoError> {
         title: row.5,
         relation: TaskLinkRelation::parse(&row.6)
             .ok_or_else(|| RepoError::Backend(format!("unknown task link relation {}", row.6)))?,
+        active: row.10,
         created_by: serde_json::from_value::<Actor>(row.7).map_err(backend)?,
         created_at: row.8,
         metadata: row.9,

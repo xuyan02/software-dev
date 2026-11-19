@@ -56,7 +56,6 @@ export const TASK_STATE_LABELS: Record<string, string> = {
 export const ROLE_KIND_LABELS = {
   human: '人类',
   agent: '智能体',
-  any: '不限',
 } as const;
 
 export function taskStateLabel(state: string): string {
@@ -483,24 +482,16 @@ export function serializeTitle(segments: TitleSegment[]): string {
     .join('');
 }
 
-export const ROLE_KINDS: RoleKind[] = ['human', 'agent', 'any'];
+export const ROLE_KINDS: RoleKind[] = ['human', 'agent'];
 
 /** Machine summary used by diffs and tests. */
 export function roleSummary(role: RoleSpec): string {
-  const actors =
-    role.max_actors === null || role.max_actors === undefined
-      ? `${role.min_actors}+`
-      : `${role.min_actors}-${role.max_actors}`;
-  return `${role.kind} · ${actors}`;
+  return `${role.kind} · ${role.assignment}`;
 }
 
 /** Human-readable summary used in panels. */
 export function roleSummaryLabel(role: RoleSpec): string {
-  const actors =
-    role.max_actors === null || role.max_actors === undefined
-      ? `至少 ${role.min_actors} 个 actor`
-      : `${role.min_actors}–${role.max_actors} 个 actor`;
-  return `${ROLE_KIND_LABELS[role.kind]} · ${actors}`;
+  return `${ROLE_KIND_LABELS[role.kind]} · ${role.assignment}`;
 }
 
 export function effectDisplayLabel(effect: CreatedEffect): string {

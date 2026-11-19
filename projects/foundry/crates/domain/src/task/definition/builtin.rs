@@ -1,6 +1,8 @@
 use super::ast::WorkflowBody;
 use super::interpreter::DefinitionWorkflow;
 use super::validate::validate;
+use crate::RoleKind;
+use std::collections::BTreeSet;
 
 const PROJECT: &str = include_str!("../definitions/project.json");
 const EMPTY: &str = include_str!("../definitions/empty.json");
@@ -19,10 +21,15 @@ const RELEASE: &str = include_str!("../definitions/release.json");
 const PROJECT_REVIEW: &str = include_str!("../definitions/project_review.json");
 const DESIGN_SPACE_MERGE: &str = include_str!("../definitions/design_space_merge.json");
 const CODE_SUMMARY_GROUP: &str = include_str!("../definitions/code_summary_group.json");
+const DESIGN_BASELINE: &str = include_str!("../definitions/design_baseline.json");
 const DESIGN_CONSISTENCY_MAINTENANCE: &str =
     include_str!("../definitions/design_consistency_maintenance.json");
 const ISSUE_TRIAGE: &str = include_str!("../definitions/issue_triage.json");
+const TRIAGE_CHECK: &str = include_str!("../definitions/triage_check.json");
+const TRIAGE: &str = include_str!("../definitions/triage.json");
 const DESIGN_CHANGE: &str = include_str!("../definitions/design_change.json");
+const DESIGN_CORRECTION: &str = include_str!("../definitions/design_correction.json");
+const DESIGN_REWORK: &str = include_str!("../definitions/design_rework.json");
 const CODE_CHANGE: &str = include_str!("../definitions/code_change.json");
 const STYLE_INSPECTION: &str = include_str!("../definitions/style_inspection.json");
 const LOGIC_INSPECTION: &str = include_str!("../definitions/logic_inspection.json");
@@ -79,14 +86,35 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Technical design consistency",
         DESIGN_CONSISTENCY_MAINTENANCE,
     ),
-    ("software_development", "Software development", SOFTWARE_DEVELOPMENT),
+    ("design_baseline", "Design baseline", DESIGN_BASELINE),
+    (
+        "software_development",
+        "Software development",
+        SOFTWARE_DEVELOPMENT,
+    ),
     ("daily_check", "Daily check", DAILY_CHECK),
     ("issue_triage", "Issue triage", ISSUE_TRIAGE),
+    ("triage_check", "Triage check", TRIAGE_CHECK),
+    ("triage", "Issue triage", TRIAGE),
     ("design_change", "Design change", DESIGN_CHANGE),
+    ("design_correction", "Design correction", DESIGN_CORRECTION),
+    ("design_rework", "Design rework", DESIGN_REWORK),
     ("code_change", "Code change", CODE_CHANGE),
-    ("style_inspection", "Code style inspection", STYLE_INSPECTION),
-    ("logic_inspection", "Code logic inspection", LOGIC_INSPECTION),
-    ("cohesion_inspection", "Code cohesion inspection", COHESION_INSPECTION),
+    (
+        "style_inspection",
+        "Code style inspection",
+        STYLE_INSPECTION,
+    ),
+    (
+        "logic_inspection",
+        "Code logic inspection",
+        LOGIC_INSPECTION,
+    ),
+    (
+        "cohesion_inspection",
+        "Code cohesion inspection",
+        COHESION_INSPECTION,
+    ),
     (
         "consistency_inspection",
         "Code-design consistency inspection",
@@ -98,8 +126,40 @@ const SOURCES: &[(&str, &str, &str)] = &[
 /// Builtin workflows currently offered as project root tasks.
 pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &["software_development"];
 
+/// Builtin workflows temporarily disabled. They stay in the catalog so
+/// existing tasks can resolve their pinned versions, but they are hidden from
+/// workflow listings and reject new task creation.
+pub const DISABLED_WORKFLOWS: &[&str] = &[
+    "code_summary_group",
+    "design_consistency_maintenance",
+    "issue_triage",
+    "design_change",
+    "roadmap",
+    "release",
+    "project_review",
+    "requirements_discovery",
+    "iteration",
+];
+
 pub fn is_enabled_root_workflow(id: &str) -> bool {
     ENABLED_ROOT_WORKFLOWS.contains(&id)
+}
+
+pub fn is_disabled_workflow(id: &str) -> bool {
+    DISABLED_WORKFLOWS.contains(&id)
+}
+
+/// Every human identity declared by a builtin workflow role.
+pub fn human_identities() -> Vec<String> {
+    let mut identities = BTreeSet::new();
+    for workflow in builtin_workflows() {
+        for role in &workflow.body_ref().roles {
+            if role.kind == RoleKind::Human {
+                identities.insert(role.assignment.clone());
+            }
+        }
+    }
+    identities.into_iter().collect()
 }
 
 pub fn builtin_title(id: &str) -> Option<&'static str> {
@@ -109,7 +169,7 @@ pub fn builtin_title(id: &str) -> Option<&'static str> {
         .map(|(_, title, _)| *title)
 }
 
-/// Parse, validate and construct the nine platform workflows.
+/// Parse, validate and construct the platform workflows.
 ///
 /// The sources are embedded JSON owned by this crate; a parse or validation
 /// failure is a build-content error and panics at startup rather than silently

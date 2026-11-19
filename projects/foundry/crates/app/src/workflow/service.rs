@@ -70,6 +70,9 @@ where
             .await?;
         let mut definitions = Vec::with_capacity(rows.len());
         for row in rows {
+            if foundry_domain::is_disabled_workflow(row.definition.id.as_str()) {
+                continue;
+            }
             definitions.push(self.view(&account, row).await?);
         }
         Ok(definitions)

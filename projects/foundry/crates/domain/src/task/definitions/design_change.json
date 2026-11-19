@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "design_reviewer", "kind": "agent", "min_actors": 1, "max_actors": 1},
-    {"name": "acceptor", "kind": "human", "min_actors": 1, "max_actors": 1}
+    {"name": "designer", "kind": "agent", "assignment": "design_change"},
+    {"name": "design_reviewer", "kind": "agent", "assignment": "design_change"},
+    {"name": "acceptor", "kind": "human", "assignment": "design_space_reviewer"}
   ],
   "initial_stage": "analysis",
   "stages": [
@@ -61,34 +61,19 @@
       "name": "human_review",
       "active_roles": ["acceptor"],
       "vars": {
-        "decision": {"type": "string", "display_name": "Decision"}
+        "decision": {"type": "string", "display_name": "Decision"},
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "conflict": {"type": "bool", "display_name": "Conflict"}
       },
       "operations": [
-        {"name": "approved", "display_name": "人类批准", "description": "人类批准当前设计内容和合并请求。", "roles": ["acceptor"], "action": "decision = 'approved'"},
+        {"name": "merge", "display_name": "批准并合入", "description": "人类批准后平台立即机械合入设计变更。", "roles": ["acceptor"], "action": "merged = true"},
+        {"name": "conflict", "display_name": "合入未完成", "description": "机械合入失败，转智能体解决冲突或清理评论后重新审批。", "roles": ["acceptor"], "action": "conflict = true"},
         {"name": "rejected", "display_name": "人类打回", "description": "设计修改需要继续调整。", "roles": ["acceptor"], "action": "decision = 'rejected'"}
       ],
       "transitions": [
-        {"on": "decision == 'approved'", "to": "merge"},
-        {"on": "decision == 'rejected'", "to": "design"}
-      ]
-    },
-    {
-      "name": "merge",
-      "active_roles": ["design_reviewer"],
-      "vars": {
-        "merged": {"type": "bool", "display_name": "Merged"},
-        "conflict": {"type": "bool", "display_name": "Conflict"},
-        "failed": {"type": "bool", "display_name": "Failed"}
-      },
-      "operations": [
-        {"name": "merged", "display_name": "合入完成", "description": "设计变更已合入 source。", "roles": ["design_reviewer"], "action": "merged = true"},
-        {"name": "conflict", "display_name": "存在冲突", "description": "source 在审批期间前进，需要 rebase。", "roles": ["design_reviewer"], "action": "conflict = true"},
-        {"name": "failed", "display_name": "合入失败", "description": "无法合入设计变更。", "roles": ["design_reviewer"], "action": "failed = true"}
-      ],
-      "transitions": [
-        {"on": "merged", "to": "cleanup"},
         {"on": "conflict", "to": "conflict_resolution"},
-        {"on": "failed", "to": "failed"}
+        {"on": "merged", "to": "cleanup"},
+        {"on": "decision == 'rejected'", "to": "design"}
       ]
     },
     {
@@ -99,7 +84,7 @@
         "failed": {"type": "bool", "display_name": "Failed"}
       },
       "operations": [
-        {"name": "resolved", "display_name": "冲突已解决", "description": "design-change 分支已 rebase，并刷新合并请求。", "roles": ["designer"], "action": "resolved = true"},
+        {"name": "resolved", "display_name": "冲突已解决", "description": "design-change 分支已 rebase、清理评论并刷新合并请求。", "roles": ["designer"], "action": "resolved = true"},
         {"name": "failed", "display_name": "无法解决", "description": "冲突无法解决。", "roles": ["designer"], "action": "failed = true"}
       ],
       "transitions": [

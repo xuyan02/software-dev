@@ -6,7 +6,7 @@ function body(): WorkflowBody {
   return {
     schema_version: 1,
     roles: [
-      { name: 'owner', kind: 'human', min_actors: 1, max_actors: null },
+      { name: 'owner', kind: 'human', assignment: 'acceptor' },
     ],
     vars: {},
     initial_stage: 'start',
@@ -55,21 +55,21 @@ describe('version diff', () => {
   it('reports role changes, additions and removals', () => {
     const after = body();
     after.roles = [
-      { name: 'owner', kind: 'agent', min_actors: 2, max_actors: 3 },
-      { name: 'qa', kind: 'human', min_actors: 1, max_actors: null },
+      { name: 'owner', kind: 'agent', assignment: 'custom' },
+      { name: 'qa', kind: 'human', assignment: 'acceptor' },
     ];
     const entries = diffBodies(body(), after);
     expect(entries).toEqual([
       {
         kind: 'changed',
         scope: '角色 owner',
-        text: 'kind human → agent，min_actors 1 → 2，max_actors 不限 → 3',
+        text: 'kind human → agent，assignment acceptor → custom',
         selection: { kind: 'role', index: 0 },
       },
       {
         kind: 'added',
         scope: '角色',
-        text: '新增 qa（human · 1+）',
+        text: '新增 qa（human · acceptor）',
         selection: { kind: 'role', index: 1 },
       },
     ]);
@@ -78,7 +78,7 @@ describe('version diff', () => {
     expect(removed).toContainEqual({
       kind: 'removed',
       scope: '角色',
-      text: '删除 qa（human · 1+）',
+      text: '删除 qa（human · acceptor）',
       selection: null,
     });
   });

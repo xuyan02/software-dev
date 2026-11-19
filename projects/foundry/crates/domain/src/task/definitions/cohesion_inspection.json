@@ -1,12 +1,7 @@
 {
   "schema_version": 1,
   "roles": [
-    {
-      "name": "cohesion_inspector",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    }
+    {"name": "cohesion_inspector", "kind": "agent", "assignment": "cohesion_inspection"}
   ],
   "initial_stage": "inspect",
   "stages": [

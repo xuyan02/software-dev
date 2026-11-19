@@ -205,6 +205,7 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
             require_hash(p.qualified_name, "system qualified_name")?;
             require_hash(p.parent, "system parent")?;
             validate_text(&p.title, "system title")?;
+            validate_symbol_list(&p.members, "system members", true)?;
             validate_object_hashes(&p.children, "system children")?;
             Ok(())
         }
@@ -575,9 +576,7 @@ fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> 
         Kind::DocumentList => ObjectPayload::DocumentList(decode_document_list(reader)?),
         Kind::DocumentText => ObjectPayload::DocumentText(decode_document_text(reader)?),
         Kind::DocumentTopic => ObjectPayload::DocumentTopic(decode_document_topic(reader)?),
-        Kind::DesignStructure => {
-            ObjectPayload::DesignStructure(decode_design_structure(reader)?)
-        }
+        Kind::DesignStructure => ObjectPayload::DesignStructure(decode_design_structure(reader)?),
         Kind::System => ObjectPayload::System(decode_system(reader)?),
         Kind::Module => ObjectPayload::Module(decode_module(reader)?),
     })
@@ -955,15 +954,31 @@ fn encode_system(p: &SystemPayload, out: &mut Vec<u8>) {
     put_string(out, &p.title);
     put_hash(out, p.document);
     encode_object_hashes(out, &p.children);
+    // Appended optional field: objects written before systems could own
+    // members have no trailing bytes and decode with an empty member list.
+    if !p.members.is_empty() {
+        encode_symbols(out, &p.members);
+    }
 }
 
 fn decode_system(r: &mut Reader<'_>) -> Result<SystemPayload> {
+    let qualified_name = SymbolHash(Hash32(read_32(r)?));
+    let parent = SymbolHash(Hash32(read_32(r)?));
+    let title = read_string(r, "system title")?;
+    let document = SymbolHash(Hash32(read_32(r)?));
+    let children = decode_object_hashes(r)?;
+    let members = if r.is_empty() {
+        Vec::new()
+    } else {
+        decode_symbols(r)?
+    };
     Ok(SystemPayload {
-        qualified_name: SymbolHash(Hash32(read_32(r)?)),
-        parent: SymbolHash(Hash32(read_32(r)?)),
-        title: read_string(r, "system title")?,
-        document: SymbolHash(Hash32(read_32(r)?)),
-        children: decode_object_hashes(r)?,
+        qualified_name,
+        parent,
+        title,
+        document,
+        members,
+        children,
     })
 }
 
@@ -1682,6 +1697,18 @@ mod tests {
                 parent: s(1),
                 title: "应用".to_owned(),
                 document: s(3),
+                members: vec![s(5), s(6)],
+                children: vec![],
+            }),
+        ));
+        roundtrip(DesignObject::new(
+            Kind::System,
+            ObjectPayload::System(SystemPayload {
+                qualified_name: s(9),
+                parent: s(1),
+                title: "空成员系统".to_owned(),
+                document: s(3),
+                members: vec![],
                 children: vec![],
             }),
         ));

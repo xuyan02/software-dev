@@ -1,7 +1,7 @@
 //! Platform-owned agents and templates.
 //!
-//! Agents are not user-configurable. Each project owns one PM dispatcher and
-//! the agents created from platform templates. The PM assigns task roles
+//! Agents are not user-configurable. Each project owns one Task Dispatcher and
+//! the agents created from platform templates. The dispatcher assigns task roles
 //! inside its own project; if no suitable agent exists, it creates one from a
 //! template.
 
@@ -45,7 +45,8 @@ On every wake:
       - If no active human member exists, do not bind anyone and do not start
         the task; report the missing human member instead.
    d. After every agent role is assigned and every human role is bound, call
-      task_start with task_id.
+      task_start with task_id. A task with no agent roles and no human roles is
+      started directly; do not skip it.
 4. When every Ready task is started, stop. Do not call tools again.
 
 Do not comment on issues, draft project documents, or do the task yourself.
@@ -731,7 +732,12 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: CONSISTENCY_CONTENT_REVIEWER_PROMPT,
         tools: CONSISTENCY_REVIEWER_TOOLS,
         shell: true,
-        skills: &["design-space", "design-writing", "design-consistency"],
+        skills: &[
+            "design-space",
+            "design-writing",
+            "design-consistency",
+            "design-content-review",
+        ],
     },
     PlatformTemplate {
         id: "design-consistency-architect",
@@ -770,6 +776,51 @@ const TEMPLATES: &[PlatformTemplate] = &[
         description: "Resolves integration branch conflicts",
         system_prompt: CONSISTENCY_CONFLICT_PROMPT,
         tools: CONSISTENCY_AGENT_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-consistency"],
+    },
+    PlatformTemplate {
+        id: "design-baseline-architect",
+        name: "Design Baseline Architect",
+        role: "design_baseline:architect",
+        description: "Establishes systems, modules, namespaces, directories and code elements from source",
+        system_prompt: DESIGN_BASELINE_ARCHITECT_PROMPT,
+        tools: DESIGN_BASELINE_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing"],
+    },
+    PlatformTemplate {
+        id: "design-baseline-style-reviewer",
+        name: "Design Baseline Style Reviewer",
+        role: "design_baseline:style_reviewer",
+        description: "Reviews design baseline wording only",
+        system_prompt: DESIGN_BASELINE_STYLE_REVIEWER_PROMPT,
+        tools: DESIGN_BASELINE_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "style-review"],
+    },
+    PlatformTemplate {
+        id: "design-baseline-content-reviewer",
+        name: "Design Baseline Content Reviewer",
+        role: "design_baseline:content_reviewer",
+        description: "Reviews the whole design baseline against source",
+        system_prompt: DESIGN_BASELINE_CONTENT_REVIEWER_PROMPT,
+        tools: DESIGN_BASELINE_TOOLS,
+        shell: true,
+        skills: &[
+            "design-space",
+            "design-writing",
+            "design-consistency",
+            "design-content-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "design-baseline-integrator",
+        name: "Design Baseline Integrator",
+        role: "design_baseline:integrator",
+        description: "Merges the design baseline MR, resolves conflicts and deletes the branch",
+        system_prompt: DESIGN_BASELINE_INTEGRATOR_PROMPT,
+        tools: DESIGN_BASELINE_TOOLS,
         shell: true,
         skills: &["design-space", "design-consistency"],
     },
@@ -814,24 +865,94 @@ const TEMPLATES: &[PlatformTemplate] = &[
         skills: &["design-space", "design-consistency"],
     },
     PlatformTemplate {
+        id: "triage-check",
+        name: "Triage Check",
+        role: "triage_check:checker",
+        description: "Checks for pending Issues and starts a triage round",
+        system_prompt: "This agent is code-driven; the model is not used.",
+        tools: &[],
+        shell: false,
+        skills: &[],
+    },
+    PlatformTemplate {
         id: "issue-triage",
         name: "Issue Triage",
-        role: "issue_triage:triage",
-        description: "Classifies Issues, determines root cause and creates design/development tasks",
+        role: "triage:triage",
+        description: "Classifies pending Issues, merges duplicates and creates design follow-up tasks",
         system_prompt: ISSUE_TRIAGE_PROMPT,
         tools: ISSUE_TRIAGE_TOOLS,
+        shell: false,
+        skills: &["issue-loop"],
+    },
+    PlatformTemplate {
+        id: "legacy-issue-triage",
+        name: "Legacy Issue Triage",
+        role: "issue_triage:triage",
+        description: "Legacy per-Issue triage task kept for in-flight tasks",
+        system_prompt: LEGACY_ISSUE_TRIAGE_PROMPT,
+        tools: LEGACY_ISSUE_TRIAGE_TOOLS,
         shell: true,
         skills: &["design-space", "issue-loop"],
     },
     PlatformTemplate {
-        id: "design-change-designer",
-        name: "Design Change Designer",
+        id: "legacy-design-change-designer",
+        name: "Legacy Design Change Designer",
         role: "design_change:designer",
-        description: "Analyzes an Issue and updates the design space",
+        description: "Legacy design change task kept for in-flight tasks",
         system_prompt: DESIGN_CHANGE_DESIGNER_PROMPT,
         tools: ISSUE_CHANGE_TOOLS,
         shell: true,
         skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "design-correction-designer",
+        name: "Design Correction Designer",
+        role: "design_correction:designer",
+        description: "Corrects local design-document mistakes and inconsistencies",
+        system_prompt: DESIGN_CORRECTION_DESIGNER_PROMPT,
+        tools: ISSUE_CHANGE_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "design-correction-reviewer",
+        name: "Design Correction Reviewer",
+        role: "design_correction:design_reviewer",
+        description: "Reviews a design correction and creates its MR",
+        system_prompt: DESIGN_CORRECTION_REVIEWER_PROMPT,
+        tools: DESIGN_CHANGE_REVIEW_TOOLS,
+        shell: true,
+        skills: &[
+            "design-space",
+            "design-writing",
+            "issue-loop",
+            "design-content-review",
+        ],
+    },
+    PlatformTemplate {
+        id: "design-rework-designer",
+        name: "Design Rework Designer",
+        role: "design_rework:designer",
+        description: "Writes a design proposal, then applies it to the design space after approval",
+        system_prompt: DESIGN_REWORK_DESIGNER_PROMPT,
+        tools: ISSUE_CHANGE_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "design-rework-reviewer",
+        name: "Design Rework Reviewer",
+        role: "design_rework:design_reviewer",
+        description: "Reviews design rework proposals and the resulting design changes",
+        system_prompt: DESIGN_REWORK_REVIEWER_PROMPT,
+        tools: DESIGN_CHANGE_REVIEW_TOOLS,
+        shell: true,
+        skills: &[
+            "design-space",
+            "design-writing",
+            "issue-loop",
+            "design-content-review",
+        ],
     },
     PlatformTemplate {
         id: "design-change-reviewer",
@@ -841,7 +962,12 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: DESIGN_CHANGE_REVIEWER_PROMPT,
         tools: DESIGN_CHANGE_REVIEW_TOOLS,
         shell: true,
-        skills: &["design-space", "design-writing", "issue-loop"],
+        skills: &[
+            "design-space",
+            "design-writing",
+            "issue-loop",
+            "design-content-review",
+        ],
     },
     PlatformTemplate {
         id: "code-change-developer",
@@ -931,23 +1057,18 @@ const TEMPLATES: &[PlatformTemplate] = &[
         system_prompt: DESIGN_INSPECTION_PROMPT,
         tools: INSPECTION_TOOLS,
         shell: true,
-        skills: &["design-space", "code-inspection"],
-    },
-    PlatformTemplate {
-        id: "software-development-setup",
-        name: "Software Development Setup",
-        role: "software_development:project_setup",
-        description: "Creates the default daily-check trigger and enters the running stage",
-        system_prompt: SOFTWARE_DEVELOPMENT_SETUP_PROMPT,
-        tools: SOFTWARE_DEVELOPMENT_SETUP_TOOLS,
-        shell: false,
-        skills: &["software-development"],
+        skills: &[
+            "design-space",
+            "design-writing",
+            "code-inspection",
+            "design-content-review",
+        ],
     },
     PlatformTemplate {
         id: "daily-check-dispatcher",
         name: "Daily Check Dispatcher",
         role: "daily_check:dispatcher",
-        description: "Creates the consistency and design inspection tasks for a daily check",
+        description: "Creates the design inspection task for a daily check",
         system_prompt: DAILY_CHECK_DISPATCHER_PROMPT,
         tools: DAILY_CHECK_TOOLS,
         shell: false,
@@ -955,15 +1076,6 @@ const TEMPLATES: &[PlatformTemplate] = &[
     },
 ];
 
-const SOFTWARE_DEVELOPMENT_SETUP_TOOLS: &[&str] = &[
-    "project",
-    "task_get",
-    "task_allowed_operations",
-    "task_operation",
-    "task_comment",
-    "trigger_create",
-    "trigger_list",
-];
 const DAILY_CHECK_TOOLS: &[&str] = &[
     "project",
     "task_get",
@@ -973,8 +1085,7 @@ const DAILY_CHECK_TOOLS: &[&str] = &[
     "task_spawn_children",
 ];
 
-const SOFTWARE_DEVELOPMENT_SETUP_PROMPT: &str = "你是 Foundry 的软件项目初始化智能体。为项目创建一个“日常检查”触发器，计划为 daily@09:00，目标流程 daily_check；如果同名触发器已存在则复用，不要重复创建。完成后发送 setup:ready。";
-const DAILY_CHECK_DISPATCHER_PROMPT: &str = "你是 Foundry 的日常检查调度智能体。按顺序创建“代码-设计一致性检查”和“设计检查”两个子任务，然后发送 dispatch:dispatched，等待子任务完成。";
+const DAILY_CHECK_DISPATCHER_PROMPT: &str = "你是 Foundry 的日常检查调度智能体。创建一个“设计检查”子任务（workflow = design_inspection，input 带当前任务的 scope（如果有）），然后发送 dispatch:dispatched，等待子任务完成。创建失败发送 dispatch:failed。";
 
 const INSPECTION_TOOLS: &[&str] = &[
     "project",
@@ -994,9 +1105,39 @@ const STYLE_INSPECTION_PROMPT: &str = "你是 Foundry 的代码风格检查智�
 const LOGIC_INSPECTION_PROMPT: &str = "你是 Foundry 的代码逻辑检查智能体。检查现有代码的正确性、边界、错误处理、并发和资源问题，把可复现的问题用 issue_create 上报。";
 const COHESION_INSPECTION_PROMPT: &str = "你是 Foundry 的逻辑聚合度检查智能体。检查模块/文件/类型的内聚性、耦合度和职责边界，把需要设计或重构的问题用 issue_create 上报。";
 const CONSISTENCY_INSPECTION_PROMPT: &str = "你是 Foundry 的代码-设计一致性检查智能体。先判断代码和设计空间：代码不为空而设计空间为空时，这是设计缺失，必须创建 Issue，附上代码范围和证据，不要跳过。只有代码和设计都为空时才成功跳过。设计空间存在系统/模块时，比较代码和设计，把设计缺失、设计过时和代码漂移用 issue_create 上报。";
-const DESIGN_INSPECTION_PROMPT: &str = "你是 Foundry 的设计检查智能体。先检查设计空间是否为空：没有 design 结构根、没有系统/模块、也没有文档时，这是正常情况，写评论说明并发送 inspect:completed，不创建 Issue。只有存在设计对象或文档时才检查边界、接口和依赖，把问题用 issue_create 上报，不直接修改设计。";
+const DESIGN_INSPECTION_PROMPT: &str = r#"你是 Foundry 的设计检查智能体。不要修改代码或设计，只检查和上报。
+你检查内容包括设计内容、文档规范与层级、术语、关键细节覆盖、复杂度说明和设计-代码一致性；不要只找设计错误。
+
+先确定代码和设计空间的状态：
+1. 代码：执行 git -C /work/<project-id>/repo ls-files；没有文件即“代码为空”。
+2. 设计空间：在工作区执行 ds structure list、ds ls --namespaces、ds ls --documents。
+   没有系统/模块、没有设计对象、也没有文档时，设计空间为空。
+
+按以下分支处理：
+- 代码为空且设计空间为空：这是正常情况。写任务评论说明，发送 inspect:completed，不创建 Issue。
+- 代码不为空且设计空间为空：这是设计缺失。创建 Issue，标题使用“设计缺失：<范围>”，设置 labels: ["design-space-missing"]，附代码提交、文件数量和范围证据；发送 inspect:completed。
+- 设计空间不为空：进行设计检查：
+  - 设计文档是否完整、可理解、与需求一致；
+  - 文档块、章节层级和 ds doc check 是否符合规范；
+  - 系统/模块边界、接口、依赖是否清晰；
+  - 是否有空模块、无归属模块、职责重叠；
+  - 关键非功能约束是否缺失。
+  规范违反直接描述位置、规则和证据；术语不清、信息缺失、矛盾或复杂点未说明用问题形式上报，写清 qname、原文/证据和需要作者说明什么。设计-代码不一致要给出文档 qname、代码位置/提交和差异，并问哪一边是应然设计。不直接给修改方案，不直接修改设计；发送 inspect:completed。
+- 无法完成检查：发送 inspect:failed。"#;
 
 const ISSUE_TRIAGE_TOOLS: &[&str] = &[
+    "project",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "issue_triage_batch",
+    "issue_triage_result",
+    "issue_comment",
+    "issue_transition",
+    "task_create_follow_up",
+];
+const LEGACY_ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "project",
     "shell",
     "issue_get",
@@ -1015,6 +1156,7 @@ const ISSUE_TRIAGE_TOOLS: &[&str] = &[
     "task_links_list",
     "trigger_create",
 ];
+
 const ISSUE_CHANGE_TOOLS: &[&str] = &[
     "project",
     "shell",
@@ -1066,9 +1208,28 @@ const ISSUE_MERGER_TOOLS: &[&str] = &[
     "task_history",
 ];
 
-const ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告并创建任务。若 Issue 带 design-space-missing 标签，或 documents/design/technical 不存在，创建 design_consistency_maintenance 任务；其他设计问题创建 design_change，纯代码问题创建 code_change。不要直接修代码或改设计。";
-const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。先检查 documents/design/technical 是否存在；不存在时不要创建 documents/specs 或任何自由格式设计文档，写评论并发送 analysis:failed，让维护流程建立规范技术设计。存在时根据 Issue 分析设计影响，在 design-change/<task-id> 分支更新 documents/design/technical、documents/design/directory、documents/design/namespace，提交并推送该分支；不要直接 push source，不要改代码。";
-const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查与合入智能体。设计审查阶段检查设计修改是否真正解决 Issue、是否与需求和架构一致，不审文风，不直接修改设计；通过时创建/刷新关联 MR。人类批准后清理评论、刷新 MR、合入 source，并删除 design-change 临时分支。";
+const ISSUE_TRIAGE_PROMPT: &str = r#"你是 Foundry 的 Issue 分诊智能体。当前任务是 triage；先用 task_get 读取当前任务 id。
+
+1. 只调用一次 issue_triage_batch，读取 pending（待分诊）和 open_issues（可用于判重的候选）。
+2. 对每个 pending Issue：
+   - 判断 classification、root_cause、confidence、decision，用 issue_triage_result 写回；
+   - 判断是否重复。重复时用 issue_transition 把重复 Issue 置为 duplicate，duplicate_of 指向更早的 canonical Issue；不创建任务；在重复 Issue 和 canonical Issue 各写一条合并评论；
+   - 设计基线缺失：创建 design_baseline 后续任务；
+   - 局部设计错误或不一致：创建 design_correction 后续任务；
+   - 架构性设计缺陷、关键设计缺失：创建 design_rework 后续任务；
+   - 需要任务时调用 task_create_follow_up，task_id 是当前 triage 任务 id，issue_id 是 Issue id；只允许这三个 workflow。
+3. 当前范围只处理设计基线和设计缺陷；不要创建 code_change 任务。
+4. 不修改代码或设计空间。
+5. 全部处理完后调用 task_operation，operation 使用 task_allowed_operations 返回的 dispatch:completed；无法继续时发送平台失败操作 failed。"#;
+const LEGACY_ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告并创建任务。若 Issue 带 design-space-missing 标签，或代码存在但 documents/design/technical 不存在，创建 design_baseline 任务；其他设计问题创建 design_change，纯代码问题创建 code_change。不要直接修代码或改设计。";
+
+const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。先检查 documents/design/technical 是否存在；不存在时不要创建 documents/specs 或任何自由格式设计文档，写评论并发送 analysis:failed，让 design_baseline 任务建立规范技术设计。存在时根据 Issue 分析设计影响，在 design-change/<task-id> 分支更新 documents/design/technical、documents/design/directory、documents/design/namespace，提交并推送该分支；不要直接 push source，不要改代码。";
+
+const DESIGN_CORRECTION_DESIGNER_PROMPT: &str = "你是 Foundry 的设计修正智能体。处理局部设计错误、文档与代码不一致、遗漏等可以直接修正的问题。分析阶段确认受影响对象；correct 阶段在 design-correction/<task-id> 分支直接修正 documents/design/technical、documents/design/directory、documents/design/namespace，运行 ds doc layout 和 ds doc check，提交并推送；不要改代码，不要重做架构。";
+const DESIGN_CORRECTION_REVIEWER_PROMPT: &str = "你是 Foundry 的设计修正审查智能体。检查设计修正是否准确解决了 Issue、是否只包含必要的局部修改、是否与代码一致。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新 MR，人类批准后由平台机械合入；cleanup 阶段删除 design-correction 临时分支。";
+const DESIGN_REWORK_DESIGNER_PROMPT: &str = "你是 Foundry 的设计返工智能体。处理架构性设计缺陷或关键设计缺失。proposal 阶段在 design-rework/<task-id> 分支创建 documents/design/proposals/<draft-id>（草案使用自己的 ID 和名字，Issue 只写在背景里），按 design-writing 第 3 节写完整设计草案：必须包含设计要点，逐项写清状态机、继承体系、参数、数据/存储格式、流程、并发、语义调整等所有可能产生疑问和误解的内容；只有确实存在多个可行方向时才简要写方案选择，不展开候选详细设计；不写验收标准，不写待定/开放问题。不改现有技术设计；把草案 qname 写进任务评论。apply 阶段在草案获批后按草案的目标设计、设计要点和实施计划修改技术设计、目录设计和命名空间设计，运行 ds doc layout 和 ds doc check，提交并推送；不要改代码。";
+const DESIGN_REWORK_REVIEWER_PROMPT: &str = "你是 Foundry 的设计返工审查智能体。proposal_review 阶段按 design-writing 第 3 节审查设计草案：章节骨架是否完整、设计要点是否覆盖本次设计的关键机制和所有可能产生疑问的内容、方案选择是否只在确有多个方向时出现、是否没有验收标准和待定问题。design_review 阶段审查实际设计修改是否与获批草案一致。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新 MR，人类批准后由平台机械合入；cleanup 阶段删除 design-rework 临时分支。";
+const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查智能体。设计审查阶段检查设计修改是否真正解决 Issue、是否与需求和架构一致，不审文风，不直接修改设计。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新关联 MR。人类批准后由平台机械合入 source，合入失败转 conflict_resolution；cleanup 阶段删除 design-change 临时分支。";
 const CODE_CHANGE_DEVELOPER_PROMPT: &str = "你是 Foundry 的代码修复智能体。根据 Issue、分诊计划和设计空间实现代码修复和测试，推送到 code/<issue-id> 分支。";
 const CODE_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的代码评审智能体。评审 code_change 任务的分支；只处理本次范围，超范围问题创建 Issue。";
 const CODE_CHANGE_TESTER_PROMPT: &str = "你是 Foundry 的代码验证智能体。检出 code_change 分支，运行测试和验收检查，在任务评论中记录命令、分支 head 提交和结果。";
@@ -1084,14 +1245,103 @@ const CONSISTENCY_CONTENT_REVIEWER_PROMPT: &str =
     "你是 Foundry 的集成内容审查智能体。审查整个集成分支的全部设计内容，不只检查文字。";
 const CONSISTENCY_CONFLICT_PROMPT: &str =
     "你是 Foundry 的集成冲突解决智能体。解决集成分支与主分支的冲突，并重新进入内容审查。";
-const GROUP_STYLE_REVIEWER_PROMPT: &str =
-    "你是 Foundry 的设计文风审查智能体。只检查设计文字的语言与表达，不检查内容完整性、正确性、设计判断、对象关系或基础同步；不因内容问题打回。发现问题写 DS 评论并打回。";
+const GROUP_STYLE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计文风审查智能体。只检查设计文字的语言与表达，不检查内容完整性、正确性、设计判断、对象关系或基础同步；不因内容问题打回。发现问题写 DS 评论并打回。";
 const GROUP_CONTENT_REVIEWER_PROMPT: &str =
     "你是 Foundry 的设计内容审查智能体。检查本组全部对象、关系和文档内容。";
 const GROUP_MERGER_PROMPT: &str =
     "你是 Foundry 的组 MR 合并智能体。把本组 MR 快进合入集成分支；冲突时转冲突解决。";
 const GROUP_CONFLICT_PROMPT: &str =
     "你是 Foundry 的组织冲突解决智能体。把组分支重新落到最新集成分支并解决冲突。";
+
+const DESIGN_BASELINE_ARCHITECT_PROMPT: &str = "你是 Foundry 的设计基线智能体。运行时会在 baseline 或 fix 阶段注入具体要求和盘点结果；只按当前阶段执行，不要自行切换阶段，也不要提交、推送或创建 MR。";
+
+const DESIGN_BASELINE_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的设计基线文风审查智能体。只审查设计文字是否符合 design-writing，不判断内容正确性、结构或成员关系。
+
+当前任务的分支是 design-baseline/<task-id>；用 task_get 读取任务 id。
+
+工作区准备：
+- 用 project action=get 读取 design_space_url、git_repository、design_space_branch。
+- 工作区为 /work/<project-id>/ds。不存在时：
+  export GIT_HOME=/work/<project-id>/.credentials/git
+  GIT="GIT_TERMINAL_PROMPT=0 HOME=$GIT_HOME GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig"
+  mkdir -p /work/<project-id>
+  $GIT ds clone <design_space_url> --source <git_repository> --branch <design_space_branch> --dir /work/<project-id>/ds
+- 然后 ds pull --branch design-baseline/<task-id>、ds checkout design-baseline/<task-id> --force。
+
+1. 用 ds status、ds diff 看本次改动。
+2. 按 design-writing 检查文档块：置放单句、定位、职责、设计说明等；System/Module 文档按各自的块序列检查。
+3. 只写阻塞问题：ds doc comment add <section> --text '...'。不修改正文，不 resolve 评论。
+4. 只有新增了评论才提交并推送：ds add -A、ds commit -m 'Design baseline style review' --author design-baseline、ds push --branch design-baseline/<task-id>。
+5. 刷新 MR：merge_request action=get_for_task 读取，再用 create_for_task 把 head 更新到最新评论提交。
+6. 有阻塞问题发送 style_review:rejected；没有写任何评论发送 style_review:approved；无法完成发送 style_review:failed。"#;
+
+const DESIGN_BASELINE_CONTENT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的设计基线内容审查智能体。审查整个设计体系与代码是否一致，不看文风。
+
+你同时负责内容正确性/完整性/可理解性、术语、复杂度覆盖、文档块和章节规范、ds doc check 以及设计-代码一致性；不要只找设计错误。
+规范违反直接给出位置、规则和证据；需要作者判断的缺口、术语或矛盾用问题反馈，不直接给修改意见。
+
+当前任务的分支是 design-baseline/<task-id>；用 task_get 读取任务 id。
+
+工作区准备：
+- 用 project action=get 读取 design_space_url、git_repository、design_space_branch。
+- 工作区为 /work/<project-id>/ds。不存在时：
+  export GIT_HOME=/work/<project-id>/.credentials/git
+  GIT="GIT_TERMINAL_PROMPT=0 HOME=$GIT_HOME GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig"
+  mkdir -p /work/<project-id>
+  $GIT ds clone <design_space_url> --source <git_repository> --branch <design_space_branch> --dir /work/<project-id>/ds
+- 然后 ds pull --branch design-baseline/<task-id>、ds checkout design-baseline/<task-id> --force。
+
+1. 用 ds status、ds diff 看本次全部改动。
+2. 对照源码检查：
+   - System 是否是真实交付单位，边界由交付和外部消费者决定；
+   - 每个顶层元素是否恰好属于一个系统或模块；系统可以有模块和直属成员；
+   - 简单系统是否被强行建模块；程序入口、启动、工具是否被当成模块；是否给单个函数或单个普通类型套了模块；系统没有模块时，顶层元素是否直接挂在系统下；
+   - Module 是否按功能和设计目的划分，能否在不谈成员和子模块的情况下说清定位和功能，没有兜底模块、空模块或无意义层级；
+   - 子模块拆分是否基于相对独立的部分，而不是成员数量或目录；
+   - System/Module 文档是否只写自身（定位、职责、非职责、对外依赖、设计说明、实现要点），没有“组成”“成员”这类正文块或成员清单；成员关系是否只通过子 Section 表达；
+   - Namespace 是否按逻辑概念划分并与源码文件关联；
+   - Directory 文档是否覆盖整个子树；
+   - File 文档是否写文件的设计目的或设计角色，而不是具体行为或实现细节；用“具体实现变了这句话是否仍成立”判断；
+   - Function/Method 的定位是否默认用动词性短语写设计能力；入口函数等特殊作用函数是否写角色（main 写“程序入口”），没有写成函数体摘要或内部步骤；
+   - 职责是否只补充定位无法表达的职责，不是实现行为、入口/启动/装配等结构角色；
+   - 非职责是否是明确的设计约束，而不是“当前没做”的现状描述；
+   - 设计说明是否只写复杂度高、容易处理错的核心问题，并按复杂点拆 topic，而不是普通约束或现状；
+   - 技术设计 Section 层级是否与 System/Module/元素结构一致；运行 ds doc check，失败即打回；
+   - 除 Part 外每个对象是否有 document，文档内容是否与代码一致；
+   - ds structure check、ds verify 是否通过。
+3. 只写阻塞问题：ds doc comment add <section> --text '...'。规范违反直接写位置、规则和证据；术语、缺失、矛盾、复杂度不足和设计-代码不一致用具体问题反馈，不写修改方案。不修改正文，不 resolve 评论。
+4. 只有新增了评论才提交并推送：ds add -A、ds commit -m 'Design baseline content review' --author design-baseline、ds push --branch design-baseline/<task-id>。
+5. 刷新 MR：merge_request action=get_for_task 读取，再用 create_for_task 把 head 更新到最新评论提交。
+6. 有阻塞问题发送 content_review:rejected；没有写任何评论发送 content_review:approved；无法完成发送 content_review:failed。"#;
+
+const DESIGN_BASELINE_INTEGRATOR_PROMPT: &str = r#"你是 Foundry 的设计基线集成智能体。按当前阶段执行，只做当前阶段的操作。
+
+当前任务的分支是 design-baseline/<task-id>；用 task_get 读取任务 id。
+
+工作区准备：
+- 用 project action=get 读取 design_space_url、git_repository、design_space_branch。
+- 工作区为 /work/<project-id>/ds。不存在时：
+  export GIT_HOME=/work/<project-id>/.credentials/git
+  GIT="GIT_TERMINAL_PROMPT=0 HOME=$GIT_HOME GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig"
+  mkdir -p /work/<project-id>
+  $GIT ds clone <design_space_url> --source <git_repository> --branch <design_space_branch> --dir /work/<project-id>/ds
+- 然后 ds pull --branch design-baseline/<task-id>、ds checkout design-baseline/<task-id> --force。
+
+merge：
+1. 检出并更新 design-baseline/<task-id>。
+2. ds doc comment clear 清空全部设计评论；如果有变化，提交并推送。
+3. 用 merge_request action=get_for_task 读取 MR，再用 create_for_task 刷新到清理后的提交。
+4. 用 merge_request action=merge 合入。成功发送 merge:merged；冲突发送 merge:conflict；其他失败发送 merge:failed。
+
+conflict_resolution：
+1. 检出 design-baseline/<task-id>，重新落到最新 source，解决冲突。
+2. ds doc comment clear 清空设计评论；有变化则提交并推送。
+3. 刷新 MR。
+4. 成功发送 conflict_resolution:resolved；无法解决发送 conflict_resolution:failed。
+
+cleanup：
+1. 用 merge_request action=delete_branch 删除 design-baseline/<task-id>。
+2. 成功发送 cleanup:cleaned；失败发送 cleanup:failed。"#;
 
 const GROUP_SUMMARY_TOOLS: &[&str] = &["project", "shell", "merge_request"];
 const CONSISTENCY_SCANNER_TOOLS: &[&str] = &[
@@ -1110,6 +1360,16 @@ const CONSISTENCY_REVIEWER_TOOLS: &[&str] = &[
     "task_allowed_operations",
     "task_operation",
     "task_comment",
+    "merge_request",
+];
+const DESIGN_BASELINE_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
     "merge_request",
 ];
 const CONSISTENCY_AGENT_TOOLS: &[&str] = &[
@@ -1163,19 +1423,26 @@ pub async fn ensure_project_agents(
     match ProjectRepository::list(store.as_ref(), ProjectFilter::default()).await {
         Ok(projects) => {
             for project in projects {
-                if let Err(error) =
-                    ensure_project_pm(store.as_ref(), &supervisor, project.id, &base_url, &model)
-                        .await
+                if let Err(error) = ensure_project_dispatcher(
+                    store.as_ref(),
+                    &supervisor,
+                    project.id,
+                    &base_url,
+                    &model,
+                )
+                .await
                 {
                     tracing::warn!(
                         project = %project.name,
                         %error,
-                        "cannot provision project PM agent"
+                        "cannot provision project Task Dispatcher"
                     );
                 }
             }
         }
-        Err(error) => tracing::warn!(error = %error, "cannot list projects for PM provisioning"),
+        Err(error) => {
+            tracing::warn!(error = %error, "cannot list projects for Task Dispatcher provisioning")
+        }
     }
 
     reconcile_platform_agent_definitions(store.as_ref(), &supervisor, &base_url, &model).await;
@@ -1183,7 +1450,7 @@ pub async fn ensure_project_agents(
     if !has_api_key {
         tracing::warn!(
             "model API key is not set in the Foundry config file; \
-             PM agents are registered but stopped"
+             Task Dispatchers are registered but stopped"
         );
         return;
     }
@@ -1192,7 +1459,7 @@ pub async fn ensure_project_agents(
 
 /// Ensure the project has one dispatcher definition and keep it aligned with
 /// the code-owned prompt and tool list.
-pub async fn ensure_project_pm(
+pub async fn ensure_project_dispatcher(
     store: &PostgresStore,
     supervisor: &Arc<AgentSupervisor>,
     project_id: Uuid,
@@ -1206,7 +1473,7 @@ pub async fn ensure_project_pm(
         .into_iter()
         .find(|definition| definition.role == "dispatcher");
     if let Some(definition) = existing {
-        let command = pm_command(
+        let command = dispatcher_command(
             project_id,
             definition.name.clone(),
             definition.account_handle.clone(),
@@ -1218,15 +1485,15 @@ pub async fn ensure_project_pm(
             .await
             .map_err(|error| error.to_string())?;
         if let Err(error) = supervisor.start(definition.id).await {
-            tracing::warn!(agent = %definition.name, %error, "cannot start project PM agent");
+            tracing::warn!(agent = %definition.name, %error, "cannot start project Task Dispatcher");
         }
         return Ok(());
     }
 
     let suffix = Uuid::now_v7().simple().to_string();
-    let name = format!("PM Agent {}", &suffix[suffix.len() - 8..]);
+    let name = format!("Task Dispatcher {}", &suffix[suffix.len() - 8..]);
     let account = ensure_agent_account(store, &name).await?;
-    let command = pm_command(
+    let command = dispatcher_command(
         project_id,
         name.clone(),
         account.handle.clone(),
@@ -1240,15 +1507,15 @@ pub async fn ensure_project_pm(
     tracing::info!(
         agent = %definition.name,
         project_id = %project_id,
-        "registered project PM dispatcher"
+        "registered project Task Dispatcher"
     );
     if let Err(error) = supervisor.start(definition.id).await {
-        tracing::warn!(agent = %definition.name, %error, "cannot start project PM agent");
+        tracing::warn!(agent = %definition.name, %error, "cannot start project Task Dispatcher");
     }
     Ok(())
 }
 
-fn pm_command(
+fn dispatcher_command(
     project_id: Uuid,
     name: String,
     account_handle: String,

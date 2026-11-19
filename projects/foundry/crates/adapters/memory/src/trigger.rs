@@ -106,11 +106,7 @@ impl TriggerRepository for InMemoryStore {
         Ok(())
     }
 
-    async fn runs(
-        &self,
-        project_id: Uuid,
-        trigger_id: Uuid,
-    ) -> Result<Vec<TriggerRun>, RepoError> {
+    async fn runs(&self, project_id: Uuid, trigger_id: Uuid) -> Result<Vec<TriggerRun>, RepoError> {
         let belongs = self
             .triggers
             .read()

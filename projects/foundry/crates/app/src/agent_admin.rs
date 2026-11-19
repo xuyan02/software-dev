@@ -22,9 +22,9 @@ pub trait AgentAdminUseCases: Send + Sync {
         actor: Actor,
         project_id: Option<Uuid>,
     ) -> Result<Vec<AgentDefinition>, ServiceError>;
-    /// Ensure the project has a running PM dispatcher. Called when a project is
+    /// Ensure the project has a running Task Dispatcher. Called when a project is
     /// created; startup provisioning uses the same path.
-    async fn ensure_project_pm(&self, project_id: Uuid);
+    async fn ensure_project_dispatcher(&self, project_id: Uuid);
     async fn ready_tasks(
         &self,
         actor: Actor,

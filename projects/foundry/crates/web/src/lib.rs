@@ -8,11 +8,10 @@ use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
     AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, Confidence, EntityStatus, Issue,
     IssueClassification, IssueConfidence, IssueKind, IssueSeverity, IssueSourceKind, IssueStatus,
-    MergeRequestChangeStatus,
-    MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project, ProjectRole,
-    ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind, StoryPriority, Task,
-    TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, Trigger,
-    WorkflowDefinition, WorkflowOption, WorkflowOwner,
+    MergeRequestChangeStatus, MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project,
+    ProjectRole, ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind,
+    StoryPriority, Task, TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState,
+    Trigger, WorkflowDefinition, WorkflowOption, WorkflowOwner,
 };
 use serde::Serialize;
 
@@ -540,7 +539,10 @@ fn toc_label(text: &str) -> String {
             || text.contains("::")
             || text.matches('/').count() >= 2);
     if contains_path {
-        let local = text.rsplit_once("::").map(|(_, local)| local).unwrap_or(text);
+        let local = text
+            .rsplit_once("::")
+            .map(|(_, local)| local)
+            .unwrap_or(text);
         return local
             .rsplit_once('/')
             .map(|(_, local)| local)
@@ -554,7 +556,9 @@ fn document_view(input: &str) -> String {
     let headings = document_headings(input);
     let body = markdown_to_html(input);
     if headings.is_empty() {
-        return format!(r#"<div class="doc-view"><div class="markdown doc-body">{body}</div></div>"#);
+        return format!(
+            r#"<div class="doc-view"><div class="markdown doc-body">{body}</div></div>"#
+        );
     }
     let items = headings
         .iter()
@@ -1871,9 +1875,7 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
     let actor_name = |actor: &foundry_domain::TaskActor| {
         let name = escape(&actor.display_name);
         match (ctx.viewer.is_admin(), actor.agent_definition_id) {
-            (true, Some(agent_id)) => format!(
-                r#"<a href="/agents/{agent_id}/logs">{name}</a>"#
-            ),
+            (true, Some(agent_id)) => format!(r#"<a href="/agents/{agent_id}/logs">{name}</a>"#),
             _ => name,
         }
     };
@@ -1951,13 +1953,10 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
                     actors.join("<br>")
                 };
                 format!(
-                    r#"<tr><td><code>{name}</code></td><td>{kind}</td><td>{range}</td><td>{actors}</td></tr>"#,
+                    r#"<tr><td><code>{name}</code></td><td>{kind}</td><td><code>{assignment}</code></td><td>{actors}</td></tr>"#,
                     name = escape(&role.name),
                     kind = role_kind_label(role.kind),
-                    range = match role.max_actors {
-                        Some(max) => format!("{} - {max}", role.min_actors),
-                        None => format!("{} - ∞", role.min_actors),
-                    },
+                    assignment = escape(&role.assignment),
                     actors = actors,
                 )
             })
@@ -2035,10 +2034,11 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
         .parent_id
         .map(|id| format!(r#"<a href="/tasks/{id}"><code>{id}</code></a>"#))
         .unwrap_or_else(|| "无".to_string());
-    let recovery = if task
-        .stage
-        .as_ref()
-        .is_some_and(|stage| stage.as_str().ends_with("failed"))
+    let recovery = if task.state == TaskState::Failed
+        || task
+            .stage
+            .as_ref()
+            .is_some_and(|stage| stage.as_str().ends_with("failed"))
     {
         format!(
             r#"<h2>失败处理</h2>
@@ -2060,19 +2060,18 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
     } else {
         markdown_to_html(&task.description)
     };
-    let input_block = if task.input.is_null()
-        || task.input.as_object().is_some_and(|value| value.is_empty())
-    {
-        String::new()
-    } else {
-        format!(
-            r#"<details class="card"><summary>任务参数</summary><pre>{}</pre></details>"#,
-            escape(
-                &serde_json::to_string_pretty(&task.input)
-                    .unwrap_or_else(|_| task.input.to_string())
+    let input_block =
+        if task.input.is_null() || task.input.as_object().is_some_and(|value| value.is_empty()) {
+            String::new()
+        } else {
+            format!(
+                r#"<details class="card"><summary>任务参数</summary><pre>{}</pre></details>"#,
+                escape(
+                    &serde_json::to_string_pretty(&task.input)
+                        .unwrap_or_else(|_| task.input.to_string())
+                )
             )
-        )
-    };
+        };
     let body = format!(
         r#"<p><a href="/tasks">← 返回任务列表</a></p>
 <h1>{title}</h1>
@@ -2096,7 +2095,7 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
 {input_block}
 <h2>角色与成员</h2>
 <table>
-<thead><tr><th>角色</th><th>类型</th><th>人数</th><th>Actor</th></tr></thead>
+<thead><tr><th>角色</th><th>类型</th><th>指派</th><th>Actor</th></tr></thead>
 <tbody>{role_rows}</tbody>
 </table>
 <h2>关联对象</h2>
@@ -3078,13 +3077,10 @@ pub struct IssueLinkedTask {
     pub stage: String,
     pub state: String,
     pub result: String,
+    pub active: bool,
 }
 
-pub fn issue_page(
-    ctx: &ConsoleContext,
-    issue: &Issue,
-    linked_tasks: &[IssueLinkedTask],
-) -> String {
+pub fn issue_page(ctx: &ConsoleContext, issue: &Issue, linked_tasks: &[IssueLinkedTask]) -> String {
     let bug_details = issue_bug_details(issue);
     let resolution = issue
         .resolution
@@ -3212,29 +3208,37 @@ pub fn issue_page(
             )
         })
         .unwrap_or_default();
-    let linked_tasks = if linked_tasks.is_empty() {
-        r#"<p class="empty">还没有关联任务。</p>"#.to_string()
-    } else {
-        let rows = linked_tasks
-            .iter()
-            .map(|task| {
-                format!(
-                    r#"<div class="card"><div class="meta"><a href="/tasks/{id}"><strong>{title}</strong></a><span class="badge">{workflow}</span><span class="badge">{stage}</span><span class="badge">{state}</span>{result}</div></div>"#,
-                    id = escape(&task.id),
-                    title = escape(&task.title),
-                    workflow = escape(&task.workflow),
-                    stage = escape(&task.stage),
-                    state = escape(&task.state),
-                    result = if task.result.is_empty() {
-                        String::new()
-                    } else {
-                        format!("<span class=\"badge\">{}</span>", escape(&task.result))
-                    },
-                )
-            })
-            .collect::<String>();
-        format!("<h2>关联任务</h2>{rows}")
+    let render_task = |task: &IssueLinkedTask| {
+        format!(
+            r#"<div class="card"><div class="meta"><a href="/tasks/{id}"><strong>{title}</strong></a><span class="badge">{workflow}</span><span class="badge">{stage}</span><span class="badge">{state}</span>{result}</div></div>"#,
+            id = escape(&task.id),
+            title = escape(&task.title),
+            workflow = escape(&task.workflow),
+            stage = escape(&task.stage),
+            state = escape(&task.state),
+            result = if task.result.is_empty() {
+                String::new()
+            } else {
+                format!("<span class=\"badge\">{}</span>", escape(&task.result))
+            },
+        )
     };
+    let current = linked_tasks
+        .iter()
+        .find(|task| task.active)
+        .map(render_task)
+        .unwrap_or_else(|| r#"<p class="empty">尚未关联当前任务。</p>"#.to_string());
+    let history_rows = linked_tasks
+        .iter()
+        .filter(|task| !task.active)
+        .map(render_task)
+        .collect::<String>();
+    let history_rows = if history_rows.is_empty() {
+        r#"<p class="empty">没有历史任务。</p>"#.to_string()
+    } else {
+        history_rows
+    };
+    let linked_tasks = format!("<h2>当前任务</h2>{current}<h2>历史任务</h2>{history_rows}");
 
     let history = if issue.history.is_empty() {
         "<li>无状态变更</li>".to_string()
@@ -3806,7 +3810,11 @@ pub fn project_page(
                 None,
             ),
             git_branch = input_field("git_branch", "Git 分支", &project.git_branch, true),
-            skip_checked = if project.skip_human_review { " checked" } else { "" },
+            skip_checked = if project.skip_human_review {
+                " checked"
+            } else {
+                ""
+            },
             handle = input_field("handle", "账号 handle", "", true),
             role = role_field,
         )
@@ -3927,7 +3935,11 @@ pub fn project_page(
         git_branch = escape(&project.git_branch),
         design_space_display = design_space_display,
         design_space_branch = escape(&project.design_space_branch),
-        skip_human_review = if project.skip_human_review { "开启" } else { "关闭" },
+        skip_human_review = if project.skip_human_review {
+            "开启"
+        } else {
+            "关闭"
+        },
         short_id = short_id,
         member_count = members.len(),
         version = project.version,
@@ -4045,7 +4057,11 @@ pub fn design_space_page(
             format!(
                 r#"<option value="{branch}"{selected}>{branch}</option>"#,
                 branch = escape(branch),
-                selected = if branch == selected_branch { " selected" } else { "" },
+                selected = if branch == selected_branch {
+                    " selected"
+                } else {
+                    ""
+                },
             )
         })
         .collect::<String>();
@@ -4514,9 +4530,14 @@ pub fn merge_request_page(
     } else {
         task.allowed_operations
             .iter()
+            .filter(|operation| !operation.name.as_str().ends_with(":conflict"))
             .map(|operation| {
                 let name = operation.name.as_str();
-                let approved = name.ends_with(":approved") || name.ends_with(":review_approved");
+                let mechanical_approval = name.ends_with(":merge")
+                    && task.stage.as_ref().map(|stage| stage.as_str()) == Some("human_review");
+                let approved = name.ends_with(":approved")
+                    || name.ends_with(":review_approved")
+                    || mechanical_approval;
                 if approved {
                     format!(
                         r#"<form class="inline-form" method="post" action="/projects/{project}/merge-requests/{id}/approve">
@@ -5599,7 +5620,7 @@ pub fn agents_page(ctx: &ConsoleContext, overview: &AgentOverview, error: Option
         r#"<h1>智能体</h1>
 <p class="sub">这里只显示当前项目的智能体；智能体由平台定义，用户不能新建或修改。</p>
 {error_html}
-<p class="hint">项目文档撰写任务（<code>goal_clarification / clarifier / writer</code>）由 PM Agent 分配智能体。</p>
+<p class="hint">项目文档撰写任务（<code>goal_clarification / clarifier / writer</code>）由 Task Dispatcher 分配智能体。</p>
 <table>
 <thead><tr><th>名称 / 账户</th><th>模型</th><th>启用</th><th>进程</th><th>心跳 / 错误</th><th></th></tr></thead>
 <tbody>{definition_rows}</tbody>
@@ -6086,6 +6107,7 @@ fn task_state_label(state: TaskState) -> &'static str {
     match state {
         TaskState::Pending => "待处理",
         TaskState::InProgress => "进行中",
+        TaskState::Failed => "失败",
         TaskState::Completed => "已完成",
     }
 }
@@ -6095,6 +6117,7 @@ fn task_dispatch_label(state: TaskDispatchState) -> &'static str {
         TaskDispatchState::Blocked => "阻塞",
         TaskDispatchState::Ready => "就绪",
         TaskDispatchState::Running => "运行中",
+        TaskDispatchState::Failed => "失败",
         TaskDispatchState::Closed => "已关闭",
     }
 }
@@ -6103,7 +6126,6 @@ fn role_kind_label(kind: RoleKind) -> &'static str {
     match kind {
         RoleKind::Human => "人类",
         RoleKind::Agent => "智能体",
-        RoleKind::Any => "任意",
     }
 }
 
@@ -6511,13 +6533,7 @@ mod tests {
                 members: Vec::new(),
             }],
         };
-        let html = design_space_page(
-            &ctx,
-            &project,
-            &overview,
-            &["source".to_string()],
-            "source",
-        );
+        let html = design_space_page(&ctx, &project, &overview, &["source".to_string()], "source");
         assert!(html.contains("id=\"ds-shell\""));
         assert!(html.contains(&format!(
             "data-tree-url=\"/projects/{}/design-space/tree\"",
@@ -6618,10 +6634,12 @@ mod tests {
         assert!(!html.contains("data-source-url"));
     }
 
-
     #[test]
     fn toc_shortens_qualified_names_but_keeps_prose_titles() {
-        assert_eq!(toc_label("namespaces/taskboard_utils/format_points"), "format_points");
+        assert_eq!(
+            toc_label("namespaces/taskboard_utils/format_points"),
+            "format_points"
+        );
         assert_eq!(toc_label("src/domain/task.rs"), "task.rs");
         assert_eq!(toc_label("namespaces/app/Auth::login"), "login");
         assert_eq!(toc_label("用户 / 客户 / 账户"), "用户 / 客户 / 账户");
@@ -6639,9 +6657,7 @@ mod tests {
                 path: "documents/design/technical".to_string(),
                 start_line: 0,
                 end_line: 0,
-                design: Some(
-                    "# 概览\n\n正文。\n\n## 类\n\n**职责**\n\n负责示例。".to_string(),
-                ),
+                design: Some("# 概览\n\n正文。\n\n## 类\n\n**职责**\n\n负责示例。".to_string()),
                 comments: vec![DesignSpaceComment {
                     id: 1,
                     resolved: false,

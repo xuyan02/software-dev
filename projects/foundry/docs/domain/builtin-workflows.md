@@ -11,7 +11,7 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `empty` | Empty (no-op) | 不声明阶段和角色；用于测试和空 Task | 已实现 |
 | `project` | Project lifecycle | 旧项目生命周期模板（不再是根流程） | 已实现 |
 | `software_development` | Software development | 唯一的项目根流程；初始化日常检查触发器并进入长期运行 | 已实现 |
-| `daily_check` | Daily check | 创建代码-设计一致性检查和设计检查子任务 | 已实现 |
+| `daily_check` | Daily check | 创建设计检查子任务 | 已实现 |
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
@@ -215,7 +215,7 @@ work (designer)
 | `review` | `reviewer` | `review_approved` 写 `decision = 'approved'` → `human_review`；`review_rejected` 写 `decision = 'rejected'` → `work` |
 | `human_review` | `acceptor` | `approved` 写 `decision = 'approved'`，完成并设置 `result = 'approved'`；`rejected` 写 `decision = 'rejected'` → `work` |
 
-`architect` 和 `reviewer` 的 `kind` 是 `agent`，`acceptor` 的 `kind` 是 `any`，人类和 Agent 都可以绑定。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
+`architect` 和 `reviewer` 的 `kind` 是 `agent`，`assignment` 指向对应的 workflow；`acceptor` 的 `kind` 是 `human`，`assignment` 是 `acceptor` 身份。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
 
 ## 修改内置流程
 
@@ -270,9 +270,8 @@ setup（project_setup 智能体）
 
 如果同名触发器已存在则复用。创建成功后根任务进入 `running` 并长期保持运行；用户可以在项目页手动运行触发器。
 
-`daily_check` 由触发器创建，调度阶段按顺序创建两个子任务：
+`daily_check` 由触发器创建，调度阶段创建一个子任务：
 
-1. `consistency_inspection`：代码-设计一致性检查；
-2. `design_inspection`：设计检查。
+1. `design_inspection`：设计检查。
 
-两个子任务完成后 `daily_check` 完成。子任务发现的问题通过 Issue 进入分诊和设计/开发闭环。
+设计检查子任务完成后 `daily_check` 完成。子任务发现的问题通过 Issue 进入分诊和设计/开发闭环。

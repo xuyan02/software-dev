@@ -69,10 +69,9 @@ impl Tool for TasksReadyListTool {
                 if let Some(roles) = entry.get("roles").and_then(Value::as_array) {
                     for role in roles {
                         let name = role.get("name").and_then(Value::as_str).unwrap_or("");
-                        let task_role = role.get("task_role").and_then(Value::as_str).unwrap_or("");
                         let kind = role.get("kind").and_then(Value::as_str).unwrap_or("");
-                        let min_actors =
-                            role.get("min_actors").and_then(Value::as_u64).unwrap_or(0);
+                        let assignment =
+                            role.get("assignment").and_then(Value::as_str).unwrap_or("");
                         let agent = role.get("agent");
                         let agent_name = agent
                             .and_then(|agent| agent.get("name"))
@@ -84,9 +83,8 @@ impl Tool for TasksReadyListTool {
                         tracing::info!(
                             task_id = %task_id,
                             role = %name,
-                            task_role = %task_role,
                             kind = %kind,
-                            min_actors = min_actors,
+                            assignment = %assignment,
                             agent = %agent_name,
                             enabled = ?enabled,
                             "ready task role"
@@ -361,9 +359,10 @@ impl Tool for TaskOperationTool {
     ) -> Result<ToolOutput, ToolError> {
         let task_id = parse_uuid(&arguments, "task_id")?;
         let operation = parse_string(&arguments, "operation")?;
-        if !operation.contains(':') {
+        if operation != "failed" && !operation.contains(':') {
             return Err(ToolError::InvalidArguments(
-                "operation must use the stage:operation form".to_string(),
+                "operation must use the stage:operation form, or be the platform failure operation failed"
+                    .to_string(),
             ));
         }
         let key = optional_string(&arguments, "idempotency_key")
@@ -487,6 +486,7 @@ impl Tool for TaskAddLinkTool {
                     "url": { "type": "string" },
                     "title": { "type": "string" },
                     "relation": { "type": "string" },
+                    "active": { "type": "boolean", "description": "Make this Issue link the current handling task; previous handlers become history." },
                     "metadata": { "type": "object" }
                 }
             }),
@@ -703,6 +703,66 @@ impl Tool for TaskSpawnChildrenTool {
     }
 }
 
+pub struct TaskCreateFollowUpTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TaskCreateFollowUpTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskCreateFollowUpTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "task_create_follow_up".to_string(),
+            description: "Create a design follow-up task under the project root. \
+                          The task depends on the current triage task, so it cannot start \
+                          until triage finishes, and it becomes the Issue's active task."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["task_id", "issue_id", "workflow", "title", "description"],
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" },
+                    "issue_id": { "type": "string", "format": "uuid" },
+                    "workflow": {
+                        "type": "string",
+                        "enum": ["design_baseline", "design_correction", "design_rework"]
+                    },
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                    "input": { "type": "object" }
+                }
+            }),
+        }
+    }
+
+    async fn call(
+        &self,
+        arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let task_id = parse_uuid(&arguments, "task_id")?;
+        let issue_id = parse_uuid(&arguments, "issue_id")?;
+        let workflow = parse_string(&arguments, "workflow")?;
+        let title = parse_string(&arguments, "title")?;
+        let description = parse_string(&arguments, "description")?;
+        let input = arguments
+            .get("input")
+            .cloned()
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        let created = self
+            .client
+            .create_follow_up_task(task_id, issue_id, &workflow, &title, &description, input)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(created)
+    }
+}
 
 pub struct TaskBindActorTool {
     client: Arc<FoundryClient>,

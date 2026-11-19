@@ -16,7 +16,7 @@ pub struct AgentDefinition {
     pub account_id: Uuid,
     pub account_handle: String,
     /// Workflow role this agent can fill, as `workflow_id:role`; `dispatcher`
-    /// for the platform PM agent.
+    /// for the platform Task Dispatcher.
     pub role: String,
     /// Project that owns this agent.
     pub project_id: Uuid,
@@ -100,32 +100,34 @@ pub struct AgentTemplateView {
     pub description: String,
 }
 
-/// A task with the agent roles that must be bound before it starts.
-///
-/// The PM sees one entry per task. It assigns agents to every agent role that
-/// has no enabled agent yet, including roles used only in later stages, then
-/// starts the task. Tasks with no agent role never enter this list.
+/// A task with the roles that must be bound before it starts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadyTaskView {
     pub project_id: Uuid,
     pub project_name: String,
     pub task_id: Uuid,
     pub title: String,
+    pub description: String,
     pub workflow: String,
     pub stage: String,
+    pub input: serde_json::Value,
     pub roles: Vec<ReadyTaskRoleView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadyTaskRoleView {
+    /// Local role name, unique within the task.
     pub name: String,
-    /// `workflow:role`, the key accepted by assignment APIs.
-    pub task_role: String,
     pub kind: crate::RoleKind,
-    pub min_actors: u32,
-    pub max_actors: Option<u32>,
+    /// Agent workflow for agent roles; human identity for human roles.
+    pub assignment: String,
     /// The agent currently assigned to this role, if any.
     pub agent: Option<AssignedAgentView>,
+    /// The human account currently bound to this role, if any.
+    pub actor: Option<Uuid>,
+    /// Human accounts eligible for this role. Only the project creator is
+    /// considered today.
+    pub candidates: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -124,6 +124,13 @@ impl LinuxCapsuleMode {
     }
 }
 
+/// A host directory mounted into the capsule.
+#[derive(Debug, Clone)]
+struct VolumeMount {
+    host: std::path::PathBuf,
+    container: String,
+}
+
 #[derive(Debug, Clone)]
 struct LinuxCapsuleSpec {
     pub mode: LinuxCapsuleMode,
@@ -143,6 +150,8 @@ struct LinuxCapsuleSpec {
     /// sidecar and setup are ready.  Defaults to 250 ms; set to zero if the
     /// caller prefers to poll the screen itself.
     pub settle: Duration,
+    /// Host directories mounted into the capsule.
+    volumes: Vec<VolumeMount>,
 }
 
 impl LinuxCapsuleSpec {
@@ -196,6 +205,7 @@ impl Default for LinuxCapsuleSpec {
             setup: None,
             startup_timeout: Duration::from_secs(30),
             settle: Duration::from_millis(250),
+            volumes: Vec::new(),
         }
     }
 }
@@ -312,6 +322,25 @@ impl LinuxCapsule {
         .await
     }
 
+    /// Headless capsule using a specific base image with a persistent host
+    /// directory mounted at `/work`. The directory is created if missing and
+    /// survives container replacement.
+    pub async fn headless_with_image_and_workspace(
+        image: impl Into<String>,
+        workspace: impl Into<std::path::PathBuf>,
+    ) -> Result<Self> {
+        Self::create(LinuxCapsuleSpec {
+            mode: LinuxCapsuleMode::Headless,
+            image: image.into(),
+            volumes: vec![VolumeMount {
+                host: workspace.into(),
+                container: "/work".to_string(),
+            }],
+            ..LinuxCapsuleSpec::default()
+        })
+        .await
+    }
+
     /// Create a capsule and wait until it is ready.
     ///
     /// This single call:
@@ -340,6 +369,10 @@ impl LinuxCapsule {
         } else {
             None
         };
+
+        for volume in &spec.volumes {
+            tokio::fs::create_dir_all(&volume.host).await?;
+        }
 
         let id = uuid::Uuid::new_v4().simple().to_string();
         let name = format!("linux-capsule-{}", &id[..12]);
@@ -593,6 +626,10 @@ fn build_create_args(
         args.push("-v".to_string());
         args.push(format!("{}:/config:ro", session_dir.display()));
     }
+    for volume in &spec.volumes {
+        args.push("-v".to_string());
+        args.push(format!("{}:{}:rw", volume.host.display(), volume.container));
+    }
 
     let app: Vec<String> = if spec.app.is_empty() {
         vec!["sleep".to_string(), "infinity".to_string()]
@@ -692,6 +729,29 @@ mod tests {
         assert!(joined.contains("host.containers.internal:10.89.0.1"));
         assert!(joined.contains("LINUX_CAPSULE_TOKEN=token"));
         assert_eq!(args.last().unwrap(), "xterm");
+    }
+
+    #[test]
+    fn workspace_volume_is_mounted_read_write() {
+        let spec = LinuxCapsuleSpec {
+            mode: LinuxCapsuleMode::Headless,
+            volumes: vec![VolumeMount {
+                host: Path::new("/home/agent/workspaces/one").to_path_buf(),
+                container: "/work".to_string(),
+            }],
+            ..LinuxCapsuleSpec::default()
+        };
+        let args = build_create_args(
+            &spec,
+            "linux-capsule-test",
+            "token",
+            None,
+            Path::new("/tmp/session"),
+            "id",
+            None,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains("-v /home/agent/workspaces/one:/work:rw"));
     }
 
     #[test]

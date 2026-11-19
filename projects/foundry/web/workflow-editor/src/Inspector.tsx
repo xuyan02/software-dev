@@ -1596,8 +1596,6 @@ function RoleInspector({
       mutate(roles[index]);
       return { ...current, roles };
     }, options);
-  const maxInvalid =
-    role.max_actors != null && role.max_actors < role.min_actors;
 
   if (readOnly) {
     return (
@@ -1605,10 +1603,7 @@ function RoleInspector({
         <h3>角色</h3>
         <DocField label="name">{role.name}</DocField>
         <DocField label="类型">{ROLE_KIND_LABELS[role.kind]}</DocField>
-        <DocField label="min_actors">{role.min_actors}</DocField>
-        <DocField label="max_actors">
-          {role.max_actors ?? '不限'}
-        </DocField>
+        <DocField label="assignment">{role.assignment}</DocField>
       </section>
     );
   }
@@ -1632,7 +1627,7 @@ function RoleInspector({
             })
           }
         >
-          {(['human', 'agent', 'any'] as RoleKind[]).map((kind) => (
+          {(['human', 'agent'] as RoleKind[]).map((kind) => (
             <option key={kind} value={kind}>
               {ROLE_KIND_LABELS[kind]}
             </option>
@@ -1640,44 +1635,19 @@ function RoleInspector({
         </select>
       </label>
       <label className="field">
-        min_actors
+        assignment
         <input
-          type="number"
-          min={0}
-          value={role.min_actors}
+          value={role.assignment}
           onChange={(event) =>
-            set(
-              (value) =>
-                (value.min_actors = Math.max(
-                  0,
-                  Number(event.target.value) || 0,
-                )),
-              { coalesce: true, label: `修改角色 ${role.name} min_actors` },
-            )
+            set((value) => (value.assignment = event.target.value), {
+              coalesce: true,
+              label: `修改角色 ${role.name} assignment`,
+            })
           }
         />
-      </label>
-      <label className="field">
-        max_actors（留空为不限）
-        <input
-          type="number"
-          min={0}
-          aria-invalid={maxInvalid || undefined}
-          value={role.max_actors ?? ''}
-          onChange={(event) =>
-            set(
-              (value) =>
-                (value.max_actors =
-                  event.target.value === ''
-                    ? null
-                    : Number(event.target.value)),
-              { coalesce: true, label: `修改角色 ${role.name} max_actors` },
-            )
-          }
-        />
-        {maxInvalid && (
-          <span className="error-text">max_actors 不能小于 min_actors。</span>
-        )}
+        <span className="hint">
+          智能体角色填 workflow，人类角色填身份。
+        </span>
       </label>
       <div className="row-actions">
         <button

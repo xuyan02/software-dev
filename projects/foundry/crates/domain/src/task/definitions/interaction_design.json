@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "designer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "style_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "interaction_reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "designer", "kind": "agent", "assignment": "interaction_design"},
+    {"name": "style_reviewer", "kind": "agent", "assignment": "interaction_design"},
+    {"name": "interaction_reviewer", "kind": "agent", "assignment": "interaction_design"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "work",
   "stages": [

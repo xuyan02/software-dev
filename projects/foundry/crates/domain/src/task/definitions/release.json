@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "release_manager", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "verifier", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "approver", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "deployer", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "observer", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "release_manager", "kind": "agent", "assignment": "release"},
+    {"name": "verifier", "kind": "agent", "assignment": "release"},
+    {"name": "approver", "kind": "agent", "assignment": "release"},
+    {"name": "deployer", "kind": "agent", "assignment": "release"},
+    {"name": "observer", "kind": "agent", "assignment": "release"}
   ],
   "initial_stage": "candidate",
   "stages": [

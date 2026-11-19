@@ -19,13 +19,7 @@ pub struct DefinitionWorkflow {
 }
 
 impl DefinitionWorkflow {
-    pub fn new(id: impl Into<String>, mut body: WorkflowBody) -> Self {
-        // Every workflow role has exactly one actor. The authoring fields stay
-        // optional and are normalized here so old definitions keep loading.
-        for role in &mut body.roles {
-            role.min_actors = 1;
-            role.max_actors = Some(1);
-        }
+    pub fn new(id: impl Into<String>, body: WorkflowBody) -> Self {
         Self {
             id: id.into(),
             body,

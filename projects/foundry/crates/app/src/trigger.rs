@@ -10,9 +10,7 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{
-    AccountRepository, NewTask, ProjectRepository, RepoError, ServiceError, TaskUseCases,
-};
+use crate::{AccountRepository, NewTask, ProjectRepository, RepoError, ServiceError, TaskUseCases};
 
 /// Workflows that a trigger may start. Triggers are intentionally limited to
 /// known inspection/quality tasks.
@@ -23,7 +21,6 @@ pub const SCHEDULABLE_WORKFLOWS: &[&str] = &[
     "consistency_inspection",
     "design_inspection",
     "daily_check",
-    "design_consistency_maintenance",
 ];
 
 #[derive(Debug, Clone)]
@@ -66,11 +63,7 @@ pub trait TriggerRepository: Send + Sync {
     ) -> Result<(), RepoError>;
     async fn list_due(&self, now: OffsetDateTime) -> Result<Vec<Trigger>, RepoError>;
     async fn insert_run(&self, run: &TriggerRun) -> Result<(), RepoError>;
-    async fn runs(
-        &self,
-        project_id: Uuid,
-        trigger_id: Uuid,
-    ) -> Result<Vec<TriggerRun>, RepoError>;
+    async fn runs(&self, project_id: Uuid, trigger_id: Uuid) -> Result<Vec<TriggerRun>, RepoError>;
     async fn has_active_run(&self, trigger_id: Uuid) -> Result<bool, RepoError>;
 }
 
@@ -83,22 +76,9 @@ pub trait TriggerUseCases: Send + Sync {
         project_id: Uuid,
         id: Uuid,
     ) -> Result<Option<Trigger>, ServiceError>;
-    async fn create(
-        &self,
-        actor: Actor,
-        command: CreateTrigger,
-    ) -> Result<Trigger, ServiceError>;
-    async fn update(
-        &self,
-        actor: Actor,
-        command: UpdateTrigger,
-    ) -> Result<Trigger, ServiceError>;
-    async fn delete(
-        &self,
-        actor: Actor,
-        project_id: Uuid,
-        id: Uuid,
-    ) -> Result<(), ServiceError>;
+    async fn create(&self, actor: Actor, command: CreateTrigger) -> Result<Trigger, ServiceError>;
+    async fn update(&self, actor: Actor, command: UpdateTrigger) -> Result<Trigger, ServiceError>;
+    async fn delete(&self, actor: Actor, project_id: Uuid, id: Uuid) -> Result<(), ServiceError>;
     async fn run(
         &self,
         actor: Actor,
@@ -111,6 +91,10 @@ pub trait TriggerUseCases: Send + Sync {
         project_id: Uuid,
         id: Uuid,
     ) -> Result<Vec<TriggerRun>, ServiceError>;
+
+    /// Deterministically create the default daily-check trigger for a project
+    /// if it is missing. Safe to call repeatedly.
+    async fn ensure_daily_check(&self, project_id: Uuid) -> Result<Option<Trigger>, ServiceError>;
 }
 
 pub struct TriggerService<TR, P, A, T> {
@@ -127,12 +111,7 @@ where
     A: AccountRepository,
     T: TaskUseCases,
 {
-    pub fn new(
-        triggers: Arc<TR>,
-        projects: Arc<P>,
-        accounts: Arc<A>,
-        tasks: Arc<T>,
-    ) -> Self {
+    pub fn new(triggers: Arc<TR>, projects: Arc<P>, accounts: Arc<A>, tasks: Arc<T>) -> Self {
         Self {
             triggers,
             projects,
@@ -174,11 +153,7 @@ where
         Ok(())
     }
 
-    pub async fn list(
-        &self,
-        actor: Actor,
-        project_id: Uuid,
-    ) -> Result<Vec<Trigger>, ServiceError> {
+    pub async fn list(&self, actor: Actor, project_id: Uuid) -> Result<Vec<Trigger>, ServiceError> {
         self.require_role(&actor, project_id, ProjectRole::Viewer)
             .await?;
         Ok(self.triggers.list(project_id).await?)
@@ -324,6 +299,78 @@ where
             .map_err(ServiceError::from)
     }
 
+    pub async fn ensure_daily_check(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let owner_id = project
+            .members
+            .iter()
+            .find(|member| member.role == ProjectRole::Owner)
+            .map(|member| member.account_id)
+            .ok_or_else(|| {
+                ServiceError::Validation("project has no owner for default trigger".to_string())
+            })?;
+        let owner = self
+            .accounts
+            .get(owner_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("account", owner_id))?;
+        let existing = self.triggers.list(project_id).await?;
+        if let Some(trigger) = existing
+            .iter()
+            .find(|trigger| trigger.workflow_id == "daily_check")
+        {
+            // Upgrade the system-created default without touching a trigger
+            // the project has customized.
+            let legacy_description = "按计划运行代码-设计一致性检查和设计检查。";
+            let legacy_template = "运行代码-设计一致性和设计检查。";
+            if trigger.name == "日常检查"
+                && trigger.description == legacy_description
+                && trigger.description_template == legacy_template
+            {
+                return self
+                    .update(
+                        owner.actor(),
+                        UpdateTrigger {
+                            project_id,
+                            id: trigger.id,
+                            name: None,
+                            description: Some("按计划运行设计检查。".to_string()),
+                            input: None,
+                            schedule: None,
+                            title_template: None,
+                            description_template: Some("运行设计检查。".to_string()),
+                            enabled: None,
+                        },
+                    )
+                    .await
+                    .map(Some);
+            }
+            return Ok(Some(trigger.clone()));
+        }
+        let trigger = Trigger::new(
+            project_id,
+            "日常检查",
+            "按计划运行设计检查。",
+            "daily_check",
+            json!({}),
+            "daily@09:00",
+            "日常检查",
+            "运行设计检查。",
+            owner.actor(),
+            owner.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.triggers.insert(&trigger).await?;
+        Ok(Some(trigger))
+    }
+
     /// Run every enabled trigger whose `next_run_at` is due. The scheduler
     /// calls this sequentially; no run overlaps.
     pub async fn run_due(&self, now: OffsetDateTime) -> Result<usize, ServiceError> {
@@ -368,9 +415,7 @@ where
             .await?
             .ok_or_else(|| ServiceError::not_found("trigger", id))?;
         if !trigger.enabled && reason == TriggerRunReason::Scheduled {
-            return Err(ServiceError::Validation(
-                "trigger is disabled".to_string(),
-            ));
+            return Err(ServiceError::Validation("trigger is disabled".to_string()));
         }
         if self.triggers.has_active_run(trigger.id).await? {
             return Err(ServiceError::Validation(
@@ -393,9 +438,9 @@ where
                 "项目已归档，触发器不能创建任务".to_string(),
             ));
         }
-        let parent_id = project.root_task_id.ok_or_else(|| {
-            ServiceError::Validation("project has no root task".to_string())
-        })?;
+        let parent_id = project
+            .root_task_id
+            .ok_or_else(|| ServiceError::Validation("project has no root task".to_string()))?;
         let task = self
             .tasks
             .create_task(
@@ -426,7 +471,9 @@ where
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
         trigger.touch();
-        self.triggers.save(&trigger, trigger.version.saturating_sub(1)).await?;
+        self.triggers
+            .save(&trigger, trigger.version.saturating_sub(1))
+            .await?;
         Ok(run)
     }
 }
@@ -437,7 +484,6 @@ fn render_template(template: &str, trigger: &Trigger) -> String {
         .replace("{workflow}", &trigger.workflow_id)
         .replace("{project}", &trigger.project_id.to_string())
 }
-
 
 #[async_trait]
 impl<TR, P, A, T> TriggerUseCases for TriggerService<TR, P, A, T>
@@ -460,28 +506,15 @@ where
         TriggerService::get(self, actor, project_id, id).await
     }
 
-    async fn create(
-        &self,
-        actor: Actor,
-        command: CreateTrigger,
-    ) -> Result<Trigger, ServiceError> {
+    async fn create(&self, actor: Actor, command: CreateTrigger) -> Result<Trigger, ServiceError> {
         TriggerService::create(self, actor, command).await
     }
 
-    async fn update(
-        &self,
-        actor: Actor,
-        command: UpdateTrigger,
-    ) -> Result<Trigger, ServiceError> {
+    async fn update(&self, actor: Actor, command: UpdateTrigger) -> Result<Trigger, ServiceError> {
         TriggerService::update(self, actor, command).await
     }
 
-    async fn delete(
-        &self,
-        actor: Actor,
-        project_id: Uuid,
-        id: Uuid,
-    ) -> Result<(), ServiceError> {
+    async fn delete(&self, actor: Actor, project_id: Uuid, id: Uuid) -> Result<(), ServiceError> {
         TriggerService::delete(self, actor, project_id, id).await
     }
 
@@ -501,5 +534,9 @@ where
         id: Uuid,
     ) -> Result<Vec<TriggerRun>, ServiceError> {
         TriggerService::runs(self, actor, project_id, id).await
+    }
+
+    async fn ensure_daily_check(&self, project_id: Uuid) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_daily_check(self, project_id).await
     }
 }

@@ -66,6 +66,7 @@ export function RolesPanel({
 }) {
   const [name, setName] = useState('');
   const [kind, setKind] = useState<RoleKind>('human');
+  const [assignment, setAssignment] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const add = () => {
@@ -78,14 +79,20 @@ export function RolesPanel({
       setError(`角色 ${value} 已存在。`);
       return;
     }
+    const target = assignment.trim();
+    if (!isKey(target)) {
+      setError('assignment 必须以小写字母开头，只能包含小写字母、数字和下划线。');
+      return;
+    }
     setError(null);
     setName('');
+    setAssignment('');
     const index = body.roles.length;
     onChange((current) => ({
       ...current,
       roles: [
         ...current.roles,
-        { name: value, kind, min_actors: 1, max_actors: null },
+        { name: value, kind, assignment: target },
       ],
     }));
     onSelect({ kind: 'role', index });
@@ -128,6 +135,16 @@ export function RolesPanel({
               if (event.key === 'Enter') add();
             }}
           />
+          <input
+            id="new-role-assignment"
+            value={assignment}
+            placeholder="assignment"
+            aria-label="新角色 assignment"
+            onChange={(event) => setAssignment(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') add();
+            }}
+          />
           <select
             value={kind}
             aria-label="新角色类型"
@@ -135,7 +152,6 @@ export function RolesPanel({
           >
             <option value="human">人类</option>
             <option value="agent">智能体</option>
-            <option value="any">不限</option>
           </select>
           <button type="button" className="secondary" onClick={add}>
             添加

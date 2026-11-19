@@ -493,6 +493,7 @@ async fn call_tool(
                         url: args.url,
                         title: args.title,
                         relation,
+                        active: args.active,
                         metadata: args.metadata,
                     },
                 )
@@ -703,6 +704,7 @@ fn tool_definitions() -> Value {
                     "url": { "type": "string" },
                     "title": { "type": "string" },
                     "relation": { "type": "string" },
+                    "active": { "type": "boolean" },
                     "metadata": { "type": "object" }
                 }
             }
@@ -820,6 +822,8 @@ struct AddTaskLinkArgs {
     url: Option<String>,
     title: String,
     relation: String,
+    #[serde(default)]
+    active: bool,
     #[serde(default)]
     metadata: Value,
 }

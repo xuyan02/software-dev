@@ -20,8 +20,8 @@ use ds::store::Store;
 use foundry_app::{DesignSpaceGateway, DesignSpaceGatewayError};
 use foundry_domain::{MergeRequestChange, MergeRequestChangeStatus, Project};
 use foundry_web::{
-    DesignSpaceComment, DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine,
-    DesignSpaceMember, DesignSpaceOverview, DesignSpaceSource,
+    DesignSpaceComment, DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine, DesignSpaceMember,
+    DesignSpaceOverview, DesignSpaceSource,
 };
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -171,12 +171,12 @@ impl DesignSpaceAccess {
         let (design, comments) = match document_target(object) {
             Some(target) => {
                 let (design, comments) =
-                    render_document(&loaded.store, &loaded.catalog, target)?;
+                    render_document(&loaded.store, &loaded.catalog, target, project.id, branch)?;
                 (Some(design), comments)
             }
             None if is_document_kind(object.kind) => {
                 let (design, comments) =
-                    render_document(&loaded.store, &loaded.catalog, qname)?;
+                    render_document(&loaded.store, &loaded.catalog, qname, project.id, branch)?;
                 (Some(design), comments)
             }
             None => (None, Vec::new()),
@@ -715,7 +715,6 @@ struct Loaded {
     catalog: Catalog,
 }
 
-
 fn read_branch_commit(path: &Path, branch: &str) -> Result<Option<CommitHash>, String> {
     if branch.is_empty()
         || branch
@@ -991,14 +990,22 @@ fn document_target(object: &DesignObject) -> Option<SymbolHash> {
     (!target.is_zero()).then_some(target)
 }
 
+struct RenderRefs<'a> {
+    project_id: uuid::Uuid,
+    branch: &'a str,
+}
+
 fn render_document(
     store: &Store,
     catalog: &Catalog,
     qname: SymbolHash,
+    project_id: uuid::Uuid,
+    branch: &str,
 ) -> Result<(String, Vec<DesignSpaceComment>), String> {
     let mut out = String::new();
     let mut comments = Vec::new();
-    render_doc(store, catalog, qname, 0, &mut out, &mut comments)?;
+    let refs = RenderRefs { project_id, branch };
+    render_doc(store, catalog, qname, 0, &refs, &mut out, &mut comments)?;
     Ok((out, comments))
 }
 
@@ -1007,6 +1014,7 @@ fn render_doc(
     catalog: &Catalog,
     qname: SymbolHash,
     depth: usize,
+    refs: &RenderRefs<'_>,
     out: &mut String,
     comments: &mut Vec<DesignSpaceComment>,
 ) -> Result<(), String> {
@@ -1028,13 +1036,13 @@ fn render_doc(
                     .cmp(&store.get_symbol(*right).unwrap_or_default())
             });
             for child in children {
-                render_doc(store, catalog, child, depth, out, comments)?;
+                render_doc(store, catalog, child, depth, refs, out, comments)?;
             }
         }
         ObjectPayload::Document(p) => {
             out.push_str(&format!("{}{}\n\n", p.title, marker));
             for section in &p.sections {
-                render_doc(store, catalog, *section, depth + 1, out, comments)?;
+                render_doc(store, catalog, *section, depth + 1, refs, out, comments)?;
             }
         }
         ObjectPayload::DocumentSection(p) => {
@@ -1045,10 +1053,10 @@ fn render_doc(
                 marker
             ));
             for paragraph in &p.body {
-                render_doc(store, catalog, *paragraph, depth + 1, out, comments)?;
+                render_doc(store, catalog, *paragraph, depth + 1, refs, out, comments)?;
             }
             for section in &p.sections {
-                render_doc(store, catalog, *section, depth + 1, out, comments)?;
+                render_doc(store, catalog, *section, depth + 1, refs, out, comments)?;
             }
         }
         ObjectPayload::DocumentList(p) => {
@@ -1058,10 +1066,16 @@ fn render_doc(
                     .get(*item)
                     .ok_or_else(|| format!("document item not found: {}", item.to_hex()))?;
                 if let ObjectPayload::DocumentText(text) = &item_object.payload {
-                    let trailing = if position == last { marker.as_str() } else { "" };
-                    out.push_str(&format!("- {}{}\n", text.text, trailing));
+                    let trailing = if position == last {
+                        marker.as_str()
+                    } else {
+                        ""
+                    };
+                    let text =
+                        render_references(&text.text, store, catalog, refs.project_id, refs.branch);
+                    out.push_str(&format!("- {text}{trailing}\n"));
                 } else {
-                    render_doc(store, catalog, *item, depth + 1, out, comments)?;
+                    render_doc(store, catalog, *item, depth + 1, refs, out, comments)?;
                     if position == last && !marker.is_empty() {
                         out.push_str(&marker);
                         out.push('\n');
@@ -1075,12 +1089,13 @@ fn render_doc(
             out.push('\n');
         }
         ObjectPayload::DocumentText(p) => {
-            out.push_str(&format!("{}{}\n\n", p.text, marker));
+            let text = render_references(&p.text, store, catalog, refs.project_id, refs.branch);
+            out.push_str(&format!("{text}{marker}\n\n"));
         }
         ObjectPayload::DocumentTopic(p) => {
             out.push_str(&format!("**{}**{}\n\n", p.title, marker));
             for paragraph in &p.paragraphs {
-                render_doc(store, catalog, *paragraph, depth + 1, out, comments)?;
+                render_doc(store, catalog, *paragraph, depth + 1, refs, out, comments)?;
             }
         }
         _ => return Err("document reference does not point at a document fragment".to_owned()),
@@ -1097,7 +1112,104 @@ fn render_doc(
     Ok(())
 }
 
-/// A marker rendered by the web UI as a collapsed comment button. Comment
+/// Replace `[[target|label]]` references with Markdown links. The reference is
+/// a text convention, not a design-space object.
+fn render_references(
+    text: &str,
+    store: &Store,
+    catalog: &Catalog,
+    project_id: uuid::Uuid,
+    branch: &str,
+) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[[") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else {
+            out.push_str("[[");
+            rest = after;
+            continue;
+        };
+        let inner = &after[..end];
+        let (target, label) = inner
+            .split_once('|')
+            .map(|(target, label)| (target.trim(), label.trim()))
+            .unwrap_or((inner.trim(), ""));
+        let link = reference_link(target, label, store, catalog, project_id, branch);
+        out.push_str(&link);
+        rest = &after[end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn reference_link(
+    target: &str,
+    label: &str,
+    store: &Store,
+    catalog: &Catalog,
+    project_id: uuid::Uuid,
+    branch: &str,
+) -> String {
+    let fallback = || {
+        if label.is_empty() {
+            format!("[[{target}]]")
+        } else {
+            label.to_owned()
+        }
+    };
+    let Some((kind, value)) = target.split_once(':') else {
+        return fallback();
+    };
+    let (url, default_label) = match kind {
+        "issue" => (format!("/issues/{value}"), format!("Issue {value}")),
+        "task" => (format!("/tasks/{value}"), format!("Task {value}")),
+        "ds" => {
+            let Some(object) = find_object_by_qname(store, catalog, value) else {
+                return fallback();
+            };
+            let Ok(hash) = ds::format::object_hash(object) else {
+                return fallback();
+            };
+            let mut url = format!(
+                "/projects/{project_id}/design-space/elements/{}",
+                hash.to_hex()
+            );
+            if !branch.is_empty() {
+                url.push_str("?branch=");
+                url.push_str(branch);
+            }
+            (url, value.to_owned())
+        }
+        "code" => return fallback(),
+        _ => return fallback(),
+    };
+    let label = if label.is_empty() {
+        default_label
+    } else {
+        label.to_owned()
+    };
+    let label = label
+        .replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]");
+    format!("[{label}]({url})")
+}
+
+fn find_object_by_qname<'a>(
+    store: &Store,
+    catalog: &'a Catalog,
+    qname: &str,
+) -> Option<&'a DesignObject> {
+    catalog.iter().find_map(|(symbol, object)| {
+        store
+            .get_symbol(symbol)
+            .ok()
+            .filter(|value| value == qname)
+            .map(|_| object)
+    })
+}
 /// bodies stay out of the document flow and open in a popover on click.
 fn comment_marker(object: &DesignObject) -> String {
     let ids = document_comments(object)
@@ -1382,6 +1494,23 @@ mod tests {
     };
     use design_space::{Catalog, Commit, DesignObject, ObjectPayload};
     use tempfile::tempdir;
+
+    #[test]
+    fn renders_references_as_links() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let catalog = Catalog::new(GitOid::ZERO);
+        let out = render_references(
+            "见 [[issue:01a1f3fe-909a-735b-bab8-8c8e1789a5ca|缺陷]] 和 [[task:01a1f3fe-c18e-709d-9f2e-075ea5bf3165]]，未知 [[other:x]]",
+            &store,
+            &catalog,
+            uuid::Uuid::nil(),
+            "",
+        );
+        assert!(out.contains("[缺陷](/issues/01a1f3fe-909a-735b-bab8-8c8e1789a5ca)"));
+        assert!(out.contains("[Task 01a1f3fe-c18e-709d-9f2e-075ea5bf3165](/tasks/01a1f3fe-c18e-709d-9f2e-075ea5bf3165)"));
+        assert!(out.contains("[[other:x]]"));
+    }
 
     #[test]
     fn reads_repository_names_from_addresses() {

@@ -160,15 +160,19 @@ pub fn validate(body: &WorkflowBody, is_known: &dyn Fn(&str) -> bool) -> Validat
                 format!("role {:?} is declared more than once", role.name),
             );
         }
-        if let Some(max) = role.max_actors
-            && (max == 0 || max < role.min_actors)
-        {
+        if role.assignment.trim().is_empty() {
             validation.error(
-                format!("{path}.max_actors"),
-                "invalid_max_actors",
+                format!("{path}.assignment"),
+                "missing_assignment",
+                "role assignment is required",
+            );
+        } else if !is_valid_key(&role.assignment) {
+            validation.error(
+                format!("{path}.assignment"),
+                "invalid_assignment",
                 format!(
-                    "max_actors must be at least 1 and at least min_actors ({})",
-                    role.min_actors
+                    "role assignment {:?} must match [a-z][a-z0-9_]*",
+                    role.assignment
                 ),
             );
         }
@@ -715,22 +719,6 @@ fn add_warnings(body: &WorkflowBody, initial: Option<&str>, validation: &mut Val
                 "operations_without_actors",
                 "stage declares operations but no active_roles, so nobody can send them",
             );
-        }
-        if !stage.operations.is_empty() {
-            for role in &stage.active_roles {
-                if let Some(spec) = body.roles.iter().find(|spec| &spec.name == role)
-                    && spec.min_actors == 0
-                {
-                    validation.warning(
-                        format!("stages[{index}].active_roles"),
-                        "optional_role_on_operation_stage",
-                        format!(
-                            "role {:?} is optional (min_actors = 0) on a stage with operations",
-                            spec.name
-                        ),
-                    );
-                }
-            }
         }
     }
 

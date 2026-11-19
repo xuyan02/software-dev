@@ -1,4 +1,7 @@
-use super::definition::{DefinitionWorkflow, WorkflowBody, builtin_workflows, validate};
+use super::definition::{
+    DISABLED_WORKFLOWS, DefinitionWorkflow, WorkflowBody, builtin_workflows, is_disabled_workflow,
+    validate,
+};
 use crate::task::script::VariableValue;
 use crate::{
     ACCEPT_OPERATION, ChildState, DependencyState, DocumentReviewLinkAction, DomainEventKind,
@@ -138,13 +141,12 @@ fn child_changed(
 }
 
 #[test]
-fn workflow_roles_allow_exactly_one_actor() {
+fn workflow_roles_carry_an_assignment() {
     let workflow = builtin("design_space_merge");
     let body = workflow.body().expect("definition body");
     assert_eq!(body.roles.len(), 1);
     for role in &body.roles {
-        assert_eq!(role.min_actors, 1);
-        assert_eq!(role.max_actors, Some(1));
+        assert!(!role.assignment.is_empty());
     }
 }
 
@@ -162,9 +164,12 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "cohesion_inspection",
             "consistency_inspection",
             "daily_check",
+            "design_baseline",
             "design_change",
             "design_consistency_maintenance",
+            "design_correction",
             "design_inspection",
+            "design_rework",
             "design_space_merge",
             "detailed_design",
             "empty",
@@ -183,6 +188,8 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "style_inspection",
             "test_execution",
             "test_planning",
+            "triage",
+            "triage_check",
             "ui_design",
         ]
     );
@@ -971,7 +978,7 @@ fn operation_on_a_pending_task_starts_it() {
     let body: WorkflowBody = serde_json::from_str(
         r#"{
             "schema_version": 1,
-            "roles": [{"name": "worker", "kind": "any", "min_actors": 1, "max_actors": null}],
+            "roles": [{"name": "worker", "kind": "agent", "assignment": "custom"}],
             "initial_stage": "work",
             "stages": [{
                 "name": "work",
@@ -1009,7 +1016,7 @@ fn platform_start_requires_bound_agent_roles() {
     let body: WorkflowBody = serde_json::from_str(
         r#"{
             "schema_version": 1,
-            "roles": [{"name": "worker", "kind": "agent", "min_actors": 1}],
+            "roles": [{"name": "worker", "kind": "agent", "assignment": "custom"}],
             "initial_stage": "work",
             "stages": [{
                 "name": "work",
@@ -1080,8 +1087,8 @@ fn stage_entry_resets_variables() {
         r#"{
             "schema_version": 1,
             "roles": [
-                {"name": "worker", "kind": "any", "min_actors": 1},
-                {"name": "reviewer", "kind": "any", "min_actors": 1}
+                {"name": "worker", "kind": "agent", "assignment": "custom"},
+                {"name": "reviewer", "kind": "agent", "assignment": "custom"}
             ],
             "initial_stage": "work",
             "stages": [
@@ -1263,11 +1270,36 @@ fn validator_rejects_unknown_references() {
 }
 
 #[test]
+fn validator_requires_a_role_assignment() {
+    let body: WorkflowBody = serde_json::from_str(
+        r#"{
+            "schema_version": 1,
+            "roles": [{"name": "worker", "kind": "agent", "assignment": ""}],
+            "initial_stage": "work",
+            "stages": [{
+                "name": "work",
+                "active_roles": ["worker"],
+                "operations": [],
+                "transitions": []
+            }]
+        }"#,
+    )
+    .unwrap();
+    let validation = validate(&body, &|_| true);
+    assert!(
+        validation
+            .errors
+            .iter()
+            .any(|issue| issue.code == "missing_assignment")
+    );
+}
+
+#[test]
 fn validator_rejects_operations_with_inactive_roles() {
     let body: WorkflowBody = serde_json::from_str(
         r#"{
             "schema_version": 1,
-            "roles": [{"name": "worker", "kind": "any", "min_actors": 1}],
+            "roles": [{"name": "worker", "kind": "agent", "assignment": "custom"}],
             "initial_stage": "work",
             "stages": [{
                 "name": "work",
@@ -1628,11 +1660,14 @@ fn design_change_runs_through_analysis_design_and_review() {
     assert_eq!(state.task.stage.as_deref(), Some("design"));
     state = aggregate_of(operation(&workflow, state, "design:designed", designer));
     assert_eq!(state.task.stage.as_deref(), Some("design_review"));
-    state = aggregate_of(operation(&workflow, state, "design_review:approved", reviewer));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "design_review:approved",
+        reviewer,
+    ));
     assert_eq!(state.task.stage.as_deref(), Some("human_review"));
-    state = aggregate_of(operation(&workflow, state, "human_review:approved", acceptor));
-    assert_eq!(state.task.stage.as_deref(), Some("merge"));
-    state = aggregate_of(operation(&workflow, state, "merge:merged", reviewer));
+    state = aggregate_of(operation(&workflow, state, "human_review:merge", acceptor));
     assert_eq!(state.task.stage.as_deref(), Some("cleanup"));
     let mutation = operation(&workflow, state, "cleanup:cleaned", reviewer);
     assert_eq!(mutation.task.state, TaskState::Completed);
@@ -1643,27 +1678,143 @@ fn design_change_runs_through_analysis_design_and_review() {
 }
 
 #[test]
-fn software_development_starts_and_enters_running() {
-    let workflow = builtin("software_development");
-    let task = task("software_development", TaskState::Pending, None);
+fn design_baseline_runs_through_review_human_and_merge() {
+    let workflow = builtin("design_baseline");
+    let task = task("design_baseline", TaskState::Pending, None);
     let task_id = task.id;
-    let setup = Uuid::now_v7();
+    let architect = Uuid::now_v7();
+    let style_reviewer = Uuid::now_v7();
+    let content_reviewer = Uuid::now_v7();
+    let integrator = Uuid::now_v7();
+    let acceptor = Uuid::now_v7();
     let state = aggregate(
         task,
-        vec![actor(task_id, "project_setup", setup, false)],
+        vec![
+            actor(task_id, "architect", architect, false),
+            actor(task_id, "style_reviewer", style_reviewer, false),
+            actor(task_id, "content_reviewer", content_reviewer, false),
+            actor(task_id, "integrator", integrator, false),
+            actor(task_id, "acceptor", acceptor, false),
+        ],
         vec![],
         vec![],
     );
-    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
-    assert_eq!(created.task.stage.as_deref(), Some("setup"));
-    let state = aggregate_of(created);
-    let ready = operation(&workflow, state, "setup:ready", setup);
-    assert_eq!(ready.task.stage.as_deref(), Some("running"));
-    assert_eq!(ready.task.state, TaskState::InProgress);
+    let mut state = aggregate_of(apply(&workflow, state, TaskEvent::Created, now()).unwrap());
+    assert_eq!(state.task.stage.as_deref(), Some("baseline"));
+    state = aggregate_of(operation(&workflow, state, "baseline:baselined", architect));
+    assert_eq!(state.task.stage.as_deref(), Some("style_review"));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "style_review:rejected",
+        style_reviewer,
+    ));
+    assert_eq!(state.task.stage.as_deref(), Some("fix"));
+    state = aggregate_of(operation(&workflow, state, "fix:fixed", architect));
+    assert_eq!(state.task.stage.as_deref(), Some("style_review"));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "style_review:approved",
+        style_reviewer,
+    ));
+    assert_eq!(state.task.stage.as_deref(), Some("content_review"));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "content_review:rejected",
+        content_reviewer,
+    ));
+    assert_eq!(state.task.stage.as_deref(), Some("fix"));
+    state = aggregate_of(operation(&workflow, state, "fix:fixed", architect));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "style_review:approved",
+        style_reviewer,
+    ));
+    state = aggregate_of(operation(
+        &workflow,
+        state,
+        "content_review:approved",
+        content_reviewer,
+    ));
+    assert_eq!(state.task.stage.as_deref(), Some("human_review"));
+    state = aggregate_of(operation(&workflow, state, "human_review:merge", acceptor));
+    assert_eq!(state.task.stage.as_deref(), Some("cleanup"));
+    let mutation = operation(&workflow, state, "cleanup:cleaned", integrator);
+    assert_eq!(mutation.task.state, TaskState::Completed);
+    assert_eq!(
+        mutation.task.result.as_ref().map(TaskResult::as_str),
+        Some("completed")
+    );
 }
 
 #[test]
-fn daily_check_waits_for_both_inspections() {
+fn design_baseline_failure_keeps_the_stage_and_retry_resumes_it() {
+    let workflow = builtin("design_baseline");
+    let task = task(
+        "design_baseline",
+        TaskState::InProgress,
+        Some("style_review"),
+    );
+    let task_id = task.id;
+    let reviewer = Uuid::now_v7();
+    let state = aggregate(
+        task,
+        vec![actor(task_id, "style_reviewer", reviewer, true)],
+        vec![],
+        vec![],
+    );
+    let failed = operation(&workflow, state, "style_review:failed", reviewer);
+    assert_eq!(failed.task.state, TaskState::Failed);
+    assert_eq!(failed.task.stage.as_deref(), Some("style_review"));
+
+    let retried = operation(&workflow, aggregate_of(failed), "retry", Uuid::now_v7());
+    assert_eq!(retried.task.state, TaskState::InProgress);
+    assert_eq!(retried.task.stage.as_deref(), Some("style_review"));
+
+    let abandoned = operation(&workflow, aggregate_of(retried), "abandon", Uuid::now_v7());
+    assert_eq!(abandoned.task.state, TaskState::Completed);
+    assert_eq!(
+        abandoned.task.result.as_ref().map(TaskResult::as_str),
+        Some("abandoned")
+    );
+}
+
+#[test]
+fn disabled_workflows_stay_resolvable_but_are_marked_disabled() {
+    let ids = builtin_workflows()
+        .iter()
+        .map(|workflow| workflow.id().to_string())
+        .collect::<Vec<_>>();
+    for id in DISABLED_WORKFLOWS {
+        assert!(
+            ids.contains(&id.to_string()),
+            "{id} is still in the catalog"
+        );
+        assert!(is_disabled_workflow(id));
+    }
+    assert!(!is_disabled_workflow("design_baseline"));
+}
+
+#[test]
+fn software_development_starts_in_running() {
+    let workflow = builtin("software_development");
+    let task = task("software_development", TaskState::Pending, None);
+    let task_id = task.id;
+    let state = aggregate(task, vec![], vec![], vec![]);
+    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+    assert_eq!(created.task.stage.as_deref(), Some("running"));
+    assert_eq!(created.task.state, TaskState::Pending);
+
+    let started = operation(&workflow, aggregate_of(created), "start", task_id);
+    assert_eq!(started.task.stage.as_deref(), Some("running"));
+    assert_eq!(started.task.state, TaskState::InProgress);
+}
+
+#[test]
+fn daily_check_waits_for_the_design_inspection() {
     let workflow = builtin("daily_check");
     let task = task("daily_check", TaskState::Pending, None);
     let task_id = task.id;
@@ -1678,29 +1829,23 @@ fn daily_check_waits_for_both_inspections() {
     let state = aggregate_of(created);
     let dispatched = operation(&workflow, state, "dispatch:dispatched", dispatcher);
     assert_eq!(dispatched.task.stage.as_deref(), Some("waiting"));
-    let mut state = aggregate_of(dispatched);
+    let state = aggregate_of(dispatched);
 
-    for (workflow_id, child_id) in [
-        ("consistency_inspection", Uuid::now_v7()),
-        ("design_inspection", Uuid::now_v7()),
-    ] {
-        let mutation = apply(
-            &workflow,
-            state,
-            TaskEvent::ChildStateChanged {
-                child_id,
-                child_workflow: WorkflowId::new(workflow_id),
-                child_state: TaskState::Completed,
-                result: Some(TaskResult::new("completed")),
-            },
-            now(),
-        )
-        .unwrap();
-        state = aggregate_of(mutation);
-    }
-    assert_eq!(state.task.state, TaskState::Completed);
+    let completed = apply(
+        &workflow,
+        state,
+        TaskEvent::ChildStateChanged {
+            child_id: Uuid::now_v7(),
+            child_workflow: WorkflowId::new("design_inspection"),
+            child_state: TaskState::Completed,
+            result: Some(TaskResult::new("completed")),
+        },
+        now(),
+    )
+    .unwrap();
+    assert_eq!(completed.task.state, TaskState::Completed);
     assert_eq!(
-        state.task.result.as_ref().map(TaskResult::as_str),
+        completed.task.result.as_ref().map(TaskResult::as_str),
         Some("completed")
     );
 }
@@ -1718,23 +1863,16 @@ fn daily_check_fails_when_an_inspection_is_abandoned() {
         vec![],
     );
     let created = aggregate_of(apply(&workflow, state, TaskEvent::Created, now()).unwrap());
-    let state = aggregate_of(operation(&workflow, created, "dispatch:dispatched", dispatcher));
-
-    let completed = apply(
+    let state = aggregate_of(operation(
         &workflow,
-        state,
-        TaskEvent::ChildStateChanged {
-            child_id: Uuid::now_v7(),
-            child_workflow: WorkflowId::new("consistency_inspection"),
-            child_state: TaskState::Completed,
-            result: Some(TaskResult::new("completed")),
-        },
-        now(),
-    )
-    .unwrap();
+        created,
+        "dispatch:dispatched",
+        dispatcher,
+    ));
+
     let failed = apply(
         &workflow,
-        aggregate_of(completed),
+        state,
         TaskEvent::ChildStateChanged {
             child_id: Uuid::now_v7(),
             child_workflow: WorkflowId::new("design_inspection"),
@@ -1745,8 +1883,5 @@ fn daily_check_fails_when_an_inspection_is_abandoned() {
     )
     .unwrap();
     assert_eq!(failed.task.stage.as_deref(), Some("failed"));
-    assert_eq!(
-        failed.task.result.as_ref().map(TaskResult::as_str),
-        None
-    );
+    assert_eq!(failed.task.result.as_ref().map(TaskResult::as_str), None);
 }

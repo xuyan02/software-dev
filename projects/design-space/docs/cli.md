@@ -110,11 +110,13 @@ ds doc comment resolve <qname> <comment-id>
 ds doc comment list <qname>
 ds doc comment clear
 ds doc show <qname>
+ds doc layout
+ds doc check
 ds structure init
 ds structure system create <name> --title <text> [--document <qname>]
 ds structure module create <name> --parent <system-or-module> --title <text> [--document <qname>]
-ds structure assign <module> <element...>
-ds structure unassign <module> <element...>
+ds structure assign <system-or-module> <element...>
+ds structure unassign <system-or-module> <element...>
 ds structure list
 ds structure show <qname>
 ds structure check
@@ -130,13 +132,15 @@ ds repack
 - 根固定为 `design`；
 - 系统是 `design/<system>`；
 - 模块是 `<system-or-module>/<module>`；
-- 模块成员只引用顶层 Class/Interface/Function/Mixin，且一个元素只能属于一个模块；
+- 系统和模块的成员只引用顶层 Class/Interface/Function/Mixin，且一个元素恰好属于一个系统或模块；
+- 系统可以同时有模块和直属成员；
 - 子模块通过 parent 嵌套，不写进 members。
 
 ```bash
 ds structure init
 ds structure system create app --title '应用' --document documents/design/technical/section1
 ds structure module create core --parent design/app --title '核心' --document documents/design/technical/section2
+ds structure assign design/app namespaces/app/Entry
 ds structure assign design/app/core namespaces/app/Auth namespaces/app/Session
 ds structure check
 ```

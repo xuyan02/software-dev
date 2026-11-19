@@ -560,7 +560,7 @@ mod tests {
     fn body() -> WorkflowBody {
         serde_json::from_value(serde_json::json!({
             "schema_version": 1,
-            "roles": [{"name": "actor", "kind": "any", "min_actors": 1, "max_actors": null}],
+            "roles": [{"name": "actor", "kind": "agent", "assignment": "custom"}],
             "initial_stage": "work",
             "stages": [{"name": "work", "active_roles": ["actor"]}]
         }))

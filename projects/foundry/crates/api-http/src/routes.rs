@@ -6,22 +6,20 @@ use crate::dto::{
     AnchorAnnotationQuery, AnchorQuery, AnnotateRequirementsForm, AnnotateRequirementsRequest,
     ApplyAnchorOperationsRequest, ApplyRequirementsOperationsRequest, ApproveDocumentForm,
     ApproveRequirementsForm, AssignAgentRequest, BindTaskActorRequest, CommentIssueForm,
-    CommentIssueRequest,
-    CreateAccountRequest, CreateAgentFromTemplateRequest, CreateIssueRequest,
-    CreateInspectionRequest, CreateMergeRequestForm, CreateMergeRequestRequest, CreateProjectRequest,
-    CreateTriggerRequest, CreateWorkflowRequest, NewTriggerForm, UpdateTriggerRequest,
-    DecideAnchorDocumentRequest, DecideRequirementsRequest, DeleteDesignSpaceBranchRequest,
-    IssueListQuery, IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse,
-    MemberRoleForm, MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm,
-    TaskOperationForm,
-    NewInspectionForm, NewIssueForm, NewProjectForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
+    CommentIssueRequest, CreateAccountRequest, CreateAgentFromTemplateRequest,
+    CreateInspectionRequest, CreateIssueRequest, CreateMergeRequestForm, CreateMergeRequestRequest,
+    CreateProjectRequest, CreateTriggerRequest, CreateWorkflowRequest, DecideAnchorDocumentRequest,
+    DecideRequirementsRequest, DeleteDesignSpaceBranchRequest, FollowUpTaskRequest, IssueListQuery,
+    IssueTransitionForm, LoginForm, LoginQuery, LoginRequest, LoginResponse, MemberRoleForm,
+    MergeRequestCommentForm, MergeRequestOperationForm, NewAccountForm, NewInspectionForm,
+    NewIssueForm, NewProjectForm, NewTriggerForm, NewWorkflowForm, PageQuery, ProjectUpdateForm,
     PublishWorkflowForm, RejectDocumentForm, RejectRequirementsForm, RenameWorkflowForm,
     RenameWorkflowRequest, RequirementsAnnotationQuery, ResolveAnchorAnnotationRequest,
     ResolveRequirementsAnnotationRequest, SaveDraftRequest, SelectProjectForm,
-    SetMemberRoleRequest, SetupAdminForm, SetupLoginForm, SpawnChildTasksRequest,
-    TaskCommentRequest, TaskListQuery, TaskOperationRequest, TransitionIssueRequest,
-    TriageIssueRequest,
-    UpdateAccountRequest, UpdateProjectRequest, ValidateWorkflowRequest,
+    SetMemberIdentityRequest, SetMemberRoleRequest, SetupAdminForm, SetupLoginForm,
+    SpawnChildTasksRequest, TaskCommentRequest, TaskListQuery, TaskOperationForm,
+    TaskOperationRequest, TransitionIssueRequest, TriageIssueRequest, UpdateAccountRequest,
+    UpdateProjectRequest, UpdateTriggerRequest, ValidateWorkflowRequest,
 };
 use crate::error::{anchor_document_error, requirements_error, workflow_error};
 use axum::Form;
@@ -32,18 +30,18 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use foundry_app::{
     AccountFilter, AccountUseCases, AddAnchorAnnotation, AddTaskLink, AgentAdminUseCases,
     AnchorDocumentUseCases, AnchorRef, AnnotateRequirements, ApplyAnchorOperations,
-    ApplyRequirementsOperations, AuthUseCases, DecideAnchorDocument, DecideRequirementsDraft,
-    IssueFilter, IssueUseCases, ProjectDetail, ProjectUseCases, PublishWorkflow,
-    RemoveProjectMember, RemoveTaskLink, RequirementsApprovalResult, RequirementsApprovalView,
-    RequirementsDocumentUseCases, RequirementsDocumentView, RequirementsDraftView,
-    ResolveAnchorAnnotation, ResolveRequirementsAnnotation, SaveWorkflowLayout, ServiceError,
-    CreateTrigger, NewTask, TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer,
+    ApplyRequirementsOperations, AuthUseCases, CreateTrigger, DecideAnchorDocument,
+    DecideRequirementsDraft, IssueFilter, IssueUseCases, NewTask, ProjectDetail, ProjectUseCases,
+    PublishWorkflow, RemoveProjectMember, RemoveTaskLink, RequirementsApprovalResult,
+    RequirementsApprovalView, RequirementsDocumentUseCases, RequirementsDocumentView,
+    RequirementsDraftView, ResolveAnchorAnnotation, ResolveRequirementsAnnotation,
+    SaveWorkflowLayout, ServiceError, TaskFilter, TaskLinkUseCases, TaskUseCases, TaskViewer,
     UpdateTrigger, WorkflowUseCases, hash_token, new_session_token,
 };
 use foundry_domain::{
-    AccountRole, Actor, AllowedOperation, ApprovalDecision, Issue, MergeRequestStatus,
-    OperationName, Project, ProjectRole, RequirementsAnnotation, Task, TaskLinkKind,
-    TaskLinkRelation, TaskState, WorkflowId, WorkflowLayout,
+    AccountRole, AllowedOperation, ApprovalDecision, MergeRequestStatus, OperationName, Project,
+    ProjectRole, RequirementsAnnotation, Task, TaskLinkKind, TaskLinkRelation, TaskState,
+    WorkflowId, WorkflowLayout,
 };
 use foundry_web::MemberInfo;
 use serde_json::{Value, json};
@@ -1024,7 +1022,10 @@ pub async fn create_project_form(
         .await
     {
         Ok(project) => {
-            state.agents.ensure_project_pm(project.id).await;
+            if let Err(error) = state.triggers.ensure_daily_check(project.id).await {
+                tracing::warn!(project_id = %project.id, %error, "cannot create default daily-check trigger");
+            }
+            state.agents.ensure_project_dispatcher(project.id).await;
             Redirect::to(&format!("/projects/{}", project.id)).into_response()
         }
         Err(error) => project_form_error(&state, &session, error).await,
@@ -1233,9 +1234,7 @@ pub async fn design_space_element(
         .into_response();
     };
     let branch = requested_design_space_branch(&project, &query);
-    let source_url = format!(
-        "/projects/{id}/design-space/elements/{hash}/source?branch={branch}"
-    );
+    let source_url = format!("/projects/{id}/design-space/elements/{hash}/source?branch={branch}");
     match access.element(&project, &hash, &branch).await {
         Ok(detail) => Html(foundry_web::design_space_element(&detail, &source_url)).into_response(),
         Err(error) => Html(foundry_web::design_space_element_error(&error)).into_response(),
@@ -1526,9 +1525,7 @@ pub async fn merge_request_operation_form(
         .map(|(_, name)| name)
         .unwrap_or(operation);
     if operation_name == "approved" || operation_name == "review_approved" {
-        return auth::web_forbidden(
-            "请使用合并请求页面的批准按钮，以便记录审批的设计内容摘要。",
-        );
+        return auth::web_forbidden("请使用合并请求页面的批准按钮，以便记录审批的设计内容摘要。");
     }
     if operation_name == "merge" {
         match state
@@ -2675,9 +2672,7 @@ pub async fn update_project_form(
         .await
     {
         Ok(_) => {
-            if reevaluate
-                && let Err(error) = state.tasks.reevaluate_project(id).await
-            {
+            if reevaluate && let Err(error) = state.tasks.reevaluate_project(id).await {
                 tracing::warn!(project_id = %id, %error, "cannot re-evaluate project tasks");
             }
             Redirect::to(&format!("/projects/{id}")).into_response()
@@ -2864,7 +2859,10 @@ pub async fn create_project(
         .projects
         .create(session.actor(), body.into_command())
         .await?;
-    state.agents.ensure_project_pm(project.id).await;
+    if let Err(error) = state.triggers.ensure_daily_check(project.id).await {
+        tracing::warn!(project_id = %project.id, %error, "cannot create default daily-check trigger");
+    }
+    state.agents.ensure_project_dispatcher(project.id).await;
     Ok((StatusCode::CREATED, Json(project)))
 }
 
@@ -2889,9 +2887,7 @@ pub async fn update_project(
         .projects
         .update(session.actor(), body.into_command(id))
         .await?;
-    if reevaluate
-        && let Err(error) = state.tasks.reevaluate_project(id).await
-    {
+    if reevaluate && let Err(error) = state.tasks.reevaluate_project(id).await {
         tracing::warn!(project_id = %id, %error, "cannot re-evaluate project tasks");
     }
     Ok(Json(project))
@@ -2955,6 +2951,21 @@ pub async fn remove_project_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn set_project_member_identity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, identity)): Path<(Uuid, String)>,
+    Json(body): Json<SetMemberIdentityRequest>,
+) -> Result<Json<Project>, ApiError> {
+    let session = auth::api_account(&state, &headers).await?;
+    Ok(Json(
+        state
+            .projects
+            .set_member_identity(session.actor(), body.into_command(id, identity))
+            .await?,
+    ))
+}
+
 async fn can_manage_project(
     state: &AppState,
     account: &foundry_domain::Account,
@@ -3008,58 +3019,6 @@ fn member_infos(detail: &ProjectDetail) -> Vec<MemberInfo> {
 // Issues
 // ---------------------------------------------------------------------------
 
-async fn enqueue_issue_triage(
-    state: &AppState,
-    actor: Actor,
-    account_id: Uuid,
-    project_id: Uuid,
-    parent_id: Uuid,
-    issue: &Issue,
-) {
-    let task = state
-        .tasks
-        .create_task(
-            project_id,
-            NewTask {
-                parent_id,
-                workflow: "issue_triage".to_string(),
-                title: format!("分诊：{}", issue.title),
-                description: format!(
-                    "对 Issue {} 进行分诊：判断问题类型、根因和下一步任务，并把分诊结论写回 Issue。",
-                    issue.id
-                ),
-                input: json!({ "issue_id": issue.id }),
-            },
-            account_id,
-        )
-        .await;
-    let task = match task {
-        Ok(task) => task,
-        Err(error) => {
-            tracing::warn!(issue_id = %issue.id, %error, "cannot create issue triage task");
-            return;
-        }
-    };
-    if let Err(error) = state
-        .task_links
-        .add(
-            actor,
-            AddTaskLink {
-                task_id: task.id,
-                kind: TaskLinkKind::Issue,
-                target_id: Some(issue.id),
-                url: None,
-                title: issue.title.clone(),
-                relation: TaskLinkRelation::References,
-                metadata: json!({ "issue_id": issue.id, "source": "issue-triage" }),
-            },
-        )
-        .await
-    {
-        tracing::warn!(issue_id = %issue.id, task_id = %task.id, %error, "cannot link triage task to issue");
-    }
-}
-
 pub async fn list_triggers(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3081,9 +3040,7 @@ pub async fn create_trigger(
     Json(body): Json<CreateTriggerRequest>,
 ) -> Result<(StatusCode, Json<foundry_domain::Trigger>), ApiError> {
     let session = auth::api_session(&state, &headers).await?;
-    let title = body
-        .title_template
-        .unwrap_or_else(|| body.name.clone());
+    let title = body.title_template.unwrap_or_else(|| body.name.clone());
     let trigger = state
         .triggers
         .create(
@@ -3401,15 +3358,13 @@ pub async fn create_inspection(
         .create_task(
             project_id,
             NewTask {
-                parent_id: project
-                    .root_task_id
-                    .ok_or_else(|| {
-                        ApiError::new(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            "no_root_task",
-                            "project has no root task",
-                        )
-                    })?,
+                parent_id: project.root_task_id.ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "no_root_task",
+                        "project has no root task",
+                    )
+                })?,
                 workflow: workflow.to_string(),
                 title: title.to_string(),
                 description,
@@ -3432,20 +3387,36 @@ pub async fn create_issue(
         .issues
         .create(session.actor(), body.into_command(session.project.id))
         .await?;
-    if let Some(parent_id) = session.project.root_task_id {
-        enqueue_issue_triage(
-            &state,
-            session.actor(),
-            session.account.id,
-            session.project.id,
-            parent_id,
-            &issue,
-        )
-        .await;
-    } else {
-        tracing::warn!(issue_id = %issue.id, "cannot enqueue triage: project has no root task");
-    }
     Ok((StatusCode::CREATED, Json(issue)))
+}
+
+pub async fn issue_triage_batch(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    let session = auth::api_session(&state, &headers).await?;
+    let issues = state
+        .issues
+        .list(
+            session.project.id,
+            IssueFilter {
+                status: None,
+                kind: None,
+                source: None,
+                assignee: None,
+                text: None,
+            },
+        )
+        .await?;
+    let pending = issues
+        .iter()
+        .filter(|issue| issue.status == foundry_domain::IssueStatus::Open && issue.triage.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(Json(json!({
+        "pending": pending,
+        "open_issues": issues,
+    })))
 }
 
 pub async fn get_issue(
@@ -3530,12 +3501,7 @@ pub async fn triage_issue(
     Ok(Json(
         state
             .issues
-            .set_triage(
-                session.actor(),
-                session.project.id,
-                id,
-                body.into_triage(),
-            )
+            .set_triage(session.actor(), session.project.id, id, body.into_triage())
             .await?,
     ))
 }
@@ -3577,22 +3543,7 @@ pub async fn create_issue_form(
         )
         .await
     {
-        Ok(issue) => {
-            if let Some(parent_id) = session.project.root_task_id {
-                enqueue_issue_triage(
-                    &state,
-                    session.account.actor(),
-                    session.account.id,
-                    session.project.id,
-                    parent_id,
-                    &issue,
-                )
-                .await;
-            } else {
-                tracing::warn!(issue_id = %issue.id, "cannot enqueue triage: project has no root task");
-            }
-            Redirect::to(&format!("/issues/{}", issue.id)).into_response()
-        }
+        Ok(issue) => Redirect::to(&format!("/issues/{}", issue.id)).into_response(),
         Err(ServiceError::Validation(message)) | Err(ServiceError::Forbidden(message)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
             Html(foundry_web::new_issue_page(
@@ -3630,6 +3581,7 @@ pub async fn issue_page(
                     stage: task.stage.unwrap_or_default(),
                     state: task.state,
                     result: task.result.unwrap_or_default(),
+                    active: task.active,
                 })
                 .collect::<Vec<_>>();
             Html(foundry_web::issue_page(&session.context, &issue, &linked)).into_response()
@@ -4144,11 +4096,7 @@ pub async fn bind_task_actor(
         .tasks
         .get(session.project.id, id, task_viewer(&session))
         .await?;
-    let Some(role) = task
-        .role_specs
-        .iter()
-        .find(|role| role.name == body.role)
-    else {
+    let Some(role) = task.role_specs.iter().find(|role| role.name == body.role) else {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "unknown_role",
@@ -4254,6 +4202,87 @@ pub async fn spawn_task_children(
         )
         .await?;
     Ok((StatusCode::CREATED, Json(children)))
+}
+
+pub async fn create_follow_up_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(body): Json<FollowUpTaskRequest>,
+) -> Result<(StatusCode, Json<foundry_domain::Task>), ApiError> {
+    let session = task_api_session(&state, &headers, id).await?;
+    let task = state
+        .tasks
+        .get(session.project.id, id, task_viewer(&session))
+        .await?;
+    let active = session.account.is_admin()
+        || task
+            .actors
+            .iter()
+            .any(|actor| actor.account_id == session.account.id && actor.active);
+    if !active {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "only an active task actor or an administrator can create follow-up tasks",
+        ));
+    }
+    if !matches!(
+        body.workflow.as_str(),
+        "design_baseline" | "design_correction" | "design_rework"
+    ) {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "unsupported_workflow",
+            "the triage task can only create design follow-up tasks",
+        ));
+    }
+    let root_id = session.project.root_task_id.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "no_root_task",
+            "project has no root task",
+        )
+    })?;
+    let issue = state.issues.get(session.project.id, body.issue_id).await?;
+    let mut input = if body.input.is_object() {
+        body.input
+    } else {
+        json!({})
+    };
+    input["issue_id"] = json!(issue.id);
+    let created = state
+        .tasks
+        .create_task_with_dependencies(
+            session.project.id,
+            NewTask {
+                parent_id: root_id,
+                workflow: body.workflow,
+                title: body.title,
+                description: body.description,
+                input,
+            },
+            vec![id],
+            session.account.id,
+        )
+        .await?;
+    state
+        .task_links
+        .add(
+            session.account.actor(),
+            AddTaskLink {
+                task_id: created.id,
+                kind: TaskLinkKind::Issue,
+                target_id: Some(issue.id),
+                url: None,
+                title: issue.title.clone(),
+                relation: TaskLinkRelation::References,
+                active: true,
+                metadata: json!({ "issue_id": issue.id, "source": "triage" }),
+            },
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
 }
 
 pub async fn send_task_operation(
@@ -4475,7 +4504,9 @@ pub async fn start_task(
     match task.dispatch_state {
         foundry_domain::TaskDispatchState::Ready => {}
         foundry_domain::TaskDispatchState::Running => return Ok(StatusCode::NO_CONTENT),
-        foundry_domain::TaskDispatchState::Blocked | foundry_domain::TaskDispatchState::Closed => {
+        foundry_domain::TaskDispatchState::Blocked
+        | foundry_domain::TaskDispatchState::Failed
+        | foundry_domain::TaskDispatchState::Closed => {
             return Err(ApiError::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "not_ready",
@@ -4494,11 +4525,10 @@ pub async fn start_task(
             "task is not a Ready dispatch candidate",
         ));
     };
-    if view
-        .roles
-        .iter()
-        .any(|role| role.agent.as_ref().is_none_or(|agent| !agent.enabled))
-    {
+    if view.roles.iter().any(|role| {
+        role.kind == foundry_domain::RoleKind::Agent
+            && role.agent.as_ref().is_none_or(|agent| !agent.enabled)
+    }) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "roles_unassigned",
@@ -4515,6 +4545,9 @@ pub async fn start_task(
             foundry_domain::START_OPERATION.to_string(),
         )
         .await?;
+    // Starting a task makes it the Issue's current handler; previous handlers
+    // stay in the link list as history.
+    state.task_links.handoff_task_issues(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4835,6 +4868,7 @@ pub async fn add_task_link(
         url: body.url,
         title: body.title,
         relation,
+        active: body.active,
         metadata: body.metadata,
     };
     Ok(Json(state.task_links.add(account.actor(), command).await?))

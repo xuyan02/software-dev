@@ -444,6 +444,9 @@ pub struct SystemPayload {
     pub parent: SymbolHash,
     pub title: String,
     pub document: SymbolHash,
+    /// Top-level code elements owned directly by the system. A system may
+    /// also contain modules; the two forms are not mutually exclusive.
+    pub members: Vec<SymbolHash>,
     pub children: Vec<ObjectHash>,
 }
 

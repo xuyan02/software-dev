@@ -4,7 +4,7 @@
 //! the model protocol, provider calls, tool loop and message history.
 
 use crate::graph_tools::adapt_registry;
-use crate::{ContextBundle, RunError, Shell, ToolRegistry, codesummary};
+use crate::{ContextBundle, RunError, Shell, ToolRegistry, codesummary, design_baseline};
 use graph_agent::{
     Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmRuntime, ModelGateway,
     ModelProfileRef, NodeError, PromptTemplate, SkillError, SkillRegistry,
@@ -12,6 +12,7 @@ use graph_agent::{
 };
 use serde::Serialize;
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,9 @@ pub struct AgentRunRequest {
     pub user_message: String,
     pub context: ContextBundle,
     pub task_input: Value,
+    /// Workflow stage of the task being executed. Deterministic runtimes use it
+    /// to select stage-specific behavior; the model never chooses the stage.
+    pub stage: Option<String>,
 }
 
 impl AgentRunRequest {
@@ -40,11 +44,17 @@ impl AgentRunRequest {
             user_message: user_message.into(),
             context: ContextBundle::default(),
             task_input: Value::Null,
+            stage: None,
         }
     }
 
     pub fn with_project_id(mut self, project_id: impl Into<String>) -> Self {
         self.project_id = Some(project_id.into());
+        self
+    }
+
+    pub fn with_stage(mut self, stage: Option<String>) -> Self {
+        self.stage = stage;
         self
     }
 }
@@ -64,6 +74,7 @@ pub struct AgentRuntime {
 enum RuntimeMode {
     Generic,
     CodeSummary,
+    DesignBaseline { state_dir: PathBuf },
 }
 
 impl AgentRuntime {
@@ -89,10 +100,36 @@ impl AgentRuntime {
         }
     }
 
+    pub fn new_design_baseline(
+        model: Arc<dyn ModelGateway>,
+        tools: Arc<ToolRegistry>,
+        shell: Arc<dyn Shell>,
+        state_dir: PathBuf,
+    ) -> Self {
+        Self {
+            model,
+            tools,
+            shell: Some(shell),
+            mode: RuntimeMode::DesignBaseline { state_dir },
+        }
+    }
+
     pub async fn run(&self, request: AgentRunRequest) -> Result<RunResult, RunError> {
-        match self.mode {
+        match &self.mode {
             RuntimeMode::Generic => self.run_generic(request).await,
             RuntimeMode::CodeSummary => self.run_codesummary(request).await,
+            RuntimeMode::DesignBaseline { state_dir } => {
+                let tools = adapt_registry(&self.tools)
+                    .map_err(|error| RunError::Graph(format!("tool registry: {error}")))?;
+                design_baseline::run(
+                    Arc::clone(&self.model),
+                    Arc::new(tools),
+                    self.shell.clone(),
+                    request,
+                    state_dir.clone(),
+                )
+                .await
+            }
         }
     }
 

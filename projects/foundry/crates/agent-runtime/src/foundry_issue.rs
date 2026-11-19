@@ -259,6 +259,36 @@ impl Tool for IssueTransitionTool {
             .map(|value| value.parse::<Uuid>())
             .transpose()
             .map_err(|_| ToolError::InvalidArguments("invalid duplicate_of".to_string()))?;
+        if to == "duplicate" {
+            let Some(duplicate_of) = duplicate_of else {
+                return Err(ToolError::InvalidArguments(
+                    "duplicate_of is required for a duplicate transition".to_string(),
+                ));
+            };
+            let issue = self
+                .client
+                .get_issue(issue_id)
+                .await
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            let target = self
+                .client
+                .get_issue(duplicate_of)
+                .await
+                .map_err(|error| ToolError::Failed(error.to_string()))?;
+            let created = issue
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let target_created = target
+                .get("created_at")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if target_created > created {
+                return Err(ToolError::Failed(
+                    "duplicate_of must point to an older Issue".to_string(),
+                ));
+            }
+        }
         let issue = self
             .client
             .transition_issue(issue_id, to, resolution, duplicate_of)
@@ -268,6 +298,41 @@ impl Tool for IssueTransitionTool {
     }
 }
 
+pub struct IssueTriageBatchTool {
+    client: Arc<FoundryClient>,
+}
+
+impl IssueTriageBatchTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for IssueTriageBatchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "issue_triage_batch".to_string(),
+            description: "Return all Open issues that still need triage and the Open issues \
+                          available as duplicate candidates. Call this once per triage task."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let batch = self
+            .client
+            .issue_triage_batch()
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        pretty(batch)
+    }
+}
 
 pub struct IssueListTool {
     client: Arc<FoundryClient>,
@@ -284,8 +349,9 @@ impl Tool for IssueListTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "issue_list".to_string(),
-            description: "List project Issues. Use it to check for duplicates before creating a new Issue."
-                .to_string(),
+            description:
+                "List project Issues. Use it to check for duplicates before creating a new Issue."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -307,7 +373,6 @@ impl Tool for IssueListTool {
     }
 }
 
-
 pub struct IssueTriageResultTool {
     client: Arc<FoundryClient>,
 }
@@ -323,8 +388,9 @@ impl Tool for IssueTriageResultTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "issue_triage_result".to_string(),
-            description: "Record the structured triage classification, root cause and decision on an Issue."
-                .to_string(),
+            description:
+                "Record the structured triage classification, root cause and decision on an Issue."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "required": ["issue_id", "classification", "root_cause", "confidence", "decision"],
@@ -362,7 +428,6 @@ impl Tool for IssueTriageResultTool {
     }
 }
 
-
 pub struct TriggerCreateTool {
     client: Arc<FoundryClient>,
 }
@@ -378,8 +443,9 @@ impl Tool for TriggerCreateTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "trigger_create".to_string(),
-            description: "Create a project trigger that schedules or manually runs a workflow Task."
-                .to_string(),
+            description:
+                "Create a project trigger that schedules or manually runs a workflow Task."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "required": ["name", "workflow_id", "schedule"],
@@ -409,7 +475,6 @@ impl Tool for TriggerCreateTool {
         pretty(trigger)
     }
 }
-
 
 pub struct TriggerListTool {
     client: Arc<FoundryClient>,

@@ -11,6 +11,26 @@ cargo build --bins
 cargo run -p foundry-control-plane
 ```
 
+## 更新 agent shell 镜像
+
+agent 的常驻 shell 使用 `shell_image`（默认 `localhost/openergasterion-shell:1`）。镜像里的 `ds` 是构建时复制进去的二进制，不会随 control plane 或工作区的重新编译自动更新。修改 `design-space` 的 CLI 后，必须重建镜像：
+
+```bash
+cd projects/foundry
+cargo build --release -p design-space --bin ds
+cp ../../target/release/ds deploy/shell/ds
+podman build -t localhost/openergasterion-shell:1 deploy/shell/
+```
+
+已经运行的 shell 容器仍持有旧二进制。重启 agentd 会创建新容器；不重启时，对运行中的容器执行：
+
+```bash
+for c in $(podman ps -q --filter ancestor=localhost/openergasterion-shell:1); do
+  podman cp ../../target/release/ds "$c":/usr/local/bin/ds
+  podman exec "$c" chmod 755 /usr/local/bin/ds
+done
+```
+
 首次启动时账户库为空，打开 <http://127.0.0.1:8080/setup>，先用配置中的初始账号和初始密码登录初始化流程，再创建首个管理员。没有默认账户、默认密码或默认项目；初始身份只用于授权初始化，不是系统账户，也不是管理员密码。创建管理员后会进入项目页，由管理员显式创建第一个项目。
 
 数据库连接串可以放在用户配置文件 `~/.foundry/foundry.toml` 中，参考 `foundry.toml.example`：
@@ -100,13 +120,31 @@ cargo xtask check
 
 ### 任务派发
 
-每个项目有自己的 PM Agent；它每次扫描只看本项目的任务：
+每个项目有自己的 Task Dispatcher（任务调度员）；它每次扫描只看本项目的任务：
 
-1. `tasks_ready_list`：每个任务一行，携带 workflow 中**所有** agent 角色（不只当前阶段）和已分配的 agent；
-2. 对没有 enabled agent 的 agent 角色，分配已有 Agent 或按模板创建后再分配；
-3. 调用 `task_start`（保留操作 `start`）把任务从 `Pending` 置为 `InProgress`。
+1. `tasks_ready_list`：每个任务一行，携带所有角色、当前绑定和人类候选者；
+2. 对没有 enabled agent 的智能体角色，按 `assignment:name` 分配已有 Agent，或按模板创建后再分配；
+3. 对人类角色，只有一个候选者时直接绑定；多个候选者留给模型选择；
+4. 所有角色都绑定后调用 `task_start`（保留操作 `start`）把任务从 `Pending` 置为 `InProgress`。
 
-`task_start` 是平台通用操作，不是 workflow 定义的；它只接受 Ready 任务，且要求所有 agent 角色都已有 enabled 的分配。所有角色在任务启动前一起绑定；之后进入新的 stage 时不会重新走 PM 分配。后续阶段角色的 task actor 先以 inactive 状态绑定，进入对应 stage 时再激活。领域层同样拒绝 `Pending → InProgress`：任一 agent 角色的绑定数低于 `min_actors` 时任务不能进入执行状态。没有 agent 角色的任务不进入 PM 队列。
+`task_start` 是平台通用操作，不是 workflow 定义的；它只接受 Ready 任务，且要求每个角色都恰好有一个 actor。所有角色在任务启动前一起绑定；之后进入新的 stage 时不会重新走分配。后续阶段角色的 task actor 先以 inactive 状态绑定，进入对应 stage 时再激活。没有角色的任务直接启动。
+
+人类角色引用的是身份而不是具体账户。项目创建者默认拥有所有身份，可以通过
+`PUT /api/v1/projects/{id}/identities/{identity}`（`{"enabled": false}`）取消自己的某个身份，再用同样的接口恢复。其他用户暂不参与候选；一个角色有多个候选者时，Task Dispatcher 把任务描述、输入和候选者列表交给模型选择。
+
+### Issue 分诊
+
+项目根流程会创建 `triage_check` 任务：
+
+1. `triage_check` 的 checker 是纯代码智能体；它在 `check` 阶段查询待分诊 Issue；
+2. 有待分诊 Issue 时，创建 `triage` 子任务并进入 `waiting_triage`；`triage` 结束后回到 `check`；
+3. 没有待分诊 Issue 时进入 `waiting_issue`；Issue 创建/评论/重新打开会通过 `foundry_issue_changes` 通知唤醒它；
+4. `triage` 的 LLM 智能体一次读取全部待分诊 Issue，分类、判断重复和设计修正/返工；
+5. 重复 Issue 直接转 `Duplicate`，写入 `duplicate_of`，不创建任务；
+6. 后续任务挂在项目根任务下，`depends_on` 指向当前 `triage` 任务；`triage` 完成前它们不会进入 Ready；
+7. 分诊完成后，Task Dispatcher 才调度这些设计任务。
+
+当前自动处理范围是设计基线和设计缺陷：`design_baseline`、`design_correction`、`design_rework`。旧 `issue_triage` 任务已停用。
 
 任务进入 `InProgress` 后，Agent 进程在启动、重连和收到 `foundry_task_changes` 通知时，查询自己是 active actor 的任务，并自行决定是否执行。通知是瞬时的：不写 durable queue、不重试、不补发；通知丢失时，下一次通知或 Agent 重启会重新扫描。`issue_commented` 也走同一通知通道，因此人类在 Issue 回复会唤醒 Agent。
 
@@ -118,7 +156,7 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 项目创建后，根 Task 创建 `goal_clarification` 子 Task 和统一的澄清 Issue：
 
-1. PM 在任务开始时按 `goal_clarification:clarifier` 和 `goal_clarification:writer`
+1. Task Dispatcher 在任务开始时按 `goal_clarification:clarifier` 和 `goal_clarification:writer`
    分配或创建 **Clarifier** 和 **Project Document Writer**；
 2. Clarifier 在澄清 Issue 中与创建者对话，只负责提问；澄清完毕后发送总结评论并调用
    `task_operation(operation = "clarification:completed")` 进入项目文档撰写；
@@ -137,7 +175,7 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 项目文档通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
 
-1. PM 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
+1. Task Dispatcher 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
 2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"update_title"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（领域模型 / 用户肖像 / 故事 / 子系统 / 功能集 / 功能；交互设计和 UI 设计是后续阶段维护的子系统树，交互设计按子系统 → 功能集 → 功能组织并包含信息架构和页面清单，UI 设计按子系统 → 页面组织并包含设计稿图片）；
    人类和 Reviewer 可以在需求文档页写锚点标注，Analyst 用 `action = "annotations_list"` 读取，用 `action = "resolve_annotation"` 在修改后标记解决；
 3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用标注写具体意见，打回时任务回到 `work`，Analyst 读取标注修改后重新提交；
@@ -148,7 +186,7 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 项目进入 `architecture` 后创建 `architecture_design` 子 Task：
 
-1. PM 按 `architecture_design:architect` 分配或创建 **Architect**；
+1. Task Dispatcher 按 `architecture_design:architect` 分配或创建 **Architect**；
 2. Architect 读取项目文档、需求文档和当前架构设计，用 `document`，`kind = "architecture"` 维护架构锚点文档（架构概览 / 系统上下文 / 组件 / 接口与契约 / 数据与存储 / 部署与运行 / 质量属性 / 关键决策 / 技术债 / 风险）；
 3. Architect 提交后进入 Architecture review（`architecture_design:reviewer`）；Reviewer 用锚点标注写具体意见，打回时任务回到 `work`；
 4. 人类在 `/projects/{id}/documents/architecture` 做最终 review：**批准当前草案**生成新的不可变版本，或填写打回原因退回 Architect；
@@ -158,14 +196,14 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
 
 项目进入 `detailed_design` 后创建 `detailed_design` 子 Task：
 
-1. PM 按 `detailed_design:designer` 分配或创建 **Detailed Designer**；
+1. Task Dispatcher 按 `detailed_design:designer` 分配或创建 **Detailed Designer**；
 2. Designer 读取项目文档、需求文档和架构设计，用 `document`，`kind = "design"` 维护详细设计（设计概览 / 子系统 / 模块 / 任务分解 / 质量门禁）；
 3. 提交后进入 Design review（`detailed_design:reviewer`）；Reviewer 用锚点标注写意见，打回时回到 `work`；
 4. 人类在 `/projects/{id}/documents/design` 批准当前草案，control-plane 发送 `accept`，项目进入 `test_planning`。
 
 ### 测试计划流程
 
-1. PM 按 `test_planning:test_planner` 分配或创建 **Test Planner**；
+1. Task Dispatcher 按 `test_planning:test_planner` 分配或创建 **Test Planner**；
 2. Test Planner 读取需求、架构和详细设计，用 `document`，`kind = "test_plan"` 写测试策略、范围、环境、测试用例和质量门禁；
 3. 提交后进入 Test Plan review（`test_planning:reviewer`），打回回到 `work`；
 4. 人类在 `/projects/{id}/documents/test_plan` 批准，项目进入 `iteration`。

@@ -631,12 +631,14 @@ impl InMemoryStore {
                         aggregate.task.workflow
                     )));
                 }
-                if aggregate
-                    .actors
-                    .iter()
-                    .any(|actor| actor.role_key == role && actor.account_id == account_id)
+                if let Some(existing) = aggregate.actors.iter().find(|actor| actor.role_key == role)
                 {
-                    return Ok(());
+                    if existing.account_id == account_id {
+                        return Ok(());
+                    }
+                    return Err(TaskDispatchError::Rejected(format!(
+                        "role {role} already has an actor"
+                    )));
                 }
 
                 let actor = self.task_actor(bound_by).unwrap_or(Actor::System);

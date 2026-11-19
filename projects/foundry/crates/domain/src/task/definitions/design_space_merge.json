@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "reviewer", "kind": "human", "min_actors": 1, "max_actors": 1}
+    {"name": "reviewer", "kind": "human", "assignment": "design_space_reviewer"}
   ],
   "initial_stage": "review",
   "stages": [

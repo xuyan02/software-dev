@@ -137,13 +137,14 @@ impl TriggerRepository for PostgresStore {
         id: Uuid,
         expected_version: u32,
     ) -> Result<(), RepoError> {
-        let result = sqlx::query("delete from triggers where project_id=$1 and id=$2 and version=$3")
-            .bind(project_id)
-            .bind(id)
-            .bind(expected_version as i32)
-            .execute(&self.pool)
-            .await
-            .map_err(map_write_error)?;
+        let result =
+            sqlx::query("delete from triggers where project_id=$1 and id=$2 and version=$3")
+                .bind(project_id)
+                .bind(id)
+                .bind(expected_version as i32)
+                .execute(&self.pool)
+                .await
+                .map_err(map_write_error)?;
         if result.rows_affected() == 0 {
             return Err(RepoError::Backend("trigger version conflict".to_string()));
         }
@@ -183,11 +184,7 @@ impl TriggerRepository for PostgresStore {
         Ok(())
     }
 
-    async fn runs(
-        &self,
-        project_id: Uuid,
-        trigger_id: Uuid,
-    ) -> Result<Vec<TriggerRun>, RepoError> {
+    async fn runs(&self, project_id: Uuid, trigger_id: Uuid) -> Result<Vec<TriggerRun>, RepoError> {
         let rows: Vec<RunRow> = sqlx::query_as(
             "select r.id, r.trigger_id, r.task_id, r.reason, r.triggered_by, r.created_at \
              from trigger_runs r join triggers t on t.id = r.trigger_id \
@@ -241,8 +238,9 @@ fn run_from_row(row: RunRow) -> Result<TriggerRun, RepoError> {
         id: row.id,
         trigger_id: row.trigger_id,
         task_id: row.task_id,
-        reason: TriggerRunReason::parse(&row.reason)
-            .ok_or_else(|| RepoError::Backend(format!("unknown trigger run reason {}", row.reason)))?,
+        reason: TriggerRunReason::parse(&row.reason).ok_or_else(|| {
+            RepoError::Backend(format!("unknown trigger run reason {}", row.reason))
+        })?,
         triggered_by: serde_json::from_value::<Actor>(row.triggered_by).map_err(backend)?,
         created_at: row.created_at,
     })

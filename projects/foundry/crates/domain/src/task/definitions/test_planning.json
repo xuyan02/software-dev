@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "test_planner", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "test_planner", "kind": "agent", "assignment": "test_planning"},
+    {"name": "reviewer", "kind": "agent", "assignment": "test_planning"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "work",
   "stages": [

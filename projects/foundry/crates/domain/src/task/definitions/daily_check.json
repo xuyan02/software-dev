@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "dispatcher", "kind": "agent", "min_actors": 1, "max_actors": 1}
+    {"name": "dispatcher", "kind": "agent", "assignment": "daily_check"}
   ],
   "initial_stage": "dispatch",
   "stages": [
@@ -13,8 +13,8 @@
         "failed": {"type": "bool", "display_name": "Failed"}
       },
       "operations": [
-        {"name": "dispatched", "display_name": "检查任务已创建", "description": "一致性检查和设计检查任务已创建。", "roles": ["dispatcher"], "action": "dispatched = true"},
-        {"name": "failed", "display_name": "创建检查任务失败", "description": "无法创建检查子任务。", "roles": ["dispatcher"], "action": "failed = true"}
+        {"name": "dispatched", "display_name": "检查任务已创建", "description": "设计检查任务已创建。", "roles": ["dispatcher"], "action": "dispatched = true"},
+        {"name": "failed", "display_name": "创建检查任务失败", "description": "无法创建设计检查子任务。", "roles": ["dispatcher"], "action": "failed = true"}
       ],
       "transitions": [
         {"on": "failed", "to": "failed"},
@@ -25,19 +25,18 @@
       "name": "waiting",
       "active_roles": [],
       "vars": {
-        "consistency_done": {"type": "bool", "display_name": "Consistency done"},
         "design_done": {"type": "bool", "display_name": "Design done"},
         "inspection_failed": {"type": "bool", "display_name": "Inspection failed"}
       },
       "events": [
         {
           "event": "child.state_changed",
-          "action": "if event.child.workflow == 'consistency_inspection' and event.child.state == 'completed' { if event.child.result == 'completed' { consistency_done = true } else { inspection_failed = true } } if event.child.workflow == 'design_inspection' and event.child.state == 'completed' { if event.child.result == 'completed' { design_done = true } else { inspection_failed = true } }"
+          "action": "if event.child.workflow == 'design_inspection' and event.child.state == 'completed' { if event.child.result == 'completed' { design_done = true } else { inspection_failed = true } }"
         }
       ],
       "transitions": [
         {"on": "inspection_failed", "action": "result = 'failed'", "to": "failed"},
-        {"on": "consistency_done and design_done", "action": "result = 'completed'", "to": "ended"}
+        {"on": "design_done", "action": "result = 'completed'", "to": "ended"}
       ]
     },
     {

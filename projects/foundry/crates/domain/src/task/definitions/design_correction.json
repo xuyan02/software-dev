@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "designer", "kind": "agent", "assignment": "design_correction"},
+    {"name": "design_reviewer", "kind": "agent", "assignment": "design_correction"},
+    {"name": "acceptor", "kind": "human", "assignment": "design_space_reviewer"}
+  ],
+  "initial_stage": "analysis",
+  "stages": [
+    {
+      "name": "analysis",
+      "active_roles": ["designer"],
+      "vars": {
+        "analyzed": {"type": "bool", "display_name": "Analyzed"}
+      },
+      "operations": [
+        {"name": "analyzed", "display_name": "设计影响分析完成", "description": "受影响的对象和设计修正范围已明确。", "roles": ["designer"], "action": "analyzed = true"}
+      ],
+      "transitions": [
+        {"on": "analyzed", "to": "correct"}
+      ]
+    },
+    {
+      "name": "correct",
+      "active_roles": ["designer"],
+      "vars": {
+        "corrected": {"type": "bool", "display_name": "Corrected"}
+      },
+      "operations": [
+        {"name": "corrected", "display_name": "设计修正完成", "description": "设计空间已按 Issue 修正并推送到 design-correction/<task-id> 分支。", "roles": ["designer"], "action": "corrected = true"}
+      ],
+      "transitions": [
+        {"on": "corrected", "to": "design_review"}
+      ]
+    },
+    {
+      "name": "design_review",
+      "active_roles": ["design_reviewer"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"}
+      },
+      "operations": [
+        {"name": "approved", "display_name": "设计修正通过", "description": "设计修正通过，并已创建/刷新合并请求。", "roles": ["design_reviewer"], "action": "decision = 'approved'"},
+        {"name": "rejected", "display_name": "设计修正打回", "description": "设计修正需要继续调整。", "roles": ["design_reviewer"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "decision == 'approved'", "to": "human_review"},
+        {"on": "decision == 'rejected'", "to": "correct"}
+      ]
+    },
+    {
+      "name": "human_review",
+      "active_roles": ["acceptor"],
+      "vars": {
+        "decision": {"type": "string", "display_name": "Decision"},
+        "merged": {"type": "bool", "display_name": "Merged"},
+        "conflict": {"type": "bool", "display_name": "Conflict"}
+      },
+      "operations": [
+        {"name": "merge", "display_name": "批准并合入", "description": "人类批准后平台立即机械合入设计修正。", "roles": ["acceptor"], "action": "merged = true"},
+        {"name": "conflict", "display_name": "合入未完成", "description": "机械合入失败，转智能体解决冲突或清理评论后重新审批。", "roles": ["acceptor"], "action": "conflict = true"},
+        {"name": "rejected", "display_name": "人类打回", "description": "设计修正需要继续调整。", "roles": ["acceptor"], "action": "decision = 'rejected'"}
+      ],
+      "transitions": [
+        {"on": "conflict", "to": "conflict_resolution"},
+        {"on": "merged", "to": "cleanup"},
+        {"on": "decision == 'rejected'", "to": "correct"}
+      ]
+    },
+    {
+      "name": "conflict_resolution",
+      "active_roles": ["designer"],
+      "vars": {
+        "resolved": {"type": "bool", "display_name": "Resolved"}
+      },
+      "operations": [
+        {"name": "resolved", "display_name": "冲突已解决", "description": "design-correction 分支已 rebase、清理评论并刷新合并请求。", "roles": ["designer"], "action": "resolved = true"}
+      ],
+      "transitions": [
+        {"on": "resolved", "to": "design_review"}
+      ]
+    },
+    {
+      "name": "cleanup",
+      "active_roles": ["design_reviewer"],
+      "vars": {
+        "cleaned": {"type": "bool", "display_name": "Cleaned"}
+      },
+      "operations": [
+        {"name": "cleaned", "display_name": "清理完成", "description": "design-correction 临时分支已删除。", "roles": ["design_reviewer"], "action": "cleaned = true"}
+      ],
+      "transitions": [
+        {"on": "cleaned", "action": "result = 'approved'", "to": "ended"}
+      ]
+    }
+  ]
+}

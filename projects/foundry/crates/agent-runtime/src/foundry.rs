@@ -319,6 +319,14 @@ impl FoundryClient {
         .await
     }
 
+    pub async fn issue_triage_batch(&self) -> Result<Value, FoundryError> {
+        self.get(&format!(
+            "{}/api/v1/issues/triage-batch",
+            self.base_url.trim_end_matches('/')
+        ))
+        .await
+    }
+
     pub async fn list_triggers(&self) -> Result<Value, FoundryError> {
         self.get(&format!(
             "{}/api/v1/projects/{}/triggers",
@@ -413,10 +421,7 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn dispatch_agents(
-        &self,
-        project_id: Option<Uuid>,
-    ) -> Result<Value, FoundryError> {
+    pub async fn dispatch_agents(&self, project_id: Option<Uuid>) -> Result<Value, FoundryError> {
         let mut url = format!(
             "{}/api/v1/agent-dispatch/agents",
             self.base_url.trim_end_matches('/')
@@ -477,10 +482,7 @@ impl FoundryClient {
         .await
     }
 
-    pub async fn ready_tasks(
-        &self,
-        project_id: Option<Uuid>,
-    ) -> Result<Value, FoundryError> {
+    pub async fn ready_tasks(&self, project_id: Option<Uuid>) -> Result<Value, FoundryError> {
         let mut url = format!(
             "{}/api/v1/agent-dispatch/tasks",
             self.base_url.trim_end_matches('/')
@@ -615,6 +617,44 @@ impl FoundryClient {
                 self.base_url.trim_end_matches('/')
             ),
             serde_json::json!({ "tasks": tasks, "sequential": sequential }),
+            None,
+        )
+        .await
+    }
+
+    pub async fn retry_task(&self, task_id: Uuid) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/tasks/{task_id}/retry",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({}),
+            None,
+        )
+        .await
+    }
+
+    pub async fn create_follow_up_task(
+        &self,
+        task_id: Uuid,
+        issue_id: Uuid,
+        workflow: &str,
+        title: &str,
+        description: &str,
+        input: Value,
+    ) -> Result<Value, FoundryError> {
+        self.post(
+            &format!(
+                "{}/api/v1/tasks/{task_id}/follow-up",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({
+                "issue_id": issue_id,
+                "workflow": workflow,
+                "title": title,
+                "description": description,
+                "input": input,
+            }),
             None,
         )
         .await

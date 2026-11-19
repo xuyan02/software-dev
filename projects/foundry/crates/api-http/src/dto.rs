@@ -1,13 +1,13 @@
 use foundry_app::{
     AddProjectMemberByHandle, CommentIssue, CreateAccount, CreateIssue, CreateProject,
-    CreateWorkflow, RenameWorkflow, SaveWorkflowDraft, SetProjectMemberRole, TaskFilter,
-    TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
+    CreateWorkflow, RenameWorkflow, SaveWorkflowDraft, SetMemberIdentity, SetProjectMemberRole,
+    TaskFilter, TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
 };
 use foundry_domain::{
     AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, IssueClassification,
-    IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus, IssueTriage,
-    ProjectRole, ProjectStatus, RoleKey, StageKey,
-    TaskDispatchState, TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
+    IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus,
+    IssueTriage, ProjectRole, ProjectStatus, RoleKey, StageKey, TaskDispatchState, TaskState,
+    WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -356,6 +356,20 @@ impl SetMemberRoleRequest {
             project_id,
             account_id,
             role: self.role,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMemberIdentityRequest {
+    pub enabled: bool,
+}
+impl SetMemberIdentityRequest {
+    pub fn into_command(self, project_id: uuid::Uuid, identity: String) -> SetMemberIdentity {
+        SetMemberIdentity {
+            project_id,
+            identity,
+            enabled: self.enabled,
         }
     }
 }
@@ -1285,6 +1299,16 @@ pub struct DeleteDesignSpaceBranchRequest {
     pub branch: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct FollowUpTaskRequest {
+    pub issue_id: uuid::Uuid,
+    pub workflow: String,
+    pub title: String,
+    pub description: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
 // ---------------------------------------------------------------------------
 // Task links
 // ---------------------------------------------------------------------------
@@ -1298,6 +1322,9 @@ pub struct AddTaskLinkRequest {
     pub url: Option<String>,
     pub title: String,
     pub relation: String,
+    /// Make this Issue link the current handling task.
+    #[serde(default)]
+    pub active: bool,
     #[serde(default)]
     pub metadata: serde_json::Value,
 }

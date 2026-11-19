@@ -38,17 +38,6 @@ fn staging_diff_reset_branches_and_pack() {
         root,
         &["create", "namespace", "app", "--parent", "namespaces"],
     );
-    ok(root, &["doc", "mkdir", "documents/design"]);
-    ok(
-        root,
-        &[
-            "doc",
-            "create",
-            "documents/design/technical",
-            "--title",
-            "技术设计",
-        ],
-    );
     ok(
         root,
         &["create", "class", "Base", "--namespace", "namespaces/app"],
@@ -361,17 +350,6 @@ fn syncs_files_and_directories_with_the_source_tree() {
 
     let url = format!("file://{}", source.display());
     ok(&ws, &["init", "--source", &url]);
-    ok(&ws, &["doc", "mkdir", "documents/design"]);
-    ok(
-        &ws,
-        &[
-            "doc",
-            "create",
-            "documents/design/directory",
-            "--title",
-            "目录设计",
-        ],
-    );
     ok(&ws, &["source", "fetch"]);
     ok(&ws, &["source", "checkout", "master"]);
     ok(&ws, &["source", "sync"]);
@@ -513,27 +491,6 @@ fn stages_and_unstages_objects_associated_with_a_source_file() {
             "files/src/a.rs",
             "--source",
             "src/a.rs:1-2",
-        ],
-    );
-    ok(&ws, &["doc", "mkdir", "documents/design"]);
-    ok(
-        &ws,
-        &[
-            "doc",
-            "create",
-            "documents/design/technical",
-            "--title",
-            "技术设计",
-        ],
-    );
-    ok(
-        &ws,
-        &[
-            "doc",
-            "create",
-            "documents/design/directory",
-            "--title",
-            "目录设计",
         ],
     );
     ok(
@@ -886,17 +843,6 @@ fn links_code_objects_to_document_sections() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     ok(root, &["init", "--source", "file:///nonexistent"]);
-    ok(root, &["doc", "mkdir", "documents/design"]);
-    ok(
-        root,
-        &[
-            "doc",
-            "create",
-            "documents/design/technical",
-            "--title",
-            "技术设计",
-        ],
-    );
     ok(
         root,
         &[
@@ -1252,20 +1198,9 @@ fn creates_systems_modules_and_assigns_members_once() {
     let dir = tempdir().unwrap();
     let root = dir.path();
     ok(root, &["init", "--source", "file:///nonexistent"]);
-    ok(root, &["doc", "mkdir", "documents/design"]);
     ok(
         root,
-        &["doc", "create", "documents/design/technical", "--title", "技术设计"],
-    );
-    ok(
-        root,
-        &[
-            "create",
-            "namespace",
-            "app",
-            "--parent",
-            "namespaces",
-        ],
+        &["create", "namespace", "app", "--parent", "namespaces"],
     );
     ok(
         root,
@@ -1273,7 +1208,13 @@ fn creates_systems_modules_and_assigns_members_once() {
     );
     ok(
         root,
-        &["create", "class", "Session", "--namespace", "namespaces/app"],
+        &[
+            "create",
+            "class",
+            "Session",
+            "--namespace",
+            "namespaces/app",
+        ],
     );
 
     ok(root, &["structure", "init"]);
@@ -1307,14 +1248,24 @@ fn creates_systems_modules_and_assigns_members_once() {
     );
     ok(
         root,
-        &["structure", "assign", "design/app/core", "namespaces/app/Auth"],
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Auth",
+        ],
     );
     let unassigned = ok(root, &["structure", "unassigned"]);
     assert_eq!(unassigned.trim(), "namespaces/app/Session");
 
     ok(
         root,
-        &["structure", "assign", "design/app/core", "namespaces/app/Session"],
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Session",
+        ],
     );
     let checked = ok(root, &["structure", "check"]);
     assert!(checked.contains("structure ok"));
@@ -1340,10 +1291,245 @@ fn creates_systems_modules_and_assigns_members_once() {
     );
     let output = ds(
         root,
-        &["structure", "assign", "design/app/other", "namespaces/app/Auth"],
+        &[
+            "structure",
+            "assign",
+            "design/app/other",
+            "namespaces/app/Auth",
+        ],
     );
     assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("already belongs to module")
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already belongs to"));
+
+    // A system may own top-level elements directly and also contain modules.
+    ok(
+        root,
+        &["create", "class", "Direct", "--namespace", "namespaces/app"],
     );
+    ok(
+        root,
+        &["structure", "assign", "design/app", "namespaces/app/Direct"],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "class",
+            "OtherThing",
+            "--namespace",
+            "namespaces/app",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/other",
+            "namespaces/app/OtherThing",
+        ],
+    );
+    let checked = ok(root, &["structure", "check"]);
+    assert!(checked.contains("structure ok"));
+    let shown = ok(root, &["structure", "show", "design/app"]);
+    assert!(shown.contains("namespaces/app/Direct"));
+    let output = ds(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Direct",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("already belongs to"));
+}
+
+#[test]
+fn lays_out_technical_design_sections_by_structure() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "class", "Auth", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "class",
+            "Session",
+            "--namespace",
+            "namespaces/app",
+        ],
+    );
+    ok(root, &["structure", "init"]);
+    ok(
+        root,
+        &[
+            "structure",
+            "system",
+            "create",
+            "app",
+            "--title",
+            "应用",
+            "--document",
+            "documents/design/technical",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "module",
+            "create",
+            "core",
+            "--parent",
+            "design/app",
+            "--title",
+            "核心",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Auth",
+            "namespaces/app/Session",
+        ],
+    );
+    for title in ["应用", "核心", "Auth", "Session"] {
+        ok(
+            root,
+            &[
+                "doc",
+                "section",
+                "add",
+                "documents/design/technical/section",
+                "--title",
+                title,
+            ],
+        );
+    }
+    ok(
+        root,
+        &[
+            "edit",
+            "design/app",
+            "--document",
+            "documents/design/technical/section1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "design/app/core",
+            "--document",
+            "documents/design/technical/section2",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Auth",
+            "--document",
+            "documents/design/technical/section3",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Session",
+            "--document",
+            "documents/design/technical/section4",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "inner-class",
+            "Inner",
+            "--parent",
+            "namespaces/app/Auth",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "Inner",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Auth/Inner",
+            "--document",
+            "documents/design/technical/section5",
+        ],
+    );
+    ok(
+        root,
+        &["create", "class", "Entry", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &["structure", "assign", "design/app", "namespaces/app/Entry"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "Entry",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Entry",
+            "--document",
+            "documents/design/technical/section6",
+        ],
+    );
+
+    let check = ds(root, &["doc", "check"]);
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("expected"));
+
+    ok(root, &["doc", "layout"]);
+    let checked = ok(root, &["doc", "check"]);
+    assert!(checked.contains("document hierarchy ok"));
+
+    let auth = ok(root, &["show", "namespaces/app/Auth"]);
+    assert!(auth.contains("document: documents/design/technical/section1/section1/section1"));
+    let inner = ok(root, &["show", "namespaces/app/Auth/Inner"]);
+    assert!(
+        inner.contains("document: documents/design/technical/section1/section1/section1/section1")
+    );
+    let system = ok(root, &["show", "design/app"]);
+    assert!(system.contains("document: documents/design/technical/section1"));
+    let entry = ok(root, &["show", "namespaces/app/Entry"]);
+    assert!(entry.contains("document: documents/design/technical/section1/section2"));
 }

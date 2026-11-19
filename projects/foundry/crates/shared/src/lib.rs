@@ -283,6 +283,30 @@ fn config_home(home: Option<OsString>) -> Option<PathBuf> {
     home.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
+/// The per-user Foundry data directory: `~/.foundry`, falling back to
+/// `.foundry`.
+pub fn default_foundry_dir() -> PathBuf {
+    default_config_path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from(CONFIG_DIR))
+}
+
+/// The persistent host directory mounted at `/work` in one agent's shell.
+pub fn default_agent_workspace_dir(agent_id: &str) -> PathBuf {
+    default_foundry_dir().join("workspaces").join(agent_id)
+}
+
+/// Create a directory readable and writable only by the current user.
+pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
 fn load_config_file(path: &Path) -> Result<ConfigFile, ConfigError> {
     let text = std::fs::read_to_string(path).map_err(|source| ConfigError::ReadConfig {
         path: path.display().to_string(),

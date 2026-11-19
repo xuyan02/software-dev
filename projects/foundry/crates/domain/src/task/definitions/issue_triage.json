@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "triage", "kind": "agent", "min_actors": 1, "max_actors": 1}
+    {"name": "triage", "kind": "agent", "assignment": "issue_triage"}
   ],
   "initial_stage": "triage",
   "stages": [

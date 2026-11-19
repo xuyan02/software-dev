@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "implementer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "reviewer", "kind": "agent", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "implementer", "kind": "agent", "assignment": "iteration"},
+    {"name": "reviewer", "kind": "agent", "assignment": "iteration"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "implementation",
   "stages": [

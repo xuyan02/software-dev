@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "roles": [
-    {"name": "reviewer", "kind": "any", "min_actors": 1, "max_actors": null},
-    {"name": "acceptor", "kind": "any", "min_actors": 1, "max_actors": null}
+    {"name": "reviewer", "kind": "agent", "assignment": "project_review"},
+    {"name": "acceptor", "kind": "human", "assignment": "acceptor"}
   ],
   "initial_stage": "work",
   "stages": [

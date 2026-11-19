@@ -81,9 +81,9 @@ ds pull --branch source
 如果 Issue 带有 `design-space-missing` 标签，或分诊确认代码存在但 `documents/design/technical` 不存在：
 
 - 不要创建 `design_change` 或 `code_change`；
-- 创建 `design_consistency_maintenance` 任务；
+- 创建 `design_baseline` 任务；
 - 任务 input 包含 `{ "issue_id": "<issue-id>" }`；
-- 任务描述说明需要从代码建立/补齐设计空间，并处理该 Issue；
+- 任务描述说明需要从代码建立设计基线（系统、模块、命名空间、目录和代码元素设计），并处理该 Issue；
 - 将该任务链接回 Issue；
 - 把 Issue 推进到 `in_progress`，发送 `issue_triage:routed`。
 
@@ -91,9 +91,9 @@ ds pull --branch source
 {
   "sequential": false,
   "tasks": [{
-    "workflow": "design_consistency_maintenance",
+    "workflow": "design_baseline",
     "title": "建立设计基线：<Issue 标题>",
-    "description": "处理 Issue <id>：代码存在但设计空间为空，需要扫描代码、创建设计对象和文档。",
+    "description": "处理 Issue <id>：代码存在但设计空间为空，需要从代码建立系统、模块、命名空间、目录和代码元素设计。",
     "input": { "issue_id": "<issue-id>" }
   }]
 }
@@ -155,7 +155,10 @@ ds pull --branch source
 - `needs_info`：写清楚缺什么，发送 `issue_triage:needs_info`。
 - `requirement_defect` / `enhancement` / `incident`：当前版本先写分诊报告和建议，发送 `issue_triage:needs_info` 或 `issue_triage:rejected`，不要伪造开发任务。
 
-10. 对每个创建的任务调用 `task_add_link`：
+10. 对每个创建的任务调用 `task_add_link`。一个 Issue 只有一个当前处理任务：
+    - 第一个要处理的任务设置 `"active": true`，它成为 Issue 的当前任务，原分诊任务自动退为历史；
+    - 后续串行任务设置 `"active": false`，轮到它启动时会自动成为当前任务；
+    - 同一个 Issue 的活跃关联最多一个。
 
 ```json
 {
@@ -163,7 +166,8 @@ ds pull --branch source
   "kind": "issue",
   "target_id": "<issue-id>",
   "relation": "references",
-  "title": "<Issue 标题>"
+  "title": "<Issue 标题>",
+  "active": true
 }
 ```
 
@@ -193,7 +197,7 @@ ds show documents/design/technical
 
 如果不存在：
 - 不要创建 `documents/specs` 或其他自由格式设计文档；
-- `task_comment` 写明“规范技术设计不存在，应由 design_consistency_maintenance 建立”；
+- `task_comment` 写明“规范技术设计不存在，应由 design_baseline 建立”；
 - 发送 `analysis:failed`。
 
 3. 从最新 `source` 创建设计变更分支：
@@ -213,7 +217,8 @@ ds pull --branch source
    - 目录设计使用 `documents/design/directory`；
    - 命名空间设计使用 `documents/design/namespace`；
    - 不要创建 `documents/specs` 等临时示例目录。
-2. 提交并推送设计变更分支：
+2. 运行 `ds doc layout` 统一技术设计 Section 层级，再运行 `ds doc check`；不通过不要提交。
+3. 提交并推送设计变更分支：
 
 ```bash
 ds add -A
@@ -221,11 +226,11 @@ ds commit -m "Design change for issue <issue-id>" --author design-change
 ds push --branch design-change/<task-id>
 ```
 
-3. `task_comment` 写设计摘要、受影响对象、实现约束，发送 `design:designed`。
+4. `task_comment` 写设计摘要、受影响对象、实现约束，发送 `design:designed`。
 
 ### design_review（design_reviewer）
 
-1. 检出并拉取 `design-change/<task-id>`，检查设计是否真正解决 Issue、是否与需求/架构一致、是否引入新的边界问题。
+1. 检出并拉取 `design-change/<task-id>`，检查设计是否真正解决 Issue、是否与需求/架构一致、是否引入新的边界问题；运行 `ds doc check`，失败即打回。
 2. 发现问题：写 DS 评论，`ds add -A`、`ds commit`、`ds push` 到设计变更分支，发送 `design_review:rejected`。
 3. 通过时：用 `merge_request` 工具 `create_for_task` 创建或刷新 MR：
    - source_branch = `design-change/<task-id>`
@@ -235,32 +240,11 @@ ds push --branch design-change/<task-id>
 
 ### human_review（acceptor）
 
-人类在 MR 页面审批。Agent 不执行此阶段，也不能代替人类批准。
-
-### merge（design_reviewer）
-
-1. 检出设计变更分支并拉取最新提交。
-2. 清理该分支上的设计评论：
-
-```bash
-ds doc comment clear
-```
-
-如有评论被删除：
-
-```bash
-ds add -A
-ds commit -m "Remove review comments before merge" --author design-change
-ds push --branch design-change/<task-id>
-```
-
-3. 用 `merge_request` 工具 `create_for_task` 刷新 MR head。
-4. 用 `merge_request` 工具 `merge` 合入 `source`。
-5. 成功发送 `merge:merged`；冲突发送 `merge:conflict`；失败发送 `merge:failed`。
+人类在 MR 页面审批。审批成功后平台立即机械合入 `source`，不需要 agent 执行 merge 阶段；合入失败（冲突或仍有评论）时任务转到 `conflict_resolution`，解决后重新进行人类审批。Agent 不执行此阶段，也不能代替人类批准。
 
 ### conflict_resolution（designer）
 
-把 `design-change/<task-id>` rebase 到最新 `source`，解决冲突，推送并刷新 MR，发送 `conflict_resolution:resolved`；无法解决发送 `conflict_resolution:failed`。
+把 `design-change/<task-id>` rebase 到最新 `source`，解决冲突，清空设计评论（`ds doc comment clear`，有变化则提交并推送），刷新 MR，发送 `conflict_resolution:resolved`；无法解决发送 `conflict_resolution:failed`。
 
 ### cleanup（design_reviewer）
 

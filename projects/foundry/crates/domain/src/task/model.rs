@@ -76,6 +76,9 @@ text_key!(
 pub enum TaskState {
     Pending,
     InProgress,
+    /// The current stage could not finish. The task keeps its stage so a retry
+    /// re-runs the same stage; `abandon` completes it with `abandoned`.
+    Failed,
     Completed,
 }
 
@@ -102,6 +105,12 @@ pub const REJECT_OPERATION: &str = "reject";
 /// failure stage. The stage declares `retry_to`.
 pub const RETRY_OPERATION: &str = "retry";
 
+/// Reserved platform operation that parks a task in the `failed` state without
+/// changing its stage. Workflows that still declare a `failed` operation in
+/// the current stage keep their legacy failure-stage behavior; otherwise the
+/// platform handles the operation and a retry resumes the same stage.
+pub const FAILED_OPERATION: &str = "failed";
+
 /// Reserved platform operation that gives up on a retryable failure and
 /// completes the task with result `abandoned`.
 pub const ABANDON_OPERATION: &str = "abandon";
@@ -111,6 +120,7 @@ impl TaskState {
         match self {
             Self::Pending => "pending",
             Self::InProgress => "in_progress",
+            Self::Failed => "failed",
             Self::Completed => "completed",
         }
     }
@@ -127,6 +137,7 @@ impl std::str::FromStr for TaskState {
         match value {
             "pending" => Ok(Self::Pending),
             "in_progress" => Ok(Self::InProgress),
+            "failed" => Ok(Self::Failed),
             "completed" => Ok(Self::Completed),
             other => Err(format!("unknown task state {other:?}")),
         }
@@ -142,6 +153,7 @@ pub enum TaskDispatchState {
     Blocked,
     Ready,
     Running,
+    Failed,
     Closed,
 }
 
@@ -151,6 +163,7 @@ impl TaskDispatchState {
             TaskState::Pending if dependencies_ready => Self::Ready,
             TaskState::Pending => Self::Blocked,
             TaskState::InProgress => Self::Running,
+            TaskState::Failed => Self::Failed,
             TaskState::Completed => Self::Closed,
         }
     }
@@ -160,6 +173,7 @@ impl TaskDispatchState {
             Self::Blocked => "blocked",
             Self::Ready => "ready",
             Self::Running => "running",
+            Self::Failed => "failed",
             Self::Closed => "closed",
         }
     }
@@ -173,6 +187,7 @@ impl std::str::FromStr for TaskDispatchState {
             "blocked" => Ok(Self::Blocked),
             "ready" => Ok(Self::Ready),
             "running" => Ok(Self::Running),
+            "failed" => Ok(Self::Failed),
             "closed" => Ok(Self::Closed),
             other => Err(format!("unknown dispatch state {other:?}")),
         }

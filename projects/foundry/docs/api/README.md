@@ -540,7 +540,7 @@ MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
 }
 ```
 
-`retry` 和 `abandon` 只允许项目 Maintainer/Owner 或全局管理员调用。`actors` 允许 Maintainer/Owner、全局管理员或项目 Agent 调用；PM 用它指定人类审批人。
+`retry` 和 `abandon` 只允许项目 Maintainer/Owner 或全局管理员调用。`actors` 允许 Maintainer/Owner、全局管理员或项目 Agent 调用；Task Dispatcher 用它绑定人类角色。
 
 ## Design-space 合并请求
 

@@ -275,17 +275,62 @@ fn parse_node_output(content: &str) -> Result<Value, NodeError> {
     if let Ok(value) = serde_json::from_str(text) {
         return Ok(value);
     }
+    // Models frequently put raw newlines or tabs inside a JSON string instead
+    // of escaping them. Repair only control characters inside strings; the
+    // rest of the JSON shape is still validated strictly.
+    let repaired = escape_control_characters(text);
+    if let Ok(value) = serde_json::from_str(&repaired) {
+        return Ok(value);
+    }
     // Models occasionally wrap the final JSON object in prose. Keep the
     // strict parse above, then accept the last complete JSON object/array in
     // the response so a harmless explanation does not fail the whole run.
-    if let Some(value) = last_json_value(text) {
+    if let Some(value) = last_json_value(&repaired) {
         return Ok(value);
     }
-    let error = serde_json::from_str::<Value>(text).expect_err("strict parse failed");
+    let error = serde_json::from_str::<Value>(&repaired).expect_err("strict parse failed");
     Err(NodeError::failed(format!(
         "LLM node returned invalid JSON: {error}; response: {}",
         truncate_for_error(text)
     )))
+}
+
+/// Escape control characters that appear inside JSON strings. Raw `\n` and
+/// `\t` are valid JSON whitespace outside strings, but not inside strings.
+fn escape_control_characters(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for ch in text.chars() {
+        if !in_string {
+            if ch == '"' {
+                in_string = true;
+            }
+            out.push(ch);
+            continue;
+        }
+        if escaped {
+            out.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => {
+                out.push(ch);
+                escaped = true;
+            }
+            '"' => {
+                out.push(ch);
+                in_string = false;
+            }
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch <= '\u{1f}' => out.push_str(&format!("\\u{:04x}", ch as u32)),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn last_json_value(text: &str) -> Option<Value> {
@@ -552,11 +597,30 @@ mod tests {
 
     #[test]
     fn parses_json_after_prose() {
+        let value =
+            parse_node_output("Cargo.toml 没有代码元素，无需修改。\n\n{\"ok\":true}").unwrap();
+        assert_eq!(value, serde_json::json!({ "ok": true }));
+    }
+
+    #[test]
+    fn parses_json_with_raw_control_characters_in_strings() {
         let value = parse_node_output(
-            "Cargo.toml 没有代码元素，无需修改。\n\n{\"ok\":true}",
+            "{\"message\":\"first line\nsecond line\tindented\r\\\"quoted\\\"\"}",
         )
         .unwrap();
-        assert_eq!(value, serde_json::json!({ "ok": true }));
+        assert_eq!(
+            value["message"],
+            "first line\nsecond line\tindented\r\"quoted\""
+        );
+    }
+
+    #[test]
+    fn parses_fenced_json_with_raw_newlines() {
+        let value =
+            parse_node_output("```json\n{\"message\":\"line one\nline two\",\"ok\":true}\n```")
+                .unwrap();
+        assert_eq!(value["message"], "line one\nline two");
+        assert_eq!(value["ok"], true);
     }
 
     struct NoSkills;

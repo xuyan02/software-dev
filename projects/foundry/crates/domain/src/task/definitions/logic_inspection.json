@@ -1,12 +1,7 @@
 {
   "schema_version": 1,
   "roles": [
-    {
-      "name": "logic_inspector",
-      "kind": "agent",
-      "min_actors": 1,
-      "max_actors": 1
-    }
+    {"name": "logic_inspector", "kind": "agent", "assignment": "logic_inspection"}
   ],
   "initial_stage": "inspect",
   "stages": [
