@@ -105,6 +105,155 @@ fn staging_diff_reset_branches_and_pack() {
 }
 
 #[test]
+fn skeleton_documents_read_in_order() {
+    let dir = tempdir().unwrap();
+    ok(dir.path(), &["init", "--source", "file:///nonexistent"]);
+
+    let shown = ok(dir.path(), &["doc", "show", "documents/design"]);
+    let directory = shown.find("documents/design/directory").unwrap();
+    let namespace = shown.find("documents/design/namespace").unwrap();
+    let technical = shown.find("documents/design/technical").unwrap();
+    let drafts = shown.find("documents/design/drafts").unwrap();
+    assert!(directory < namespace);
+    assert!(namespace < technical);
+    assert!(technical < drafts);
+}
+
+#[test]
+fn removes_a_document_subtree_recursively() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "登录",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/design/technical/section1/body",
+            "--title",
+            "定位",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/design/technical/section1/body1/body",
+            "--text",
+            "正文",
+        ],
+    );
+
+    ok(
+        root,
+        &["rm", "--recursive", "documents/design/technical/section1"],
+    );
+    let listed = ok(root, &["ls", "--documents"]);
+    assert!(!listed.contains("documents/design/technical/section1"));
+    assert!(!listed.contains("documents/design/technical/section1/body1"));
+}
+
+#[test]
+fn recursive_removal_keeps_external_references_unless_forced() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "class", "Auth", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "Auth",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Auth",
+            "--document",
+            "documents/design/technical/section1",
+        ],
+    );
+
+    let refused = ds(
+        root,
+        &["rm", "--recursive", "documents/design/technical/section1"],
+    );
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("referenced by"));
+
+    ok(
+        root,
+        &[
+            "rm",
+            "--recursive",
+            "--force",
+            "documents/design/technical/section1",
+        ],
+    );
+    let auth = ok(root, &["show", "namespaces/app/Auth"]);
+    assert!(auth.contains("document: <none>"));
+}
+
+#[test]
+fn removes_nested_design_objects_recursively() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "class", "Base", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "method",
+            "foo",
+            "--parent",
+            "namespaces/app/Base",
+            "--signature",
+            "foo()",
+        ],
+    );
+
+    ok(root, &["rm", "--recursive", "namespaces/app/Base"]);
+    let listed = ok(root, &["ls"]);
+    assert!(!listed.contains("namespaces/app/Base"));
+    assert!(!listed.contains("Base/foo"));
+}
+
+#[test]
 fn clones_a_remote_branch() {
     let dir = tempdir().unwrap();
     let source = dir.path().join("source");
@@ -932,6 +1081,313 @@ fn rejects_document_links_to_non_document_objects() {
 }
 
 #[test]
+fn lists_open_comments_across_all_documents() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["doc", "create", "documents/specs/auth", "--title", "认证"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/specs/auth/section",
+            "--title",
+            "登录",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/specs/auth/section1/body",
+            "--text",
+            "登录使用 OAuth。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "补充错误码",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "resolve",
+            "documents/specs/auth/section1/body1",
+            "1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth",
+            "--text",
+            "文档级意见",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1",
+            "--text",
+            "章节级意见",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "第二个正文意见",
+        ],
+    );
+
+    let open = ok(root, &["doc", "comment", "list", "--open"]);
+    assert!(open.contains("documents/specs/auth\tcomment1\topen\t文档级意见"));
+    assert!(!open.contains("补充错误码"));
+
+    let all = ok(root, &["doc", "comment", "list"]);
+    assert!(all.contains("documents/specs/auth\tcomment1\topen\t文档级意见"));
+    assert!(all.contains("documents/specs/auth/section1/body1\tcomment1\tresolved\t补充错误码"));
+
+    let filtered = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1/body1",
+            "--open",
+        ],
+    );
+    assert!(filtered.contains("comment2\topen\t第二个正文意见"));
+    assert!(!filtered.contains("补充错误码"));
+
+    let exact = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1",
+            "--open",
+        ],
+    );
+    assert!(exact.contains("comment1\topen\t章节级意见"));
+    assert!(!exact.contains("第二个正文意见"));
+
+    let subtree = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1",
+            "--open",
+            "--subtree",
+        ],
+    );
+    assert!(subtree.contains("documents/specs/auth/section1\tcomment1\topen\t章节级意见"));
+    assert!(
+        subtree.contains("documents/specs/auth/section1/body1\tcomment2\topen\t第二个正文意见")
+    );
+    assert!(!subtree.contains("补充错误码"));
+    assert!(!subtree.contains("文档级意见"));
+}
+
+#[test]
+fn manages_concepts_and_concept_references() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["concept", "mkdir", "concepts/agent"]);
+    ok(
+        root,
+        &[
+            "concept",
+            "create",
+            "concepts/agent/agent",
+            "--name",
+            "智能体",
+            "--summary",
+            "能自主执行任务的主体。",
+            "--explanation",
+            "智能体由身份、工具和运行状态组成。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "concept",
+            "feature",
+            "add",
+            "concepts/agent/agent",
+            "有独立身份。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "concept",
+            "relation",
+            "add",
+            "concepts/agent/agent",
+            "智能体执行任务，与任务是执行关系。",
+        ],
+    );
+    ok(
+        root,
+        &["concept", "alias", "add", "concepts/agent/agent", "Agent"],
+    );
+
+    let shown = ok(root, &["concept", "show", "concepts/agent/agent"]);
+    assert!(shown.contains("name: 智能体"));
+    assert!(shown.contains("summary: 能自主执行任务的主体。"));
+    assert!(shown.contains("characteristics: 有独立身份。"));
+    assert!(shown.contains("relations: 智能体执行任务，与任务是执行关系。"));
+    assert!(shown.contains("aliases: Agent"));
+
+    let listed = ok(root, &["concept", "ls", "concepts/agent"]);
+    assert!(listed.contains("concept\tconcepts/agent/agent\t智能体\t能自主执行任务的主体。"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/design/technical/section",
+            "--title",
+            "概念",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/design/technical/section1/body",
+            "--text",
+            "[[concept:concepts/agent/agent|智能体]] 指能自主执行任务的主体。",
+        ],
+    );
+    let checked = ok(root, &["concept", "check"]);
+    assert!(checked.contains("concept references ok"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/design/technical/section1/body",
+            "--text",
+            "[[concept:concepts/missing|缺失概念]]",
+        ],
+    );
+    let check = ds(root, &["concept", "check"]);
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("concept not found: concepts/missing"));
+
+    ok(
+        root,
+        &[
+            "concept",
+            "create",
+            "concepts/agent/task",
+            "--summary",
+            "可被分派和执行的工作单元。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "concept",
+            "mv",
+            "concepts/agent/task",
+            "concepts",
+            "--name",
+            "task",
+        ],
+    );
+    let moved = ok(root, &["concept", "show", "concepts/task"]);
+    assert!(moved.contains("summary: 可被分派和执行的工作单元。"));
+    ok(root, &["concept", "rm", "concepts/task"]);
+    let listed = ok(root, &["concept", "ls"]);
+    assert!(listed.contains("concept-directory\tconcepts/agent"));
+    assert!(!listed.contains("concepts/task"));
+}
+
+#[test]
+fn renames_and_moves_document_subtrees() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/design/old"]);
+    ok(
+        root,
+        &[
+            "doc",
+            "create",
+            "documents/design/old/example",
+            "--title",
+            "示例草案",
+        ],
+    );
+    ok(
+        root,
+        &["doc", "mv", "documents/design/old", "documents/design/new"],
+    );
+    let draft = ok(root, &["show", "documents/design/new"]);
+    assert!(draft.contains("parent: documents/design"));
+    assert!(!ds(root, &["show", "documents/design/old"]).status.success());
+
+    ok(
+        root,
+        &[
+            "doc",
+            "mv",
+            "documents/design/new/example",
+            "documents/design/example",
+        ],
+    );
+    let moved = ok(root, &["show", "documents/design/example"]);
+    assert!(moved.contains("title: 示例草案"));
+    assert!(moved.contains("parent: documents/design"));
+    assert!(
+        !ds(root, &["show", "documents/design/new/example"])
+            .status
+            .success()
+    );
+}
+
+#[test]
 fn adds_resolves_and_lists_document_comments() {
     let dir = tempdir().unwrap();
     let root = dir.path();
@@ -1561,6 +2017,21 @@ fn lays_out_technical_design_sections_by_structure() {
     assert!(String::from_utf8_lossy(&check.stdout).contains("expected"));
 
     ok(root, &["doc", "layout"]);
+
+    let method_section = "documents/design/technical/section1/section1/section1/section2";
+    let prototype = "login(&mut self) -> Result<(), Error>";
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "set-title",
+            method_section,
+            "--title",
+            prototype,
+        ],
+    );
+
     let checked = ok(root, &["doc", "check"]);
     assert!(checked.contains("document hierarchy ok"));
 
@@ -1576,26 +2047,42 @@ fn lays_out_technical_design_sections_by_structure() {
     assert!(entry.contains("document: documents/design/technical/section1/section2"));
 
     let login_doc = ok(root, &["show", &login]);
-    assert!(login_doc.contains("document: documents/design/technical/section1/section1/section1/section2"));
+    assert!(
+        login_doc
+            .contains("document: documents/design/technical/section1/section1/section1/section2")
+    );
 
     let titles = [
         ("documents/design/technical/section1", "应用"),
         ("documents/design/technical/section1/section1", "核心"),
-        ("documents/design/technical/section1/section1/section1", "Auth"),
+        (
+            "documents/design/technical/section1/section1/section1",
+            "Auth",
+        ),
         (
             "documents/design/technical/section1/section1/section1/section1",
             "Inner",
         ),
         (
             "documents/design/technical/section1/section1/section1/section2",
-            "login",
+            "login(&mut self) -> Result<(), Error>",
         ),
         ("documents/design/technical/section1/section2", "Entry"),
     ];
     for (section, title) in titles {
         let shown = ok(root, &["show", section]);
-        assert!(shown.contains(&format!("title: {title}")), "{section}: {shown}");
+        assert!(
+            shown.contains(&format!("title: {title}")),
+            "{section}: {shown}"
+        );
     }
+
+    ok(root, &["doc", "layout"]);
+    let shown = ok(root, &["show", method_section]);
+    assert!(
+        shown.contains(&format!("title: {prototype}")),
+        "layout must not overwrite a function prototype title: {shown}"
+    );
 }
 
 #[test]
@@ -1703,9 +2190,7 @@ fn design_principles_section_must_be_first() {
 
     let check = ds(root, &["doc", "check"]);
     assert!(!check.status.success());
-    assert!(
-        String::from_utf8_lossy(&check.stdout).contains("must be the first Section")
-    );
+    assert!(String::from_utf8_lossy(&check.stdout).contains("must be the first Section"));
 }
 
 #[test]
@@ -1780,9 +2265,7 @@ fn rejects_non_topic_blocks_in_design_principles_section() {
 
     let check = ds(root, &["doc", "check"]);
     assert!(!check.status.success());
-    assert!(
-        String::from_utf8_lossy(&check.stdout).contains("must contain principle topics only")
-    );
+    assert!(String::from_utf8_lossy(&check.stdout).contains("must contain principle topics only"));
 }
 
 #[test]
@@ -1849,4 +2332,825 @@ fn rejects_duplicate_design_principles_sections() {
     let check = ds(root, &["doc", "check"]);
     assert!(!check.status.success());
     assert!(String::from_utf8_lossy(&check.stdout).contains("appears 2 times"));
+}
+
+#[test]
+fn creates_layers_and_enforces_layer_rules() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    for name in ["Api", "Core", "Store"] {
+        ok(
+            root,
+            &["create", "class", name, "--namespace", "namespaces/app"],
+        );
+    }
+
+    ok(root, &["structure", "init"]);
+    ok(
+        root,
+        &["structure", "system", "create", "app", "--title", "应用"],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "api",
+            "--parent",
+            "design/app",
+            "--title",
+            "接口层",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "core",
+            "--parent",
+            "design/app",
+            "--title",
+            "核心层",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "store",
+            "--parent",
+            "design/app",
+            "--title",
+            "存储层",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/api",
+            "namespaces/app/Api",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Core",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/store",
+            "namespaces/app/Store",
+        ],
+    );
+
+    let shown = ok(root, &["structure", "show", "design/app/api"]);
+    assert!(shown.contains("kind: layer"));
+    assert!(shown.contains("title: 接口层"));
+    assert!(shown.contains("order: 1"));
+    assert!(shown.contains("namespaces/app/Api"));
+    assert!(ok(root, &["structure", "show", "design/app/core"]).contains("order: 2"));
+    let listed = ok(root, &["structure", "list"]);
+    assert!(listed.contains("layer\tdesign/app/api\t接口层\tmembers=1"));
+    assert!(ok(root, &["structure", "check"]).contains("structure ok"));
+
+    // Sibling layers must use distinct orders.
+    let duplicate = ds(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "duplicate",
+            "--parent",
+            "design/app",
+            "--order",
+            "1",
+        ],
+    );
+    assert!(!duplicate.status.success());
+    assert!(String::from_utf8_lossy(&duplicate.stderr).contains("already used by a sibling layer"));
+
+    // Layers may not nest.
+    let nested = ds(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "inner",
+            "--parent",
+            "design/app/api",
+        ],
+    );
+    assert!(!nested.status.success());
+    assert!(
+        String::from_utf8_lossy(&nested.stderr).contains("layer parent must be a system or module")
+    );
+
+    // Only adjacent layers may depend on each other.
+    ok(
+        root,
+        &[
+            "dep",
+            "add",
+            "namespaces/app/Api",
+            "namespaces/app/Store",
+            "--explicit",
+        ],
+    );
+    let check = ds(root, &["structure", "check"]);
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("interact but are not adjacent"));
+    ok(
+        root,
+        &[
+            "dep",
+            "rm",
+            "namespaces/app/Api",
+            "namespaces/app/Store",
+            "--explicit",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "dep",
+            "add",
+            "namespaces/app/Api",
+            "namespaces/app/Core",
+            "--explicit",
+        ],
+    );
+    assert!(ok(root, &["structure", "check"]).contains("structure ok"));
+
+    // Empty layers are reported and can be removed.
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "spare",
+            "--parent",
+            "design/app",
+        ],
+    );
+    let check = ds(root, &["structure", "check"]);
+    assert!(!check.status.success());
+    assert!(String::from_utf8_lossy(&check.stdout).contains("layer is empty: design/app/spare"));
+    ok(root, &["structure", "layer", "rm", "design/app/spare"]);
+
+    // A container with layers cannot own direct members or modules.
+    ok(
+        root,
+        &["create", "class", "Direct", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &["structure", "assign", "design/app", "namespaces/app/Direct"],
+    );
+    let check = ds(root, &["structure", "check"]);
+    assert!(!check.status.success());
+    assert!(
+        String::from_utf8_lossy(&check.stdout).contains("layered container has direct members")
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "unassign",
+            "design/app",
+            "namespaces/app/Direct",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/api",
+            "namespaces/app/Direct",
+        ],
+    );
+
+    // Modules and their members may live inside a layer.
+    ok(
+        root,
+        &[
+            "create",
+            "class",
+            "Handler",
+            "--namespace",
+            "namespaces/app",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "module",
+            "create",
+            "handlers",
+            "--parent",
+            "design/app/api",
+            "--title",
+            "处理器",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/api/handlers",
+            "namespaces/app/Handler",
+        ],
+    );
+    assert!(ok(root, &["structure", "check"]).contains("structure ok"));
+
+    let remove = ds(root, &["structure", "layer", "rm", "design/app/api"]);
+    assert!(!remove.status.success());
+    assert!(String::from_utf8_lossy(&remove.stderr).contains("layer is not empty"));
+}
+
+#[test]
+fn lays_out_layer_sections_in_order() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    for name in ["Api", "Core"] {
+        ok(
+            root,
+            &["create", "class", name, "--namespace", "namespaces/app"],
+        );
+    }
+    ok(root, &["structure", "init"]);
+    ok(
+        root,
+        &["structure", "system", "create", "app", "--title", "应用"],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "api",
+            "--parent",
+            "design/app",
+            "--title",
+            "接口层",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "create",
+            "core",
+            "--parent",
+            "design/app",
+            "--title",
+            "核心层",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/api",
+            "namespaces/app/Api",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "assign",
+            "design/app/core",
+            "namespaces/app/Core",
+        ],
+    );
+
+    // Create the sections out of order; layout must move them under the
+    // matching layer in layer order.
+    for title in [
+        "核心层",
+        "namespaces/app/Core",
+        "接口层",
+        "namespaces/app/Api",
+        "应用",
+    ] {
+        ok(
+            root,
+            &[
+                "doc",
+                "section",
+                "add",
+                "documents/design/technical/section",
+                "--title",
+                title,
+            ],
+        );
+    }
+    ok(
+        root,
+        &[
+            "edit",
+            "design/app",
+            "--document",
+            "documents/design/technical/section5",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "set",
+            "design/app/api",
+            "--document",
+            "documents/design/technical/section3",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "structure",
+            "layer",
+            "set",
+            "design/app/core",
+            "--document",
+            "documents/design/technical/section1",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Api",
+            "--document",
+            "documents/design/technical/section4",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "edit",
+            "namespaces/app/Core",
+            "--document",
+            "documents/design/technical/section2",
+        ],
+    );
+
+    let check = ds(root, &["doc", "check"]);
+    assert!(!check.status.success());
+
+    ok(root, &["doc", "layout"]);
+    assert!(ok(root, &["doc", "check"]).contains("document hierarchy ok"));
+
+    let titles = [
+        ("documents/design/technical/section5", "应用"),
+        ("documents/design/technical/section5/section1", "接口层"),
+        (
+            "documents/design/technical/section5/section1/section1",
+            "Api",
+        ),
+        ("documents/design/technical/section5/section2", "核心层"),
+        (
+            "documents/design/technical/section5/section2/section1",
+            "Core",
+        ),
+    ];
+    for (section, title) in titles {
+        let shown = ok(root, &["show", section]);
+        assert!(
+            shown.contains(&format!("title: {title}")),
+            "{section}: {shown}"
+        );
+    }
+}
+
+#[test]
+fn adds_and_edits_fenced_code_blocks() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["doc", "create", "documents/specs/auth", "--title", "认证"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/specs/auth/section",
+            "--title",
+            "登录",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/specs/auth/section1/body",
+            "--text",
+            "使用代码块说明协议。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "block",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--language",
+            "rust",
+            "--text",
+            "let token = login();\nnext_step();",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "block",
+            "add",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "[[concept:concepts/missing|代码里的引用不参与检查]]",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "topic",
+            "add",
+            "documents/specs/auth/section1/body3",
+            "--title",
+            "流程",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "block",
+            "add",
+            "documents/specs/auth/section1/body4/body",
+            "--language",
+            "mermaid",
+            "--text",
+            "flowchart TD",
+        ],
+    );
+
+    let rendered = ok(root, &["doc", "show", "documents/specs/auth"]);
+    assert!(rendered.contains("body2  block \"rust\""));
+    assert!(rendered.contains("let token = login();"));
+    assert!(rendered.contains("next_step();"));
+    assert!(rendered.contains("body3  block \"\""));
+    assert!(rendered.contains("body4  topic \"流程\""));
+    assert!(rendered.contains("body1  block \"mermaid\""));
+
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body2"]);
+    assert!(shown.contains("kind: Block"));
+    assert!(shown.contains("language: rust"));
+    assert!(shown.contains("text: let token = login();"));
+    let listed = ok(root, &["ls", "--documents"]);
+    assert!(listed.contains("documents/specs/auth/section1/body2"));
+    assert!(ok(root, &["concept", "check"]).contains("concept references ok"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "block",
+            "set",
+            "documents/specs/auth/section1/body2",
+            "--language",
+            "text",
+            "--text",
+            "changed code",
+        ],
+    );
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body2"]);
+    assert!(shown.contains("language: text"));
+    assert!(shown.contains("text: changed code"));
+
+    let unchanged = ds(
+        root,
+        &["doc", "block", "set", "documents/specs/auth/section1/body2"],
+    );
+    assert!(!unchanged.status.success());
+    assert!(String::from_utf8_lossy(&unchanged.stderr).contains("nothing to update"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "示例需要补充错误码",
+        ],
+    );
+    let comments = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1/body2",
+        ],
+    );
+    assert!(comments.contains("comment1\topen\t示例需要补充错误码"));
+
+    // Blocks are body elements, not list items.
+    ok(
+        root,
+        &["doc", "list", "add", "documents/specs/auth/section1/body"],
+    );
+    let in_list = ds(
+        root,
+        &[
+            "doc",
+            "block",
+            "add",
+            "documents/specs/auth/section1/body5/item",
+            "--text",
+            "x",
+        ],
+    );
+    assert!(!in_list.status.success());
+}
+
+#[test]
+fn adds_and_edits_mermaid_diagrams() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["doc", "create", "documents/specs/auth", "--title", "认证"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/specs/auth/section",
+            "--title",
+            "登录",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "mermaid",
+            "add",
+            "documents/specs/auth/section1/body",
+            "--text",
+            "flowchart TD\n  A[请求] --> B[校验]",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "图前后要有说明。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "mermaid",
+            "add",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "sequenceDiagram\n  A->>B: 校验凭据",
+        ],
+    );
+
+    let rendered = ok(root, &["doc", "show", "documents/specs/auth"]);
+    assert!(rendered.contains("body1  mermaid"));
+    assert!(rendered.contains("flowchart TD"));
+    assert!(rendered.contains("body2  text"));
+    assert!(rendered.contains("body3  mermaid"));
+    assert!(rendered.contains("sequenceDiagram"));
+
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body1"]);
+    assert!(shown.contains("kind: MermaidBlock"));
+    assert!(shown.contains("text: flowchart TD"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "mermaid",
+            "set",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "flowchart LR\n  A --> B",
+        ],
+    );
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body1"]);
+    assert!(shown.contains("text: flowchart LR"));
+    assert!(!shown.contains("flowchart TD"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "图里缺少错误分支",
+        ],
+    );
+    let comments = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1/body1",
+        ],
+    );
+    assert!(comments.contains("comment1\topen\t图里缺少错误分支"));
+
+    // A text paragraph cannot be set as a Mermaid diagram.
+    let wrong = ds(
+        root,
+        &[
+            "doc",
+            "mermaid",
+            "set",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "flowchart TD",
+        ],
+    );
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("not a mermaid block"));
+}
+
+#[test]
+fn adds_and_edits_html_previews() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["doc", "create", "documents/specs/auth", "--title", "认证"],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "section",
+            "add",
+            "documents/specs/auth/section",
+            "--title",
+            "登录页",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "html",
+            "add",
+            "documents/specs/auth/section1/body",
+            "--text",
+            "<div style=\"padding:12px\">UI 效果图</div>",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "text",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "效果图说明。",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "doc",
+            "html",
+            "add",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "<svg width=\"40\" height=\"20\"><rect width=\"40\" height=\"20\"/></svg>",
+        ],
+    );
+
+    let rendered = ok(root, &["doc", "show", "documents/specs/auth"]);
+    assert!(rendered.contains("body1  html"));
+    assert!(rendered.contains("UI 效果图"));
+    assert!(rendered.contains("body2  text"));
+    assert!(rendered.contains("body3  html"));
+    assert!(rendered.contains("<svg"));
+
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body1"]);
+    assert!(shown.contains("kind: HtmlBlock"));
+    assert!(shown.contains("text: <div style=\"padding:12px\">UI 效果图</div>"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "html",
+            "set",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "<div>新的效果图</div>",
+        ],
+    );
+    let shown = ok(root, &["show", "documents/specs/auth/section1/body1"]);
+    assert!(shown.contains("text: <div>新的效果图</div>"));
+    assert!(!shown.contains("UI 效果图"));
+
+    ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "add",
+            "documents/specs/auth/section1/body1",
+            "--text",
+            "需要补充空状态",
+        ],
+    );
+    let comments = ok(
+        root,
+        &[
+            "doc",
+            "comment",
+            "list",
+            "documents/specs/auth/section1/body1",
+        ],
+    );
+    assert!(comments.contains("comment1\topen\t需要补充空状态"));
+
+    let wrong = ds(
+        root,
+        &[
+            "doc",
+            "html",
+            "set",
+            "documents/specs/auth/section1/body2",
+            "--text",
+            "<div>x</div>",
+        ],
+    );
+    assert!(!wrong.status.success());
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("not an html block"));
 }

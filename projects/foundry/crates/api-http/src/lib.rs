@@ -9,7 +9,7 @@ mod routes;
 
 pub use design_space::DesignSpaceAccess;
 pub use error::ApiError;
-pub use routes::{AppState, EditorAssets, SetupState};
+pub use routes::{AppState, EditorAssets, ProjectPurger, SetupState};
 
 use axum::Router;
 use axum::routing::{delete, get, patch, post, put};
@@ -31,6 +31,7 @@ pub fn router(state: AppState) -> Router {
         ));
     Router::new()
         .route("/health", get(routes::health))
+        .route("/assets/mermaid.min.js", get(routes::mermaid_script))
         .route(
             "/setup",
             get(routes::setup_page).post(routes::setup_login_submit),

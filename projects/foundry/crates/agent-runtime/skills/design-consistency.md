@@ -61,7 +61,6 @@ design-consistency/<根任务 id>
 项目工具返回 `id`、`git_repository`、`git_branch`、`design_space_url`。设计空间分支固定为 `source`，不是项目配置。工作区建议使用：
 
 ```bash
-export DS_TOKEN_FILE=/run/foundry/ds-token
 GIT_HOME=/work/<project-id>/.credentials/git
 GIT="GIT_TERMINAL_PROMPT=0 HOME=$GIT_HOME GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig"
 ```
@@ -129,39 +128,50 @@ ds structure module create <module> --parent design/<system> --title '<title>' -
 ds structure module create <submodule> --parent design/<system>/<module> --title '<title>' --document <doc>
 ```
 
-2. 用 `ds structure assign <system-or-module> <element...>` 加入成员。一个顶层元素恰好属于一个系统或模块；跨容器共用关系用依赖表达，不要重复归属。简单系统可以把元素直接挂在系统下；程序入口不是模块。
-3. 模块资格、复杂度判断、子模块拆分和兜底模块规则见 `design-writing` 的 Module 章节。
-4. 每个系统和模块都要有文档，块内容见 `design-writing` 的 System、Module 章节。文档先创建或复用，再用 `--document` 关联。System/Module 文档不写“组成”“成员”正文块，成员和子模块各自建子 Section。
-5. 每完成一个系统，执行：
+2. 只有容器足够复杂且存在明显层次结构时才创建层；一个容器有层后，它的所有成员和子模块都必须放进层里，不能直接挂在容器下：
+
+```bash
+ds structure layer create <layer> --parent design/<system> --title '<title>' --document <doc>
+ds structure layer create <layer> --parent design/<system>/<module> --title '<title>' --document <doc>
+ds structure module create <module> --parent design/<system>/<layer> --title '<title>' --document <doc>
+```
+
+3. 用 `ds structure assign <system-or-module-or-layer> <element...>` 加入成员。一个顶层元素恰好属于一个系统、模块或层；跨容器共用关系用依赖表达，不要重复归属。简单系统可以把元素直接挂在系统下；程序入口不是模块。
+4. 模块资格、复杂度判断、子模块拆分和兜底模块规则见 `design-writing` 的 Module 章节；层资格和顺序规则见 Layer 章节。
+5. 每个系统、模块和层都要有文档，块内容见 `design-writing` 的 System、Module、层章节。文档先创建或复用，再用 `--document` 关联。System/Module/层文档不写“组成”“成员”正文块，成员和子模块各自建子 Section。
+6. 每完成一个系统，执行：
 
 ```bash
 ds structure unassigned
 ds structure check
 ```
 
-有未归属元素、空模块、空系统或重复归属时先修正，不要提交半成品。
-6. 全部系统完成后，在集成分支提交并推送：
+有未归属元素、空模块、空系统、空层、层顺序冲突、跨层依赖或重复归属时先修正，不要提交半成品。
+7. 全部系统完成后，在集成分支提交并推送：
 
 ```bash
 ds add -A
-ds commit -m "Design structure: systems and modules" --author design-architecture
+ds commit -m "Design structure: systems, modules and layers" --author design-architecture
 ds push --branch design-consistency/<根任务 id>
 ```
 
-7. 发送 `structure_synthesis:synthesized`；失败发送 `structure_synthesis:failed`。
+8. 发送 `structure_synthesis:synthesized`；失败发送 `structure_synthesis:failed`。
 
 ### structure_review（structure_reviewer）
 
 检查结构本身，不检查文风：
 
-- 每个顶层 Class/Interface/Function/Mixin 是否恰好属于一个系统或模块；
+- 每个顶层 Class/Interface/Function/Mixin 是否恰好属于一个系统、模块或层；
 - System 是否对应真实交付单位；模块边界是否按功能和设计目的划分，而不是文件/目录映射；
 - 是否为了简单系统强行建模块，是否把程序入口/启动/工具当成模块；
 - 只含一个函数或一个普通类型的模块是否被强行创建；系统是否因为没有模块而被误判为空；
 - 模块本身是否能在不谈成员和子模块的情况下说清定位和功能；
+- 模块/层名称是否准确描述职责和边界，是否用“服务”“平台”“核心”“公共”等泛词掩盖边界？名字与定位不一致或需要正文解释才能理解的，直接质疑；
 - 子模块拆分是否基于相对独立的部分，而不是成员数量或目录；
-- 是否存在兜底模块、空模块、无意义层级、职责重叠；
-- System/Module 文档是否只写自身，没有“组成”“成员”正文块或成员清单。
+- 层是否只在容器足够复杂、且存在明显层次结构时创建，而不是按目录、技术角色或对称性切分；
+- 有层的容器是否把所有成员和子模块都放进了层里，是否存在跨层依赖或嵌套层；
+- 是否存在兜底模块/层、空模块、空系统、空层、无意义层级、职责重叠；
+- System/Module/层文档是否只写自身，没有“组成”“成员”正文块或成员清单。
 
 发现问题写 DS 文档评论或任务评论，发送 `structure_review:rejected`；否则 `structure_review:approved`。
 
@@ -171,11 +181,11 @@ ds push --branch design-consistency/<根任务 id>
 
 ### structure_style_review（style_reviewer）
 
-只审查系统和模块文档的文字，不检查结构或成员关系。发现问题写评论，发送 `structure_style_review:rejected`；否则 `structure_style_review:approved`。
+只审查系统、模块和层文档的文字，不检查结构或成员关系。发现问题写评论，发送 `structure_style_review:rejected`；否则 `structure_style_review:approved`。
 
 ### structure_text_fix（architect）
 
-只修复模块/系统文档文字，不改变结构；发送 `structure_text_fix:fixed` 或 `structure_text_fix:failed`。
+只修复模块/系统/层文档文字，不改变结构；发送 `structure_text_fix:fixed` 或 `structure_text_fix:failed`。
 
 ### integration_review（integrator）
 

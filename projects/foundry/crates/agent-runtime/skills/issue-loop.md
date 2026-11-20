@@ -16,7 +16,6 @@
 工作区建议：
 
 ```bash
-export DS_TOKEN_FILE=/run/foundry/ds-token
 GIT_HOME=/work/<project-id>/.credentials/git
 export HOME=$GIT_HOME
 export GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig

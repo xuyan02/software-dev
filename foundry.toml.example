@@ -38,13 +38,13 @@ openai_model = "deepseek-chat"
 # github_app_private_key_file = "/home/me/.foundry/github-app.pem"
 # github_api_base = "https://api.github.com"
 
-# Local ds-server. Defaults shown; the listen address must be reachable from
-# agent containers, and design_space_agent_url overrides the host IP written
-# into project records.
+# Local ds-server. The HTTP listener is only used by the control plane for
+# repository provisioning and admin work; agents never use it. Agents use the
+# SSH transport below, served by the dedicated foundry ds sshd.
 # design_space_root = "/home/me/.foundry/design-spaces"
-# design_space_listen = "0.0.0.0:7700"
+# design_space_listen = "127.0.0.1:7700"
 # design_space_token_file = "/home/me/.foundry/design-space-token"
-# design_space_agent_url = "http://192.0.2.10:7700"
+# design_space_ssh_url = "ssh://root@192.0.2.10:2222"
 
 # Image used for an agent's persistent shell.
 # shell_image = "localhost/openergasterion-shell:1"

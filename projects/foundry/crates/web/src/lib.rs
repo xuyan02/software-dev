@@ -15,6 +15,9 @@ use foundry_domain::{
 };
 use serde::Serialize;
 
+/// Vendored Mermaid bundle served at `/assets/mermaid.min.js`.
+pub const MERMAID_SCRIPT: &str = include_str!("../../../web/vendor/mermaid.min.js");
+
 /// One design-space element as sent to the tree endpoint and rendered in the
 /// console. `hash` addresses the immutable element object.
 #[derive(Debug, Clone, Serialize)]
@@ -32,9 +35,9 @@ pub struct DesignSpaceElement {
     pub end_line: u32,
     pub has_design: bool,
     pub is_file: bool,
-    /// True for design-structure roots, systems and modules.
+    /// True for design-structure roots, systems, modules and layers.
     pub is_structure: bool,
-    /// Module member qualified names; empty for other kinds.
+    /// Direct code member qualified names; empty for non-container kinds.
     pub members: Vec<String>,
 }
 
@@ -230,6 +233,13 @@ a { color: var(--accent); }
 .markdown pre { background:var(--bg); border:1px solid var(--line); border-radius:6px;
                 padding:10px 12px; overflow:auto; margin:10px 0; }
 .markdown pre code { background:none; padding:0; }
+.mermaid-diagram { margin:10px 0; padding:12px; border:1px solid var(--line); border-radius:6px;
+                   background:var(--bg); overflow:auto; text-align:center; }
+.mermaid-diagram svg { max-width:100%; height:auto; }
+.mermaid-error { margin:10px 0; padding:10px 12px; border:1px solid #d33; border-radius:6px;
+                 color:#b00; background:var(--bg); white-space:pre-wrap; font-size:13px; }
+.html-preview { width:100%; height:360px; margin:10px 0; border:1px solid var(--line);
+                border-radius:6px; background:#fff; display:block; }
 .markdown blockquote { margin:10px 0; padding:2px 12px; border-left:3px solid var(--line);
                        color:var(--muted); }
 .markdown hr { border:0; border-top:1px solid var(--line); margin:14px 0; }
@@ -4079,6 +4089,7 @@ fn element_kind_label(kind: &str) -> &str {
         "enum" => "枚举",
         "trait" => "Trait",
         "module" => "模块",
+        "layer" => "层",
         "namespace" => "命名空间",
         "concept" => "概念",
         "variable" => "变量",
@@ -4093,6 +4104,9 @@ fn element_kind_label(kind: &str) -> &str {
         "document-list" => "列表",
         "document-text" => "文本",
         "document-topic" => "标题块",
+        "document-block" => "代码块",
+        "document-mermaid" => "流程图",
+        "document-html" => "HTML 预览",
         other => other,
     }
 }
@@ -4222,7 +4236,7 @@ pub fn design_space_unavailable_page(
   <section class="ds-pane ds-detail-pane">
     <div class="ds-detail">
       <div class="ds-source-error">{message}</div>
-      <p class="hint">本地模式启动 Foundry 时可以直接读取设计空间；远程设计空间暂不支持在控制台浏览。</p>
+      <p class="hint">控制台无法连接到设计空间；检查本地 ds-server 和设计空间仓库。</p>
     </div>
   </section>
 </div>"#,
@@ -4274,7 +4288,7 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         && detail.kind != "directory"
         && !matches!(
             detail.kind.as_str(),
-            "system" | "module" | "design-structure"
+            "system" | "module" | "layer" | "design-structure"
         );
     let source_tabs = if has_source {
         r#"<button type="button" data-ds-tab="source">源码</button>"#.to_string()
@@ -4352,6 +4366,9 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         Some(_) => r#"<div class="ds-empty">设计为空。</div>"#.to_string(),
         None if detail.kind == "file" => {
             r#"<div class="ds-empty">文件对象没有设计文本，可以查看源码。</div>"#.to_string()
+        }
+        None if detail.kind == "layer" => {
+            r#"<div class="ds-empty">该层还没有关联设计文档。</div>"#.to_string()
         }
         None if matches!(detail.kind.as_str(), "system" | "module" | "design-structure") => {
             r#"<div class="ds-empty">该系统或模块还没有关联设计文档。</div>"#.to_string()
@@ -4750,11 +4767,18 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   const isDocumentKind = (kind) => kind === 'document' || String(kind || '').startsWith('document-');
   const documentChip = (kind) => ({
     'document-directory': 'DOC DIR', document: 'DOC', 'document-section': 'SEC',
-    'document-list': 'LIST', 'document-text': 'TEXT', 'document-topic': 'TOPIC'
+    'document-list': 'LIST', 'document-text': 'TEXT', 'document-topic': 'TOPIC',
+    'document-block': 'CODE', 'document-mermaid': 'MER', 'document-html': 'HTML'
   })[kind] || 'DOC';
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
+  const documentDisplayName = (item) => {
+    const qname = String(item.qname || '');
+    if (qname === 'documents/design') return '设计文档';
+    if (qname === 'documents/design/drafts' || qname === 'documents/design/proposals') return '设计草案';
+    return item.name || shortName(qname);
+  };
   const baseName = (path) => { const parts = String(path).split('/'); return parts[parts.length - 1] || String(path); };
-  let expanded = new Set(['root', 'view:namespaces', 'view:documents']);
+  let expanded = new Set(['root', 'view:namespaces', 'view:concepts', 'view:structure', 'view:documents']);
   try {
     const saved = localStorage.getItem(storeKey);
     if (saved) expanded = new Set(JSON.parse(saved));
@@ -4775,6 +4799,15 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   };
   const byName = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN');
   const byNatural = (a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN', { numeric: true });
+  // The preset design documents read directory, namespace, technical, then
+  // drafts last.
+  const DESIGN_DOCUMENT_ORDER = { directory: 0, namespace: 1, technical: 2, drafts: 3, proposals: 3 };
+  const byDocumentChild = (a, b) => {
+    const rank = (node) => Object.prototype.hasOwnProperty.call(DESIGN_DOCUMENT_ORDER, node.name)
+      ? DESIGN_DOCUMENT_ORDER[node.name]
+      : 2;
+    return rank(a) - rank(b) || byNatural(a, b);
+  };
 
   function buildNamespaces(elements) {
     const root = { name: '命名空间', path: '', children: new Map(), element: null, count: 0 };
@@ -4857,7 +4890,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   }
 
   function buildFiles(elements) {
-    const root = { name: '文件', path: '', dirs: new Map(), files: new Map(), fileCount: 0 };
+    const root = { name: '文件空间', path: '', dirs: new Map(), files: new Map(), fileCount: 0 };
     const filesByPath = new Map();
     const dirFor = (segments) => {
       let node = root;
@@ -4929,7 +4962,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   }
 
   function buildDocuments(elements) {
-    const root = { name: '文档', path: '', children: new Map(), element: null, count: 0 };
+    const root = { name: '文档空间', path: '', children: new Map(), element: null, count: 0 };
     for (const item of elements) {
       if (!isDocumentKind(item.kind)) continue;
       if (item.kind !== 'document' && item.kind !== 'document-directory') continue;
@@ -4961,12 +4994,47 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return root;
   }
 
+  function buildConcepts(elements) {
+    const root = { name: '概念空间', path: '', children: new Map(), element: null, count: 0 };
+    for (const item of elements) {
+      if (item.kind !== 'concept' && item.kind !== 'concept-directory') continue;
+      const qname = String(item.qname || '');
+      if (!qname.startsWith('concepts/')) continue;
+      const parts = qname.slice('concepts/'.length).split('/').filter(Boolean);
+      if (!parts.length) continue;
+      let node = root;
+      const acc = [];
+      for (let index = 0; index < parts.length; index += 1) {
+        const segment = parts[index];
+        acc.push(segment);
+        let next = node.children.get(segment);
+        if (!next) {
+          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
+          node.children.set(segment, next);
+        }
+        node = next;
+        if (index === parts.length - 1) {
+          node.element = item;
+          if (item.kind === 'concept' && item.name) node.name = item.name;
+        }
+      }
+    }
+    const annotate = (node) => {
+      let count = node.element ? 1 : 0;
+      for (const child of node.children.values()) count += annotate(child);
+      node.count = count;
+      return count;
+    };
+    annotate(root);
+    return root;
+  }
+
   function buildStructure(elements) {
     const byQname = new Map();
     for (const item of elements) byQname.set(item.qname, item);
     const rootItem = elements.find((item) => item.kind === 'design-structure');
     if (!rootItem) return null;
-    const root = { name: '系统与模块', path: 'design', children: new Map(), element: rootItem, members: [], count: 0 };
+    const root = { name: '技术空间', path: 'design', children: new Map(), element: rootItem, members: [], count: 0 };
     for (const item of elements) {
       if (!item.isStructure || item.kind === 'design-structure') continue;
       const qname = String(item.qname || '');
@@ -5003,9 +5071,10 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   function chip(item) {
     let label;
     if (item.isFile) label = 'FILE';
-    else if (item.isStructure) label = item.kind === 'system' ? 'SYS' : item.kind === 'module' ? 'MOD' : '结构';
+    else if (item.isStructure) label = item.kind === 'system' ? 'SYS' : item.kind === 'module' ? 'MOD' : item.kind === 'layer' ? 'LAY' : '结构';
     else if (isDocumentKind(item.kind)) label = documentChip(item.kind);
     else if (item.kind === 'concept') label = '概念';
+    else if (item.kind === 'concept-directory') label = '概念目录';
     else label = langLabel(item.lang) || '—';
     const node = el('span', 'ds-chip' + (item.isFile ? ' file' : ''), label);
     node.title = (item.lang ? item.lang + ' · ' : '') + item.kind;
@@ -5191,7 +5260,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     row.appendChild(caret(hasChildren, key));
     if (item) {
       row.appendChild(chip(item));
-      const name = el('span', 'ds-name', item.name || shortName(item.qname));
+      const name = el('span', 'ds-name', documentDisplayName(item));
       name.title = item.qname || item.name;
       row.appendChild(name);
       row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
@@ -5211,7 +5280,9 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     wrap.appendChild(row);
     if (open && hasChildren) {
       const kids = el('div', 'ds-children');
-      for (const child of [...node.children.values()].sort(byNatural)) {
+      const children = [...node.children.values()];
+      children.sort(node.path === 'design' ? byDocumentChild : byNatural);
+      for (const child of children) {
         kids.appendChild(documentRow(child, prefix));
       }
       wrap.appendChild(kids);
@@ -5250,7 +5321,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       name.title = item.qname || item.name;
       row.appendChild(name);
       row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
-      row.appendChild(el('span', 'ds-count', countLabel(node.count, '模块')));
+      row.appendChild(el('span', 'ds-count', countLabel(node.count, '项')));
     } else {
       const glyph = el('span', 'ds-folder');
       glyph.innerHTML = folderIcon;
@@ -5277,7 +5348,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     row.dataset.hash = item.hash;
     row.appendChild(el('span', 'ds-caret empty'));
     row.appendChild(chip(item));
-    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : (isDocumentKind(item.kind) ? item.name : shortName(item.name)));
+    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : (isDocumentKind(item.kind) ? documentDisplayName(item) : shortName(item.name)));
     name.title = item.isFile ? item.path : item.name;
     row.appendChild(name);
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
@@ -5319,6 +5390,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       return;
     }
     const documentRoot = buildDocuments(data.elements);
+    const conceptRoot = buildConcepts(data.elements);
     const structureRoot = buildStructure(data.elements);
     const list = el('div', 'ds-list');
     list.appendChild(virtualRow(
@@ -5341,24 +5413,35 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
             return namespaces;
           }
         ));
-        if (fileRoot.fileCount) {
-          kids.appendChild(virtualRow(
-            'view:files',
-            '文件',
-            countLabel(fileRoot.fileCount, '文件'),
-            folderIcon,
-            () => {
-              const files = el('div', 'ds-list');
-              for (const dir of [...fileRoot.dirs.values()].sort(byName)) files.appendChild(fileDirRow(dir));
-              for (const file of [...fileRoot.files.values()].sort(byName)) files.appendChild(fileRow(file));
-              return files;
+        kids.appendChild(virtualRow(
+          'view:files',
+          '文件空间',
+          countLabel(fileRoot.fileCount, '文件'),
+          folderIcon,
+          () => {
+            const files = el('div', 'ds-list');
+            for (const dir of [...fileRoot.dirs.values()].sort(byName)) files.appendChild(fileDirRow(dir));
+            for (const file of [...fileRoot.files.values()].sort(byName)) files.appendChild(fileRow(file));
+            return files;
+          }
+        ));
+        kids.appendChild(virtualRow(
+          'view:concepts',
+          '概念空间',
+          countLabel(conceptRoot.count, '概念'),
+          folderIcon,
+          () => {
+            const concepts = el('div', 'ds-list');
+            for (const child of [...conceptRoot.children.values()].sort(byName)) {
+              concepts.appendChild(namespaceRow(child, 'concept:'));
             }
-          ));
-        }
-        if (structureRoot && structureRoot.count) {
+            return concepts;
+          }
+        ));
+        if (structureRoot) {
           kids.appendChild(virtualRow(
             'view:structure',
-            '系统与模块',
+            '技术空间',
             countLabel(structureRoot.count, '项'),
             folderIcon,
             () => {
@@ -5370,25 +5453,102 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
             }
           ));
         }
-        if (documentRoot.count) {
-          kids.appendChild(virtualRow(
-            'view:documents',
-            '文档',
-            countLabel(documentRoot.count, '文档'),
-            folderIcon,
-            () => {
-              const documents = el('div', 'ds-list');
-              for (const child of [...documentRoot.children.values()].sort(byNatural)) {
-                documents.appendChild(documentRow(child));
-              }
-              return documents;
+        kids.appendChild(virtualRow(
+          'view:documents',
+          '文档空间',
+          countLabel(documentRoot.count, '文档'),
+          folderIcon,
+          () => {
+            const documents = el('div', 'ds-list');
+            for (const child of [...documentRoot.children.values()].sort(byNatural)) {
+              documents.appendChild(documentRow(child));
             }
-          ));
-        }
+            return documents;
+          }
+        ));
         return kids;
       }
     ));
     treeEl.replaceChildren(list);
+  }
+
+  let mermaidLoader = null;
+  function loadMermaid() {
+    if (window.mermaid) return Promise.resolve(window.mermaid);
+    if (!mermaidLoader) {
+      mermaidLoader = new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '/assets/mermaid.min.js';
+        script.onload = () => window.mermaid ? resolve(window.mermaid) : reject(new Error('mermaid 未加载'));
+        script.onerror = () => reject(new Error('mermaid 加载失败'));
+        document.head.appendChild(script);
+      });
+    }
+    return mermaidLoader;
+  }
+
+  function replaceMermaidPre(code, content, isError) {
+    const pre = code.closest('pre');
+    if (!pre) return;
+    const node = document.createElement('div');
+    if (isError) {
+      node.className = 'mermaid-error';
+      node.textContent = content;
+    } else {
+      node.className = 'mermaid-diagram';
+      node.innerHTML = content;
+    }
+    pre.replaceWith(node);
+  }
+
+  function htmlPreviewDocument(source) {
+    const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:; font-src data:">';
+    const doctype = source.match(/^\s*<!doctype[^>]*>/i);
+    if (doctype) {
+      const end = doctype[0].length;
+      return source.slice(0, end) + csp + source.slice(end);
+    }
+    return '<!doctype html><meta charset="utf-8">' + csp + source;
+  }
+
+  function renderHtmlPreviews(root) {
+    const codes = [...root.querySelectorAll('pre > code.language-html-preview')];
+    for (const code of codes) {
+      const pre = code.closest('pre');
+      if (!pre) continue;
+      const frame = document.createElement('iframe');
+      frame.className = 'html-preview';
+      frame.loading = 'lazy';
+      frame.title = 'HTML 预览';
+      frame.setAttribute('sandbox', '');
+      frame.srcdoc = htmlPreviewDocument(code.textContent || '');
+      pre.replaceWith(frame);
+    }
+  }
+
+  async function renderMermaid(root) {
+    const codes = [...root.querySelectorAll('pre > code.language-mermaid')];
+    if (!codes.length) return;
+    let mermaid;
+    try {
+      mermaid = await loadMermaid();
+    } catch (error) {
+      for (const code of codes) {
+        replaceMermaidPre(code, '流程图加载失败：' + (error && error.message ? error.message : error), true);
+      }
+      return;
+    }
+    const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
+    for (const [index, code] of codes.entries()) {
+      const id = 'ds-mermaid-' + Date.now() + '-' + index;
+      try {
+        const result = await mermaid.render(id, code.textContent || '');
+        replaceMermaidPre(code, result.svg, false);
+      } catch (error) {
+        replaceMermaidPre(code, '流程图渲染失败：' + (error && error.message ? error.message : error), true);
+      }
+    }
   }
 
   async function select(item) {
@@ -5405,6 +5565,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       if (!response.ok) throw new Error('HTTP ' + response.status);
       detailEl.innerHTML = await response.text();
       bindTabs();
+      renderMermaid(detailEl).catch(() => {});
+      renderHtmlPreviews(detailEl);
     } catch (error) {
       detailEl.replaceChildren(el('div', 'ds-source-error', '无法加载元素：' + error.message));
     }
@@ -6215,6 +6377,7 @@ fn issue_status_label(status: IssueStatus) -> &'static str {
     use IssueStatus::*;
     match status {
         Open => "待处理",
+        Pooled => "在池中",
         InProgress => "处理中",
         Resolved => "待确认",
         Closed => "已关闭",

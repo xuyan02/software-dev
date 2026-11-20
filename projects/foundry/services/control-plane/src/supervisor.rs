@@ -224,6 +224,13 @@ impl AgentSupervisor {
         self.start(id).await
     }
 
+    /// Signal a known pid without reading the process table. Project deletion
+    /// removes the database rows first, so the pid is captured beforehand.
+    pub async fn stop_pid(&self, id: Uuid, pid: i32) {
+        self.stopping.lock().await.insert(id);
+        terminate(pid);
+    }
+
     async fn process_pid(&self, id: Uuid) -> Option<i32> {
         self.store
             .list_agent_processes()

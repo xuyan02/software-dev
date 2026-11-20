@@ -117,11 +117,10 @@ openai_model = "deepseek-chat"
 | `openai_api_key` | 无 | 平台智能体模型 key；不落库 |
 | `openai_base_url` | 平台默认 `http://127.0.0.1:11434/v1` | 平台智能体模型 base URL |
 | `openai_model` | 平台默认 `qwen2.5-coder` | 平台智能体模型名 |
-| `design_space_url` | 无 | 外部 `ds-server` 的 HTTP 地址；不配置时控制平面启动本地 `ds-server` |
 | `design_space_root` | `~/.foundry/design-spaces` | 本地 `ds-server` 的仓库集合根目录；每个项目一个子仓库 |
-| `design_space_listen` | `0.0.0.0:7700` | 本地 `ds-server` 的监听地址；必须能被 agent 容器访问 |
-| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 admin token 文件；同目录下 `.agent` 文件自动生成给 Agent 使用 |
-| `design_space_agent_url` | 自动检测的宿主 IP + 端口 | 写入项目 `design_space_url` 的 agent 侧地址 |
+| `design_space_listen` | `127.0.0.1:7700` | 本地 `ds-server` 的 HTTP 监听地址；只供控制平面做仓库创建和管理 |
+| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 admin token 文件；只给控制平面使用，不注入智能体 |
+| `design_space_ssh_url` | `ssh://root@<宿主 IP>:2222` | 智能体访问设计空间的 SSH 地址；由 `scripts/dev-ds-sshd.sh` 提供 sshd 端点 |
 | `editor_dir` | `web/workflow-editor/dist` | 流程编辑器的构建产物目录 |
 | `github_app_id` | 无 | GitHub App ID；用于签发短期仓库 token |
 | `github_app_private_key_file` | 无 | GitHub App 私钥路径；私钥不会写入数据库或交给 agent |

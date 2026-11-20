@@ -152,6 +152,8 @@ struct LinuxCapsuleSpec {
     pub settle: Duration,
     /// Host directories mounted into the capsule.
     volumes: Vec<VolumeMount>,
+    /// Extra podman labels, used for lifecycle cleanup.
+    pub labels: Vec<(String, String)>,
 }
 
 impl LinuxCapsuleSpec {
@@ -206,6 +208,7 @@ impl Default for LinuxCapsuleSpec {
             startup_timeout: Duration::from_secs(30),
             settle: Duration::from_millis(250),
             volumes: Vec::new(),
+            labels: Vec::new(),
         }
     }
 }
@@ -329,6 +332,15 @@ impl LinuxCapsule {
         image: impl Into<String>,
         workspace: impl Into<std::path::PathBuf>,
     ) -> Result<Self> {
+        Self::headless_with_image_workspace_and_labels(image, workspace, Vec::new()).await
+    }
+
+    /// Headless capsule with a persistent `/work` directory and extra labels.
+    pub async fn headless_with_image_workspace_and_labels(
+        image: impl Into<String>,
+        workspace: impl Into<std::path::PathBuf>,
+        labels: Vec<(String, String)>,
+    ) -> Result<Self> {
         Self::create(LinuxCapsuleSpec {
             mode: LinuxCapsuleMode::Headless,
             image: image.into(),
@@ -336,6 +348,7 @@ impl LinuxCapsule {
                 host: workspace.into(),
                 container: "/work".to_string(),
             }],
+            labels,
             ..LinuxCapsuleSpec::default()
         })
         .await
@@ -593,6 +606,11 @@ fn build_create_args(
         "-e".to_string(),
         format!("LINUX_CAPSULE_MODE={}", spec.mode.as_str()),
     ];
+
+    for (key, value) in &spec.labels {
+        args.push("--label".to_string());
+        args.push(format!("{key}={value}"));
+    }
 
     if spec.mode.has_desktop() {
         args.push("-e".to_string());

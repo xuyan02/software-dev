@@ -36,18 +36,16 @@ pub struct Config {
     /// definitions are reconciled from these values at startup.
     pub openai_base_url: Option<String>,
     pub openai_model: Option<String>,
-    /// Base URL of the `ds-server` used to provision project design spaces.
-    /// Project creation fails when this is not configured.
-    pub design_space_url: Option<String>,
     /// Local ds-server repository collection root.
     pub design_space_root: PathBuf,
     /// Local ds-server listen address. It must be reachable from agent shells.
     pub design_space_listen: String,
-    /// Bearer token file for the ds-server.
+    /// Bearer token file for the local ds-server admin API.
     pub design_space_token_file: PathBuf,
-    /// URL project fields should use so agent shells can reach ds-server.
-    /// Defaults to the detected host IP on the local ds-server port.
-    pub design_space_agent_url: Option<String>,
+    /// SSH base URL agents use to reach the design space, for example
+    /// `ssh://agent@10.0.0.5:2222`. Defaults to the detected host IP and the
+    /// dedicated sshd port.
+    pub design_space_ssh_url: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is
     /// missing.
@@ -86,11 +84,10 @@ struct ConfigFile {
     openai_api_key: Option<String>,
     openai_base_url: Option<String>,
     openai_model: Option<String>,
-    design_space_url: Option<String>,
     design_space_root: Option<String>,
     design_space_listen: Option<String>,
     design_space_token_file: Option<String>,
-    design_space_agent_url: Option<String>,
+    design_space_ssh_url: Option<String>,
     editor_dir: Option<String>,
     github_app_id: Option<GithubAppId>,
     github_app_private_key_file: Option<String>,
@@ -226,14 +223,14 @@ impl Config {
             .design_space_listen
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "0.0.0.0:7700".to_string());
+            .unwrap_or_else(|| "127.0.0.1:7700".to_string());
         let design_space_token_file = file
             .design_space_token_file
             .map(|value| PathBuf::from(value.trim()))
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| foundry_dir.join("design-space-token"));
-        let design_space_agent_url = file
-            .design_space_agent_url
+        let design_space_ssh_url = file
+            .design_space_ssh_url
             .map(|value| value.trim().trim_end_matches('/').to_string())
             .filter(|value| !value.is_empty());
         let _ = file.skip_human_review;
@@ -252,14 +249,10 @@ impl Config {
             openai_api_key: file.openai_api_key.filter(|value| !value.is_empty()),
             openai_base_url: file.openai_base_url.filter(|value| !value.is_empty()),
             openai_model: file.openai_model.filter(|value| !value.is_empty()),
-            design_space_url: file
-                .design_space_url
-                .map(|value| value.trim().trim_end_matches('/').to_string())
-                .filter(|value| !value.is_empty()),
+            design_space_ssh_url,
             design_space_root,
             design_space_listen,
             design_space_token_file,
-            design_space_agent_url,
             editor_dir: PathBuf::from(
                 file.editor_dir
                     .unwrap_or_else(|| "web/workflow-editor/dist".to_string()),

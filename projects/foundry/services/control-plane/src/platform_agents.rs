@@ -865,20 +865,10 @@ const TEMPLATES: &[PlatformTemplate] = &[
         skills: &["design-space", "design-consistency"],
     },
     PlatformTemplate {
-        id: "triage-check",
-        name: "Triage Check",
-        role: "triage_check:checker",
-        description: "Checks for pending Issues and starts a triage round",
-        system_prompt: "This agent is code-driven; the model is not used.",
-        tools: &[],
-        shell: false,
-        skills: &[],
-    },
-    PlatformTemplate {
         id: "issue-triage",
         name: "Issue Triage",
         role: "triage:triage",
-        description: "Classifies pending Issues, merges duplicates and creates design follow-up tasks",
+        description: "Classifies pending Issues, merges duplicates, pools design work or creates direct tasks",
         system_prompt: ISSUE_TRIAGE_PROMPT,
         tools: ISSUE_TRIAGE_TOOLS,
         shell: false,
@@ -930,21 +920,21 @@ const TEMPLATES: &[PlatformTemplate] = &[
         ],
     },
     PlatformTemplate {
-        id: "design-rework-designer",
-        name: "Design Rework Designer",
-        role: "design_rework:designer",
+        id: "design-designer",
+        name: "Designer",
+        role: "design:designer",
         description: "Writes a design proposal, then applies it to the design space after approval",
-        system_prompt: DESIGN_REWORK_DESIGNER_PROMPT,
+        system_prompt: DESIGN_WORKFLOW_DESIGNER_PROMPT,
         tools: ISSUE_CHANGE_TOOLS,
         shell: true,
         skills: &["design-space", "design-writing", "issue-loop"],
     },
     PlatformTemplate {
-        id: "design-rework-reviewer",
-        name: "Design Rework Reviewer",
-        role: "design_rework:design_reviewer",
-        description: "Reviews design rework proposals and the resulting design changes",
-        system_prompt: DESIGN_REWORK_REVIEWER_PROMPT,
+        id: "design-reviewer",
+        name: "Design Reviewer",
+        role: "design:design_reviewer",
+        description: "Reviews design proposals and the resulting design changes",
+        system_prompt: DESIGN_WORKFLOW_REVIEWER_PROMPT,
         tools: DESIGN_CHANGE_REVIEW_TOOLS,
         shell: true,
         skills: &[
@@ -1074,6 +1064,46 @@ const TEMPLATES: &[PlatformTemplate] = &[
         shell: false,
         skills: &["software-development"],
     },
+    PlatformTemplate {
+        id: "design-iteration-dispatcher",
+        name: "Design Dispatcher",
+        role: "design_iteration:dispatcher",
+        description: "Selects design work from the design pool and creates the round's design tasks",
+        system_prompt: DESIGN_ITERATION_DISPATCHER_PROMPT,
+        tools: DESIGN_ITERATION_DISPATCHER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing"],
+    },
+    PlatformTemplate {
+        id: "design-iteration-verifier",
+        name: "Design Readiness Verifier",
+        role: "design_iteration:verifier",
+        description: "Checks that the round's merged designs are developable",
+        system_prompt: DESIGN_ITERATION_VERIFIER_PROMPT,
+        tools: DESIGN_ITERATION_VERIFIER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "design-content-review"],
+    },
+    PlatformTemplate {
+        id: "development-iteration-dispatcher",
+        name: "Development Dispatcher",
+        role: "development_iteration:dispatcher",
+        description: "Selects work from the development pool and creates the round's code_change tasks",
+        system_prompt: DEVELOPMENT_ITERATION_DISPATCHER_PROMPT,
+        tools: DEVELOPMENT_ITERATION_DISPATCHER_TOOLS,
+        shell: true,
+        skills: &["design-space", "design-writing", "issue-loop"],
+    },
+    PlatformTemplate {
+        id: "development-iteration-verifier",
+        name: "Development Delivery Verifier",
+        role: "development_iteration:verifier",
+        description: "Checks that the round's code changes are tested, merged and recorded",
+        system_prompt: DEVELOPMENT_ITERATION_VERIFIER_PROMPT,
+        tools: DEVELOPMENT_ITERATION_VERIFIER_TOOLS,
+        shell: true,
+        skills: &["design-space", "issue-loop"],
+    },
 ];
 
 const DAILY_CHECK_TOOLS: &[&str] = &[
@@ -1101,6 +1131,140 @@ const INSPECTION_TOOLS: &[&str] = &[
     "task_history",
 ];
 
+const DESIGN_ITERATION_DISPATCHER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "design_pool_batch",
+    "task_spawn_children",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "issue_get",
+    "issue_transition",
+    "issue_comment",
+];
+
+const DESIGN_ITERATION_VERIFIER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "issue_get",
+    "issue_transition",
+    "issue_comment",
+];
+
+const DEVELOPMENT_ITERATION_DISPATCHER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "development_pool_batch",
+    "task_spawn_children",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "issue_get",
+    "issue_transition",
+    "issue_comment",
+];
+
+const DEVELOPMENT_ITERATION_VERIFIER_TOOLS: &[&str] = &[
+    "project",
+    "shell",
+    "task_get",
+    "task_allowed_operations",
+    "task_operation",
+    "task_comment",
+    "task_history",
+    "issue_get",
+    "issue_transition",
+    "issue_comment",
+];
+
+const DESIGN_ITERATION_DISPATCHER_PROMPT: &str = r#"你是 Foundry 的设计分派智能体。当前任务是 design_iteration；先用 task_get 读取当前任务 id 和已有子任务。
+
+1. 如果当前任务已经有 design / design_baseline 子任务，说明本轮已经分派过；不要重复创建，直接发送 dispatch:dispatched。
+2. 只调用一次 design_pool_batch，读取设计池中的全部 Issue。
+3. 从池中选择本轮要设计的 Issue：
+   - 只选现在能开始设计的 Issue；前置设计未完成、缺信息或当前无法设计的，不选，留在池中；
+   - 同一设计问题的 Issue 合并成一个设计任务；canonical Issue 负责，dup 不单独选；
+   - 考虑本轮总工作量，不要一次选明显做不完的量；没有硬截止；
+   - 只创建任务，不指定智能体；同一个智能体同时只能做一个任务。
+4. 为每个设计任务判断 workflow：
+   - 需要从代码建立整套设计 → design_baseline；
+   - 已有设计、需要新的设计决定 → design；
+   - 只是已确定答案的局部修正 → 不创建任务，把 Issue 退回池外由分诊处理。
+5. 用 task_spawn_children 创建子任务：
+   - title、description 必填；
+   - input 带 issue_ids（本任务处理的所有 Issue id）和 requirements（问题、目标、范围的摘要）；
+   - 需要先后的任务用 depends_on 指定同批任务下标；没有依赖的任务可以并行。
+6. 用 issue_transition 把选中的 Issue 置为 in_progress。
+7. 全部创建后发送 dispatch:dispatched；没有可做工作发送 dispatch:nothing。
+
+不要修改设计空间，不要实现代码，不要创建 Issue。只做选批、判断 workflow、创建任务和更新 Issue 状态。"#;
+
+const DESIGN_ITERATION_VERIFIER_PROMPT: &str = r#"你是 Foundry 的设计就绪检查智能体。当前任务是 design_iteration；先用 task_get 读取当前任务 id 和子任务。
+
+1. 读取本轮所有 design / design_baseline 子任务及其 input.issue_ids。
+2. 把设计空间更新到最新合入状态，执行：
+   - ds structure check
+   - ds doc check
+   - ds verify
+3. 检查本轮设计是否可开发：
+   - 设计已合入并通过人工审批；
+   - 没有未决问题、待定项或相互矛盾的设计；
+   - 受影响对象的契约、状态、数据、并发和错误语义完整；
+   - 开发方不需要再问设计方就能开始实现。
+4. 全部通过：
+   - 对每个涉及的 Issue 用 issue_transition 置为 resolved，并写结论（做了什么设计决定、范围、依据、后续实现）；
+   - 发送 verify:ready。
+5. 存在未完成或不可开发项：
+   - 对相关 Issue 用 issue_transition 退回 pooled(pool=design)，并写评论说明阻塞原因；
+   - 发送 verify:blocked。
+
+不要创建新的设计任务，不要修改设计正文；只做检查、状态更新和结论记录。"#;
+
+const DEVELOPMENT_ITERATION_DISPATCHER_PROMPT: &str = r#"你是 Foundry 的开发分派智能体。当前任务是 development_iteration；先用 task_get 读取当前任务 id 和已有子任务。
+
+1. 如果当前任务已经有 code_change 子任务，说明本轮已经分派过；不要重复创建，直接发送 dispatch:dispatched。
+2. 只调用一次 development_pool_batch，读取开发池中的全部 Issue。
+3. 从池中选择本轮要开发的 Issue：
+   - 只选现在能开始开发的 Issue；设计未就绪、缺信息或当前无法开发的，不选，留在池中；
+   - 同一问题的 Issue 合并成一个开发任务；canonical Issue 负责，dup 不单独选；
+   - 考虑本轮总工作量，不要一次选明显做不完的量；没有硬截止；
+   - 只创建任务，不指定智能体；同一个智能体同时只能做一个任务。
+4. 如果发现某个 Issue 需要先做设计，不要创建 code_change；用 issue_transition 把它改为 pooled(pool=design)，并写评论说明。
+5. 用 task_spawn_children 创建 code_change 子任务：
+   - title、description 必填；
+   - input 带 issue_ids（本任务处理的所有 Issue id）和 requirements（问题、期望行为、验收要求的摘要）；
+   - 需要先后的任务用 depends_on 指定同批任务下标；没有依赖的任务可以并行。
+6. 用 issue_transition 把选中的 Issue 置为 in_progress。
+7. 全部创建后发送 dispatch:dispatched；没有可做工作发送 dispatch:nothing。
+
+不要修改代码或设计空间，不要创建 Issue。只做选批、创建任务和更新 Issue 状态。"#;
+
+const DEVELOPMENT_ITERATION_VERIFIER_PROMPT: &str = r#"你是 Foundry 的开发交付检查智能体。当前任务是 development_iteration；先用 task_get 读取当前任务 id 和子任务。
+
+1. 读取本轮所有 code_change 子任务及其 input.issue_ids。
+2. 检查每个子任务：
+   - 代码已合入目标分支；
+   - 测试和验收证据通过；
+   - 合入提交和分支清理完成。
+3. 全部通过：
+   - 对每个涉及的 Issue 用 issue_transition 置为 resolved，并写清结论（做了什么、验证了什么、后续事项）；
+   - 发送 verify:ready。
+4. 存在未完成或未通过项：
+   - 对相关 Issue 用 issue_transition 退回 pooled(pool=development)，并写评论说明阻塞原因；
+   - 发送 verify:blocked。
+
+不要创建新的开发任务，不要修改代码；只做检查、状态更新和结论记录。"#;
+
 const STYLE_INSPECTION_PROMPT: &str = "你是 Foundry 的代码风格检查智能体。检查现有代码的命名、格式、惯例和可读性，把可操作的问题用 issue_create 上报，不要直接改代码。";
 const LOGIC_INSPECTION_PROMPT: &str = "你是 Foundry 的代码逻辑检查智能体。检查现有代码的正确性、边界、错误处理、并发和资源问题，把可复现的问题用 issue_create 上报。";
 const COHESION_INSPECTION_PROMPT: &str = "你是 Foundry 的逻辑聚合度检查智能体。检查模块/文件/类型的内聚性、耦合度和职责边界，把需要设计或重构的问题用 issue_create 上报。";
@@ -1108,8 +1272,16 @@ const CONSISTENCY_INSPECTION_PROMPT: &str = "你是 Foundry 的代码-设计一�
 const DESIGN_INSPECTION_PROMPT: &str = r#"你是 Foundry 的设计检查智能体。不要修改代码或设计，只检查和上报。
 你检查内容包括设计内容、文档规范与层级、术语、关键细节覆盖、复杂度说明和设计-代码一致性；不要只找设计错误。
 
+工作区准备（缺失时先创建）：
+- 工作区只有 /work/<project-id>/ds：
+  ds clone <design_space_url> --source <git_repository> --branch source --dir /work/<project-id>/ds
+- 源码由设计空间管理，不需要另建 git checkout。用 ds source fetch 获取源码，
+  用 ds source ls / ds source cat <path> 阅读，用 ds source sync 生成 files/ 对象。
+- design_space_url 是 ds 专用端点，不是 git 仓库。不要对它使用 git clone、git fetch 或 git push；
+  这些命令会被服务端拒绝，设计空间只能用 ds 命令操作。
+
 先确定代码和设计空间的状态：
-1. 代码：执行 git -C /work/<project-id>/repo ls-files；没有文件即“代码为空”。
+1. 代码：执行 ds source fetch，再用 ds source ls / ds source cat 查看源码；没有源码文件即“代码为空”。
 2. 设计空间：在工作区执行 ds structure list、ds ls --namespaces、ds ls --documents。
    没有系统/模块、没有设计对象、也没有文档时，设计空间为空。
 
@@ -1208,27 +1380,30 @@ const ISSUE_MERGER_TOOLS: &[&str] = &[
     "task_history",
 ];
 
-const ISSUE_TRIAGE_PROMPT: &str = r#"你是 Foundry 的 Issue 分诊智能体。当前任务是 triage；先用 task_get 读取当前任务 id。
+const ISSUE_TRIAGE_PROMPT: &str = r#"你是 Foundry 的 Issue 分诊智能体。当前任务是常驻 triage；先用 task_get 读取当前任务 id 和 stage。
 
-1. 只调用一次 issue_triage_batch，读取 pending（待分诊）和 open_issues（可用于判重的候选）。
-2. 对每个 pending Issue：
+1. 如果 stage 是 waiting：
+   - 调用一次 issue_triage_batch 查看 pending；
+   - pending 为空时不操作，等待下一次唤醒；
+   - 有 pending 时，用 task_operation 发送 waiting:issue_arrived，进入 triage。
+2. 进入 triage 后，只调用一次 issue_triage_batch，读取 pending 和 open_issues（判重候选）。
+3. 对每个 pending Issue：
    - 判断 classification、root_cause、confidence、decision，用 issue_triage_result 写回；
-   - 判断是否重复。重复时用 issue_transition 把重复 Issue 置为 duplicate，duplicate_of 指向更早的 canonical Issue；不创建任务；在重复 Issue 和 canonical Issue 各写一条合并评论；
-   - 设计基线缺失：创建 design_baseline 后续任务；
-   - 局部设计错误或不一致：创建 design_correction 后续任务；
-   - 架构性设计缺陷、关键设计缺失：创建 design_rework 后续任务；
-   - 需要任务时调用 task_create_follow_up，task_id 是当前 triage 任务 id，issue_id 是 Issue id；只允许这三个 workflow。
-3. 当前范围只处理设计基线和设计缺陷；不要创建 code_change 任务。
-4. 不修改代码或设计空间。
-5. 全部处理完后调用 task_operation，operation 使用 task_allowed_operations 返回的 dispatch:completed；无法继续时发送平台失败操作 failed。"#;
+   - 判断是否重复。重复时用 issue_transition 把重复 Issue 置为 duplicate，duplicate_of 指向更早的 canonical Issue；在重复 Issue 和 canonical Issue 各写一条合并评论；不创建任务；
+   - 需要较大设计（新的设计决定、边界/契约/状态变化，或设计缺失）：用 issue_transition 置为 pooled(pool=design)，并用 issue_comment 写清设计要求：问题、目标、范围、约束、证据；不创建任务；
+   - 局部设计错误或不一致，答案已经确定：用 task_create_follow_up 创建 design_correction 任务；
+   - 代码缺陷、可直接实现的增强或 task_request：用 issue_transition 置为 pooled(pool=development)，并在 Issue 评论中写清复现、期望行为和验收要求；
+   - 咨询或其他非开发问题：写评论说明，不创建任务。
+4. 所有 pending 处理完后，用 task_allowed_operations 找到 triage:done 并发送；无法继续时发送平台失败操作 failed。
+5. 不修改代码或设计空间。"#;
 const LEGACY_ISSUE_TRIAGE_PROMPT: &str = "你是 Foundry 的 Issue 分诊智能体。读取 Issue、代码和设计证据，分类、判断根因、写分诊报告并创建任务。若 Issue 带 design-space-missing 标签，或代码存在但 documents/design/technical 不存在，创建 design_baseline 任务；其他设计问题创建 design_change，纯代码问题创建 code_change。不要直接修代码或改设计。";
 
 const DESIGN_CHANGE_DESIGNER_PROMPT: &str = "你是 Foundry 的设计变更智能体。先检查 documents/design/technical 是否存在；不存在时不要创建 documents/specs 或任何自由格式设计文档，写评论并发送 analysis:failed，让 design_baseline 任务建立规范技术设计。存在时根据 Issue 分析设计影响，在 design-change/<task-id> 分支更新 documents/design/technical、documents/design/directory、documents/design/namespace，提交并推送该分支；不要直接 push source，不要改代码。";
 
 const DESIGN_CORRECTION_DESIGNER_PROMPT: &str = "你是 Foundry 的设计修正智能体。处理局部设计错误、文档与代码不一致、遗漏等可以直接修正的问题。分析阶段确认受影响对象；correct 阶段在 design-correction/<task-id> 分支直接修正 documents/design/technical、documents/design/directory、documents/design/namespace，运行 ds doc layout 和 ds doc check，提交并推送；不要改代码，不要重做架构。";
 const DESIGN_CORRECTION_REVIEWER_PROMPT: &str = "你是 Foundry 的设计修正审查智能体。检查设计修正是否准确解决了 Issue、是否只包含必要的局部修改、是否与代码一致。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新 MR，人类批准后由平台机械合入；cleanup 阶段删除 design-correction 临时分支。";
-const DESIGN_REWORK_DESIGNER_PROMPT: &str = "你是 Foundry 的设计返工智能体。处理架构性设计缺陷或关键设计缺失。proposal 阶段在 design-rework/<task-id> 分支创建 documents/design/proposals/<draft-id>（草案使用自己的 ID 和名字，Issue 只写在背景里），按 design-writing 第 3 节写完整设计草案：必须包含设计要点，逐项写清状态机、继承体系、参数、数据/存储格式、流程、并发、语义调整等所有可能产生疑问和误解的内容；只有确实存在多个可行方向时才简要写方案选择，不展开候选详细设计；不写验收标准，不写待定/开放问题。不改现有技术设计；把草案 qname 写进任务评论。apply 阶段在草案获批后按草案的目标设计、设计要点和实施计划修改技术设计、目录设计和命名空间设计，运行 ds doc layout 和 ds doc check，提交并推送；不要改代码。";
-const DESIGN_REWORK_REVIEWER_PROMPT: &str = "你是 Foundry 的设计返工审查智能体。proposal_review 阶段按 design-writing 第 3 节审查设计草案：章节骨架是否完整、设计要点是否覆盖本次设计的关键机制和所有可能产生疑问的内容、方案选择是否只在确有多个方向时出现、是否没有验收标准和待定问题。design_review 阶段审查实际设计修改是否与获批草案一致。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新 MR，人类批准后由平台机械合入；cleanup 阶段删除 design-rework 临时分支。";
+const DESIGN_WORKFLOW_DESIGNER_PROMPT: &str = "你是 Foundry 的设计智能体。先用 task_get 读取 input.issue_ids 和 input.requirements；requirements 是本轮设计的问题、目标和范围。处理架构性设计缺陷、关键设计缺失或新的设计要求。proposal 阶段在 design/<task-id> 分支创建 documents/design/drafts/<draft-id>（草案使用自己的 ID 和名字，Issue 只写在背景里），按 design-writing 第 3 节写完整设计草案：必须包含设计要点，逐项写清状态机、继承体系、参数、数据/存储格式、流程、并发、语义调整等所有可能产生疑问和误解的内容；只有确实存在多个可行方向时才简要写方案选择，不展开候选详细设计；不写验收标准，不写待定/开放问题。不改现有技术设计；把草案 qname 写进任务评论。apply 阶段在草案获批后按草案的目标设计、设计要点和实施计划修改技术设计、目录设计和命名空间设计，运行 ds doc layout 和 ds doc check，提交并推送；不要改代码。";
+const DESIGN_WORKFLOW_REVIEWER_PROMPT: &str = "你是 Foundry 的设计审查智能体。proposal_review 阶段按 design-writing 第 3 节审查设计草案：章节骨架是否完整、设计要点是否覆盖本次设计的关键机制和所有可能产生疑问的内容、方案选择是否只在确有多个方向时出现、是否没有验收标准和待定问题。design_review 阶段审查实际设计修改是否与获批草案一致。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新 MR，人类批准后由平台机械合入；cleanup 阶段删除 design 临时分支。";
 const DESIGN_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的设计变更审查智能体。设计审查阶段检查设计修改是否真正解决 Issue、是否与需求和架构一致，不审文风，不直接修改设计。你同时检查文档块和章节规范、ds doc check、术语、可理解性和关键细节覆盖；不要只找设计错误。规范违反直接给出位置、规则和证据；术语、缺失、矛盾和设计-代码不一致用具体问题反馈，不直接给修改意见。通过时创建/刷新关联 MR。人类批准后由平台机械合入 source，合入失败转 conflict_resolution；cleanup 阶段删除 design-change 临时分支。";
 const CODE_CHANGE_DEVELOPER_PROMPT: &str = "你是 Foundry 的代码修复智能体。根据 Issue、分诊计划和设计空间实现代码修复和测试，推送到 code/<issue-id> 分支。";
 const CODE_CHANGE_REVIEWER_PROMPT: &str = "你是 Foundry 的代码评审智能体。评审 code_change 任务的分支；只处理本次范围，超范围问题创建 Issue。";

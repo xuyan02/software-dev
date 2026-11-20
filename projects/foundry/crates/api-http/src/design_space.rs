@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 use design_space as ds;
 use ds::catalog::Catalog;
 use ds::model::{
-    CommitHash, DesignObject, DocComment, GitOid, Hash32, Kind, ObjectPayload, SymbolHash,
-    ViewPayload,
+    CommitHash, ConceptPayload, DesignObject, DocComment, GitOid, Hash32, Kind, ObjectPayload,
+    SymbolHash, ViewPayload,
 };
 use ds::store::Store;
 use foundry_app::{DesignSpaceGateway, DesignSpaceGatewayError};
@@ -122,7 +122,11 @@ impl DesignSpaceAccess {
 
         for (qname, object) in loaded.catalog.iter() {
             let qname_text = loaded.store.get_symbol(qname).map_err(display)?;
-            if qname_text == "files" || qname_text == "namespaces" || qname_text == "documents" {
+            if qname_text == "files"
+                || qname_text == "namespaces"
+                || qname_text == "documents"
+                || qname_text == "concepts"
+            {
                 continue;
             }
             if is_document_kind(object.kind)
@@ -168,18 +172,44 @@ impl DesignSpaceAccess {
             .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
         let (qname, object) = find_object(&loaded.catalog, hash)?;
         let info = element_info(&loaded.store, qname, object)?;
-        let (design, comments) = match document_target(object) {
-            Some(target) => {
-                let (design, comments) =
-                    render_document(&loaded.store, &loaded.catalog, target, project.id, branch)?;
-                (Some(design), comments)
-            }
-            None if is_document_kind(object.kind) => {
-                let (design, comments) =
-                    render_document(&loaded.store, &loaded.catalog, qname, project.id, branch)?;
-                (Some(design), comments)
-            }
-            None => (None, Vec::new()),
+        let (design, comments) = match &object.payload {
+            ObjectPayload::Concept(p) => (
+                Some(render_concept(
+                    &loaded.store,
+                    &loaded.catalog,
+                    qname,
+                    p,
+                    project.id,
+                    branch,
+                )),
+                Vec::new(),
+            ),
+            ObjectPayload::ConceptDirectory(_) => (
+                Some(render_concept_directory(
+                    &loaded.store,
+                    &loaded.catalog,
+                    qname,
+                )),
+                Vec::new(),
+            ),
+            _ => match document_target(object) {
+                Some(target) => {
+                    let (design, comments) = render_document(
+                        &loaded.store,
+                        &loaded.catalog,
+                        target,
+                        project.id,
+                        branch,
+                    )?;
+                    (Some(design), comments)
+                }
+                None if is_document_kind(object.kind) => {
+                    let (design, comments) =
+                        render_document(&loaded.store, &loaded.catalog, qname, project.id, branch)?;
+                    (Some(design), comments)
+                }
+                None => (None, Vec::new()),
+            },
         };
         Ok(DesignSpaceDetail {
             hash: info.hash,
@@ -510,6 +540,7 @@ impl DesignSpaceAccess {
 }
 
 #[async_trait::async_trait]
+#[async_trait::async_trait]
 impl DesignSpaceGateway for DesignSpaceAccess {
     async fn branches(&self, project: &Project) -> Result<Vec<String>, DesignSpaceGatewayError> {
         let access = self.clone();
@@ -756,16 +787,10 @@ fn structure_member_infos(
     qname: SymbolHash,
     object: &DesignObject,
 ) -> Result<Vec<DesignSpaceMember>, String> {
-    if !matches!(
-        object.kind,
-        Kind::DesignStructure | Kind::System | Kind::Module
-    ) {
+    if !is_structure_kind(object.kind) {
         return Ok(Vec::new());
     }
-    let mut members = Vec::new();
-    if let ObjectPayload::Module(module) = &object.payload {
-        members.extend(module.members.iter().copied());
-    }
+    let mut members = structure_member_symbols(object).to_vec();
     members.extend(catalog.children(qname));
     members.sort();
     members.dedup();
@@ -806,10 +831,15 @@ fn element_info(
             document_name(object, &qname_text)
         } else if let Some(title) = structure_title(object) {
             title
+        } else if let ObjectPayload::Concept(p) = &object.payload {
+            p.name.clone()
         } else {
             local_name(&qname_text)
         },
-        lang: if is_document || is_structure_kind(object.kind) {
+        lang: if is_document
+            || is_structure_kind(object.kind)
+            || matches!(object.kind, Kind::Concept | Kind::ConceptDirectory)
+        {
             String::new()
         } else {
             language_for_path(&path)
@@ -818,13 +848,12 @@ fn element_info(
         path,
         start_line,
         end_line,
-        has_design: is_document || document_target(object).is_some(),
+        has_design: is_document
+            || document_target(object).is_some()
+            || matches!(object.kind, Kind::Concept | Kind::ConceptDirectory),
         is_file: object.kind == Kind::File,
-        is_structure: matches!(
-            object.kind,
-            Kind::DesignStructure | Kind::System | Kind::Module
-        ),
-        members: module_members(store, object)?,
+        is_structure: is_structure_kind(object.kind),
+        members: structure_members(store, object)?,
     })
 }
 
@@ -833,20 +862,29 @@ fn structure_title(object: &DesignObject) -> Option<String> {
         ObjectPayload::DesignStructure(p) => Some(p.title.clone()),
         ObjectPayload::System(p) => Some(p.title.clone()),
         ObjectPayload::Module(p) => Some(p.title.clone()),
+        ObjectPayload::Layer(p) => Some(p.title.clone()),
         _ => None,
     }
 }
 
 fn is_structure_kind(kind: Kind) -> bool {
-    matches!(kind, Kind::DesignStructure | Kind::System | Kind::Module)
+    matches!(
+        kind,
+        Kind::DesignStructure | Kind::System | Kind::Module | Kind::Layer
+    )
 }
 
-fn module_members(store: &Store, object: &DesignObject) -> Result<Vec<String>, String> {
-    let ObjectPayload::Module(module) = &object.payload else {
-        return Ok(Vec::new());
-    };
-    module
-        .members
+fn structure_member_symbols(object: &DesignObject) -> &[ds::model::SymbolHash] {
+    match &object.payload {
+        ObjectPayload::System(p) => &p.members,
+        ObjectPayload::Module(p) => &p.members,
+        ObjectPayload::Layer(p) => &p.members,
+        _ => &[],
+    }
+}
+
+fn structure_members(store: &Store, object: &DesignObject) -> Result<Vec<String>, String> {
+    structure_member_symbols(object)
         .iter()
         .map(|member| store.get_symbol(*member).map_err(display))
         .collect()
@@ -861,6 +899,9 @@ fn is_document_kind(kind: Kind) -> bool {
             | Kind::DocumentList
             | Kind::DocumentText
             | Kind::DocumentTopic
+            | Kind::Block
+            | Kind::MermaidBlock
+            | Kind::HtmlBlock
     )
 }
 
@@ -881,6 +922,15 @@ fn document_name(object: &DesignObject, qname: &str) -> String {
                 text
             }
         }
+        ObjectPayload::Block(p) => {
+            if p.language.is_empty() {
+                "代码块".to_owned()
+            } else {
+                format!("代码块 {}", p.language)
+            }
+        }
+        ObjectPayload::MermaidBlock(_) => "流程图".to_owned(),
+        ObjectPayload::HtmlBlock(_) => "HTML 预览".to_owned(),
         ObjectPayload::DocumentDirectory(_) => local_name(qname),
         _ => local_name(qname),
     }
@@ -928,9 +978,15 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
         | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DesignStructure(_)
         | ObjectPayload::System(_)
-        | ObjectPayload::Module(_) => None,
+        | ObjectPayload::Module(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Layer(_) => None,
     };
     path.transpose().map_err(display)
 }
@@ -954,12 +1010,18 @@ fn source_span(object: &DesignObject) -> (u32, u32) {
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
         | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DesignStructure(_)
         | ObjectPayload::System(_)
         | ObjectPayload::Module(_)
         | ObjectPayload::Directory(_)
         | ObjectPayload::File(_)
-        | ObjectPayload::View(_) => None,
+        | ObjectPayload::View(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Layer(_) => None,
     };
     span.map(|span| (span.start_line, span.end_line))
         .unwrap_or((0, 0))
@@ -979,13 +1041,19 @@ fn document_target(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::DesignStructure(p) => p.document,
         ObjectPayload::System(p) => p.document,
         ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Layer(p) => p.document,
         ObjectPayload::Part(_)
         | ObjectPayload::DocumentDirectory(_)
         | ObjectPayload::Document(_)
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
-        | ObjectPayload::DocumentTopic(_) => return None,
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_) => return None,
     };
     (!target.is_zero()).then_some(target)
 }
@@ -993,6 +1061,82 @@ fn document_target(object: &DesignObject) -> Option<SymbolHash> {
 struct RenderRefs<'a> {
     project_id: uuid::Uuid,
     branch: &'a str,
+}
+
+fn render_concept(
+    store: &Store,
+    catalog: &Catalog,
+    _qname: SymbolHash,
+    concept: &ConceptPayload,
+    project_id: uuid::Uuid,
+    branch: &str,
+) -> String {
+    let mut out = format!("# {}\n\n", concept.name);
+    if !concept.summary.is_empty() {
+        out.push_str(&format!(
+            "{}\n\n",
+            render_references(&concept.summary, store, catalog, project_id, branch)
+        ));
+    }
+    if !concept.explanation.is_empty() {
+        out.push_str("## 解释\n\n");
+        out.push_str(&format!(
+            "{}\n\n",
+            render_references(&concept.explanation, store, catalog, project_id, branch)
+        ));
+    }
+    if !concept.characteristics.is_empty() {
+        out.push_str("## 特征\n\n");
+        for item in &concept.characteristics {
+            out.push_str(&format!(
+                "- {}\n",
+                render_references(item, store, catalog, project_id, branch)
+            ));
+        }
+        out.push('\n');
+    }
+    if !concept.relations.is_empty() {
+        out.push_str("## 关系与区别\n\n");
+        for item in &concept.relations {
+            out.push_str(&format!(
+                "- {}\n",
+                render_references(item, store, catalog, project_id, branch)
+            ));
+        }
+        out.push('\n');
+    }
+    if !concept.aliases.is_empty() {
+        out.push_str("## 别名\n\n");
+        for item in &concept.aliases {
+            out.push_str(&format!("- {item}\n"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn render_concept_directory(store: &Store, catalog: &Catalog, qname: SymbolHash) -> String {
+    let mut children = catalog.children(qname);
+    children.sort_by_key(|child| store.get_symbol(*child).unwrap_or_default());
+    let mut out = String::new();
+    for child in children {
+        let Ok(name) = store.get_symbol(child) else {
+            continue;
+        };
+        match catalog.get(child).map(|object| &object.payload) {
+            Some(ObjectPayload::Concept(p)) => {
+                out.push_str(&format!("- [[concept:{name}|{}]]：{}\n", p.name, p.summary));
+            }
+            Some(ObjectPayload::ConceptDirectory(_)) => {
+                out.push_str(&format!("- {name}\n"));
+            }
+            _ => {}
+        }
+    }
+    if out.is_empty() {
+        out.push_str("（暂无概念）\n");
+    }
+    out
 }
 
 fn render_document(
@@ -1007,6 +1151,18 @@ fn render_document(
     let refs = RenderRefs { project_id, branch };
     render_doc(store, catalog, qname, 0, &refs, &mut out, &mut comments)?;
     Ok((out, comments))
+}
+
+/// Reading order for the preset design documents: directory, namespace,
+/// technical, then drafts last.
+fn design_document_rank(name: &str) -> u8 {
+    match name.rsplit('/').next() {
+        Some("directory") => 0,
+        Some("namespace") => 1,
+        Some("technical") => 2,
+        Some("drafts" | "proposals") => 3,
+        _ => 2,
+    }
 }
 
 fn render_doc(
@@ -1028,12 +1184,20 @@ fn render_doc(
                 out.push_str(&marker);
                 out.push_str("\n\n");
             }
+            let design_dir = store
+                .get_symbol(qname)
+                .is_ok_and(|name| name == "documents/design");
             let mut children = catalog.children(qname);
             children.sort_by(|left, right| {
-                store
-                    .get_symbol(*left)
-                    .unwrap_or_default()
-                    .cmp(&store.get_symbol(*right).unwrap_or_default())
+                let left_name = store.get_symbol(*left).unwrap_or_default();
+                let right_name = store.get_symbol(*right).unwrap_or_default();
+                if design_dir {
+                    design_document_rank(&left_name)
+                        .cmp(&design_document_rank(&right_name))
+                        .then_with(|| left_name.cmp(&right_name))
+                } else {
+                    left_name.cmp(&right_name)
+                }
             });
             for child in children {
                 render_doc(store, catalog, child, depth, refs, out, comments)?;
@@ -1092,6 +1256,15 @@ fn render_doc(
             let text = render_references(&p.text, store, catalog, refs.project_id, refs.branch);
             out.push_str(&format!("{text}{marker}\n\n"));
         }
+        ObjectPayload::Block(p) => {
+            render_fenced_block(&p.language, &p.text, &marker, out);
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            render_fenced_block("mermaid", &p.text, &marker, out);
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            render_fenced_block("html-preview", &p.text, &marker, out);
+        }
         ObjectPayload::DocumentTopic(p) => {
             out.push_str(&format!("**{}**{}\n\n", p.title, marker));
             for paragraph in &p.paragraphs {
@@ -1110,6 +1283,37 @@ fn render_doc(
         });
     }
     Ok(())
+}
+
+/// Choose a fence longer than any leading backtick run in the code, so a code
+/// line that starts with ``` cannot close the block early.
+fn code_fence(text: &str) -> String {
+    let longest = text
+        .lines()
+        .map(|line| {
+            line.chars()
+                .take_while(|character| *character == '`')
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    "`".repeat((longest + 1).max(3))
+}
+
+fn render_fenced_block(language: &str, text: &str, marker: &str, out: &mut String) {
+    let fence = code_fence(text);
+    out.push_str(&fence);
+    out.push_str(language);
+    out.push('\n');
+    out.push_str(text.trim_end_matches(['\n', '\r']));
+    out.push('\n');
+    out.push_str(&fence);
+    out.push('\n');
+    if !marker.is_empty() {
+        out.push_str(marker);
+        out.push('\n');
+    }
+    out.push('\n');
 }
 
 /// Replace `[[target|label]]` references with Markdown links. The reference is
@@ -1183,6 +1387,38 @@ fn reference_link(
             (url, value.to_owned())
         }
         "code" => return fallback(),
+        "concept" => {
+            let Some(object) = find_object_by_qname(store, catalog, value) else {
+                return fallback();
+            };
+            if object.kind != Kind::Concept {
+                return fallback();
+            }
+            let Ok(hash) = ds::format::object_hash(object) else {
+                return fallback();
+            };
+            let mut url = format!(
+                "/projects/{project_id}/design-space/elements/{}",
+                hash.to_hex()
+            );
+            if !branch.is_empty() {
+                url.push_str("?branch=");
+                url.push_str(branch);
+            }
+            let label = if label.is_empty() {
+                match &object.payload {
+                    ObjectPayload::Concept(p) => p.name.clone(),
+                    _ => value.to_owned(),
+                }
+            } else {
+                label.to_owned()
+            };
+            let label = label
+                .replace('\\', "\\\\")
+                .replace('[', "\\[")
+                .replace(']', "\\]");
+            return format!("[{label}]({url})");
+        }
         _ => return fallback(),
     };
     let label = if label.is_empty() {
@@ -1231,6 +1467,9 @@ fn document_comments(object: &DesignObject) -> &[DocComment] {
         ObjectPayload::DocumentList(p) => &p.comments,
         ObjectPayload::DocumentText(p) => &p.comments,
         ObjectPayload::DocumentTopic(p) => &p.comments,
+        ObjectPayload::Block(p) => &p.comments,
+        ObjectPayload::MermaidBlock(p) => &p.comments,
+        ObjectPayload::HtmlBlock(p) => &p.comments,
         _ => &[],
     }
 }
@@ -1255,9 +1494,15 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::DocumentList => "document-list",
         Kind::DocumentText => "document-text",
         Kind::DocumentTopic => "document-topic",
+        Kind::Block => "document-block",
+        Kind::MermaidBlock => "document-mermaid",
+        Kind::HtmlBlock => "document-html",
         Kind::DesignStructure => "design-structure",
         Kind::System => "system",
         Kind::Module => "module",
+        Kind::ConceptDirectory => "concept-directory",
+        Kind::Concept => "concept",
+        Kind::Layer => "layer",
     }
 }
 
@@ -1489,19 +1734,156 @@ fn short(value: &str) -> &str {
 mod tests {
     use super::*;
     use design_space::model::{
-        DirectoryPayload, DocumentDirectoryPayload, DocumentPayload, DocumentSectionPayload,
-        DocumentTextPayload, NamespacePayload, ParentRef, SymbolHash,
+        ConceptDirectoryPayload, ConceptPayload, DirectoryPayload, DocumentDirectoryPayload,
+        DocumentPayload, DocumentSectionPayload, DocumentTextPayload, HtmlBlockPayload,
+        MermaidBlockPayload, NamespacePayload, ParentRef, SymbolHash,
     };
     use design_space::{Catalog, Commit, DesignObject, ObjectPayload};
     use tempfile::tempdir;
 
     #[test]
+    fn chooses_a_fence_longer_than_code_lines() {
+        assert_eq!(code_fence("let token = login();"), "```");
+        assert_eq!(code_fence("before\n```\nafter"), "````");
+        assert_eq!(code_fence("````"), "`````");
+    }
+
+    #[test]
+    fn renders_html_blocks_as_sandboxed_preview_fences() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        let section = store
+            .put_symbol("documents/design/technical/section1")
+            .unwrap();
+        let preview = store
+            .put_symbol("documents/design/technical/section1/body1")
+            .unwrap();
+        catalog
+            .insert(
+                section,
+                DesignObject::new(
+                    Kind::DocumentSection,
+                    ObjectPayload::DocumentSection(DocumentSectionPayload {
+                        qualified_name: section,
+                        parent: SymbolHash::ZERO,
+                        title: "登录页".to_owned(),
+                        body: vec![preview],
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                preview,
+                DesignObject::new(
+                    Kind::HtmlBlock,
+                    ObjectPayload::HtmlBlock(HtmlBlockPayload {
+                        qualified_name: preview,
+                        parent: section,
+                        text: "<div>UI 效果图</div>".to_owned(),
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let (markdown, comments) =
+            render_document(&store, &catalog, section, uuid::Uuid::nil(), "main").unwrap();
+        assert!(markdown.contains("```html-preview\n<div>UI 效果图</div>\n```"));
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn renders_mermaid_blocks_as_mermaid_fences() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        let section = store
+            .put_symbol("documents/design/technical/section1")
+            .unwrap();
+        let diagram = store
+            .put_symbol("documents/design/technical/section1/body1")
+            .unwrap();
+        catalog
+            .insert(
+                section,
+                DesignObject::new(
+                    Kind::DocumentSection,
+                    ObjectPayload::DocumentSection(DocumentSectionPayload {
+                        qualified_name: section,
+                        parent: SymbolHash::ZERO,
+                        title: "登录流程".to_owned(),
+                        body: vec![diagram],
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                diagram,
+                DesignObject::new(
+                    Kind::MermaidBlock,
+                    ObjectPayload::MermaidBlock(MermaidBlockPayload {
+                        qualified_name: diagram,
+                        parent: section,
+                        text: "flowchart TD\n  A --> B".to_owned(),
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let (markdown, comments) =
+            render_document(&store, &catalog, section, uuid::Uuid::nil(), "main").unwrap();
+        assert!(markdown.contains("```mermaid\nflowchart TD\n  A --> B\n```"));
+        assert!(comments.is_empty());
+    }
+
+    #[test]
     fn renders_references_as_links() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
-        let catalog = Catalog::new(GitOid::ZERO);
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        let concepts = store.put_symbol("concepts").unwrap();
+        let concept = store.put_symbol("concepts/agent/agent").unwrap();
+        catalog
+            .insert(
+                concepts,
+                DesignObject::new(
+                    Kind::ConceptDirectory,
+                    ObjectPayload::ConceptDirectory(ConceptDirectoryPayload {
+                        qualified_name: concepts,
+                        parent: ParentRef::View,
+                        children: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                concept,
+                DesignObject::new(
+                    Kind::Concept,
+                    ObjectPayload::Concept(ConceptPayload {
+                        qualified_name: concept,
+                        parent: concepts,
+                        name: "智能体".to_owned(),
+                        summary: "能自主执行任务的主体。".to_owned(),
+                        explanation: String::new(),
+                        characteristics: vec![],
+                        relations: vec![],
+                        aliases: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
         let out = render_references(
-            "见 [[issue:01a1f3fe-909a-735b-bab8-8c8e1789a5ca|缺陷]] 和 [[task:01a1f3fe-c18e-709d-9f2e-075ea5bf3165]]，未知 [[other:x]]",
+            "见 [[issue:01a1f3fe-909a-735b-bab8-8c8e1789a5ca|缺陷]] 和 [[task:01a1f3fe-c18e-709d-9f2e-075ea5bf3165]]，概念 [[concept:concepts/agent/agent|智能体]]，未知 [[other:x]]",
             &store,
             &catalog,
             uuid::Uuid::nil(),
@@ -1509,6 +1891,9 @@ mod tests {
         );
         assert!(out.contains("[缺陷](/issues/01a1f3fe-909a-735b-bab8-8c8e1789a5ca)"));
         assert!(out.contains("[Task 01a1f3fe-c18e-709d-9f2e-075ea5bf3165](/tasks/01a1f3fe-c18e-709d-9f2e-075ea5bf3165)"));
+        assert!(out.contains(
+            "[智能体](/projects/00000000-0000-0000-0000-000000000000/design-space/elements/"
+        ));
         assert!(out.contains("[[other:x]]"));
     }
 

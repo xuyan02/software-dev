@@ -51,6 +51,8 @@ impl IssueKind {
 pub enum IssueStatus {
     /// Reported, not yet acted on.
     Open,
+    /// Triaged and waiting in a work pool.
+    Pooled,
     /// Work is underway.
     InProgress,
     /// Delivered, awaiting confirmation.
@@ -67,8 +69,9 @@ impl IssueStatus {
     pub fn allowed_transitions(self) -> &'static [IssueStatus] {
         use IssueStatus::*;
         match self {
-            Open => &[InProgress, Resolved, Rejected, Duplicate],
-            InProgress => &[Resolved, Rejected],
+            Open => &[Pooled, InProgress, Resolved, Rejected, Duplicate],
+            Pooled => &[Pooled, InProgress, Open, Resolved, Rejected, Duplicate],
+            InProgress => &[Pooled, Resolved, Rejected],
             Resolved => &[Closed, InProgress],
             Closed => &[Open],
             Rejected => &[Open],
@@ -83,6 +86,7 @@ impl IssueStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::Pooled => "pooled",
             Self::InProgress => "in_progress",
             Self::Resolved => "resolved",
             Self::Closed => "closed",
@@ -95,6 +99,24 @@ impl IssueStatus {
 impl StateMachine for IssueStatus {
     fn can_transition_to(self, next: Self) -> bool {
         self.allowed_transitions().contains(&next)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IssuePool {
+    Design,
+    Development,
+    Requirements,
+}
+
+impl IssuePool {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Design => "design",
+            Self::Development => "development",
+            Self::Requirements => "requirements",
+        }
     }
 }
 
@@ -194,6 +216,8 @@ pub struct TransitionEvidence {
     pub resolution: Option<String>,
     /// Required for Duplicate.
     pub duplicate_of: Option<Uuid>,
+    /// Required for Pooled; the pool the Issue waits in.
+    pub pool: Option<IssuePool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -284,6 +308,9 @@ pub struct Issue {
     pub description: String,
     pub kind: IssueKind,
     pub status: IssueStatus,
+    /// The work pool an Issue waits in while `status` is `Pooled`.
+    #[serde(default)]
+    pub pool: Option<IssuePool>,
     pub source: IssueSource,
     pub reporter: Actor,
     #[serde(default)]
@@ -343,6 +370,7 @@ impl Issue {
             description: description.into(),
             kind,
             status: IssueStatus::Open,
+            pool: None,
             source,
             reporter,
             assignee: None,
@@ -439,6 +467,13 @@ impl Issue {
                     ));
                 }
             }
+            IssueStatus::Pooled => {
+                if evidence.pool.is_none() {
+                    return Err(IssueTransitionError::NotReady(
+                        "a pool is required".to_string(),
+                    ));
+                }
+            }
             IssueStatus::Closed => {
                 if self.resolution.is_none() {
                     return Err(IssueTransitionError::NotReady(
@@ -451,17 +486,25 @@ impl Issue {
 
         let from = self.status;
         match next {
+            IssueStatus::Pooled => {
+                self.pool = evidence.pool;
+            }
             IssueStatus::Resolved | IssueStatus::Rejected => {
                 self.resolution = resolution.clone();
+                self.pool = None;
             }
             IssueStatus::Duplicate => {
                 self.duplicate_of = evidence.duplicate_of;
+                self.pool = None;
             }
             IssueStatus::Open => {
                 self.resolution = None;
                 self.duplicate_of = None;
+                self.pool = None;
             }
-            _ => {}
+            IssueStatus::InProgress | IssueStatus::Closed => {
+                self.pool = None;
+            }
         }
 
         self.status = next;
@@ -506,6 +549,42 @@ mod tests {
         let issue = issue();
         assert_eq!(issue.status, IssueStatus::Open);
         assert_eq!(issue.version, 1);
+    }
+
+    #[test]
+    fn pooled_requires_a_pool_and_clears_on_progress() {
+        let mut issue = issue();
+        let error = issue
+            .transition_to(
+                IssueStatus::Pooled,
+                &Actor::human("triager"),
+                TransitionEvidence::default(),
+            )
+            .expect_err("pooled without a pool must fail");
+        assert!(matches!(error, IssueTransitionError::NotReady(_)));
+
+        issue
+            .transition_to(
+                IssueStatus::Pooled,
+                &Actor::human("triager"),
+                TransitionEvidence {
+                    pool: Some(IssuePool::Design),
+                    ..TransitionEvidence::default()
+                },
+            )
+            .expect("open -> pooled");
+        assert_eq!(issue.status, IssueStatus::Pooled);
+        assert_eq!(issue.pool, Some(IssuePool::Design));
+
+        issue
+            .transition_to(
+                IssueStatus::InProgress,
+                &Actor::agent("designer", "designer"),
+                TransitionEvidence::default(),
+            )
+            .expect("pooled -> in_progress");
+        assert_eq!(issue.status, IssueStatus::InProgress);
+        assert!(issue.pool.is_none());
     }
 
     #[test]
@@ -574,6 +653,7 @@ mod tests {
                 TransitionEvidence {
                     resolution: Some("fixed".to_string()),
                     duplicate_of: None,
+                    pool: None,
                 },
             )
             .unwrap();

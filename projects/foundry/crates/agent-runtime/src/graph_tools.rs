@@ -120,8 +120,7 @@ fn loggable(arguments: &Value) -> String {
     while let Some(index) = rest.find("://") {
         let (before, after) = rest.split_at(index + 3);
         out.push_str(before);
-        let stop = after
-            .find(['@', '/', '"', ' ', '\n']);
+        let stop = after.find(['@', '/', '"', ' ', '\n']);
         match stop {
             Some(at) if after.as_bytes()[at] == b'@' => {
                 out.push_str("***@");

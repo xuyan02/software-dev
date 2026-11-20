@@ -569,6 +569,8 @@ pub struct TransitionIssueRequest {
     pub resolution: Option<String>,
     #[serde(default)]
     pub duplicate_of: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub pool: Option<foundry_domain::IssuePool>,
 }
 
 impl TransitionIssueRequest {
@@ -586,6 +588,7 @@ impl TransitionIssueRequest {
             expected_version: self.expected_version,
             resolution: self.resolution,
             duplicate_of: self.duplicate_of,
+            pool: self.pool,
         }
     }
 }
@@ -734,6 +737,7 @@ impl IssueTransitionForm {
             expected_version: None,
             resolution: optional_text(&self.resolution),
             duplicate_of,
+            pool: None,
         })
     }
 }
@@ -818,6 +822,7 @@ pub fn parse_issue_severity(value: &str) -> Option<IssueSeverity> {
 
 pub fn parse_issue_status(value: &str) -> IssueStatus {
     match value {
+        "pooled" => IssueStatus::Pooled,
         "in_progress" => IssueStatus::InProgress,
         "resolved" => IssueStatus::Resolved,
         "closed" => IssueStatus::Closed,
@@ -1284,6 +1289,9 @@ pub struct SpawnChildTaskRequest {
     pub description: String,
     #[serde(default)]
     pub input: serde_json::Value,
+    /// Indices of earlier tasks in this batch that must complete first.
+    #[serde(default)]
+    pub depends_on: Vec<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]

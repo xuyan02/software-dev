@@ -18,19 +18,36 @@
 工作区：
 
 ```bash
-export DS_TOKEN_FILE=/run/foundry/ds-token
 GIT_HOME=/work/<project-id>/.credentials/git
 export HOME=$GIT_HOME
 export GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig
 export GIT_TERMINAL_PROMPT=0
 ```
 
-代码和设计空间：
+设计空间工作区：
 
 ```text
-/work/<project-id>/repo
 /work/<project-id>/ds
 ```
+
+缺失时创建：
+
+```bash
+ds clone <design_space_url> --source <git_repository> --branch source --dir /work/<project-id>/ds
+```
+
+源码由设计空间管理，不需要另建 git checkout：
+
+```bash
+ds source fetch
+ds source ls
+ds source cat <path>
+ds source sync      # 生成 files/ 对象
+```
+
+`design_space_url`（`ssh://.../<project-id>`）只接受 `ds` 协议。不要对它使用
+`git clone`、`git fetch` 或 `git push`；服务端会拒绝，主机密钥也不在 Git 的
+`known_hosts` 里。设计空间的凭证由 `ds` 自己读取，不需要环境变量或 `-i` 参数。
 
 任务 input 可以包含 `scope`（文件、目录、模块或 DS qname）。没有 scope 时检查项目全量。
 
@@ -98,8 +115,10 @@ export GIT_TERMINAL_PROMPT=0
 先判断代码和设计空间：
 
 ```bash
-# 代码是否存在
-git -C /work/<project-id>/repo ls-files
+# 代码是否存在、阅读源码
+ds source fetch
+ds source ls
+ds source cat <path>
 
 # 设计空间是否为空
 ds structure list

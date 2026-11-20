@@ -139,6 +139,12 @@ pub enum Kind {
     DesignStructure = 0x14,
     System = 0x15,
     Module = 0x16,
+    ConceptDirectory = 0x17,
+    Concept = 0x18,
+    Layer = 0x19,
+    Block = 0x1A,
+    MermaidBlock = 0x1B,
+    HtmlBlock = 0x1C,
 }
 
 impl Kind {
@@ -165,6 +171,12 @@ impl Kind {
             0x14 => Self::DesignStructure,
             0x15 => Self::System,
             0x16 => Self::Module,
+            0x17 => Self::ConceptDirectory,
+            0x18 => Self::Concept,
+            0x19 => Self::Layer,
+            0x1A => Self::Block,
+            0x1B => Self::MermaidBlock,
+            0x1C => Self::HtmlBlock,
             _ => return None,
         })
     }
@@ -244,6 +256,7 @@ pub struct ViewPayload {
     pub namespaces: ObjectHash,
     pub design: ObjectHash,
     pub documents: ObjectHash,
+    pub concepts: ObjectHash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,6 +441,82 @@ pub struct DocumentTopicPayload {
     pub comments: Vec<DocComment>,
 }
 
+/// A fenced code block inside a document section or topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    /// Markdown fence info string, for example `rust` or `mermaid`. Empty for
+    /// a plain block.
+    pub language: String,
+    /// Code text. May contain newlines.
+    pub text: String,
+    pub comments: Vec<DocComment>,
+}
+
+/// A Mermaid diagram inside a document section or topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MermaidBlockPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    /// Mermaid source text. May contain newlines.
+    pub text: String,
+    pub comments: Vec<DocComment>,
+}
+
+/// An HTML/SVG preview inside a document section or topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlBlockPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    /// Raw HTML or SVG source. May contain newlines. Rendered in a sandboxed
+    /// iframe; scripts and external resources are not available.
+    pub text: String,
+    pub comments: Vec<DocComment>,
+}
+
+/// A directory in the concept space.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConceptDirectoryPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: ParentRef,
+    pub children: Vec<ObjectHash>,
+}
+
+/// A defined concept: one technical term and its meaning.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConceptPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    /// The term shown to readers, for example `智能体`.
+    pub name: String,
+    /// One-sentence definition.
+    pub summary: String,
+    /// What the concept is, in more detail.
+    pub explanation: String,
+    /// Attributes, states, related workflows, and other characteristics.
+    pub characteristics: Vec<String>,
+    /// Relationships and differences with other concepts.
+    pub relations: Vec<String>,
+    /// Other names for the same concept.
+    pub aliases: Vec<String>,
+}
+
+/// A layer inside a System or Module. Layers are ordered; only adjacent
+/// layers may depend on each other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: SymbolHash,
+    pub title: String,
+    /// 1-based position among the sibling layers of `parent`.
+    pub order: u32,
+    pub document: SymbolHash,
+    /// Top-level code elements directly in the layer.
+    pub members: Vec<SymbolHash>,
+    pub children: Vec<ObjectHash>,
+}
+
 /// Root of the logical design structure. Its children are systems.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesignStructurePayload {
@@ -485,6 +574,12 @@ pub enum ObjectPayload {
     DesignStructure(DesignStructurePayload),
     System(SystemPayload),
     Module(ModulePayload),
+    ConceptDirectory(ConceptDirectoryPayload),
+    Concept(ConceptPayload),
+    Layer(LayerPayload),
+    Block(BlockPayload),
+    MermaidBlock(MermaidBlockPayload),
+    HtmlBlock(HtmlBlockPayload),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,6 +616,12 @@ impl DesignObject {
             ObjectPayload::DesignStructure(_) => Kind::DesignStructure,
             ObjectPayload::System(_) => Kind::System,
             ObjectPayload::Module(_) => Kind::Module,
+            ObjectPayload::ConceptDirectory(_) => Kind::ConceptDirectory,
+            ObjectPayload::Concept(_) => Kind::Concept,
+            ObjectPayload::Layer(_) => Kind::Layer,
+            ObjectPayload::Block(_) => Kind::Block,
+            ObjectPayload::MermaidBlock(_) => Kind::MermaidBlock,
+            ObjectPayload::HtmlBlock(_) => Kind::HtmlBlock,
         }
     }
 

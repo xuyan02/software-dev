@@ -65,7 +65,10 @@ impl Tool for ProjectTool {
                     .get_project()
                     .await
                     .map_err(|error| ToolError::Failed(error.to_string()))?;
-                let members = detail.get("members").cloned().unwrap_or(Value::Array(Vec::new()));
+                let members = detail
+                    .get("members")
+                    .cloned()
+                    .unwrap_or(Value::Array(Vec::new()));
                 let content = serde_json::to_string_pretty(&members)
                     .map_err(|error| ToolError::Failed(error.to_string()))?;
                 Ok(ToolOutput::success(content))

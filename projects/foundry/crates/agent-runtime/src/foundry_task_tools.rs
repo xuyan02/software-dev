@@ -671,7 +671,11 @@ impl Tool for TaskSpawnChildrenTool {
                                 "workflow": { "type": "string" },
                                 "title": { "type": "string" },
                                 "description": { "type": "string" },
-                                "input": { "type": "object" }
+                                "input": { "type": "object" },
+                                "depends_on": {
+                                    "type": "array",
+                                    "items": { "type": "integer", "minimum": 0 }
+                                }
                             }
                         }
                     }
@@ -718,9 +722,8 @@ impl Tool for TaskCreateFollowUpTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "task_create_follow_up".to_string(),
-            description: "Create a design follow-up task under the project root. \
-                          The task depends on the current triage task, so it cannot start \
-                          until triage finishes, and it becomes the Issue's active task."
+            description: "Create a design follow-up task under the project root and make it \
+                          the Issue's active task."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -730,7 +733,7 @@ impl Tool for TaskCreateFollowUpTool {
                     "issue_id": { "type": "string", "format": "uuid" },
                     "workflow": {
                         "type": "string",
-                        "enum": ["design_baseline", "design_correction", "design_rework"]
+                        "enum": ["design_baseline", "design_correction", "design"]
                     },
                     "title": { "type": "string" },
                     "description": { "type": "string" },

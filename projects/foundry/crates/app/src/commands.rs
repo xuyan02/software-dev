@@ -1,5 +1,5 @@
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssueSeverity, IssueSource,
+    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssuePool, IssueSeverity, IssueSource,
     IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId, WorkflowLayout,
     WorkflowVersionRef,
 };
@@ -157,4 +157,5 @@ pub struct TransitionIssue {
     pub expected_version: Option<u32>,
     pub resolution: Option<String>,
     pub duplicate_of: Option<uuid::Uuid>,
+    pub pool: Option<IssuePool>,
 }

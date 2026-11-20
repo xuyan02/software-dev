@@ -23,6 +23,16 @@ pub(crate) const MAX_TRANSFER: usize = 256 * 1024 * 1024;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The agent capsule installs the design-space key here. `ds` reads these
+/// files directly; no environment variable or per-command setup is involved.
+const SSH_KEY_PATH: &str = "/run/foundry/ds_key";
+const SSH_KNOWN_HOSTS_PATH: &str = "/run/foundry/ds_known_hosts";
+
+fn installed_file(path: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(path);
+    path.is_file().then_some(path)
+}
+
 #[derive(Debug)]
 pub enum Remote {
     Local(LocalRemote),
@@ -47,6 +57,8 @@ pub struct SshRemote {
     target: String,
     port: Option<u16>,
     root: String,
+    key_file: Option<PathBuf>,
+    known_hosts: Option<PathBuf>,
 }
 
 impl Remote {
@@ -279,7 +291,15 @@ impl SshRemote {
             Some(user) => format!("{user}@{ssh_host}"),
             None => ssh_host,
         };
-        Ok(Self { target, port, root })
+        let key_file = installed_file(SSH_KEY_PATH);
+        let known_hosts = installed_file(SSH_KNOWN_HOSTS_PATH);
+        Ok(Self {
+            target,
+            port,
+            root,
+            key_file,
+            known_hosts,
+        })
     }
 
     fn url(&self) -> String {
@@ -339,6 +359,19 @@ impl SshSession {
         if let Some(port) = remote.port {
             command.args(["-p", &port.to_string()]);
         }
+        if let Some(key) = &remote.key_file {
+            command.arg("-i").arg(key);
+            command.args(["-o", "IdentitiesOnly=yes"]);
+        }
+        if let Some(known_hosts) = &remote.known_hosts {
+            command.args([
+                "-o",
+                &format!("UserKnownHostsFile={}", known_hosts.display()),
+                "-o",
+                "StrictHostKeyChecking=yes",
+            ]);
+        }
+        command.args(["-o", "BatchMode=yes"]);
         command.arg(&remote.target);
         command.arg(format!(
             "ds-server --stdio --root {}",

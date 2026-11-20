@@ -166,6 +166,7 @@ where
                 TransitionEvidence {
                     resolution: command.resolution,
                     duplicate_of: command.duplicate_of,
+                    pool: command.pool,
                 },
             )
             .map_err(|error| ServiceError::InvalidTransition(error.to_string()))?;

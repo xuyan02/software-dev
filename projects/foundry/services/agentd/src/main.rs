@@ -13,13 +13,14 @@ use foundry_adapter_postgres::{
 };
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    FoundryClient, IssueCommentTool, IssueCreateTool, IssueGetTool, IssueListTool,
-    IssueTransitionTool, IssueTriageBatchTool, IssueTriageResultTool, MergeRequestTool,
-    ProjectTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool, TaskAllowedOperationsTool,
-    TaskAssignAgentTool, TaskBindActorTool, TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool,
-    TaskHistoryTool, TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool,
-    TaskSpawnChildrenTool, TaskStartTool, TasksReadyListTool, ToolError, ToolRegistry,
-    TriggerCreateTool, TriggerListTool, compose_system_prompt,
+    DesignPoolBatchTool, DevelopmentPoolBatchTool, FoundryClient, IssueCommentTool,
+    IssueCreateTool, IssueGetTool, IssueListTool, IssueTransitionTool, IssueTriageBatchTool,
+    IssueTriageResultTool, MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool,
+    TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool,
+    TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool, TaskHistoryTool, TaskLinksListTool,
+    TaskOperationTool, TaskRemoveLinkTool, TaskSpawnChildrenTool, TaskStartTool,
+    TasksReadyListTool, ToolError, ToolRegistry, TriggerCreateTool, TriggerListTool,
+    compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
 use graph_agent::{
@@ -113,17 +114,15 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let shell = if definition.shell {
-        Some(create_shell(&config).await?)
+        let shell = create_shell(&config).await?;
+        install_ds_credential(&config, &definition, &shell).await?;
+        Some(shell)
     } else {
         None
     };
 
     if definition.role == "dispatcher" {
         run_dispatcher_watcher(Arc::clone(&store), &config, &definition, model, shell).await?;
-        return Ok(());
-    }
-    if definition.role == "triage_check:checker" {
-        run_triage_check_watcher(Arc::clone(&store), &config, &definition).await?;
         return Ok(());
     }
 
@@ -139,10 +138,62 @@ async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
             workspace.display()
         )
     })?;
-    let capsule =
-        LinuxCapsule::headless_with_image_and_workspace(config.shell_image.clone(), workspace)
-            .await?;
+    let capsule = LinuxCapsule::headless_with_image_workspace_and_labels(
+        config.shell_image.clone(),
+        workspace,
+        vec![("foundry.agent_id".to_string(), config.agent_id.to_string())],
+    )
+    .await?;
     Ok(Arc::new(CapsuleShell { capsule }))
+}
+
+const DS_KEY_PATH: &str = "/run/foundry/ds_key";
+const DS_KNOWN_HOSTS_PATH: &str = "/run/foundry/ds_known_hosts";
+
+/// Install the account's design-space key once, for the shell's lifetime.
+/// The key is the agent's, not the task's, so task cleanup leaves it alone.
+async fn install_ds_credential(
+    config: &Config,
+    definition: &AgentDefinition,
+    shell: &Arc<dyn Shell>,
+) -> anyhow::Result<()> {
+    let client = FoundryClient::new(
+        &config.foundry_url,
+        &config.foundry_token,
+        definition.project_id.to_string(),
+    );
+    let credential = client
+        .agent_ds_credential(definition.id)
+        .await
+        .map_err(|error| anyhow::anyhow!("cannot fetch design-space credential: {error}"))?;
+    let private_key = credential
+        .get("private_key")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("design-space credential has no private key"))?;
+    let known_hosts = credential
+        .get("known_hosts")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("design-space credential has no known_hosts"))?;
+
+    shell_ok(
+        shell,
+        "mkdir -p /run/foundry && chmod 700 /run/foundry".to_string(),
+    )
+    .await?;
+    upload_text(shell, DS_KEY_PATH, &format!("{}\n", private_key.trim_end())).await?;
+    upload_text(shell, DS_KNOWN_HOSTS_PATH, known_hosts).await?;
+    shell_ok(
+        shell,
+        format!(
+            "chmod 600 {} {}",
+            shell_quote(DS_KEY_PATH),
+            shell_quote(DS_KNOWN_HOSTS_PATH)
+        ),
+    )
+    .await?;
+    Ok(())
 }
 
 struct CapsuleShell {
@@ -159,15 +210,14 @@ impl Shell for CapsuleShell {
     }
 
     async fn exec(&self, command: &str) -> Result<ShellOutput, ToolError> {
-        let command = format!("export DS_TOKEN_FILE=/run/foundry/ds-token; {command}");
         tracing::info!(
             target: "foundry_agentd::shell",
-            command = %truncate_log_line(&redact_credentials(&command)),
+            command = %truncate_log_line(&redact_credentials(command)),
             "shell command started"
         );
         let output = self
             .capsule
-            .exec_streaming(&command, |_stream, line| {
+            .exec_streaming(command, |_stream, line| {
                 if !line.is_empty() {
                     tracing::info!(target: "foundry_agentd::shell", "{}", truncate_log_line(line));
                 }
@@ -209,6 +259,14 @@ async fn run_agent_watcher(
                 continue;
             }
         };
+        let mut issue_notifications = match listen_issue_changes(&config.database_url).await {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                tracing::warn!(error = %error, "cannot listen for issue changes; retrying");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
+        };
         loop {
             scan_assigned_tasks(
                 Arc::clone(&store),
@@ -217,6 +275,7 @@ async fn run_agent_watcher(
                 Arc::clone(&model),
                 shell.clone(),
                 &mut handled,
+                false,
             )
             .await;
             tokio::select! {
@@ -226,12 +285,29 @@ async fn run_agent_watcher(
                         break;
                     }
                 }
+                received = issue_notifications.recv() => {
+                    if received.is_none() {
+                        tracing::warn!("issue change listener closed; reconnecting");
+                        break;
+                    }
+                    scan_assigned_tasks(
+                        Arc::clone(&store),
+                        config,
+                        definition,
+                        Arc::clone(&model),
+                        shell.clone(),
+                        &mut handled,
+                        true,
+                    )
+                    .await;
+                }
                 _ = tokio::signal::ctrl_c() => return Ok(()),
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
             // One scan sees every current assignment, so merge a burst of
             // notifications instead of scanning once per event.
             while notifications.try_recv().is_ok() {}
+            while issue_notifications.try_recv().is_ok() {}
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -252,6 +328,7 @@ async fn scan_assigned_tasks(
     model: Arc<OpenAiCompatibleModel>,
     shell: Option<Arc<dyn Shell>>,
     handled: &mut HashMap<Uuid, TaskFingerprint>,
+    wake_triage: bool,
 ) {
     let tasks = match store.assigned_active_tasks(definition.id).await {
         Ok(tasks) => tasks,
@@ -267,7 +344,9 @@ async fn scan_assigned_tasks(
             updated_at: task.updated_at.unix_timestamp_nanos(),
             last_human_comment_id: task.last_human_comment_id,
         };
-        if handled.get(&task.task_id) == Some(&fingerprint) {
+        if !(wake_triage && task.workflow == "triage")
+            && handled.get(&task.task_id) == Some(&fingerprint)
+        {
             continue;
         }
         handled.insert(task.task_id, fingerprint);
@@ -279,160 +358,6 @@ async fn scan_assigned_tasks(
         }
         let _ = store.agent_process_idle(config.agent_id).await;
     }
-}
-
-/// Triage check mode: a code-driven coordinator that watches the project's
-/// `triage_check` task and starts a `triage` child when Issues need attention.
-async fn run_triage_check_watcher(
-    store: Arc<PostgresStore>,
-    config: &Config,
-    definition: &AgentDefinition,
-) -> anyhow::Result<()> {
-    let client = Arc::new(FoundryClient::new(
-        &config.foundry_url,
-        &config.foundry_token,
-        definition.project_id.to_string(),
-    ));
-    let mut task_changes = listen_task_changes(&config.database_url).await?;
-    let mut issue_changes = listen_issue_changes(&config.database_url).await?;
-    loop {
-        let _ = store.agent_process_busy(config.agent_id).await;
-        match triage_check_once(&client).await {
-            Ok(()) => {}
-            Err(error) => tracing::warn!(error = %error, "triage check sweep failed"),
-        }
-        let _ = store.agent_process_idle(config.agent_id).await;
-        tokio::select! {
-            _ = task_changes.recv() => {}
-            _ = issue_changes.recv() => {}
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-        }
-        while task_changes.try_recv().is_ok() {}
-        while issue_changes.try_recv().is_ok() {}
-    }
-}
-
-async fn triage_check_once(client: &FoundryClient) -> anyhow::Result<()> {
-    let Some(task) = find_check_task(client).await? else {
-        return Ok(());
-    };
-    if task.get("state").and_then(Value::as_str) != Some("in_progress") {
-        return Ok(());
-    }
-    let task_id = task
-        .get("id")
-        .and_then(Value::as_str)
-        .and_then(|id| id.parse::<Uuid>().ok())
-        .ok_or_else(|| anyhow::anyhow!("triage_check task has no id"))?;
-    let stage = task.get("stage").and_then(Value::as_str).unwrap_or("");
-    let pending = pending_issue_count(client).await?;
-    match stage {
-        "check" => {
-            if pending == 0 {
-                client
-                    .send_task_operation(task_id, "check:no_issues", "triage-check-no-issues")
-                    .await?;
-            } else {
-                if let Some(failed) = find_failed_triage_child(client, task_id).await? {
-                    client.retry_task(failed).await?;
-                } else if !has_active_triage_child(client, task_id).await? {
-                    client
-                        .spawn_task_children(
-                            task_id,
-                            json!([{
-                                "workflow": "triage",
-                                "title": "分诊",
-                                "description": "处理当前待分诊 Issue：分类、合并重复并创建后续任务。",
-                                "input": {}
-                            }]),
-                            false,
-                        )
-                        .await?;
-                }
-                client
-                    .send_task_operation(task_id, "check:has_issues", "triage-check-has-issues")
-                    .await?;
-            }
-        }
-        "waiting_issue" => {
-            if pending > 0 {
-                client
-                    .send_task_operation(
-                        task_id,
-                        "waiting_issue:issue_arrived",
-                        "triage-check-issue",
-                    )
-                    .await?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-async fn find_check_task(client: &FoundryClient) -> anyhow::Result<Option<Value>> {
-    let tasks = client.list_tasks(None, "").await?;
-    Ok(tasks
-        .as_array()
-        .and_then(|tasks| {
-            tasks.iter().find(|task| {
-                task.get("workflow").and_then(Value::as_str) == Some("triage_check")
-                    && !matches!(
-                        task.get("state").and_then(Value::as_str),
-                        Some("completed" | "failed")
-                    )
-            })
-        })
-        .cloned())
-}
-
-async fn has_active_triage_child(
-    client: &FoundryClient,
-    check_task_id: Uuid,
-) -> anyhow::Result<bool> {
-    let tasks = client.list_tasks(None, "").await?;
-    let expected = check_task_id.to_string();
-    Ok(tasks.as_array().is_some_and(|tasks| {
-        tasks.iter().any(|task| {
-            task.get("workflow").and_then(Value::as_str) == Some("triage")
-                && task.get("parent_id").and_then(Value::as_str) == Some(expected.as_str())
-                && matches!(
-                    task.get("state").and_then(Value::as_str),
-                    Some("pending" | "in_progress")
-                )
-        })
-    }))
-}
-
-async fn find_failed_triage_child(
-    client: &FoundryClient,
-    check_task_id: Uuid,
-) -> anyhow::Result<Option<Uuid>> {
-    let tasks = client.list_tasks(None, "").await?;
-    let expected = check_task_id.to_string();
-    Ok(tasks.as_array().and_then(|tasks| {
-        tasks.iter().find_map(|task| {
-            let is_triage = task.get("workflow").and_then(Value::as_str) == Some("triage");
-            let is_child = task.get("parent_id").and_then(Value::as_str) == Some(expected.as_str());
-            let failed = task.get("state").and_then(Value::as_str) == Some("failed");
-            if is_triage && is_child && failed {
-                task.get("id")
-                    .and_then(Value::as_str)
-                    .and_then(|id| id.parse::<Uuid>().ok())
-            } else {
-                None
-            }
-        })
-    }))
-}
-
-async fn pending_issue_count(client: &FoundryClient) -> anyhow::Result<usize> {
-    let batch = client.issue_triage_batch().await?;
-    Ok(batch
-        .get("pending")
-        .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0))
 }
 
 /// Dispatcher mode: sweep the task pool on startup and after every task change.
@@ -592,9 +517,37 @@ async fn dispatch_once(
                             title = %title,
                             role = %role_key,
                             error = %error,
-                            "cannot assign the agent required by a role"
+                            "cached agent could not be assigned; creating a fresh one"
                         );
-                        complete = false;
+                        // The cached agent may already be busy on another task.
+                        // Create a fresh agent for this task and retry once.
+                        match create_agent(client, task_id, &role_key).await {
+                            Ok(created) => {
+                                assigned_agents.insert(role_key.clone(), created);
+                                if let Err(error) =
+                                    client.assign_agent(task_id, &role_key, created).await
+                                {
+                                    tracing::warn!(
+                                        task_id = %task_id,
+                                        title = %title,
+                                        role = %role_key,
+                                        error = %error,
+                                        "cannot assign a fresh agent for a role"
+                                    );
+                                    complete = false;
+                                }
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    title = %title,
+                                    role = %role_key,
+                                    error = %error,
+                                    "cannot create a fresh agent for a busy role"
+                                );
+                                complete = false;
+                            }
+                        }
                     }
                 }
                 "human" => {
@@ -1124,29 +1077,6 @@ async fn inject_task_credentials(
         upload_text(shell, &format!("{git_dir}/url"), url).await?;
     }
 
-    if let Some(ds) = credentials
-        .get("design_space")
-        .filter(|value| !value.is_null())
-    {
-        if let Some(url) = ds.get("url").and_then(Value::as_str)
-            && !url.is_empty()
-        {
-            upload_text(shell, &format!("{root}/ds-url"), url).await?;
-        }
-        if let Some(token) = ds.get("token").and_then(Value::as_str)
-            && !token.is_empty()
-        {
-            shell_ok(
-                shell,
-                "mkdir -p /run/foundry && chmod 700 /run/foundry".to_string(),
-            )
-            .await?;
-            upload_text(shell, "/run/foundry/ds-token", &format!("{token}\n")).await?;
-            shell_ok(shell, "chmod 600 /run/foundry/ds-token".to_owned()).await?;
-            upload_text(shell, &format!("{root}/ds-token"), &format!("{token}\n")).await?;
-        }
-    }
-
     shell_ok(
         shell,
         format!(
@@ -1163,7 +1093,7 @@ async fn clear_task_credentials(shell: Option<&Arc<dyn Shell>>, project_id: Uuid
     if let Some(shell) = shell {
         let _ = shell
             .exec(&format!(
-                "rm -rf {} /run/foundry/ds-token",
+                "rm -rf {}",
                 shell_quote(&format!("/work/{project_id}/.credentials"))
             ))
             .await;
@@ -1228,6 +1158,8 @@ fn build_runtime(
             )
         })?;
         Ok(AgentRuntime::new_codesummary(model, Arc::new(tools), shell))
+    } else if definition.role == "daily_check:dispatcher" {
+        Ok(AgentRuntime::new_daily_check(model, Arc::new(tools)))
     } else {
         Ok(AgentRuntime::new(model, Arc::new(tools)))
     }
@@ -1296,6 +1228,12 @@ fn build_tools(
             }
             "issue_triage_batch" => {
                 tools.register(Arc::new(IssueTriageBatchTool::new(Arc::clone(client))));
+            }
+            "design_pool_batch" => {
+                tools.register(Arc::new(DesignPoolBatchTool::new(Arc::clone(client))));
+            }
+            "development_pool_batch" => {
+                tools.register(Arc::new(DevelopmentPoolBatchTool::new(Arc::clone(client))));
             }
             "issue_transition" => {
                 tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));

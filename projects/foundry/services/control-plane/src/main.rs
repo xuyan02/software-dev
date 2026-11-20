@@ -20,12 +20,13 @@ use foundry_adapter_postgres::{
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
     AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
-    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, ProjectFilter,
-    ProjectRepository, ProjectService, RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
-    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TriggerService,
+    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, NewTask,
+    ProjectFilter, ProjectRepository, ProjectService, ProjectUseCases, RequirementsDocumentService,
+    RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskFilter, TaskLinkService,
+    TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TaskViewer, TriggerService,
     TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
-use foundry_domain::OperationName;
+use foundry_domain::{OperationName, TaskState};
 use foundry_shared::{AgentLogFiles, Config};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,9 +35,10 @@ use std::time::Duration;
 mod agent_admin;
 mod agent_credentials;
 mod design_space;
-mod remote_design_space;
+mod ds_ssh;
 mod github_app;
 mod platform_agents;
+mod project_purge;
 mod supervisor;
 
 #[tokio::main]
@@ -69,69 +71,41 @@ async fn main() -> anyhow::Result<()> {
 
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
-    let (
-        local_design_space,
-        design_space_base,
-        design_space_agent_base,
-        design_space_root,
-        design_space_token,
-        design_space_agent_token,
-    ) = match &config.design_space_url {
-        Some(url) => {
-            let agent_base = config
-                .design_space_agent_url
-                .clone()
-                .unwrap_or_else(|| url.clone());
-            let admin_token = design_space::read_token(&config.design_space_token_file);
-            let agent_token = design_space::read_token(&design_space::agent_token_file(
-                &config.design_space_token_file,
-            ));
-            if agent_token.is_none() {
-                tracing::warn!(
-                    path = %design_space::agent_token_file(&config.design_space_token_file).display(),
-                    "design-space agent token is missing; agents will not be able to write the design space"
-                );
-            }
-            (
-                None,
-                url.clone(),
-                agent_base,
-                None,
-                admin_token,
-                agent_token,
-            )
-        }
-        None => {
-            let (child, base, port, admin_token, agent_token) = design_space::start_local(
-                config.design_space_root.clone(),
-                config.design_space_listen.clone(),
-                config.design_space_token_file.clone(),
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error))?;
-            let agent_base = config
-                .design_space_agent_url
-                .clone()
-                .unwrap_or_else(|| format!("http://{}:{port}", design_space::host_ip()));
-            tracing::info!(url = %base, agent_url = %agent_base, "started local ds-server");
-            (
-                Some(child),
-                base,
-                agent_base,
-                Some(config.design_space_root.clone()),
-                Some(admin_token),
-                Some(agent_token),
-            )
-        }
-    };
+    let (local_design_space, design_space_base, design_space_port, design_space_token) =
+        design_space::start_local(
+            config.design_space_root.clone(),
+            config.design_space_listen.clone(),
+            config.design_space_token_file.clone(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
+    let design_space_ssh_base = config
+        .design_space_ssh_url
+        .clone()
+        .unwrap_or_else(|| format!("ssh://root@{}:2222", design_space::host_ip()));
+    tracing::info!(
+        url = %design_space_base,
+        ssh = %design_space_ssh_base,
+        port = design_space_port,
+        "started local ds-server"
+    );
     // Keep the child alive until the control plane exits. Dropping it kills
     // ds-server (`kill_on_drop`).
     let _local_design_space = local_design_space;
+    let ds_ssh = Arc::new(
+        ds_ssh::DsSsh::new(
+            &foundry_shared::default_foundry_dir(),
+            design_space_ssh_base.clone(),
+            store.pool().clone(),
+        )
+        .map_err(|error| anyhow::anyhow!(error))?,
+    );
+    migrate_design_space_urls(store.as_ref(), &design_space_ssh_base).await?;
     let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> =
         Arc::new(design_space::HttpDesignSpaceProvisioner::new(
             &design_space_base,
-            &design_space_agent_base,
-            design_space_token.clone(),
+            &design_space_ssh_base,
+            Some(design_space_token.clone()),
         ));
     let projects = Arc::new(ProjectService::new(
         Arc::clone(&store),
@@ -249,18 +223,10 @@ async fn main() -> anyhow::Result<()> {
             .clone()
             .unwrap_or_else(|| "qwen2.5-coder".to_string()),
     ));
-    let design_space_access =
-        design_space_root.map(|root| Arc::new(foundry_api_http::DesignSpaceAccess::new(root)));
-    let design_space_gateway: Arc<dyn DesignSpaceGateway> = match design_space_access.as_ref() {
-        Some(access) => access.clone(),
-        None => Arc::new(remote_design_space::RemoteDesignSpaceGateway::new(
-            &design_space_base,
-            design_space_token.clone(),
-            foundry_shared::default_config_path()
-                .and_then(|path| path.parent().map(|dir| dir.join("design-space-cache")))
-                .unwrap_or_else(|| std::env::temp_dir().join("foundry-design-space-cache")),
-        )),
-    };
+    let design_space_access = Arc::new(foundry_api_http::DesignSpaceAccess::new(
+        config.design_space_root.clone(),
+    ));
+    let design_space_gateway: Arc<dyn DesignSpaceGateway> = design_space_access.clone();
     let task_use_cases: Arc<dyn TaskUseCases> = tasks.clone();
     let merge_requests = Arc::new(MergeRequestService::new(
         Arc::clone(&store) as Arc<dyn MergeRequestRepository>,
@@ -287,6 +253,67 @@ async fn main() -> anyhow::Result<()> {
                         "cannot ensure default daily-check trigger"
                     );
                 }
+                if let Err(error) = triggers.ensure_design_iteration(project.id).await {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "cannot ensure default design-iteration trigger"
+                    );
+                }
+                if let Err(error) = triggers.ensure_development_iteration(project.id).await {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "cannot ensure default development-iteration trigger"
+                    );
+                }
+                if let Some(root_id) = project.root_task_id {
+                    match task_use_cases
+                        .list(project.id, TaskFilter::default(), TaskViewer::system())
+                        .await
+                    {
+                        Ok(tasks) => {
+                            let has_triage = tasks.iter().any(|task| {
+                                task.workflow.as_str() == "triage"
+                                    && !matches!(
+                                        task.state,
+                                        TaskState::Completed | TaskState::Failed
+                                    )
+                            });
+                            if !has_triage
+                                && let Some(owner) = project.members.iter().find(|member| {
+                                    member.role == foundry_domain::ProjectRole::Owner
+                                })
+                                && let Err(error) = task_use_cases
+                                    .create_task(
+                                        project.id,
+                                        NewTask {
+                                            parent_id: root_id,
+                                            workflow: "triage".to_string(),
+                                            title: "分诊".to_string(),
+                                            description: "常驻分诊任务。".to_string(),
+                                            input: serde_json::json!({}),
+                                        },
+                                        owner.account_id,
+                                    )
+                                    .await
+                            {
+                                tracing::warn!(
+                                    project_id = %project.id,
+                                    %error,
+                                    "cannot ensure the persistent triage task"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                project_id = %project.id,
+                                %error,
+                                "cannot list tasks to ensure the triage task"
+                            );
+                        }
+                    }
+                }
             }
         }
         Err(error) => {
@@ -298,14 +325,20 @@ async fn main() -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            if let Err(error) = scheduler
-                .run_due(time::OffsetDateTime::now_utc())
-                .await
-            {
+            if let Err(error) = scheduler.run_due(time::OffsetDateTime::now_utc()).await {
                 tracing::warn!(%error, "trigger scheduler sweep failed");
             }
         }
     });
+    let project_purger: Arc<dyn foundry_api_http::ProjectPurger> =
+        Arc::new(project_purge::ProjectPurger::new(
+            Arc::clone(&projects) as Arc<dyn ProjectUseCases>,
+            Arc::clone(&store),
+            Arc::clone(&supervisor),
+            config.design_space_root.clone(),
+            Arc::clone(&agent_logs),
+            Arc::clone(&ds_ssh),
+        ));
     let state = AppState {
         issues: Arc::new(issues),
         accounts,
@@ -325,12 +358,13 @@ async fn main() -> anyhow::Result<()> {
         ))),
         design_space: design_space_access,
         merge_requests,
+        project_purger: Some(project_purger),
     };
     let credentials = agent_credentials::CredentialState {
         auth: credential_auth,
         store: Arc::clone(&store),
         github,
-        ds_token: design_space_agent_token,
+        ssh: ds_ssh,
     };
     let app = foundry_api_http::router(state).merge(agent_credentials::router(credentials));
     tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));
@@ -564,4 +598,20 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             Err(error) => tracing::warn!(%error, "document review link release scan failed"),
         }
     }
+}
+
+/// Point every project at the local SSH transport. The repo name is the
+/// project id, so the stored URL only records the transport address.
+async fn migrate_design_space_urls(store: &PostgresStore, ssh_base: &str) -> anyhow::Result<()> {
+    let projects = ProjectRepository::list(store, ProjectFilter::default()).await?;
+    for mut project in projects {
+        let expected = format!("{ssh_base}/{}", project.id);
+        if project.design_space_url == expected {
+            continue;
+        }
+        let version = project.version;
+        project.design_space_url = expected;
+        ProjectRepository::save(store, &project, version).await?;
+    }
+    Ok(())
 }

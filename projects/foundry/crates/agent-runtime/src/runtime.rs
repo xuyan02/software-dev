@@ -4,7 +4,9 @@
 //! the model protocol, provider calls, tool loop and message history.
 
 use crate::graph_tools::adapt_registry;
-use crate::{ContextBundle, RunError, Shell, ToolRegistry, codesummary, design_baseline};
+use crate::{
+    ContextBundle, RunError, Shell, ToolRegistry, codesummary, daily_check, design_baseline,
+};
 use graph_agent::{
     Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmRuntime, ModelGateway,
     ModelProfileRef, NodeError, PromptTemplate, SkillError, SkillRegistry,
@@ -74,6 +76,7 @@ pub struct AgentRuntime {
 enum RuntimeMode {
     Generic,
     CodeSummary,
+    DailyCheck,
     DesignBaseline { state_dir: PathBuf },
 }
 
@@ -100,6 +103,15 @@ impl AgentRuntime {
         }
     }
 
+    pub fn new_daily_check(model: Arc<dyn ModelGateway>, tools: Arc<ToolRegistry>) -> Self {
+        Self {
+            model,
+            tools,
+            shell: None,
+            mode: RuntimeMode::DailyCheck,
+        }
+    }
+
     pub fn new_design_baseline(
         model: Arc<dyn ModelGateway>,
         tools: Arc<ToolRegistry>,
@@ -118,6 +130,11 @@ impl AgentRuntime {
         match &self.mode {
             RuntimeMode::Generic => self.run_generic(request).await,
             RuntimeMode::CodeSummary => self.run_codesummary(request).await,
+            RuntimeMode::DailyCheck => {
+                let tools = adapt_registry(&self.tools)
+                    .map_err(|error| RunError::Graph(format!("tool registry: {error}")))?;
+                daily_check::run(Arc::clone(&self.model), Arc::new(tools), request).await
+            }
             RuntimeMode::DesignBaseline { state_dir } => {
                 let tools = adapt_registry(&self.tools)
                     .map_err(|error| RunError::Graph(format!("tool registry: {error}")))?;

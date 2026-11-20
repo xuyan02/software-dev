@@ -380,6 +380,7 @@ impl FoundryClient {
         to: &str,
         resolution: Option<&str>,
         duplicate_of: Option<Uuid>,
+        pool: Option<&str>,
     ) -> Result<Value, FoundryError> {
         self.post(
             &format!(
@@ -390,6 +391,7 @@ impl FoundryClient {
                 "to": to,
                 "resolution": resolution,
                 "duplicate_of": duplicate_of,
+                "pool": pool,
             }),
             None,
         )
@@ -548,6 +550,21 @@ impl FoundryClient {
                 self.base_url.trim_end_matches('/')
             ),
             serde_json::json!({ "task_id": task_id }),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// The agent account's design-space key. It belongs to the agent, not to a
+    /// task, and is installed once when the shell starts.
+    pub async fn agent_ds_credential(&self, definition_id: Uuid) -> Result<Value, FoundryError> {
+        self.post_scoped(
+            &format!(
+                "{}/api/v1/agent/ds-credential",
+                self.base_url.trim_end_matches('/')
+            ),
+            serde_json::json!({ "definition_id": definition_id }),
             None,
             None,
         )

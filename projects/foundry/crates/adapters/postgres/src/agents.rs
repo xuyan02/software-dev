@@ -636,6 +636,25 @@ impl PostgresStore {
         role: &str,
         agent_definition_id: Uuid,
     ) -> Result<(), RepoError> {
+        let busy: bool = sqlx::query_scalar(
+            "select exists ( \
+                 select 1 from task_agent_assignments a \
+                 join tasks t on t.id = a.task_id \
+                 where a.agent_definition_id = $1 \
+                   and a.task_id <> $2 \
+                   and t.state in ('pending', 'in_progress') \
+             )",
+        )
+        .bind(agent_definition_id)
+        .bind(task_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
+        if busy {
+            return Err(RepoError::Invalid(
+                "agent is already assigned to an active task".to_string(),
+            ));
+        }
         sqlx::query(
             "insert into task_agent_assignments (task_id, role, agent_definition_id) \
              values ($1, $2, $3) \

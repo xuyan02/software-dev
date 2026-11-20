@@ -153,8 +153,7 @@ impl Podman {
             stdout.map_err(|error| Error::Backend(format!("read podman stdout: {error}")))?;
         let stderr =
             stderr.map_err(|error| Error::Backend(format!("read podman stderr: {error}")))?;
-        let status =
-            status.map_err(|error| Error::Backend(format!("wait for podman: {error}")))?;
+        let status = status.map_err(|error| Error::Backend(format!("wait for podman: {error}")))?;
         Ok(ExecOutput {
             status: status.code(),
             stdout,

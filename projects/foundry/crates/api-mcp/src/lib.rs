@@ -461,6 +461,7 @@ async fn call_tool(
                     expected_version: args.expected_version,
                     resolution: args.resolution,
                     duplicate_of: args.duplicate_of,
+                    pool: args.pool,
                 })
                 .await
                 .map_err(|error| error.to_string())?;
@@ -904,6 +905,8 @@ struct IssueTransitionArgs {
     resolution: Option<String>,
     #[serde(default)]
     duplicate_of: Option<uuid::Uuid>,
+    #[serde(default)]
+    pool: Option<foundry_domain::IssuePool>,
     #[serde(default)]
     expected_version: Option<u32>,
 }

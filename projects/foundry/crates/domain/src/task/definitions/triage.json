@@ -3,25 +3,48 @@
   "roles": [
     {"name": "triage", "kind": "agent", "assignment": "triage"}
   ],
-  "initial_stage": "dispatch",
   "vars": {
-    "outcome": {"type": "string", "display_name": "Outcome"}
+    "done": {
+      "type": "bool",
+      "display_name": "Done"
+    },
+    "wake": {
+      "type": "bool",
+      "display_name": "Wake"
+    }
   },
+  "initial_stage": "triage",
   "stages": [
     {
-      "name": "dispatch",
+      "name": "triage",
       "active_roles": ["triage"],
       "operations": [
         {
-          "name": "completed",
-          "display_name": "分诊完成",
-          "description": "本批 Issue 已分类、合并重复并创建后续任务。",
+          "name": "done",
+          "display_name": "本轮分诊完成",
+          "description": "当前批次的待分诊 Issue 已处理完。",
           "roles": ["triage"],
-          "action": "outcome = 'completed'"
+          "action": "done = true"
         }
       ],
       "transitions": [
-        {"on": "outcome == 'completed'", "action": "result = 'routed'", "to": "ended"}
+        {"on": "done", "action": "done = false", "to": "waiting"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": ["triage"],
+      "operations": [
+        {
+          "name": "issue_arrived",
+          "display_name": "收到 Issue 事件",
+          "description": "有新 Issue 或 Issue 更新，开始分诊。",
+          "roles": ["triage"],
+          "action": "wake = true"
+        }
+      ],
+      "transitions": [
+        {"on": "wake", "action": "wake = false", "to": "triage"}
       ]
     }
   ]

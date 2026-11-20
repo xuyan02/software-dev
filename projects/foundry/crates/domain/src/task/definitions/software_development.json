@@ -7,7 +7,7 @@
       "name": "running",
       "active_roles": [],
       "created": [
-        {"create_child": {"workflow": "triage_check", "title": "分诊检查"}}
+        {"create_child": {"workflow": "triage", "title": "分诊"}}
       ]
     }
   ]

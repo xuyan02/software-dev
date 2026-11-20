@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "dispatcher", "kind": "agent", "assignment": "development_iteration"},
+    {"name": "verifier", "kind": "agent", "assignment": "development_iteration"}
+  ],
+  "vars": {
+    "expected": {
+      "type": "int",
+      "display_name": "Expected development tasks"
+    },
+    "done": {
+      "type": "int",
+      "display_name": "Completed development tasks"
+    },
+    "failed": {
+      "type": "int",
+      "display_name": "Failed development tasks"
+    },
+    "no_work": {
+      "type": "bool",
+      "display_name": "No work"
+    },
+    "ready": {
+      "type": "bool",
+      "display_name": "Ready"
+    }
+  },
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["dispatcher"],
+      "operations": [
+        {
+          "name": "dispatched",
+          "display_name": "开发任务已创建",
+          "description": "已从开发池选批，并为每个开发工作创建了 code_change 子任务。",
+          "roles": ["dispatcher"],
+          "action": "expected = count_children('code_change')"
+        },
+        {
+          "name": "nothing",
+          "display_name": "没有可开发的议题",
+          "description": "开发池为空，或当前没有可以立即开始的开发工作。",
+          "roles": ["dispatcher"],
+          "action": "no_work = true"
+        }
+      ],
+      "transitions": [
+        {"on": "no_work", "action": "result = 'no_work'", "to": "ended"},
+        {"on": "expected > 0", "to": "waiting"},
+        {"on": "expected == 0", "action": "result = 'no_work'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'code_change' and event.child.state == 'completed' { done = done + 1 } if event.child.workflow == 'code_change' and event.child.state == 'failed' { failed = failed + 1 }"
+        }
+      ],
+      "transitions": [
+        {"on": "done + failed == expected", "to": "verify"}
+      ]
+    },
+    {
+      "name": "verify",
+      "active_roles": ["verifier"],
+      "operations": [
+        {
+          "name": "ready",
+          "display_name": "本轮可交付",
+          "description": "本轮代码已合入、测试通过，相关议题可以关闭或进入验收。",
+          "roles": ["verifier"],
+          "action": "ready = true"
+        },
+        {
+          "name": "blocked",
+          "display_name": "本轮存在阻塞",
+          "description": "部分开发未完成或未通过验证，相关议题回池。",
+          "roles": ["verifier"],
+          "action": "ready = false"
+        }
+      ],
+      "transitions": [
+        {"on": "ready", "action": "result = 'completed'", "to": "ended"},
+        {"on": "not ready", "action": "result = 'blocked'", "to": "ended"}
+      ]
+    }
+  ]
+}

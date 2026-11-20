@@ -12,10 +12,10 @@ use foundry_app::{
     AccountFilter, AccountRepository, AccountService, AnchorDocumentService,
     AnchorDocumentUseCases, AuthService, CreateProject, DesignSpaceGateway,
     DesignSpaceGatewayError, IssueRepository, IssueService, MergeRequestRepository,
-    MergeRequestService, ProjectRepository, ProjectService, RequirementsDocumentService,
-    RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases,
-    TaskRepository, TaskService, TaskUseCases, TriggerService, TriggerUseCases, WorkflowCatalog,
-    WorkflowService, WorkflowUseCases,
+    MergeRequestService, ProjectRepository, ProjectService, ProjectUseCases,
+    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
+    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TriggerService,
+    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::{
     Account, AccountKind, AccountRole, ProjectRole, RoleKey, TaskState, WorkflowId,
@@ -27,6 +27,19 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 struct TestDesignSpaces;
+
+struct TestPurger(Arc<dyn ProjectUseCases>);
+
+#[async_trait::async_trait]
+impl foundry_api_http::ProjectPurger for TestPurger {
+    async fn purge(
+        &self,
+        actor: foundry_domain::Actor,
+        project_id: Uuid,
+    ) -> Result<(), foundry_app::ServiceError> {
+        self.0.delete(actor, project_id).await
+    }
+}
 
 /// Stable branches for merge-request API tests; branch movement is a no-op
 /// because those tests assert the Task-driven approval path.
@@ -222,6 +235,7 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&store),
         Arc::clone(&tasks),
     ));
+    let project_purger = Arc::new(TestPurger(Arc::clone(&projects) as Arc<dyn ProjectUseCases>));
     let router = foundry_api_http::router(AppState {
         issues: Arc::new(issues),
         accounts,
@@ -244,8 +258,11 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             None,
         )),
         editor: Arc::new(foundry_api_http::EditorAssets::new(editor_dir)),
-        design_space: None,
+        design_space: Arc::new(foundry_api_http::DesignSpaceAccess::new(
+            std::env::temp_dir(),
+        )),
         merge_requests: merge_requests.clone(),
+        project_purger: Some(project_purger),
     });
 
     let token = login(&router, "admin", "admin-password").await;
@@ -1615,7 +1632,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        24
+        25
     );
 
     let created = body_json(
@@ -1735,8 +1752,11 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         auth: auth.clone(),
         setup: Arc::clone(&setup),
         editor: Arc::new(foundry_api_http::EditorAssets::new(missing_editor_dir())),
-        design_space: None,
+        design_space: Arc::new(foundry_api_http::DesignSpaceAccess::new(
+            std::env::temp_dir(),
+        )),
         merge_requests,
+        project_purger: None,
     });
 
     // Every route is blocked and API calls get a 503.
@@ -2442,7 +2462,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 24);
+    assert_eq!(platform.len(), 25);
     assert!(
         platform
             .iter()
@@ -2610,7 +2630,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 25);
+    assert_eq!(own.as_array().unwrap().len(), 26);
 }
 
 #[tokio::test]

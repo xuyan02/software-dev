@@ -20,6 +20,8 @@ pub const SCHEDULABLE_WORKFLOWS: &[&str] = &[
     "cohesion_inspection",
     "consistency_inspection",
     "design_inspection",
+    "design_iteration",
+    "development_iteration",
     "daily_check",
 ];
 
@@ -95,6 +97,20 @@ pub trait TriggerUseCases: Send + Sync {
     /// Deterministically create the default daily-check trigger for a project
     /// if it is missing. Safe to call repeatedly.
     async fn ensure_daily_check(&self, project_id: Uuid) -> Result<Option<Trigger>, ServiceError>;
+
+    /// Deterministically create the default design-iteration trigger for a
+    /// project if it is missing. Safe to call repeatedly.
+    async fn ensure_design_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError>;
+
+    /// Deterministically create the default development-iteration trigger for
+    /// a project if it is missing. Safe to call repeatedly.
+    async fn ensure_development_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError>;
 }
 
 pub struct TriggerService<TR, P, A, T> {
@@ -371,6 +387,98 @@ where
         Ok(Some(trigger))
     }
 
+    pub async fn ensure_design_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let owner_id = project
+            .members
+            .iter()
+            .find(|member| member.role == ProjectRole::Owner)
+            .map(|member| member.account_id)
+            .ok_or_else(|| {
+                ServiceError::Validation("project has no owner for default trigger".to_string())
+            })?;
+        let owner = self
+            .accounts
+            .get(owner_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("account", owner_id))?;
+        let existing = self.triggers.list(project_id).await?;
+        if let Some(trigger) = existing
+            .iter()
+            .find(|trigger| trigger.workflow_id == "design_iteration")
+        {
+            return Ok(Some(trigger.clone()));
+        }
+        let trigger = Trigger::new(
+            project_id,
+            "设计迭代",
+            "按计划从设计池启动一轮设计迭代。",
+            "design_iteration",
+            json!({}),
+            "every:10080",
+            "设计迭代",
+            "从设计池选批并处理。",
+            owner.actor(),
+            owner.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.triggers.insert(&trigger).await?;
+        Ok(Some(trigger))
+    }
+
+    pub async fn ensure_development_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let owner_id = project
+            .members
+            .iter()
+            .find(|member| member.role == ProjectRole::Owner)
+            .map(|member| member.account_id)
+            .ok_or_else(|| {
+                ServiceError::Validation("project has no owner for default trigger".to_string())
+            })?;
+        let owner = self
+            .accounts
+            .get(owner_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("account", owner_id))?;
+        let existing = self.triggers.list(project_id).await?;
+        if let Some(trigger) = existing
+            .iter()
+            .find(|trigger| trigger.workflow_id == "development_iteration")
+        {
+            return Ok(Some(trigger.clone()));
+        }
+        let trigger = Trigger::new(
+            project_id,
+            "开发迭代",
+            "按计划从开发池启动一轮开发迭代。",
+            "development_iteration",
+            json!({}),
+            "every:10080",
+            "开发迭代",
+            "从开发池选批并处理。",
+            owner.actor(),
+            owner.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.triggers.insert(&trigger).await?;
+        Ok(Some(trigger))
+    }
+
     /// Run every enabled trigger whose `next_run_at` is due. The scheduler
     /// calls this sequentially; no run overlaps.
     pub async fn run_due(&self, now: OffsetDateTime) -> Result<usize, ServiceError> {
@@ -538,5 +646,19 @@ where
 
     async fn ensure_daily_check(&self, project_id: Uuid) -> Result<Option<Trigger>, ServiceError> {
         TriggerService::ensure_daily_check(self, project_id).await
+    }
+
+    async fn ensure_design_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_design_iteration(self, project_id).await
+    }
+
+    async fn ensure_development_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_development_iteration(self, project_id).await
     }
 }

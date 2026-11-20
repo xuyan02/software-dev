@@ -1,6 +1,53 @@
 # 设计文档撰写技能
 
-本技能规定 design-space 中每种对象的文档写什么、格式是什么；System/Module 的创建标准也在这里统一定义。ds 命令、qname、文档位置和 staging 见 `design-space` 技能。
+本技能规定 design-space 中每种对象的文档写什么、格式是什么；System/Module/层的创建标准也在这里统一定义。ds 命令、qname、文档位置和 staging 见 `design-space` 技能。
+
+## 0. 概念与术语
+
+设计文档中的专业词汇必须有清晰定义。凡含义不显然、容易被不同读者理解成不同东西，或在不同文档中用法不一致的词，都要在概念空间中建立概念，并在文档中用概念引用指向它。
+
+- 概念空间根是 `concepts`，概念按目录组织：`concepts/<分类>/<概念>`；目录结构由智能体维护。
+- 概念对象包含：
+  - `name`：读者看到的术语，例如“智能体”；
+  - `summary`：一句话定义；
+  - `explanation`：这个术语是什么；
+  - `characteristics`：属性、状态、相关流程等特征；
+  - `relations`：与其他概念的关系、区别；
+  - `aliases`：同义词或英文名。
+- 文档中的概念引用使用 `[[concept:<qname>|<术语>]]`，例如 `[[concept:concepts/agent/agent|智能体]]`；引用是文本约定，不是 DS 对象。
+- 第一次出现的关键术语、以及容易歧义的术语，必须用概念引用；不要只写一个没有定义的名词。
+- 不要为日常用语或显而易见的词建概念；已有概念能覆盖时复用，不要重复创建；不同说法用 `aliases` 记录。
+- 概念写定义、边界和关系，不写实现细节，也不复制设计正文。
+- 如果一个词无法用一句话说清，先拆成多个概念或澄清它的边界，再在文档中使用。
+- 概念引用必须能解析到 `concepts/` 下的 Concept 对象；`ds concept check` 用于校验。
+
+### 0.1 概念维护
+
+概念是长期对象，按生命周期维护：
+
+- **更新**：定义、边界或用法变化时，更新 `summary`、`explanation`、`characteristics`、`relations`；新的同义说法加进 `aliases`，不要新建一个重复概念。
+- **合并**：两个概念指同一事物时，选一个作为 canonical；把另一个的名称和说法并入 `aliases`；把所有 `[[concept:...]]` 引用改到 canonical；确认没有引用后再删除旧概念。
+- **拆分**：一个概念无法用一句话说清、或不同用法已经产生歧义时，拆成多个概念；更新所有引用和 `relations`。
+- **移动/重命名**：`ds concept mv` 只移动对象，**不会改写文档正文里的 `[[concept:...]]`**。移动或改名后要更新所有引用，再运行 `ds concept check`。
+- **删除**：先确认没有引用，再 `ds concept rm`；非空概念目录要先移动或删除子项。
+- **目录维护**：按领域分类，不按代码目录或技术分层；保持浅层；不建 `utils`、`misc`、`other` 这类兜底目录；目录名用领域术语。
+- **检查**：提交前运行 `ds concept check`；内容评审检查未定义术语、歧义、重复概念和失效引用；定期看 `aliases` 是否该合并。
+- `ds concept check` 只扫描文档文本和概念自身的说明/特征/关系，不扫描代码块、Mermaid 和 HTML/SVG；代码里的术语用正文说明，不要依赖检查。
+
+### 0.2 命名
+
+名字是设计的一部分。读者只看名字，就应该能正确判断对象是什么、边界在哪里。
+
+- **名字和定位必须一致**：定位说它是 A，名字不能听起来像 B。名字需要额外解释才能不误解时，改名字或修正定位，不要靠正文补救。
+- **第一反应必须正确**：读者的第一理解就是设计意图，不能读完整段才纠正。
+- **不准挪用常见术语**：不要用被广泛使用、已有强约定含义的词去指别的东西。例如“数据库”就是数据库，不能指缓存、文件集合或任意存储对象；“服务”“平台”“系统”“模块”“管理器”“适配器”同理。
+- 需要借用常见词时，加限定词或改用领域术语，并在概念空间定义；不要靠上下文硬改词义。
+- 不用泛词掩盖边界：“核心”“公共”“基础”“工具”“数据”单独出现时，通常说明对象边界没有想清楚。
+- 不用生造词、缩写或堆叠名词；缩写只在已定义且读者熟悉时使用。
+- 准确优先于简短；宁可多一个限定词，也不要让读者误解。
+- 同义名称只用于真正同义的概念；不同概念不能共用名字，也不能用别名掩盖区别。
+- 改名是设计变化，不是文字润色：同步更新所有引用、文档标题和概念。
+- **审阅者遇到看不懂、有歧义、容易误解的名字或表述，必须提出质疑**；不要因为“大概知道作者意思”而放过。
 
 下面是块类型和每种对象的撰写指导，不是设计文档模板。
 
@@ -715,7 +762,7 @@ Method/Function：参数和返回值的基本契约写在“参数与返回值�
 
 Mixin：只写应用约束、组合冲突、覆盖规则、组合顺序等复杂点；不写关系清单和实现。
 
-System/Module：只写系统/模块级的复杂点，例如状态或生命周期、外部协议、数据/存储结构、并发或调度、依赖/耦合边界、部署或运行约束；不写普通约束和现状。
+System/Module/层：只写系统/模块/层级的复杂点，例如状态或生命周期、外部协议、数据/存储结构、并发或调度、依赖/耦合边界、部署或运行约束；不写普通约束和现状。
 
 Class 正例（每个复杂点一个 topic）：
 
@@ -1041,7 +1088,7 @@ topic 标题：构造服务
 
 ### 1.8 设计原则 topic 组
 
-用于跨对象的设计决定。技术设计文档的“设计原则”Section 和 System/Module 文档的“设计原则”块都用这个格式。
+用于跨对象的设计决定。技术设计文档的“设计原则”Section 和 System/Module/层文档的“设计原则”块都用这个格式。
 
 **什么算设计原则**
 
@@ -1126,6 +1173,76 @@ topic 标题：分派顺序
 
 错误原因：这是 dispatcher 的内部实现策略，不是跨对象的设计决定；应写在该组件的实现要点。
 
+### 1.9 代码块
+
+代码块是 `document-block`，用 Markdown 围栏渲染。只有内容本身就是设计需要表达的格式时才使用，例如：
+
+- 协议请求/响应样例、数据格式或配置文件片段；
+- 接口使用示例中必须固定下来的调用形态；
+- 时序图、流程图等图表的源文本（如 `mermaid`）；
+- 需要逐字约定的命令、查询或表达式。
+
+写作规则：
+
+- 必须说明语言：`--language rust`、`json`、`sql`、`mermaid`、`text` 等；没有合适的语言用 `text`；
+- 代码块要短，只保留说明设计所必需的部分；不要贴大段源码，源码通过代码对象引用；
+- 不要用代码块写实现细节、内部流程或可以写进正文的普通说明；
+- 代码内容按原样保留，不渲染 `[[concept:...]]` 引用；需要解释术语时写在代码块前后的正文里；
+- 代码块前后要有正文说明它展示什么、约束是什么，不能只放一个孤立的代码块；
+- 代码块只能放在 Section 正文或 Topic 段落里，不能作为列表项。
+
+```bash
+ds doc block add <section-or-topic>/body --language rust --text $'let token = login();'
+ds doc block set <block-qname> --language text --text "新的内容"
+```
+
+### 1.10 图表（Mermaid）
+
+只有文字、列表或结构树不足以让人一眼看清关系时，才用 `document-mermaid`。先判断图的类型：
+
+- **架构/上下文图**：跨多个 System/Module 的边界、外部系统、部署单元或数据流无法用短列表说清时画。节点名称必须与架构文档或结构树一致；不画代码目录、类图或调用细节；一张图只表达一种关系。
+- **流程图**：流程有分支、循环、并发、失败或重试路径时画；线性步骤用正文或列表。必须画出失败/异常分支，不能只画成功路径。
+- **状态图**：对象或流程有多个状态、转换条件、重试或终止状态时画；少于三个状态或线性变化用文字。状态名用领域术语，标出初始和终止状态。
+- **时序图**：参与者之间的调用顺序、异步、超时或错误返回会影响设计时画；不要用它表达静态依赖。
+
+共同规则：
+
+- 节点和边用文档中的术语，保持简短；
+- 一张图只表达一个主题；需要两个主题就画两张；
+- 图前后的正文写约束、例外和判断依据，不要逐句复述图里的步骤；
+- 不画装饰图、不画代码目录、不画能从结构树直接看出的层级；
+- Mermaid 源码不渲染 `[[concept:...]]` 引用，术语解释写在正文里；
+- 没有信息量的图不要加。
+
+```bash
+ds doc mermaid add <section-or-topic>/body --text $'flowchart TD\n  A[请求] --> B[校验]\n  B -->|失败| C[返回错误]'
+ds doc mermaid set <mermaid-qname> --text $'flowchart LR\n  A --> B'
+```
+
+Foundry 设计空间会把 Mermaid 源码渲染成图；存储里只保留源码，不保存图片。
+
+### 1.11 HTML/SVG 预览
+
+当用文字或 Mermaid 都不足以表达视觉效果时，用 `document-html` 插入 HTML/SVG。典型用法是 UI 效果图；也可以用来表达布局、视觉状态、图标或 Mermaid 覆盖不到的示意图。
+
+写作规则：
+
+- 内容必须自包含：内联 CSS 或 `<style>`，内联 SVG，图片只用 data URI；
+- 不使用脚本，不依赖外部图片、字体或样式；沙箱和 CSP 会阻止它们；
+- 只表达设计意图，不贴真实应用代码；不要把整个页面源码搬进文档；
+- 效果图前后要有正文说明它展示哪个页面、状态和关键约束；
+- 一张效果图对应一个场景；多个状态分别插入或并排画在同一张图里；
+- 默认预览高度 360px，内容超出时可滚动；布局按这个尺寸设计，或让内容自然滚动；
+- HTML/SVG 源码不渲染 `[[concept:...]]` 引用，术语解释写在正文里。
+
+```bash
+ds doc html add <section-or-topic>/body --text '<div style="padding:12px">登录页效果图</div>'
+ds doc html add <section-or-topic>/body --text '<svg viewBox="0 0 100 40"><rect width="100" height="40" fill="#eee"/></svg>'
+ds doc html set <html-qname> --text '<div>新的效果图</div>'
+```
+
+Foundry 设计空间在无脚本沙箱 iframe 中渲染，存储里只保留源码。
+
 ## 2. 对象文档
 
 块序列中没有标“可省略”或“默认不写”的块必须写；标了的按说明处理。
@@ -1136,11 +1253,15 @@ topic 标题：分派顺序
 
 - 可选的顶层 Section“设计原则”直接挂在 `documents/design/technical` 下，位于所有 System Section 之前；它不对应结构树对象；
 - System 的 Section 直接挂在 `documents/design/technical` 下；
-- Module 的 Section 挂在父 System/Module 的 Section 下；
-- 直属成员元素的 Section 挂在所属 System/Module 的 Section 下；
+- Module 的 Section 挂在父 System/Module/层的 Section 下；
+- 层的 Section 挂在父 System/Module 的 Section 下；
+- 直属成员元素的 Section 挂在所属 System/Module/层的 Section 下；
 - 嵌套元素（InnerClass、InnerInterface、Method、嵌套 Mixin）的 Section 挂在父元素的 Section 下；
 - Part 不建 Section。
-- Section 标题用对象的短名：Class/Interface/Function/Mixin 用名字最后一段；Method 只写方法名，不带 `#<signature hash>`；Namespace 用 qname 最后一段。
+- Section 标题：Class/Interface/Mixin 用名字最后一段；Function/Method 必须写源码中的完整函数原型（函数名、参数、返回类型），不能只写名字，也不能带 `#<signature hash>`；Namespace 用 qname 最后一段。设计对象的 qname 不变。
+- Function/Method 的标题由写作者设置：
+  `ds doc section set-title <section-qname> --title '<函数原型>'`。
+  `ds doc layout` 只创建占位标题，不覆盖已有标题。
 
 `ds doc layout` 按结构树统一创建/移动 Section 并规范标题，`ds doc check` 校验层级、标题和“设计原则”Section 的位置。层级由工具保证，不要手工把 Section 放到不符合结构的父节点。
 
@@ -1149,26 +1270,26 @@ topic 标题：分派顺序
 设计原则写在它所约束对象的最低共同父级文档里：
 
 - 约束多个 System 或整个项目：在技术设计文档中建一个顶层 Section，标题“设计原则”，放在所有 System Section 之前；每个原则一个 topic，格式见 1.8；
-- 只约束一个 System 或 Module 内的多个对象：写在该 System/Module 文档的“设计原则”块里，块序见各自的文档块序列；
+- 只约束一个 System、Module 或层内的多个对象：写在该 System/Module/层文档的“设计原则”块里，块序见各自的文档块序列；
 - 只约束一个对象：不写原则，写进该对象的设计说明、实现要点或非职责。
 
 技术设计文档的“设计原则”Section 用 `ds doc section add documents/design/technical/section --title "设计原则"` 创建；头锚点插入到最前面。没有跨对象原则时整个 Section 省略，不写口号。这个 Section 只放原则 topic，不写其他块。
 
-### System / Module 共同规则
+### System / Module / 层共同规则
 
-System 和 Module 是 `design` 结构树上的对象，不是源码对象。树的结构、qname 和 `ds structure` 命令见 `design-space` 技能。下面的共同规则同时适用于两者，各自的定义、创建标准和文档块见后面的 System 和 Module 章节。
+System、Module 和层是 `design` 结构树上的对象，不是源码对象。树的结构、qname 和 `ds structure` 命令见 `design-space` 技能。下面的共同规则同时适用于三者，各自的定义、创建标准和文档块见后面的章节。
 
-- 每个 System 至少有一个 Module 或直属成员；每个 Module 至少有一个成员或子模块；不允许空 System 或空 Module。
-- System 可以同时有 Module 和直属成员，不要求二选一；是否创建 Module 由复杂度和聚合性决定，见 Module 章节。
-- 每个顶层 Class/Interface/Function/Mixin 恰好属于一个 System 或 Module；跨容器协作通过依赖表达，不靠重复归属。
+- 每个 System 至少有一个 Module、层或直属成员；每个 Module 至少有一个成员、子模块或层；每个层至少有一个成员或子模块；不允许空容器。
+- 没有层的 System 可以同时有 Module 和直属成员，不要求二选一；一旦有层，成员和子 Module 都必须放进层里，不能直接挂在 System/Module 下。
+- 每个顶层 Class/Interface/Function/Mixin 恰好属于一个 System、Module 或层；跨容器协作通过依赖表达，不靠重复归属。
 - 成员只引用顶层代码元素；Method、字段、内部类型不进成员。
-- System/Module 的文档不写“组成”“成员”这类正文块，也不列成员清单；成员和子模块各自有子 Section，文档层级本身就是成员关系。
-- 依赖方向尽量无环；被依赖的底层能力放在较低层 System/Module。
-- 不建 `tools`、`misc`、`shared` 等兜底 System，也不建 `utils`、`common`、`misc`、`other`、`helpers`、`base` 等兜底 Module。
+- System/Module/层的文档不写“组成”“成员”这类正文块，也不列成员清单；成员和子模块各自有子 Section，文档层级本身就是成员关系。
+- 依赖方向尽量无环；有层时，只有相邻层之间允许依赖，被依赖的能力放在相邻层。
+- 不建 `tools`、`misc`、`shared` 等兜底 System，也不建 `utils`、`common`、`misc`、`other`、`helpers`、`base` 等兜底 Module 或层。
 - 命名用交付或领域概念，不用目录名，也不用 `service`、`repository`、`model` 这类纯分层名，除非代码本身确实按层组织。
 - `ds structure check` 通过才能提交。
-- System 和 Module 的文档都是 `documents/design/technical` 下的 Section，用 `--document` 关联，不新建独立文档。
-- 文档由块组成：每个块一个 `document-topic`，topic 标题用块名；需要列表时在 topic 里放 `document-list`；规则同上面的通用块说明。
+- System/Module/层的文档都是 `documents/design/technical` 下的 Section，用 `--document` 关联，不新建独立文档。
+- 文档由块组成：每个块一个 `document-topic`，topic 标题用块名；需要列表时在 topic 里放 `document-list`，需要代码时放 `document-block`，需要流程图时放 `document-mermaid`，需要 HTML/SVG 预览时放 `document-html`；规则同上面的通用块说明。
 
 **对外依赖列表**
 
@@ -1191,6 +1312,7 @@ System 是设计空间里最高一层的可交付单位。它对应一个能独�
 - 单系统仓库是正常的；不要为了对称硬拆多个 System。
 - 一个 System 可以跨多个 crate；一个 crate 也可能只是某个 System 的一部分。
 - 不强制划分模块。系统简单、没有多个相对独立的能力时，顶层元素直接挂在 System 下；只有复杂度需要时才创建 Module。
+- 不强制划分层。System 或 Module 足够复杂且存在明显层次结构时才创建层，见 Layer 章节；一旦有层，所有成员和子 Module 都必须进入层。
 
 **文档块序列**
 
@@ -1302,6 +1424,49 @@ design/greeter
 ```
 
 判断方法：模块里只有一个元素时，去掉模块后这个元素仍然有明确归属（系统或父模块），说明模块没有聚合任何东西。`startup`、`greeting` 这类名字只是在给单个函数套壳；读文档的人会问“为什么不直接放在系统下”，而这里没有任何站得住的理由。系统下没有任何 Module 也是合法的。
+
+### 层（Layer）
+
+**定义**
+
+层是 System 或 Module 内部按顺序组织的切片，用来表达和承载明显的层次结构。同一容器的层按 `order` 排列，相邻层之间才允许依赖。层不是可交付单位，也不是职责边界；职责边界仍由 Module 表达。
+
+**创建标准**
+
+- 只有当 System 或 Module 足够复杂，并且内部存在明显的层次结构时，才创建层。层次结构指多个成员或子 Module 可以按稳定、可解释的顺序组织，例如由外到内、由抽象到实现、由上到下。
+- 简单的、扁平的容器不建层；不要为了“看起来有架构”把元素硬塞进层里凑层次。
+- 层的划分必须对应该容器真实的层次结构，不能按目录、技术角色（`service`、`repository`、`model`）或对称性切分。
+- 一个容器需要层时，容器的所有成员和子 Module 都必须放进层里；不能一部分在层里、一部分直接挂在容器下。
+- 层不能嵌套层；层内可以放 Module 和成员。
+- 层的数量和名字都要能说清边界；不要建 `utils`、`common`、`misc` 之类的兜底层。
+- 只有少量元素、没有明显层次时，不建层，直接挂在 System 或 Module 下。
+
+**顺序**
+
+- `order` 从 1 开始，同级层互不相同。
+- 只有 `order` 相差 1 的层之间允许依赖；不要跨层建立依赖。
+- 调整层顺序或插入新层是设计变更，要同步调整文档 Section 顺序和受影响的依赖。
+
+**文档块序列**
+
+1. 定位
+2. 设计原则（可省略，按原则拆 topic）
+3. 设计说明（可省略，按复杂点拆 topic）
+4. 实现要点（可省略）
+
+各块的写法：
+
+- 定位：用 1.1.1 的置放单句，写这一层放什么、不放什么，以及它在依赖方向中的位置；
+- 设计原则：1.8 的 topic 组；只写约束本层多个对象的跨对象原则；
+- 设计说明：1.5 的 topic 组；只写本层特有的复杂点；
+- 实现要点：1.7 的 topic 组；只写本层高风险约束和保证机制。
+
+**对象特有规则**
+
+- 层文档不写“成员”块，不列成员清单；成员和子 Module 通过结构树和各自的子 Section 表达。
+- 层文档不重复 System/Module 文档里已经写过的内容。
+- 层与层之间的依赖方向写进定位或设计说明，不只靠结构。
+- `ds structure check` 通过才能提交。
 
 ### Directory
 
@@ -1700,7 +1865,7 @@ Function 文件：
 
 ## 3. 设计草案（Design Rework Proposal）
 
-设计草案用于 `design_rework`：先把根源性的设计修改写成一份完整、可实施的设计，
+设计草案用于 `design`：先把根源性的设计修改写成一份完整、可实施的设计，
 由智能体和人类 review，通过后再按草案修改设计空间。
 
 草案不是设计建议，必须拿出一个完整设计，保证可行并解决问题。
@@ -1708,11 +1873,11 @@ Function 文件：
 ### 3.1 位置、ID 和名字
 
 ```text
-文档 qname：documents/design/proposals/<draft-id>
+文档 qname：documents/design/drafts/<draft-id>
 文档标题：设计草案：<draft-name>
 ```
 
-- `<draft-id>` 是草案自己的稳定 ID，创建时生成，例如 `draft-7f3a2c9e`，在 proposals 目录下唯一；
+- `<draft-id>` 是草案自己的稳定 ID，创建时生成，例如 `draft-7f3a2c9e`，在 drafts 目录下唯一；
 - `<draft-name>` 是人类可读名字，写在 Document 标题里；
 - Issue 不进入 ID 或名字，只在“背景”中引用。
 

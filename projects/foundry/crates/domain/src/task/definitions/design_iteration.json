@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "dispatcher", "kind": "agent", "assignment": "design_iteration"},
+    {"name": "verifier", "kind": "agent", "assignment": "design_iteration"}
+  ],
+  "vars": {
+    "expected": {
+      "type": "int",
+      "display_name": "Expected design tasks"
+    },
+    "done": {
+      "type": "int",
+      "display_name": "Completed design tasks"
+    },
+    "failed": {
+      "type": "int",
+      "display_name": "Failed design tasks"
+    },
+    "no_work": {
+      "type": "bool",
+      "display_name": "No work"
+    },
+    "ready": {
+      "type": "bool",
+      "display_name": "Ready"
+    }
+  },
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["dispatcher"],
+      "operations": [
+        {
+          "name": "dispatched",
+          "display_name": "设计任务已创建",
+          "description": "已从设计池选批，并为每个设计工作创建了子任务。",
+          "roles": ["dispatcher"],
+          "action": "expected = count_children('design') + count_children('design_baseline')"
+        },
+        {
+          "name": "nothing",
+          "display_name": "没有可设计的议题",
+          "description": "设计池为空，或当前没有可以立即开始设计的议题。",
+          "roles": ["dispatcher"],
+          "action": "no_work = true"
+        }
+      ],
+      "transitions": [
+        {"on": "no_work", "action": "result = 'no_work'", "to": "ended"},
+        {"on": "expected > 0", "to": "waiting"},
+        {"on": "expected == 0", "action": "result = 'no_work'", "to": "ended"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if (event.child.workflow == 'design' or event.child.workflow == 'design_baseline') and event.child.state == 'completed' { done = done + 1 } if (event.child.workflow == 'design' or event.child.workflow == 'design_baseline') and event.child.state == 'failed' { failed = failed + 1 }"
+        }
+      ],
+      "transitions": [
+        {"on": "done + failed == expected", "to": "verify"}
+      ]
+    },
+    {
+      "name": "verify",
+      "active_roles": ["verifier"],
+      "operations": [
+        {
+          "name": "ready",
+          "display_name": "本轮可开发",
+          "description": "本轮设计已合入并通过可开发门，议题可以进入实现。",
+          "roles": ["verifier"],
+          "action": "ready = true"
+        },
+        {
+          "name": "blocked",
+          "display_name": "本轮存在阻塞",
+          "description": "部分设计未完成或未通过可开发门，相关议题回池。",
+          "roles": ["verifier"],
+          "action": "ready = false"
+        }
+      ],
+      "transitions": [
+        {"on": "ready", "action": "result = 'completed'", "to": "ended"},
+        {"on": "not ready", "action": "result = 'blocked'", "to": "ended"}
+      ]
+    }
+  ]
+}

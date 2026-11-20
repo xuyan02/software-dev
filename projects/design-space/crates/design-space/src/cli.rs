@@ -58,6 +58,11 @@ enum Command {
         #[command(subcommand)]
         command: DocCommand,
     },
+    /// Manage concepts and the concept space.
+    Concept {
+        #[command(subcommand)]
+        command: ConceptCommand,
+    },
     /// Manage systems and modules.
     Structure {
         #[command(subcommand)]
@@ -125,12 +130,15 @@ enum Command {
         #[arg(long)]
         staged: bool,
     },
-    /// Remove one worktree object.
+    /// Remove a worktree object or subtree.
     Rm {
         name: String,
         /// Remove incoming relations and dependencies before deleting.
         #[arg(long)]
         force: bool,
+        /// Remove the object and all containment descendants.
+        #[arg(short = 'r', long)]
+        recursive: bool,
     },
     /// Switch to an existing branch.
     Checkout {
@@ -433,30 +441,35 @@ enum StructureCommand {
         #[command(subcommand)]
         command: StructureModuleCommand,
     },
-    /// Add top-level code elements to a system or module.
+    /// Manage layers inside a system or module.
+    Layer {
+        #[command(subcommand)]
+        command: StructureLayerCommand,
+    },
+    /// Add top-level code elements to a system, module or layer.
     Assign {
-        /// System or module qualified name.
+        /// System, module or layer qualified name.
         module: String,
         /// Top-level class/interface/function/mixin qualified names.
         members: Vec<String>,
     },
-    /// Remove members from a system or module.
+    /// Remove members from a system, module or layer.
     Unassign {
-        /// System or module qualified name.
+        /// System, module or layer qualified name.
         module: String,
         /// Member qualified names.
         members: Vec<String>,
     },
-    /// List systems and modules.
+    /// List systems, modules and layers.
     List,
-    /// Show one system or module.
+    /// Show one system, module or layer.
     Show {
-        /// System/module qualified name.
+        /// System, module or layer qualified name.
         qname: String,
     },
     /// Report structure problems.
     Check,
-    /// List top-level elements that belong to no module.
+    /// List top-level elements that belong to no container.
     Unassigned,
 }
 
@@ -477,11 +490,11 @@ enum StructureSystemCommand {
 
 #[derive(Debug, Clone, Subcommand)]
 enum StructureModuleCommand {
-    /// Create a module under a system or another module.
+    /// Create a module under a system, module or layer.
     Create {
         /// Local module name.
         name: String,
-        /// Parent system or module qualified name.
+        /// Parent system, module or layer qualified name.
         #[arg(long)]
         parent: String,
         /// Display title. Defaults to the name.
@@ -490,6 +503,43 @@ enum StructureModuleCommand {
         /// Document or section qname describing the module.
         #[arg(long)]
         document: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum StructureLayerCommand {
+    /// Create a layer under a system or module.
+    Create {
+        /// Local layer name.
+        name: String,
+        /// Parent system or module qualified name.
+        #[arg(long)]
+        parent: String,
+        /// Display title. Defaults to the name.
+        #[arg(long)]
+        title: Option<String>,
+        /// 1-based order among sibling layers. Defaults to the next order.
+        #[arg(long)]
+        order: Option<u32>,
+        /// Document or section qname describing the layer.
+        #[arg(long)]
+        document: Option<String>,
+    },
+    /// Change a layer's title, order or document.
+    Set {
+        /// Layer qualified name.
+        qname: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        order: Option<u32>,
+        #[arg(long)]
+        document: Option<String>,
+    },
+    /// Remove an empty layer.
+    Rm {
+        /// Layer qualified name.
+        qname: String,
     },
 }
 
@@ -507,6 +557,13 @@ enum DocCommand {
         #[arg(long)]
         title: String,
     },
+    /// Rename or move a document directory or document, including its subtree.
+    Mv {
+        /// Current qname.
+        qname: String,
+        /// New qname.
+        new_qname: String,
+    },
     /// Add a section.
     Section {
         #[command(subcommand)]
@@ -521,6 +578,21 @@ enum DocCommand {
     Text {
         #[command(subcommand)]
         command: DocTextCommand,
+    },
+    /// Add or edit a fenced code block.
+    Block {
+        #[command(subcommand)]
+        command: DocBlockCommand,
+    },
+    /// Add or edit a Mermaid diagram.
+    Mermaid {
+        #[command(subcommand)]
+        command: DocMermaidCommand,
+    },
+    /// Add or edit an HTML/SVG preview.
+    Html {
+        #[command(subcommand)]
+        command: DocHtmlCommand,
     },
     /// Add a list.
     List {
@@ -538,7 +610,7 @@ enum DocCommand {
     Layout,
     /// Render a document or fragment.
     Show {
-        /// Document, section, topic, list, text or document directory qname.
+        /// Document, section, topic, list, text, block or document directory qname.
         qname: String,
     },
 }
@@ -561,11 +633,111 @@ enum DocCommentCommand {
     },
     /// List comments and their status.
     List {
-        /// Any document object qname.
-        qname: String,
+        /// Any document object qname; omit to scan all document objects.
+        qname: Option<String>,
+        /// Only list open comments.
+        #[arg(long)]
+        open: bool,
+        /// Include comments from the object's whole document subtree.
+        #[arg(long)]
+        subtree: bool,
     },
     /// Remove every comment from the worktree.
     Clear,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum ConceptCommand {
+    /// Create a directory in the concept space.
+    Mkdir {
+        /// Concept directory qname, for example `concepts/agent`.
+        qname: String,
+    },
+    /// Create a concept.
+    Create {
+        /// Concept qname, for example `concepts/agent/agent`.
+        qname: String,
+        /// Term shown to readers; defaults to the last qname segment.
+        #[arg(long)]
+        name: Option<String>,
+        /// One-sentence definition.
+        #[arg(long)]
+        summary: String,
+        /// What the concept is, in more detail.
+        #[arg(long)]
+        explanation: Option<String>,
+    },
+    /// Update a concept's name, summary or explanation.
+    Set {
+        /// Concept qname.
+        qname: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        summary: Option<String>,
+        #[arg(long)]
+        explanation: Option<String>,
+    },
+    /// Add or remove a characteristic.
+    Feature {
+        #[command(subcommand)]
+        command: ConceptListItemCommand,
+    },
+    /// Add or remove a relationship/difference.
+    Relation {
+        #[command(subcommand)]
+        command: ConceptListItemCommand,
+    },
+    /// Add or remove an alias.
+    Alias {
+        #[command(subcommand)]
+        command: ConceptListItemCommand,
+    },
+    /// Show one concept or concept directory.
+    Show {
+        /// Concept qname.
+        qname: String,
+    },
+    /// List the children of a concept directory.
+    Ls {
+        /// Concept directory qname; defaults to `concepts`.
+        qname: Option<String>,
+    },
+    /// Remove a concept or an empty concept directory.
+    Rm {
+        /// Concept or directory qname.
+        qname: String,
+    },
+    /// Move a concept or an empty directory to another concept directory.
+    Mv {
+        /// Concept or directory qname.
+        qname: String,
+        /// New parent concept directory qname.
+        parent: String,
+        /// Optional new local name.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Check that `[[concept:...]]` references resolve to concepts.
+    Check,
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum ConceptListItemCommand {
+    /// Append a list item.
+    Add {
+        /// Concept qname.
+        qname: String,
+        /// Item text.
+        text: String,
+    },
+    /// Remove one item by its 1-based position.
+    Rm {
+        /// Concept qname.
+        qname: String,
+        /// 1-based position.
+        index: usize,
+    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -574,6 +746,13 @@ enum DocSectionCommand {
     Add {
         /// Anchor qname (`.../section`) or an existing sibling section qname.
         target: String,
+        #[arg(long)]
+        title: String,
+    },
+    /// Set a section title.
+    SetTitle {
+        /// Section qname.
+        qname: String,
         #[arg(long)]
         title: String,
     },
@@ -603,6 +782,72 @@ enum DocTextCommand {
     Set {
         /// Text paragraph qname.
         qname: String,
+        #[arg(long)]
+        text: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocBlockCommand {
+    /// Add a fenced code block after a target position.
+    Add {
+        /// Anchor qname (`.../body`) or an existing body element qname.
+        target: String,
+        /// Markdown fence info string, for example `rust`; empty for a plain block.
+        #[arg(long)]
+        language: Option<String>,
+        /// Code text; may contain newlines.
+        #[arg(long)]
+        text: String,
+    },
+    /// Change a block's language or text.
+    Set {
+        /// Block qname.
+        qname: String,
+        /// Markdown fence info string; empty for a plain block.
+        #[arg(long)]
+        language: Option<String>,
+        /// Replace the code text.
+        #[arg(long)]
+        text: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocMermaidCommand {
+    /// Add a Mermaid diagram after a target position.
+    Add {
+        /// Anchor qname (`.../body`) or an existing body element qname.
+        target: String,
+        /// Mermaid source text; may contain newlines.
+        #[arg(long)]
+        text: String,
+    },
+    /// Replace a Mermaid diagram's source.
+    Set {
+        /// Mermaid block qname.
+        qname: String,
+        /// Mermaid source text.
+        #[arg(long)]
+        text: String,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+enum DocHtmlCommand {
+    /// Add an HTML/SVG preview after a target position.
+    Add {
+        /// Anchor qname (`.../body`) or an existing body element qname.
+        target: String,
+        /// Raw HTML or SVG source; may contain newlines.
+        #[arg(long)]
+        text: String,
+    },
+    /// Replace an HTML/SVG preview's source.
+    Set {
+        /// HTML block qname.
+        qname: String,
+        /// Raw HTML or SVG source.
         #[arg(long)]
         text: String,
     },
@@ -645,6 +890,7 @@ pub fn run() -> Result<()> {
         Command::Create(args) => create(cli.dir, args),
         Command::Edit(args) => edit(cli.dir, args),
         Command::Doc { command } => doc(cli.dir, command),
+        Command::Concept { command } => concept(cli.dir, command),
         Command::Structure { command } => structure(cli.dir, command),
         Command::Dep { command } => dep(cli.dir, command),
         Command::Source { command } => source(cli.dir, command),
@@ -661,7 +907,11 @@ pub fn run() -> Result<()> {
         Command::Unstage { file, directory } => unstage(cli.dir, file, directory),
         Command::Reset { names, hard } => reset(cli.dir, names, hard),
         Command::Diff { staged } => diff(cli.dir, staged),
-        Command::Rm { name, force } => rm(cli.dir, &name, force),
+        Command::Rm {
+            name,
+            force,
+            recursive,
+        } => rm(cli.dir, &name, force, recursive),
         Command::Checkout {
             branch,
             create,
@@ -745,6 +995,19 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
         ),
     )?;
 
+    let concepts = ws.put_symbol("concepts")?;
+    catalog.insert(
+        concepts,
+        DesignObject::new(
+            Kind::ConceptDirectory,
+            ObjectPayload::ConceptDirectory(ConceptDirectoryPayload {
+                qualified_name: concepts,
+                parent: ParentRef::View,
+                children: vec![],
+            }),
+        ),
+    )?;
+
     // The same preset design objects are created by ds-server repositories.
     let design_dir = ws.put_symbol("documents/design")?;
     catalog.insert(
@@ -780,7 +1043,7 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
             ),
         )?;
     }
-    let proposals = ws.put_symbol("documents/design/proposals")?;
+    let proposals = ws.put_symbol("documents/design/drafts")?;
     catalog.insert(
         proposals,
         DesignObject::new(
@@ -935,6 +1198,61 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
             catalog.insert(qname_hash, object)?;
             save_worktree(&ws, state, &catalog, &qname)?;
         }
+        DocCommand::Mv { qname, new_qname } => {
+            let old = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get(old)
+                .with_context(|| format!("object not found: {qname}"))?;
+            if !matches!(object.kind, Kind::DocumentDirectory | Kind::Document) {
+                bail!("only document directories and documents can be moved: {qname}");
+            }
+            let new = ws.put_symbol(&new_qname)?;
+            if catalog.get(new).is_some() {
+                bail!("object already exists: {new_qname}");
+            }
+            let (new_parent_text, new_local) = new_qname
+                .rsplit_once('/')
+                .with_context(|| format!("invalid document qname: {new_qname}"))?;
+            if new_local.is_empty() {
+                bail!("invalid document qname: {new_qname}");
+            }
+            let new_parent = ws.put_symbol(new_parent_text)?;
+            let parent_object = catalog
+                .get(new_parent)
+                .with_context(|| format!("parent not found: {new_parent_text}"))?;
+            if parent_object.kind != Kind::DocumentDirectory {
+                bail!("documents must be moved under a document directory: {new_qname}");
+            }
+            let mapping = rename_mapping(&ws, &catalog, old, new)?;
+            for target in mapping.values() {
+                if *target != new && catalog.get(*target).is_some() && !mapping.contains_key(target)
+                {
+                    bail!("rename target already exists: {}", ws.get_symbol(*target)?);
+                }
+            }
+            {
+                let object = catalog
+                    .get_mut(old)
+                    .with_context(|| format!("object not found: {qname}"))?;
+                match &mut object.payload {
+                    ObjectPayload::DocumentDirectory(p) => {
+                        p.parent = ParentRef::Object(new_parent);
+                    }
+                    ObjectPayload::Document(p) => p.parent = new_parent,
+                    _ => bail!("only document directories and documents can be moved: {qname}"),
+                }
+            }
+            catalog.rename_symbols(&mapping)?;
+            save_worktree(&ws, state, &catalog, &new_qname)?;
+        }
+        DocCommand::Section {
+            command: DocSectionCommand::SetTitle { qname, title },
+        } => {
+            let hash = ws.put_symbol(&qname)?;
+            set_section_title(&mut catalog, hash, &title)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+            println!("Updated {qname}");
+        }
         DocCommand::Section {
             command: DocSectionCommand::Add { target, title },
         } => {
@@ -982,7 +1300,14 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                 &target,
                 DocRole::Body,
                 "body",
-                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
                 &[Kind::DocumentSection],
             )?;
             let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
@@ -1019,7 +1344,14 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                 &target,
                 DocRole::Body,
                 "body",
-                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
                 &[Kind::DocumentSection, Kind::DocumentTopic],
             )?;
             let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
@@ -1059,6 +1391,193 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
             format::validate_object(object)?;
             save_worktree(&ws, state, &catalog, &qname)?;
         }
+        DocCommand::Block {
+            command:
+                DocBlockCommand::Add {
+                    target,
+                    language,
+                    text,
+                },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::Block,
+                ObjectPayload::Block(BlockPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    language: language.unwrap_or_default(),
+                    text,
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Block {
+            command:
+                DocBlockCommand::Set {
+                    qname,
+                    language,
+                    text,
+                },
+        } => {
+            if language.is_none() && text.is_none() {
+                bail!("nothing to update: pass --language or --text");
+            }
+            let qname_hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get_mut(qname_hash)
+                .with_context(|| format!("object not found: {qname}"))?;
+            let ObjectPayload::Block(payload) = &mut object.payload else {
+                bail!("not a block: {qname}");
+            };
+            if let Some(language) = language {
+                payload.language = language;
+            }
+            if let Some(text) = text {
+                payload.text = text;
+            }
+            format::validate_object(object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
+        DocCommand::Mermaid {
+            command: DocMermaidCommand::Add { target, text },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::MermaidBlock,
+                ObjectPayload::MermaidBlock(MermaidBlockPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    text,
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Mermaid {
+            command: DocMermaidCommand::Set { qname, text },
+        } => {
+            let qname_hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get_mut(qname_hash)
+                .with_context(|| format!("object not found: {qname}"))?;
+            let ObjectPayload::MermaidBlock(payload) = &mut object.payload else {
+                bail!("not a mermaid block: {qname}");
+            };
+            payload.text = text;
+            format::validate_object(object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
+        DocCommand::Html {
+            command: DocHtmlCommand::Add { target, text },
+        } => {
+            let position = resolve_doc_position(
+                &ws,
+                &catalog,
+                &target,
+                DocRole::Body,
+                "body",
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+            )?;
+            let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
+            let qname = child_qname(&ws, position.parent, &local)?;
+            let object = DesignObject::new(
+                Kind::HtmlBlock,
+                ObjectPayload::HtmlBlock(HtmlBlockPayload {
+                    qualified_name: qname,
+                    parent: position.parent,
+                    text,
+                    comments: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            insert_doc_ref(
+                &mut catalog,
+                position.parent,
+                DocRole::Body,
+                position.index,
+                qname,
+            )?;
+            let name = ws.get_symbol(qname)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Html {
+            command: DocHtmlCommand::Set { qname, text },
+        } => {
+            let qname_hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get_mut(qname_hash)
+                .with_context(|| format!("object not found: {qname}"))?;
+            let ObjectPayload::HtmlBlock(payload) = &mut object.payload else {
+                bail!("not an html block: {qname}");
+            };
+            payload.text = text;
+            format::validate_object(object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+        }
         DocCommand::List {
             command: DocListCommand::Add { target },
         } => {
@@ -1068,7 +1587,14 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                 &target,
                 DocRole::Body,
                 "body",
-                &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                &[
+                    Kind::DocumentText,
+                    Kind::DocumentList,
+                    Kind::DocumentTopic,
+                    Kind::Block,
+                    Kind::MermaidBlock,
+                    Kind::HtmlBlock,
+                ],
                 &[Kind::DocumentSection, Kind::DocumentTopic],
             )?;
             let local = next_doc_id(&ws, &catalog, position.parent, "body")?;
@@ -1184,24 +1710,80 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                     save_worktree(&ws, state, &catalog, &qname)?;
                 }
             }
-            DocCommentCommand::List { qname } => {
-                let hash = ws.put_symbol(&qname)?;
-                let object = catalog
-                    .get(hash)
-                    .with_context(|| format!("object not found: {qname}"))?;
-                let comments = doc_comments(object)
-                    .with_context(|| format!("not a document object: {qname}"))?;
-                if comments.is_empty() {
-                    println!("no comments");
-                } else {
-                    for comment in comments {
-                        println!(
-                            "comment{}\t{}\t{}",
-                            comment.id,
-                            comment_status(comment),
-                            escape_comment_text(&comment.text)
-                        );
+            DocCommentCommand::List {
+                qname,
+                open,
+                subtree,
+            } => {
+                let mut printed = 0usize;
+                match qname {
+                    Some(qname) => {
+                        let qname = qname.trim_end_matches('/').to_owned();
+                        let hash = ws.put_symbol(&qname)?;
+                        catalog
+                            .get(hash)
+                            .with_context(|| format!("object not found: {qname}"))?;
+                        if subtree {
+                            let prefix = format!("{qname}/");
+                            let mut objects = catalog
+                                .iter()
+                                .filter(|(candidate, object)| {
+                                    let name = ws.get_symbol(*candidate).unwrap_or_default();
+                                    (name == qname || name.starts_with(&prefix))
+                                        && doc_comments(object)
+                                            .is_some_and(|comments| !comments.is_empty())
+                                })
+                                .collect::<Vec<_>>();
+                            objects.sort_by_key(|(qname, _)| {
+                                ws.get_symbol(*qname).unwrap_or_default()
+                            });
+                            for (candidate, object) in objects {
+                                let name = ws.get_symbol(candidate)?;
+                                for comment in doc_comments(object).unwrap_or_default() {
+                                    if open && comment.resolved {
+                                        continue;
+                                    }
+                                    print_comment(Some(&name), comment);
+                                    printed += 1;
+                                }
+                            }
+                        } else {
+                            let object = catalog
+                                .get(hash)
+                                .with_context(|| format!("object not found: {qname}"))?;
+                            let comments = doc_comments(object)
+                                .with_context(|| format!("not a document object: {qname}"))?;
+                            for comment in comments {
+                                if open && comment.resolved {
+                                    continue;
+                                }
+                                print_comment(None, comment);
+                                printed += 1;
+                            }
+                        }
                     }
+                    None => {
+                        let mut objects = catalog
+                            .iter()
+                            .filter(|(_, object)| {
+                                doc_comments(object).is_some_and(|comments| !comments.is_empty())
+                            })
+                            .collect::<Vec<_>>();
+                        objects.sort_by_key(|(qname, _)| ws.get_symbol(*qname).unwrap_or_default());
+                        for (qname, object) in objects {
+                            let name = ws.get_symbol(qname)?;
+                            for comment in doc_comments(object).unwrap_or_default() {
+                                if open && comment.resolved {
+                                    continue;
+                                }
+                                print_comment(Some(&name), comment);
+                                printed += 1;
+                            }
+                        }
+                    }
+                }
+                if printed == 0 {
+                    println!("no comments");
                 }
             }
             DocCommentCommand::Clear => {
@@ -1246,6 +1828,435 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn concept(dir: Option<PathBuf>, command: ConceptCommand) -> Result<()> {
+    let dir_arg = dir.clone();
+    let ws = open_workspace(dir)?;
+    let state = ws
+        .read_worktree()?
+        .context("worktree is not initialized; run `ds init`")?;
+    let mut catalog = Catalog::load(ws.store(), state.root_view)?;
+
+    let root_text = "concepts";
+    let root = ws.put_symbol(root_text)?;
+    if catalog.get(root).is_none() {
+        let object = DesignObject::new(
+            Kind::ConceptDirectory,
+            ObjectPayload::ConceptDirectory(ConceptDirectoryPayload {
+                qualified_name: root,
+                parent: ParentRef::View,
+                children: vec![],
+            }),
+        );
+        format::validate_object(&object)?;
+        catalog.insert(root, object)?;
+    }
+
+    match command {
+        ConceptCommand::Mkdir { qname } => {
+            let qname = normalize_concept_qname(&qname)?;
+            ensure_concept_absent(&catalog, &qname)?;
+            let parent = concept_parent(&ws, &catalog, &qname)?;
+            let hash = ws.put_symbol(&qname)?;
+            let object = DesignObject::new(
+                Kind::ConceptDirectory,
+                ObjectPayload::ConceptDirectory(ConceptDirectoryPayload {
+                    qualified_name: hash,
+                    parent: ParentRef::Object(parent),
+                    children: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(hash, object)?;
+            attach_concept_child(&ws, &mut catalog, parent, hash)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+            println!("Created concept directory {qname}");
+        }
+        ConceptCommand::Create {
+            qname,
+            name,
+            summary,
+            explanation,
+        } => {
+            let qname = normalize_concept_qname(&qname)?;
+            ensure_concept_absent(&catalog, &qname)?;
+            let parent = concept_parent(&ws, &catalog, &qname)?;
+            let local = local_name(&qname);
+            let hash = ws.put_symbol(&qname)?;
+            let object = DesignObject::new(
+                Kind::Concept,
+                ObjectPayload::Concept(ConceptPayload {
+                    qualified_name: hash,
+                    parent,
+                    name: name.unwrap_or(local),
+                    summary,
+                    explanation: explanation.unwrap_or_default(),
+                    characteristics: vec![],
+                    relations: vec![],
+                    aliases: vec![],
+                }),
+            );
+            format::validate_object(&object)?;
+            catalog.insert(hash, object)?;
+            attach_concept_child(&ws, &mut catalog, parent, hash)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+            println!("Created concept {qname}");
+        }
+        ConceptCommand::Set {
+            qname,
+            name,
+            summary,
+            explanation,
+        } => {
+            let qname = normalize_concept_qname(&qname)?;
+            let hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get_mut(hash)
+                .with_context(|| format!("concept not found: {qname}"))?;
+            let ObjectPayload::Concept(p) = &mut object.payload else {
+                bail!("not a concept: {qname}");
+            };
+            if let Some(name) = name {
+                p.name = name;
+            }
+            if let Some(summary) = summary {
+                p.summary = summary;
+            }
+            if let Some(explanation) = explanation {
+                p.explanation = explanation;
+            }
+            format::validate_object(object)?;
+            save_worktree(&ws, state, &catalog, &qname)?;
+            println!("Updated concept {qname}");
+        }
+        ConceptCommand::Feature { command } => {
+            concept_list_item(&ws, state, &mut catalog, command, ConceptList::Feature)?;
+        }
+        ConceptCommand::Relation { command } => {
+            concept_list_item(&ws, state, &mut catalog, command, ConceptList::Relation)?;
+        }
+        ConceptCommand::Alias { command } => {
+            concept_list_item(&ws, state, &mut catalog, command, ConceptList::Alias)?;
+        }
+        ConceptCommand::Show { qname } => {
+            drop(catalog);
+            return show(dir_arg, &qname, false, false);
+        }
+        ConceptCommand::Ls { qname } => {
+            let qname = qname.as_deref().unwrap_or(root_text);
+            let hash = ws.put_symbol(qname)?;
+            let object = catalog
+                .get(hash)
+                .with_context(|| format!("concept directory not found: {qname}"))?;
+            if object.kind != Kind::ConceptDirectory {
+                bail!("not a concept directory: {qname}");
+            }
+            let mut children = catalog.children(hash);
+            children.sort_by_key(|child| ws.get_symbol(*child).unwrap_or_default());
+            if children.is_empty() {
+                println!("no concepts");
+                return Ok(());
+            }
+            for child in children {
+                let Some(object) = catalog.get(child) else {
+                    continue;
+                };
+                let child_text = ws.get_symbol(child)?;
+                match &object.payload {
+                    ObjectPayload::Concept(p) => {
+                        println!("concept\t{child_text}\t{}\t{}", p.name, p.summary);
+                    }
+                    ObjectPayload::ConceptDirectory(_) => {
+                        println!("concept-directory\t{child_text}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ConceptCommand::Rm { qname } => {
+            let qname = normalize_concept_qname(&qname)?;
+            let hash = ws.put_symbol(&qname)?;
+            let object = catalog
+                .get(hash)
+                .with_context(|| format!("concept not found: {qname}"))?;
+            if object.kind == Kind::ConceptDirectory && !catalog.children(hash).is_empty() {
+                bail!("concept directory is not empty: {qname}");
+            }
+            let parent = concept_parent(&ws, &catalog, &qname)?;
+            detach_concept_child(&ws, &mut catalog, parent, hash)?;
+            catalog.remove(hash);
+            save_worktree(&ws, state, &catalog, &qname)?;
+            println!("Removed {qname}");
+        }
+        ConceptCommand::Mv {
+            qname,
+            parent,
+            name,
+        } => {
+            let qname = normalize_concept_qname(&qname)?;
+            let old = ws.put_symbol(&qname)?;
+            let old_object = catalog
+                .get(old)
+                .cloned()
+                .with_context(|| format!("concept not found: {qname}"))?;
+            if old_object.kind == Kind::ConceptDirectory && !catalog.children(old).is_empty() {
+                bail!("cannot move a non-empty concept directory; move its children first");
+            }
+            let old_parent = concept_parent(&ws, &catalog, &qname)?;
+            let parent = parent.trim_end_matches('/').to_owned();
+            let parent_hash = ws.put_symbol(&parent)?;
+            let parent_object = catalog
+                .get(parent_hash)
+                .with_context(|| format!("concept directory not found: {parent}"))?;
+            if parent_object.kind != Kind::ConceptDirectory {
+                bail!("not a concept directory: {parent}");
+            }
+            let local = name.unwrap_or_else(|| local_name(&qname));
+            if local.is_empty() || local.contains('/') {
+                bail!("invalid concept local name: {local}");
+            }
+            let new_qname = format!("{parent}/{local}");
+            ensure_concept_absent(&catalog, &new_qname)?;
+            let new_hash = ws.put_symbol(&new_qname)?;
+            let mut new_object = old_object;
+            match &mut new_object.payload {
+                ObjectPayload::ConceptDirectory(p) => {
+                    p.qualified_name = new_hash;
+                    p.parent = ParentRef::Object(parent_hash);
+                    p.children.clear();
+                }
+                ObjectPayload::Concept(p) => {
+                    p.qualified_name = new_hash;
+                    p.parent = parent_hash;
+                }
+                _ => bail!("not a concept: {qname}"),
+            }
+            format::validate_object(&new_object)?;
+            catalog.insert(new_hash, new_object)?;
+            attach_concept_child(&ws, &mut catalog, parent_hash, new_hash)?;
+            detach_concept_child(&ws, &mut catalog, old_parent, old)?;
+            catalog.remove(old);
+            save_worktree(&ws, state, &catalog, &new_qname)?;
+            println!("Moved {qname} to {new_qname}");
+        }
+        ConceptCommand::Check => {
+            let mut problems = Vec::new();
+            for (qname, object) in catalog.iter() {
+                let name = ws.get_symbol(qname)?;
+                match &object.payload {
+                    ObjectPayload::DocumentText(p) => {
+                        collect_concept_problems(&ws, &catalog, &name, &p.text, &mut problems);
+                    }
+                    ObjectPayload::Concept(p) => {
+                        for text in p
+                            .characteristics
+                            .iter()
+                            .chain(p.relations.iter())
+                            .chain(std::iter::once(&p.explanation))
+                        {
+                            collect_concept_problems(&ws, &catalog, &name, text, &mut problems);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if problems.is_empty() {
+                println!("concept references ok");
+            } else {
+                for problem in &problems {
+                    println!("problem: {problem}");
+                }
+                bail!("concept check found {} problem(s)", problems.len());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ConceptList {
+    Feature,
+    Relation,
+    Alias,
+}
+
+fn concept_list_item(
+    ws: &Workspace,
+    state: State,
+    catalog: &mut Catalog,
+    command: ConceptListItemCommand,
+    list: ConceptList,
+) -> Result<()> {
+    match command {
+        ConceptListItemCommand::Add { qname, text } => {
+            let qname = normalize_concept_qname(&qname)?;
+            let hash = ws.put_symbol(&qname)?;
+            let values = concept_list_mut(catalog, hash, &qname, list)?;
+            values.push(text);
+            let object = catalog
+                .get(hash)
+                .with_context(|| format!("concept not found: {qname}"))?;
+            format::validate_object(object)?;
+            save_worktree(ws, state, catalog, &qname)?;
+            println!("Updated concept {qname}");
+        }
+        ConceptListItemCommand::Rm { qname, index } => {
+            let qname = normalize_concept_qname(&qname)?;
+            let hash = ws.put_symbol(&qname)?;
+            let values = concept_list_mut(catalog, hash, &qname, list)?;
+            if index == 0 || index > values.len() {
+                bail!("list index out of range: {index}");
+            }
+            values.remove(index - 1);
+            let object = catalog
+                .get(hash)
+                .with_context(|| format!("concept not found: {qname}"))?;
+            format::validate_object(object)?;
+            save_worktree(ws, state, catalog, &qname)?;
+            println!("Updated concept {qname}");
+        }
+    }
+    Ok(())
+}
+
+fn concept_list_mut<'a>(
+    catalog: &'a mut Catalog,
+    hash: SymbolHash,
+    qname: &str,
+    list: ConceptList,
+) -> Result<&'a mut Vec<String>> {
+    let object = catalog
+        .get_mut(hash)
+        .with_context(|| format!("concept not found: {qname}"))?;
+    let ObjectPayload::Concept(p) = &mut object.payload else {
+        bail!("not a concept: {qname}");
+    };
+    Ok(match list {
+        ConceptList::Feature => &mut p.characteristics,
+        ConceptList::Relation => &mut p.relations,
+        ConceptList::Alias => &mut p.aliases,
+    })
+}
+
+fn normalize_concept_qname(qname: &str) -> Result<String> {
+    let qname = qname.trim_end_matches('/');
+    if qname == "concepts" || !qname.starts_with("concepts/") {
+        bail!("concept qname must be under concepts/: {qname}");
+    }
+    if qname.split('/').any(|part| part.is_empty()) {
+        bail!("invalid concept qname: {qname}");
+    }
+    Ok(qname.to_owned())
+}
+
+fn ensure_concept_absent(catalog: &Catalog, qname: &str) -> Result<()> {
+    let hash = symbol_hash(qname);
+    if catalog.get(hash).is_some() {
+        bail!("object already exists: {qname}");
+    }
+    Ok(())
+}
+
+fn concept_parent(ws: &Workspace, catalog: &Catalog, qname: &str) -> Result<SymbolHash> {
+    let (parent, local) = qname
+        .rsplit_once('/')
+        .with_context(|| format!("concept qname has no parent: {qname}"))?;
+    if local.is_empty() {
+        bail!("concept qname has no local name: {qname}");
+    }
+    let parent = ws.put_symbol(parent)?;
+    let parent_text = ws.get_symbol(parent)?;
+    let object = catalog
+        .get(parent)
+        .with_context(|| format!("concept directory not found: {parent_text}"))?;
+    if object.kind != Kind::ConceptDirectory {
+        bail!("not a concept directory: {parent_text}");
+    }
+    Ok(parent)
+}
+
+fn attach_concept_child(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    child: SymbolHash,
+) -> Result<()> {
+    let child_text = ws.get_symbol(child)?;
+    let child_hash = format::object_hash(
+        catalog
+            .get(child)
+            .with_context(|| format!("concept not found: {child_text}"))?,
+    )?;
+    let parent_text = ws.get_symbol(parent)?;
+    let object = catalog
+        .get_mut(parent)
+        .with_context(|| format!("concept directory not found: {parent_text}"))?;
+    let ObjectPayload::ConceptDirectory(p) = &mut object.payload else {
+        bail!("not a concept directory: {parent_text}");
+    };
+    p.children.push(child_hash);
+    p.children.sort();
+    p.children.dedup();
+    Ok(())
+}
+
+fn detach_concept_child(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    child: SymbolHash,
+) -> Result<()> {
+    let child_text = ws.get_symbol(child)?;
+    let child_hash = format::object_hash(
+        catalog
+            .get(child)
+            .with_context(|| format!("concept not found: {child_text}"))?,
+    )?;
+    let parent_text = ws.get_symbol(parent)?;
+    let object = catalog
+        .get_mut(parent)
+        .with_context(|| format!("concept directory not found: {parent_text}"))?;
+    let ObjectPayload::ConceptDirectory(p) = &mut object.payload else {
+        bail!("not a concept directory: {parent_text}");
+    };
+    p.children.retain(|hash| *hash != child_hash);
+    Ok(())
+}
+
+fn collect_concept_problems(
+    ws: &Workspace,
+    catalog: &Catalog,
+    owner: &str,
+    text: &str,
+    problems: &mut Vec<String>,
+) {
+    let mut rest = text;
+    while let Some(start) = rest.find("[[concept:") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else {
+            break;
+        };
+        let inner = &after[..end];
+        let target = inner
+            .split_once('|')
+            .map(|(target, _)| target)
+            .unwrap_or(inner)
+            .trim()
+            .strip_prefix("concept:")
+            .unwrap_or("")
+            .trim();
+        if target.is_empty() {
+            problems.push(format!("{owner}: empty concept reference"));
+        } else if let Ok(hash) = ws.put_symbol(target) {
+            match catalog.get(hash) {
+                Some(object) if object.kind == Kind::Concept => {}
+                Some(_) => problems.push(format!("{owner}: {target} is not a concept")),
+                None => problems.push(format!("{owner}: concept not found: {target}")),
+            }
+        }
+        rest = &after[end + 2..];
+    }
 }
 
 fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
@@ -1320,8 +2331,11 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 let parent_object = catalog
                     .get(parent_hash)
                     .with_context(|| format!("parent not found: {parent}"))?;
-                if !matches!(parent_object.kind, Kind::System | Kind::Module) {
-                    bail!("module parent must be a system or module: {parent}");
+                if !matches!(
+                    parent_object.kind,
+                    Kind::System | Kind::Module | Kind::Layer
+                ) {
+                    bail!("module parent must be a system, module or layer: {parent}");
                 }
                 let qname = child_qname(&ws, parent_hash, &name)?;
                 if catalog.get(qname).is_some() {
@@ -1341,6 +2355,101 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 format::validate_object(&object)?;
                 catalog.insert(qname, object)?;
                 save_worktree(&ws, state, &catalog, &format!("{parent}/{name}"))?;
+            }
+        },
+        StructureCommand::Layer { command } => match command {
+            StructureLayerCommand::Create {
+                name,
+                parent,
+                title,
+                order,
+                document,
+            } => {
+                validate_structure_name(&name)?;
+                let parent_hash = ws.put_symbol(&parent)?;
+                let parent_object = catalog
+                    .get(parent_hash)
+                    .with_context(|| format!("parent not found: {parent}"))?;
+                if !matches!(parent_object.kind, Kind::System | Kind::Module) {
+                    bail!("layer parent must be a system or module: {parent}");
+                }
+                let qname = child_qname(&ws, parent_hash, &name)?;
+                if catalog.get(qname).is_some() {
+                    bail!("layer already exists: {name}");
+                }
+                let order = match order {
+                    Some(order) => order,
+                    None => next_layer_order(&catalog, parent_hash),
+                };
+                validate_layer_order(&catalog, parent_hash, order, None)?;
+                let object = DesignObject::new(
+                    Kind::Layer,
+                    ObjectPayload::Layer(LayerPayload {
+                        qualified_name: qname,
+                        parent: parent_hash,
+                        title: title.unwrap_or_else(|| name.clone()),
+                        order,
+                        document: optional_ref(&ws, document.as_deref())?,
+                        members: vec![],
+                        children: vec![],
+                    }),
+                );
+                format::validate_object(&object)?;
+                catalog.insert(qname, object)?;
+                save_worktree(&ws, state, &catalog, &format!("{parent}/{name}"))?;
+            }
+            StructureLayerCommand::Set {
+                qname,
+                title,
+                order,
+                document,
+            } => {
+                let hash = ws.put_symbol(&qname)?;
+                let layer = catalog
+                    .get(hash)
+                    .with_context(|| format!("layer not found: {qname}"))?;
+                let ObjectPayload::Layer(existing) = &layer.payload else {
+                    bail!("not a layer: {qname}");
+                };
+                let parent = existing.parent;
+                if let Some(order) = order {
+                    validate_layer_order(&catalog, parent, order, Some(hash))?;
+                }
+                let document = document
+                    .as_deref()
+                    .map(|document| optional_ref(&ws, Some(document)))
+                    .transpose()?;
+                let object = catalog
+                    .get_mut(hash)
+                    .with_context(|| format!("layer not found: {qname}"))?;
+                let ObjectPayload::Layer(p) = &mut object.payload else {
+                    bail!("not a layer: {qname}");
+                };
+                if let Some(order) = order {
+                    p.order = order;
+                }
+                if let Some(title) = title {
+                    p.title = title;
+                }
+                if let Some(document) = document {
+                    p.document = document;
+                }
+                format::validate_object(object)?;
+                save_worktree(&ws, state, &catalog, &qname)?;
+            }
+            StructureLayerCommand::Rm { qname } => {
+                let hash = ws.put_symbol(&qname)?;
+                let object = catalog
+                    .get(hash)
+                    .with_context(|| format!("layer not found: {qname}"))?;
+                let ObjectPayload::Layer(p) = &object.payload else {
+                    bail!("not a layer: {qname}");
+                };
+                if !p.members.is_empty() || !p.children.is_empty() {
+                    bail!("layer is not empty: {qname}");
+                }
+                catalog.remove(hash);
+                save_worktree(&ws, state, &catalog, &qname)?;
             }
         },
         StructureCommand::Assign { module, members } => {
@@ -1365,7 +2474,8 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 let members = match &mut object.payload {
                     ObjectPayload::System(p) => &mut p.members,
                     ObjectPayload::Module(p) => &mut p.members,
-                    _ => bail!("not a system or module: {module}"),
+                    ObjectPayload::Layer(p) => &mut p.members,
+                    _ => bail!("not a system, module or layer: {module}"),
                 };
                 members.extend(member_hashes);
                 members.sort();
@@ -1384,7 +2494,8 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 let members = match &mut object.payload {
                     ObjectPayload::System(p) => &mut p.members,
                     ObjectPayload::Module(p) => &mut p.members,
-                    _ => bail!("not a system or module: {module}"),
+                    ObjectPayload::Layer(p) => &mut p.members,
+                    _ => bail!("not a system, module or layer: {module}"),
                 };
                 members.retain(|member| !member_hashes.contains(member));
                 format::validate_object(object)?;
@@ -1397,7 +2508,7 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 .filter(|(_, object)| {
                     matches!(
                         object.kind,
-                        Kind::DesignStructure | Kind::System | Kind::Module
+                        Kind::DesignStructure | Kind::System | Kind::Module | Kind::Layer
                     )
                 })
                 .map(|(qname, object)| {
@@ -1421,13 +2532,16 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 .with_context(|| format!("object not found: {qname}"))?;
             if !matches!(
                 object.kind,
-                Kind::DesignStructure | Kind::System | Kind::Module
+                Kind::DesignStructure | Kind::System | Kind::Module | Kind::Layer
             ) {
-                bail!("not a system or module: {qname}");
+                bail!("not a system, module or layer: {qname}");
             }
             println!("{qname}");
             println!("kind: {}", structure_kind_label(object.kind));
             println!("title: {}", structure_title(object).unwrap_or_default());
+            if let ObjectPayload::Layer(p) = &object.payload {
+                println!("order: {}", p.order);
+            }
             println!(
                 "document: {}",
                 structure_document(&ws, object).unwrap_or_default()
@@ -1501,6 +2615,120 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                     _ => {}
                 }
             }
+            let mut owners = BTreeMap::new();
+            for (qname, object) in catalog.iter() {
+                for member in structure_members(object) {
+                    if let Some(previous) = owners.insert(*member, qname) {
+                        problems.push(format!(
+                            "{} belongs to both {} and {}",
+                            ws.get_symbol(*member).unwrap_or_default(),
+                            ws.get_symbol(previous).unwrap_or_default(),
+                            ws.get_symbol(qname).unwrap_or_default()
+                        ));
+                    }
+                }
+            }
+            let mut layer_rows: BTreeMap<SymbolHash, (SymbolHash, u32, String)> = BTreeMap::new();
+            for (qname, object) in catalog.iter() {
+                let ObjectPayload::Layer(p) = &object.payload else {
+                    continue;
+                };
+                let name = ws.get_symbol(qname).unwrap_or_default();
+                if !catalog
+                    .get(p.parent)
+                    .is_some_and(|parent| matches!(parent.kind, Kind::System | Kind::Module))
+                {
+                    problems.push(format!("layer parent must be a system or module: {name}"));
+                }
+                if p.members.is_empty() && p.children.is_empty() {
+                    problems.push(format!("layer is empty: {name}"));
+                }
+                if catalog.children(qname).iter().any(|child| {
+                    catalog
+                        .get(*child)
+                        .is_some_and(|object| object.kind == Kind::Layer)
+                }) {
+                    problems.push(format!("layer cannot contain another layer: {name}"));
+                }
+                if p.order == 0 {
+                    problems.push(format!("layer order must start at 1: {name}"));
+                }
+                layer_rows.insert(qname, (p.parent, p.order, name));
+            }
+            let layers = layer_rows.iter().collect::<Vec<_>>();
+            for (index, (_, (parent, order, name))) in layers.iter().enumerate() {
+                for (_, (other_parent, other_order, other_name)) in &layers[index + 1..] {
+                    if parent == other_parent && order == other_order {
+                        problems.push(format!(
+                            "layers {} and {} use the same order {}",
+                            name, other_name, order
+                        ));
+                    }
+                }
+            }
+            for (qname, object) in catalog.iter() {
+                if !matches!(object.kind, Kind::System | Kind::Module) {
+                    continue;
+                }
+                let name = ws.get_symbol(qname).unwrap_or_default();
+                let children = catalog.children(qname);
+                let has_layers = children.iter().any(|child| {
+                    catalog
+                        .get(*child)
+                        .is_some_and(|object| object.kind == Kind::Layer)
+                });
+                if !has_layers {
+                    continue;
+                }
+                if !structure_members(object).is_empty() {
+                    problems.push(format!(
+                        "layered container has direct members; assign them to layers: {name}"
+                    ));
+                }
+                if children.iter().any(|child| {
+                    catalog
+                        .get(*child)
+                        .is_some_and(|object| object.kind == Kind::Module)
+                }) {
+                    problems.push(format!(
+                        "layered container has direct modules; put them inside layers: {name}"
+                    ));
+                }
+            }
+            for (qname, object) in catalog.iter() {
+                let Some(owner) = owners.get(&qname) else {
+                    continue;
+                };
+                let Some(layer_a) = layer_for_owner(*owner, &catalog) else {
+                    continue;
+                };
+                let Some((parent_a, order_a, name_a)) = layer_rows.get(&layer_a) else {
+                    continue;
+                };
+                for target in object_dependency_targets(object) {
+                    let Some(target_owner) = owners.get(&target) else {
+                        continue;
+                    };
+                    let Some(layer_b) = layer_for_owner(*target_owner, &catalog) else {
+                        continue;
+                    };
+                    if layer_a == layer_b {
+                        continue;
+                    }
+                    let Some((parent_b, order_b, name_b)) = layer_rows.get(&layer_b) else {
+                        continue;
+                    };
+                    if parent_a != parent_b {
+                        continue;
+                    }
+                    if order_a.abs_diff(*order_b) > 1 {
+                        problems.push(format!(
+                            "layers {} and {} interact but are not adjacent",
+                            name_a, name_b
+                        ));
+                    }
+                }
+            }
             if problems.is_empty() {
                 println!(
                     "structure ok: {} top-level element(s), {} assigned",
@@ -1549,6 +2777,46 @@ fn validate_structure_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+fn sibling_layers(catalog: &Catalog, parent: SymbolHash) -> Vec<(SymbolHash, u32)> {
+    catalog
+        .children(parent)
+        .into_iter()
+        .filter_map(|child| {
+            let object = catalog.get(child)?;
+            let ObjectPayload::Layer(p) = &object.payload else {
+                return None;
+            };
+            Some((child, p.order))
+        })
+        .collect()
+}
+
+fn next_layer_order(catalog: &Catalog, parent: SymbolHash) -> u32 {
+    sibling_layers(catalog, parent)
+        .into_iter()
+        .map(|(_, order)| order)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
+fn validate_layer_order(
+    catalog: &Catalog,
+    parent: SymbolHash,
+    order: u32,
+    exclude: Option<SymbolHash>,
+) -> Result<()> {
+    if order == 0 {
+        bail!("layer order must start at 1");
+    }
+    for (layer, existing) in sibling_layers(catalog, parent) {
+        if Some(layer) != exclude && existing == order {
+            bail!("layer order {order} is already used by a sibling layer");
+        }
+    }
+    Ok(())
+}
+
 fn structure_member_hashes(
     ws: &Workspace,
     catalog: &Catalog,
@@ -1578,6 +2846,7 @@ fn structure_kind_label(kind: Kind) -> &'static str {
         Kind::DesignStructure => "design-structure",
         Kind::System => "system",
         Kind::Module => "module",
+        Kind::Layer => "layer",
         _ => "object",
     }
 }
@@ -1587,6 +2856,7 @@ fn structure_title(object: &DesignObject) -> Option<String> {
         ObjectPayload::DesignStructure(p) => Some(p.title.clone()),
         ObjectPayload::System(p) => Some(p.title.clone()),
         ObjectPayload::Module(p) => Some(p.title.clone()),
+        ObjectPayload::Layer(p) => Some(p.title.clone()),
         _ => None,
     }
 }
@@ -1596,6 +2866,7 @@ fn structure_document(ws: &Workspace, object: &DesignObject) -> Option<String> {
         ObjectPayload::DesignStructure(p) => p.document,
         ObjectPayload::System(p) => p.document,
         ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Layer(p) => p.document,
         _ => return None,
     };
     (!document.is_zero()).then(|| ws.get_symbol(document).unwrap_or_default())
@@ -1605,7 +2876,42 @@ fn structure_members(object: &DesignObject) -> &[SymbolHash] {
     match &object.payload {
         ObjectPayload::System(p) => &p.members,
         ObjectPayload::Module(p) => &p.members,
+        ObjectPayload::Layer(p) => &p.members,
         _ => &[],
+    }
+}
+
+fn object_dependency_targets(object: &DesignObject) -> Vec<SymbolHash> {
+    let (explicit, implicit) = match &object.payload {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            (&p.explicit_dependencies, &p.implicit_dependencies)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            (&p.explicit_dependencies, &p.implicit_dependencies)
+        }
+        ObjectPayload::Method(p) => (&p.explicit_dependencies, &p.implicit_dependencies),
+        ObjectPayload::Function(p) => (&p.explicit_dependencies, &p.implicit_dependencies),
+        ObjectPayload::Part(p) => (&p.explicit_dependencies, &p.implicit_dependencies),
+        ObjectPayload::Mixin(p) => (&p.explicit_dependencies, &p.implicit_dependencies),
+        _ => return Vec::new(),
+    };
+    explicit
+        .iter()
+        .chain(implicit.iter())
+        .map(|dependency| dependency.target)
+        .collect()
+}
+
+fn layer_for_owner(owner: SymbolHash, catalog: &Catalog) -> Option<SymbolHash> {
+    let mut current = owner;
+    loop {
+        let object = catalog.get(current)?;
+        match &object.payload {
+            ObjectPayload::Layer(_) => return Some(current),
+            ObjectPayload::Module(p) => current = p.parent,
+            ObjectPayload::System(_) => return None,
+            _ => return None,
+        }
     }
 }
 
@@ -1618,7 +2924,9 @@ struct DocPlacement {
     /// The owning System/Module/element, or `None` for a System whose parent is
     /// the technical document itself.
     parent: Option<SymbolHash>,
-    title: String,
+    /// Expected title. `None` means the writer owns the title; `doc layout`
+    /// creates a placeholder and never rewrites an existing one.
+    title: Option<String>,
 }
 
 fn expected_doc_placements(ws: &Workspace, catalog: &Catalog) -> Result<Vec<DocPlacement>> {
@@ -1660,8 +2968,29 @@ fn push_container_placement(
     out.push(DocPlacement {
         object,
         parent,
-        title,
+        title: Some(title),
     });
+    let mut layers = catalog
+        .children(object)
+        .into_iter()
+        .filter(|child| {
+            catalog
+                .get(*child)
+                .is_some_and(|object| object.kind == Kind::Layer)
+        })
+        .collect::<Vec<_>>();
+    layers.sort_by_key(|child| {
+        catalog
+            .get(*child)
+            .and_then(|object| match &object.payload {
+                ObjectPayload::Layer(layer) => Some(layer.order),
+                _ => None,
+            })
+            .unwrap_or(u32::MAX)
+    });
+    for layer in &layers {
+        push_layer_placement(ws, catalog, *layer, Some(object), out)?;
+    }
     let modules = catalog
         .children(object)
         .into_iter()
@@ -1685,6 +3014,48 @@ fn push_container_placement(
     Ok(())
 }
 
+fn push_layer_placement(
+    ws: &Workspace,
+    catalog: &Catalog,
+    layer: SymbolHash,
+    parent: Option<SymbolHash>,
+    out: &mut Vec<DocPlacement>,
+) -> Result<()> {
+    let object = catalog.get(layer).with_context(|| {
+        format!(
+            "object not found: {}",
+            ws.get_symbol(layer).unwrap_or_default()
+        )
+    })?;
+    let ObjectPayload::Layer(payload) = &object.payload else {
+        bail!("{} is not a layer", ws.get_symbol(layer)?);
+    };
+    out.push(DocPlacement {
+        object: layer,
+        parent,
+        title: Some(payload.title.clone()),
+    });
+    let mut modules = catalog
+        .children(layer)
+        .into_iter()
+        .filter(|child| {
+            catalog
+                .get(*child)
+                .is_some_and(|object| object.kind == Kind::Module)
+        })
+        .collect::<Vec<_>>();
+    modules.sort_by_key(|child| ws.get_symbol(*child).unwrap_or_default());
+    for module in modules {
+        push_container_placement(ws, catalog, module, Some(layer), out)?;
+    }
+    let mut members = structure_members(object).to_vec();
+    members.sort_by_key(|member| ws.get_symbol(*member).unwrap_or_default());
+    for member in members {
+        push_element_placement(ws, catalog, member, Some(layer), out)?;
+    }
+    Ok(())
+}
+
 fn push_element_placement(
     ws: &Workspace,
     catalog: &Catalog,
@@ -1693,10 +3064,21 @@ fn push_element_placement(
     out: &mut Vec<DocPlacement>,
 ) -> Result<()> {
     let name = ws.get_symbol(element)?;
+    let object = catalog
+        .get(element)
+        .with_context(|| format!("object not found: {name}"))?;
+    // Function and method headings must show the prototype, which the writer
+    // knows from the source. Layout creates a placeholder but never overwrites
+    // the title. The object's qname is unchanged.
+    let title = if matches!(object.kind, Kind::Function | Kind::Method) {
+        None
+    } else {
+        Some(element_title(&name))
+    };
     out.push(DocPlacement {
         object: element,
         parent,
-        title: element_title(&name),
+        title,
     });
     let mut nested = Vec::new();
     for (qname, object) in catalog.iter() {
@@ -1875,12 +3257,16 @@ fn doc_layout(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
                 }
             }
             _ => {
-                let created = add_doc_section(ws, catalog, parent, &placement.title)?;
+                let placeholder = element_title(&object_text);
+                let title = placement.title.as_deref().unwrap_or(&placeholder);
+                let created = add_doc_section(ws, catalog, parent, title)?;
                 changes += 1;
                 created
             }
         };
-        if set_section_title(catalog, section, &placement.title)? {
+        if let Some(title) = &placement.title
+            && set_section_title(catalog, section, title)?
+        {
             changes += 1;
         }
         set_document(
@@ -1980,16 +3366,33 @@ fn doc_check(ws: &Workspace, catalog: &Catalog) -> Result<()> {
                 ws.get_symbol(expected)?
             ));
         }
-        if let Some(section) = catalog.get(document)
+        if let Some(expected) = &placement.title
+            && let Some(section) = catalog.get(document)
             && let ObjectPayload::DocumentSection(payload) = &section.payload
-            && payload.title != placement.title
+            && payload.title != *expected
         {
             problems.push(format!(
                 "{}: Section title is {:?}, expected {:?}",
                 ws.get_symbol(placement.object)?,
                 payload.title,
-                placement.title
+                expected
             ));
+        }
+        if placement.title.is_none()
+            && let Some(section) = catalog.get(document)
+            && let ObjectPayload::DocumentSection(payload) = &section.payload
+        {
+            let short = element_title(&ws.get_symbol(placement.object)?);
+            if payload.title.trim().is_empty()
+                || payload.title.trim() == short
+                || payload.title.contains('#')
+            {
+                problems.push(format!(
+                    "{}: Section title must show the function prototype, not {:?}",
+                    ws.get_symbol(placement.object)?,
+                    payload.title
+                ));
+            }
         }
     }
     let mut namespaces = catalog
@@ -2288,6 +3691,9 @@ fn doc_comments(object: &DesignObject) -> Option<&[DocComment]> {
         ObjectPayload::DocumentList(p) => Some(&p.comments),
         ObjectPayload::DocumentText(p) => Some(&p.comments),
         ObjectPayload::DocumentTopic(p) => Some(&p.comments),
+        ObjectPayload::Block(p) => Some(&p.comments),
+        ObjectPayload::MermaidBlock(p) => Some(&p.comments),
+        ObjectPayload::HtmlBlock(p) => Some(&p.comments),
         _ => None,
     }
 }
@@ -2300,6 +3706,9 @@ fn doc_comments_mut(object: &mut DesignObject) -> Option<&mut Vec<DocComment>> {
         ObjectPayload::DocumentList(p) => Some(&mut p.comments),
         ObjectPayload::DocumentText(p) => Some(&mut p.comments),
         ObjectPayload::DocumentTopic(p) => Some(&mut p.comments),
+        ObjectPayload::Block(p) => Some(&mut p.comments),
+        ObjectPayload::MermaidBlock(p) => Some(&mut p.comments),
+        ObjectPayload::HtmlBlock(p) => Some(&mut p.comments),
         _ => None,
     }
 }
@@ -2324,6 +3733,15 @@ fn escape_comment_text(text: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+}
+
+fn print_comment(qname: Option<&str>, comment: &DocComment) {
+    let status = comment_status(comment);
+    let text = escape_comment_text(&comment.text);
+    match qname {
+        Some(qname) => println!("{qname}\tcomment{}\t{status}\t{text}", comment.id),
+        None => println!("comment{}\t{status}\t{text}", comment.id),
+    }
 }
 
 fn comments_text(comments: &[DocComment]) -> String {
@@ -2363,6 +3781,18 @@ fn doc_show(ws: &Workspace, catalog: &Catalog, qname: &str) -> Result<()> {
     render_doc(ws, catalog, hash, object, 0)
 }
 
+/// Reading order for the preset design documents: directory, namespace,
+/// technical, then drafts last.
+fn design_document_rank(name: &str) -> u8 {
+    match name.rsplit('/').next() {
+        Some("directory") => 0,
+        Some("namespace") => 1,
+        Some("technical") => 2,
+        Some("drafts" | "proposals") => 3,
+        _ => 2,
+    }
+}
+
 fn render_doc(
     ws: &Workspace,
     catalog: &Catalog,
@@ -2379,7 +3809,15 @@ fn render_doc(
             for child in catalog.children(qname) {
                 children.push((ws.get_symbol(child)?, child));
             }
-            children.sort_by(|left, right| left.0.cmp(&right.0));
+            if name == "documents/design" {
+                children.sort_by(|left, right| {
+                    design_document_rank(&left.0)
+                        .cmp(&design_document_rank(&right.0))
+                        .then_with(|| left.0.cmp(&right.0))
+                });
+            } else {
+                children.sort_by(|left, right| left.0.cmp(&right.0));
+            }
             for (_, child) in children {
                 let child_object = catalog.get(child).context("missing child")?;
                 render_doc(ws, catalog, child, child_object, depth + 1)?;
@@ -2412,6 +3850,24 @@ fn render_doc(
         }
         ObjectPayload::DocumentText(p) => {
             println!("{indent}{name}  text {:?}", p.text);
+        }
+        ObjectPayload::Block(p) => {
+            println!("{indent}{name}  block {:?}", p.language);
+            for line in p.text.lines() {
+                println!("{indent}  {line}");
+            }
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            println!("{indent}{name}  mermaid");
+            for line in p.text.lines() {
+                println!("{indent}  {line}");
+            }
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            println!("{indent}{name}  html");
+            for line in p.text.lines() {
+                println!("{indent}  {line}");
+            }
         }
         ObjectPayload::DocumentTopic(p) => {
             println!("{indent}{name}  topic {:?}", p.title);
@@ -2551,10 +4007,16 @@ fn object_source_path(ws: &Workspace, object: &DesignObject) -> Result<Option<St
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_)
         | ObjectPayload::DesignStructure(_)
         | ObjectPayload::System(_)
-        | ObjectPayload::Module(_) => None,
+        | ObjectPayload::Module(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Layer(_) => None,
     };
     match symbol {
         Some(symbol) => Ok(Some(ws.get_symbol(symbol)?)),
@@ -2604,7 +4066,14 @@ fn set_object_source(ws: &Workspace, object: &mut DesignObject, path: &str) -> R
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_) => bail!("document objects have no source"),
+        ObjectPayload::ConceptDirectory(_) | ObjectPayload::Concept(_) => {
+            bail!("concept objects have no source")
+        }
+        ObjectPayload::Layer(_) => bail!("layer objects have no source"),
         ObjectPayload::DesignStructure(_) | ObjectPayload::System(_) | ObjectPayload::Module(_) => {
             bail!("structure objects have no source")
         }
@@ -3337,12 +4806,19 @@ fn apply_structure_edit(
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_) => {
             bail!("document objects are edited with `ds doc`")
         }
         ObjectPayload::DesignStructure(_) | ObjectPayload::System(_) | ObjectPayload::Module(_) => {
             bail!("structure objects are edited with `ds structure`")
         }
+        ObjectPayload::ConceptDirectory(_) | ObjectPayload::Concept(_) => {
+            bail!("concepts are edited with `ds concept`")
+        }
+        ObjectPayload::Layer(_) => bail!("layers are edited with `ds structure`"),
     }
     Ok(())
 }
@@ -3421,12 +4897,19 @@ fn apply_rename(ws: &Workspace, object: &mut DesignObject, name: Option<&str>) -
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_) => {
             bail!("document fragments have fixed local names; create a new fragment")
         }
         ObjectPayload::DesignStructure(_) | ObjectPayload::System(_) | ObjectPayload::Module(_) => {
             bail!("structure objects have fixed local names; create a new object")
         }
+        ObjectPayload::ConceptDirectory(_) | ObjectPayload::Concept(_) => {
+            bail!("concepts are renamed with `ds concept`")
+        }
+        ObjectPayload::Layer(_) => bail!("layers are renamed with `ds structure`"),
     }
     Ok(())
 }
@@ -3687,12 +5170,18 @@ fn set_document(object: &mut DesignObject, document: SymbolHash) -> Result<()> {
         ObjectPayload::Function(p) => p.document = document,
         ObjectPayload::Part(_) => bail!("part has no document reference"),
         ObjectPayload::Mixin(p) => p.document = document,
+        ObjectPayload::Layer(p) => p.document = document,
         ObjectPayload::DocumentDirectory(_)
         | ObjectPayload::Document(_)
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
-        | ObjectPayload::DocumentTopic(_) => {
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_) => {
             bail!("document objects have no design document field")
         }
         ObjectPayload::DesignStructure(p) => p.document = document,
@@ -3764,7 +5253,14 @@ fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_) => bail!("document objects have no source"),
+        ObjectPayload::ConceptDirectory(_) | ObjectPayload::Concept(_) => {
+            bail!("concept objects have no source")
+        }
+        ObjectPayload::Layer(_) => bail!("layer objects have no source"),
         ObjectPayload::DesignStructure(_) | ObjectPayload::System(_) | ObjectPayload::Module(_) => {
             bail!("structure objects have no source")
         }
@@ -4562,9 +6058,15 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::DocumentList => "document-list",
         Kind::DocumentText => "document-text",
         Kind::DocumentTopic => "document-topic",
+        Kind::Block => "document-block",
+        Kind::MermaidBlock => "document-mermaid",
+        Kind::HtmlBlock => "document-html",
         Kind::DesignStructure => "design-structure",
         Kind::System => "system",
         Kind::Module => "module",
+        Kind::ConceptDirectory => "concept-directory",
+        Kind::Concept => "concept",
+        Kind::Layer => "layer",
     }
 }
 
@@ -4741,6 +6243,7 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             fields.insert("namespaces", p.namespaces.to_hex());
             fields.insert("documents", p.documents.to_hex());
             fields.insert("design", format_hash(p.design.0));
+            fields.insert("concepts", format_hash(p.concepts.0));
         }
         ObjectPayload::Directory(p) => {
             fields.insert("parent", parent_ref_text(ws, p.parent));
@@ -4934,6 +6437,22 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             fields.insert("paragraphs", symbol_list_text(ws, &p.paragraphs));
             fields.insert("comments", comments_text(&p.comments));
         }
+        ObjectPayload::Block(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("language", p.language.clone());
+            fields.insert("text", p.text.clone());
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("text", p.text.clone());
+            fields.insert("comments", comments_text(&p.comments));
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("text", p.text.clone());
+            fields.insert("comments", comments_text(&p.comments));
+        }
         ObjectPayload::DesignStructure(p) => {
             fields.insert("parent", parent_ref_text(ws, p.parent));
             fields.insert("title", p.title.clone());
@@ -4948,6 +6467,25 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
         ObjectPayload::Module(p) => {
             fields.insert("parent", symbol_text(ws, p.parent));
             fields.insert("title", p.title.clone());
+            fields.insert("document", symbol_text(ws, p.document));
+            fields.insert("members", symbol_list_text(ws, &p.members));
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            fields.insert("parent", parent_ref_text(ws, p.parent));
+        }
+        ObjectPayload::Concept(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("name", p.name.clone());
+            fields.insert("summary", p.summary.clone());
+            fields.insert("explanation", p.explanation.clone());
+            fields.insert("characteristics", p.characteristics.join(" | "));
+            fields.insert("relations", p.relations.join(" | "));
+            fields.insert("aliases", p.aliases.join(", "));
+        }
+        ObjectPayload::Layer(p) => {
+            fields.insert("parent", symbol_text(ws, p.parent));
+            fields.insert("title", p.title.clone());
+            fields.insert("order", p.order.to_string());
             fields.insert("document", symbol_text(ws, p.document));
             fields.insert("members", symbol_list_text(ws, &p.members));
         }
@@ -5060,7 +6598,7 @@ fn dependencies_text(ws: &Workspace, dependencies: &[Dependency]) -> Result<Stri
     Ok(out.join("; "))
 }
 
-fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
+fn rm(dir: Option<PathBuf>, name: &str, force: bool, recursive: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let state = ws
         .read_worktree()?
@@ -5076,11 +6614,47 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
     if catalog.get(qname).is_none() {
         bail!("object not found: {name}");
     }
+
+    if recursive {
+        let mut order = Vec::new();
+        collect_subtree(&catalog, qname, &mut order);
+        let subtree = order.iter().copied().collect::<BTreeSet<_>>();
+        for object in &order {
+            remove_object(&ws, &mut catalog, *object, force, &subtree)?;
+        }
+        println!("Removed {} object(s) under {name}", order.len());
+    } else {
+        remove_object(&ws, &mut catalog, qname, force, &BTreeSet::new())?;
+    }
+
+    let view = catalog.rebuild(ws.store())?;
+    ws.write_worktree(State {
+        base_commit: state.base_commit,
+        root_view: view,
+    })?;
+    Ok(())
+}
+
+fn collect_subtree(catalog: &Catalog, qname: SymbolHash, out: &mut Vec<SymbolHash>) {
+    for child in catalog.children(qname) {
+        collect_subtree(catalog, child, out);
+    }
+    out.push(qname);
+}
+
+fn remove_object(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    qname: SymbolHash,
+    force: bool,
+    subtree: &BTreeSet<SymbolHash>,
+) -> Result<()> {
+    let name = ws.get_symbol(qname)?;
     let children = catalog.children(qname);
     if !children.is_empty() {
         let names = children
             .iter()
-            .map(|child| symbol_text(&ws, *child))
+            .map(|child| symbol_text(ws, *child))
             .collect::<Vec<_>>()
             .join(", ");
         bail!("object has children; remove them first: {names}");
@@ -5091,15 +6665,19 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
         };
         if structure_members(object).contains(&qname) {
             remove_references_to(object, qname);
-            println!("Unassigned from {}", symbol_text(&ws, module));
+            println!("Unassigned from {}", symbol_text(ws, module));
         }
     }
-    let references = catalog.references_to(qname);
+    let references = catalog
+        .references_to(qname)
+        .into_iter()
+        .filter(|reference| !subtree.contains(reference))
+        .collect::<Vec<_>>();
     if !references.is_empty() {
         if !force {
             let names = references
                 .iter()
-                .map(|reference| symbol_text(&ws, *reference))
+                .map(|reference| symbol_text(ws, *reference))
                 .collect::<Vec<_>>()
                 .join(", ");
             bail!("object is referenced by: {names}");
@@ -5109,7 +6687,7 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
             if let Some(object) = catalog.get_mut(reference)
                 && remove_references_to(object, qname)
             {
-                changed.push(symbol_text(&ws, reference));
+                changed.push(symbol_text(ws, reference));
             }
         }
         changed.sort();
@@ -5123,15 +6701,10 @@ fn rm(dir: Option<PathBuf>, name: &str, force: bool) -> Result<()> {
         if let Some(object) = catalog.get_mut(parent)
             && remove_references_to(object, qname)
         {
-            println!("Removed from {}", symbol_text(&ws, parent));
+            println!("Removed from {}", symbol_text(ws, parent));
         }
     }
     catalog.remove(qname);
-    let view = catalog.rebuild(ws.store())?;
-    ws.write_worktree(State {
-        base_commit: state.base_commit,
-        root_view: view,
-    })?;
     println!("Removed {name}");
     Ok(())
 }
@@ -5240,6 +6813,9 @@ fn is_document_kind(kind: Kind) -> bool {
             | Kind::DocumentList
             | Kind::DocumentText
             | Kind::DocumentTopic
+            | Kind::Block
+            | Kind::MermaidBlock
+            | Kind::HtmlBlock
     )
 }
 
@@ -5257,13 +6833,19 @@ fn document_of(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::DesignStructure(p) => p.document,
         ObjectPayload::System(p) => p.document,
         ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Layer(p) => p.document,
         ObjectPayload::Part(_)
         | ObjectPayload::DocumentDirectory(_)
         | ObjectPayload::Document(_)
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
-        | ObjectPayload::DocumentTopic(_) => return None,
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
+        | ObjectPayload::DocumentTopic(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_) => return None,
     };
     (!target.is_zero()).then_some(target)
 }
@@ -5373,6 +6955,22 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             println!("text: {}", p.text);
             println!("comments: {}", comments_text(&p.comments));
         }
+        ObjectPayload::Block(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("language: {}", p.language);
+            println!("text: {}", p.text);
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("text: {}", p.text);
+            println!("comments: {}", comments_text(&p.comments));
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("text: {}", p.text);
+            println!("comments: {}", comments_text(&p.comments));
+        }
         ObjectPayload::DocumentTopic(p) => {
             println!("parent: {}", symbol_text(&ws, p.parent));
             println!("title: {}", p.title);
@@ -5395,6 +6993,25 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             println!("title: {}", p.title);
             print_document(&ws, p.document);
             print_symbol_list("members", &p.members, &ws)?;
+        }
+        ObjectPayload::Layer(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("title: {}", p.title);
+            println!("order: {}", p.order);
+            print_document(&ws, p.document);
+            print_symbol_list("members", &p.members, &ws)?;
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            println!("parent: {}", parent_ref_text(&ws, p.parent));
+        }
+        ObjectPayload::Concept(p) => {
+            println!("parent: {}", symbol_text(&ws, p.parent));
+            println!("name: {}", p.name);
+            println!("summary: {}", p.summary);
+            println!("explanation: {}", p.explanation);
+            print_string_list("characteristics", &p.characteristics);
+            print_string_list("relations", &p.relations);
+            print_string_list("aliases", &p.aliases);
         }
     }
     let children = catalog.children(qname);
@@ -5443,10 +7060,16 @@ fn print_source_content(ws: &Workspace, catalog: &Catalog, object: &DesignObject
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_)
         | ObjectPayload::DesignStructure(_)
         | ObjectPayload::System(_)
-        | ObjectPayload::Module(_) => bail!("object has no source anchor"),
+        | ObjectPayload::Module(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Layer(_) => bail!("object has no source anchor"),
     };
     let path = ws.get_symbol(path)?;
     let bytes = repo.read_path(&commit, &path)?;
@@ -5590,7 +7213,7 @@ fn mark_view(
     let ObjectPayload::View(p) = &view.payload else {
         bail!("commit does not point at a view");
     };
-    for root in [p.files, p.namespaces, p.documents, p.design] {
+    for root in [p.files, p.namespaces, p.documents, p.design, p.concepts] {
         mark_object(ws, root, objects, docs, symbols)?;
     }
     Ok(())
@@ -5743,6 +7366,18 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
             out.push(p.qualified_name);
             out.push(p.parent);
         }
+        ObjectPayload::Block(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
+        }
         ObjectPayload::DocumentTopic(p) => {
             out.push(p.qualified_name);
             out.push(p.parent);
@@ -5764,6 +7399,20 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
             out.push(p.document);
             out.push(p.parent);
             out.extend(p.members.iter().copied());
+        }
+        ObjectPayload::Layer(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            out.push(p.parent);
+            out.extend(p.members.iter().copied());
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            out.push(p.qualified_name);
+            push_parent_ref(&mut out, p.parent);
+        }
+        ObjectPayload::Concept(p) => {
+            out.push(p.qualified_name);
+            out.push(p.parent);
         }
     }
     out.retain(|hash| !hash.is_zero());
@@ -5804,10 +7453,16 @@ fn object_docs(object: &DesignObject) -> Vec<DocHash> {
         | ObjectPayload::DocumentSection(_)
         | ObjectPayload::DocumentList(_)
         | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_)
         | ObjectPayload::DocumentTopic(_)
         | ObjectPayload::DesignStructure(_)
         | ObjectPayload::System(_)
-        | ObjectPayload::Module(_) => {}
+        | ObjectPayload::Module(_)
+        | ObjectPayload::ConceptDirectory(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Layer(_) => {}
     }
     out.retain(|hash| !hash.is_zero());
     out
@@ -6542,9 +8197,15 @@ fn object_qname(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::DocumentList(p) => Some(p.qualified_name),
         ObjectPayload::DocumentText(p) => Some(p.qualified_name),
         ObjectPayload::DocumentTopic(p) => Some(p.qualified_name),
+        ObjectPayload::Block(p) => Some(p.qualified_name),
+        ObjectPayload::MermaidBlock(p) => Some(p.qualified_name),
+        ObjectPayload::HtmlBlock(p) => Some(p.qualified_name),
         ObjectPayload::DesignStructure(p) => Some(p.qualified_name),
         ObjectPayload::System(p) => Some(p.qualified_name),
         ObjectPayload::Module(p) => Some(p.qualified_name),
+        ObjectPayload::ConceptDirectory(p) => Some(p.qualified_name),
+        ObjectPayload::Concept(p) => Some(p.qualified_name),
+        ObjectPayload::Layer(p) => Some(p.qualified_name),
     }
 }
 
@@ -6595,6 +8256,12 @@ fn print_symbol_list(label: &str, symbols: &[SymbolHash], ws: &Workspace) -> Res
         println!("{label}: {}", names.join(", "));
     }
     Ok(())
+}
+
+fn print_string_list(label: &str, items: &[String]) {
+    for item in items {
+        println!("{label}: {item}");
+    }
 }
 
 fn print_class_parent(parent: ClassParent, ws: &Workspace) -> Result<()> {

@@ -1,9 +1,13 @@
 //! Credentials for remote agent processes.
 //!
-//! Agentd authenticates with its agent token and asks for the credentials of
-//! one task. The control plane verifies that the account is an active actor on
-//! that task, then mints a short-lived repository token.
+//! Agentd authenticates with its agent token and asks for two different kinds
+//! of credential:
+//!
+//! - the design-space key belongs to the agent account and is installed once
+//!   when the agent's shell starts;
+//! - the GitHub token belongs to one task/repository and is short-lived.
 
+use crate::ds_ssh::DsSsh;
 use crate::github_app::{GitCredential, GitHubApp};
 use axum::{
     Json, Router,
@@ -25,12 +29,13 @@ pub struct CredentialState {
     pub auth: Arc<AuthService<PostgresStore, PostgresStore>>,
     pub store: Arc<PostgresStore>,
     pub github: Option<Arc<GitHubApp>>,
-    pub ds_token: Option<String>,
+    pub ssh: Arc<DsSsh>,
 }
 
 pub fn router(state: CredentialState) -> Router {
     Router::new()
         .route("/api/v1/agent/credentials", post(handle))
+        .route("/api/v1/agent/ds-credential", post(handle_ds_credential))
         .with_state(state)
 }
 
@@ -99,26 +104,63 @@ async fn handle(
         _ => None,
     };
 
-    let body = CredentialResponse {
-        git,
-        design_space: DesignSpaceCredential {
-            url: project.design_space_url.clone(),
-            token: state.ds_token.clone(),
-        },
-    };
+    let body = CredentialResponse { git };
     (StatusCode::OK, Json(body)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct DsCredentialRequest {
+    definition_id: Uuid,
+}
+
+/// The design-space key belongs to the agent account, not to a task. Agentd
+/// installs it once when it creates the agent's shell.
+async fn handle_ds_credential(
+    State(state): State<CredentialState>,
+    headers: HeaderMap,
+    Json(request): Json<DsCredentialRequest>,
+) -> Response {
+    let Some(token) = bearer_token(&headers) else {
+        return unauthorized("missing bearer token");
+    };
+    let account = match state.auth.authenticate(&token).await {
+        Ok(Some(account)) => account,
+        Ok(None) => return unauthorized("invalid or expired token"),
+        Err(error) => return server_error(error.to_string()),
+    };
+    if account.kind != AccountKind::Agent {
+        return unauthorized("only agent accounts may request a design-space key");
+    }
+    let definition = match state.store.agent_definition(request.definition_id).await {
+        Ok(Some(definition)) => definition,
+        Ok(None) => return not_found("agent definition not found"),
+        Err(error) => return server_error(error.to_string()),
+    };
+    if definition.account_id != account.id {
+        return forbidden("agent definition belongs to another account");
+    }
+    let credential = match state
+        .ssh
+        .credential(account.id, &definition.project_id.to_string())
+        .await
+    {
+        Ok(credential) => credential,
+        Err(error) => return server_error(error),
+    };
+    (
+        StatusCode::OK,
+        Json(json!({
+            "url": credential.url,
+            "private_key": credential.private_key,
+            "known_hosts": credential.known_hosts,
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, serde::Serialize)]
 struct CredentialResponse {
     git: Option<GitCredential>,
-    design_space: DesignSpaceCredential,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct DesignSpaceCredential {
-    url: String,
-    token: Option<String>,
 }
 
 fn bearer_token(headers: &HeaderMap) -> Option<String> {

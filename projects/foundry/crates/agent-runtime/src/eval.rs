@@ -104,8 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn passes_when_the_final_answer_contains_the_expected_text() {
-        let case =
-            EvaluationCase::new("case-1", "system", "do it").expect("all done");
+        let case = EvaluationCase::new("case-1", "system", "do it").expect("all done");
         let report = evaluate_case(
             &runtime(vec![LlmResponse::final_answer(
                 json!({"message": "all done"}).to_string(),
@@ -118,8 +117,7 @@ mod tests {
 
     #[tokio::test]
     async fn fails_when_the_answer_is_wrong() {
-        let case =
-            EvaluationCase::new("case-2", "system", "do it").expect("all done");
+        let case = EvaluationCase::new("case-2", "system", "do it").expect("all done");
         let report = evaluate_case(
             &runtime(vec![LlmResponse::final_answer(
                 json!({"message": "not yet"}).to_string(),

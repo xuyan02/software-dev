@@ -22,14 +22,15 @@ const PROJECT_REVIEW: &str = include_str!("../definitions/project_review.json");
 const DESIGN_SPACE_MERGE: &str = include_str!("../definitions/design_space_merge.json");
 const CODE_SUMMARY_GROUP: &str = include_str!("../definitions/code_summary_group.json");
 const DESIGN_BASELINE: &str = include_str!("../definitions/design_baseline.json");
+const DESIGN_ITERATION: &str = include_str!("../definitions/design_iteration.json");
+const DEVELOPMENT_ITERATION: &str = include_str!("../definitions/development_iteration.json");
 const DESIGN_CONSISTENCY_MAINTENANCE: &str =
     include_str!("../definitions/design_consistency_maintenance.json");
 const ISSUE_TRIAGE: &str = include_str!("../definitions/issue_triage.json");
-const TRIAGE_CHECK: &str = include_str!("../definitions/triage_check.json");
 const TRIAGE: &str = include_str!("../definitions/triage.json");
 const DESIGN_CHANGE: &str = include_str!("../definitions/design_change.json");
 const DESIGN_CORRECTION: &str = include_str!("../definitions/design_correction.json");
-const DESIGN_REWORK: &str = include_str!("../definitions/design_rework.json");
+const DESIGN: &str = include_str!("../definitions/design.json");
 const CODE_CHANGE: &str = include_str!("../definitions/code_change.json");
 const STYLE_INSPECTION: &str = include_str!("../definitions/style_inspection.json");
 const LOGIC_INSPECTION: &str = include_str!("../definitions/logic_inspection.json");
@@ -87,6 +88,8 @@ const SOURCES: &[(&str, &str, &str)] = &[
         DESIGN_CONSISTENCY_MAINTENANCE,
     ),
     ("design_baseline", "Design baseline", DESIGN_BASELINE),
+    ("design_iteration", "Design iteration", DESIGN_ITERATION),
+    ("development_iteration", "Development iteration", DEVELOPMENT_ITERATION),
     (
         "software_development",
         "Software development",
@@ -94,11 +97,10 @@ const SOURCES: &[(&str, &str, &str)] = &[
     ),
     ("daily_check", "Daily check", DAILY_CHECK),
     ("issue_triage", "Issue triage", ISSUE_TRIAGE),
-    ("triage_check", "Triage check", TRIAGE_CHECK),
     ("triage", "Issue triage", TRIAGE),
     ("design_change", "Design change", DESIGN_CHANGE),
     ("design_correction", "Design correction", DESIGN_CORRECTION),
-    ("design_rework", "Design rework", DESIGN_REWORK),
+    ("design", "Design", DESIGN),
     ("code_change", "Code change", CODE_CHANGE),
     (
         "style_inspection",

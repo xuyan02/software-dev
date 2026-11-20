@@ -13,15 +13,12 @@
       "name": "plan",
       "active_roles": ["developer"],
       "vars": {
-        "planned": {"type": "bool", "display_name": "Planned"},
-        "failed": {"type": "bool", "display_name": "Failed"}
+        "planned": {"type": "bool", "display_name": "Planned"}
       },
       "operations": [
-        {"name": "planned", "display_name": "修复计划完成", "description": "代码修复范围和验证计划已明确。", "roles": ["developer"], "action": "planned = true"},
-        {"name": "failed", "display_name": "计划失败", "description": "无法形成修复计划。", "roles": ["developer"], "action": "failed = true"}
+        {"name": "planned", "display_name": "修复计划完成", "description": "代码修复范围和验证计划已明确。", "roles": ["developer"], "action": "planned = true"}
       ],
       "transitions": [
-        {"on": "failed", "to": "failed"},
         {"on": "planned", "to": "implement"}
       ]
     },
@@ -29,15 +26,12 @@
       "name": "implement",
       "active_roles": ["developer"],
       "vars": {
-        "implemented": {"type": "bool", "display_name": "Implemented"},
-        "failed": {"type": "bool", "display_name": "Failed"}
+        "implemented": {"type": "bool", "display_name": "Implemented"}
       },
       "operations": [
-        {"name": "implemented", "display_name": "代码修改完成", "description": "代码和测试已提交并推送。", "roles": ["developer"], "action": "implemented = true"},
-        {"name": "failed", "display_name": "开发失败", "description": "无法完成代码修改。", "roles": ["developer"], "action": "failed = true"}
+        {"name": "implemented", "display_name": "代码修改完成", "description": "代码和测试已提交并推送。", "roles": ["developer"], "action": "implemented = true"}
       ],
       "transitions": [
-        {"on": "failed", "to": "failed"},
         {"on": "implemented", "to": "code_review"}
       ]
     },
@@ -90,15 +84,12 @@
       "name": "merge",
       "active_roles": ["merger"],
       "vars": {
-        "merged": {"type": "bool", "display_name": "Merged"},
-        "failed": {"type": "bool", "display_name": "Failed"}
+        "merged": {"type": "bool", "display_name": "Merged"}
       },
       "operations": [
-        {"name": "merged", "display_name": "合入完成", "description": "代码已合入目标分支，Issue 可标记为已解决。", "roles": ["merger"], "action": "merged = true"},
-        {"name": "failed", "display_name": "合入失败", "description": "代码无法合入目标分支。", "roles": ["merger"], "action": "failed = true"}
+        {"name": "merged", "display_name": "合入完成", "description": "代码已合入目标分支，Issue 可标记为已解决。", "roles": ["merger"], "action": "merged = true"}
       ],
       "transitions": [
-        {"on": "failed", "action": "result = 'failed'", "to": "failed"},
         {"on": "merged", "to": "cleanup"}
       ]
     },
@@ -106,27 +97,14 @@
       "name": "cleanup",
       "active_roles": ["merger"],
       "vars": {
-        "cleaned": {"type": "bool", "display_name": "Cleaned"},
-        "failed": {"type": "bool", "display_name": "Failed"}
+        "cleaned": {"type": "bool", "display_name": "Cleaned"}
       },
       "operations": [
-        {"name": "cleaned", "display_name": "分支清理完成", "description": "code/<issue-id> 临时分支已删除。", "roles": ["merger"], "action": "cleaned = true"},
-        {"name": "failed", "display_name": "分支清理失败", "description": "临时分支删除失败。", "roles": ["merger"], "action": "failed = true"}
+        {"name": "cleaned", "display_name": "分支清理完成", "description": "code/<issue-id> 临时分支已删除。", "roles": ["merger"], "action": "cleaned = true"}
       ],
       "transitions": [
-        {"on": "cleaned", "action": "result = 'completed'", "to": "ended"},
-        {"on": "failed", "to": "cleanup_failed"}
+        {"on": "cleaned", "action": "result = 'completed'", "to": "ended"}
       ]
-    },
-    {
-      "name": "cleanup_failed",
-      "active_roles": [],
-      "retry_to": "cleanup"
-    },
-    {
-      "name": "failed",
-      "active_roles": [],
-      "retry_to": "plan"
     }
   ]
 }

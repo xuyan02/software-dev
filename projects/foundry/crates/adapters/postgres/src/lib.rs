@@ -171,15 +171,16 @@ pub(crate) async fn insert_issue_row(
     let body = to_json(issue)?;
     sqlx::query(
         "insert into issues \
-         (id, project_id, kind, status, title, source_kind, reporter_kind, reporter_id, \
+         (id, project_id, kind, status, pool, title, source_kind, reporter_kind, reporter_id, \
           assignee_kind, assignee_id, severity, area, duplicate_of, version, body, \
           created_at, updated_at) \
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
     )
     .bind(issue.id)
     .bind(issue.project_id)
     .bind(issue.kind.as_str())
     .bind(issue.status.as_str())
+    .bind(issue.pool.map(|pool| pool.as_str()))
     .bind(&issue.title)
     .bind(issue.source.kind.as_str())
     .bind(actor_kind(&issue.reporter))
@@ -212,16 +213,17 @@ impl IssueRepository for PostgresStore {
         let body = to_json(issue)?;
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let result = sqlx::query(
-            "update issues set kind = $3, status = $4, title = $5, source_kind = $6, \
-             reporter_kind = $7, reporter_id = $8, assignee_kind = $9, assignee_id = $10, \
-             severity = $11, area = $12, duplicate_of = $13, version = $14, body = $15, \
-             updated_at = $16 \
+            "update issues set kind = $3, status = $4, pool = $5, title = $6, source_kind = $7, \
+             reporter_kind = $8, reporter_id = $9, assignee_kind = $10, assignee_id = $11, \
+             severity = $12, area = $13, duplicate_of = $14, version = $15, body = $16, \
+             updated_at = $17 \
              where id = $1 and version = $2",
         )
         .bind(issue.id)
         .bind(expected_version as i32)
         .bind(issue.kind.as_str())
         .bind(issue.status.as_str())
+        .bind(issue.pool.map(|pool| pool.as_str()))
         .bind(&issue.title)
         .bind(issue.source.kind.as_str())
         .bind(actor_kind(&issue.reporter))

@@ -1,24 +1,21 @@
 use async_trait::async_trait;
 use foundry_app::ports::DesignSpaceProvisioner;
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
-/// Start the single local `ds-server` when `design_space_url` is not configured.
+/// Start the local `ds-server` used for repo provisioning and admin work.
 ///
 /// The child is returned so the caller keeps it alive for the process
-/// lifetime. The root, listen address and token file come from the Foundry
-/// config file. The root contains one ds repository per project.
+/// lifetime. Agents never use this HTTP endpoint; they use the SSH transport.
 pub async fn start_local(
     root: PathBuf,
     listen: String,
     token_file: PathBuf,
-) -> Result<(tokio::process::Child, String, u16, String, String), String> {
+) -> Result<(tokio::process::Child, String, u16, String), String> {
     std::fs::create_dir_all(&root)
         .map_err(|error| format!("create design-space root {}: {error}", root.display()))?;
     let admin_token = ensure_token(&token_file)?;
-    let agent_token_file = agent_token_file(&token_file);
-    let agent_token = ensure_token(&agent_token_file)?;
 
     let listen = normalize_listen(&listen)?;
     let port = listen_port(&listen)?;
@@ -35,8 +32,6 @@ pub async fn start_local(
         .arg(&root)
         .arg("--listen")
         .arg(&listen)
-        .arg("--token-file")
-        .arg(&agent_token_file)
         .arg("--admin-token-file")
         .arg(&token_file);
     command.kill_on_drop(true);
@@ -44,7 +39,7 @@ pub async fn start_local(
     command.stderr(std::process::Stdio::inherit());
     let mut child = command.spawn().map_err(|error| {
         format!(
-            "failed to start {}: {error}; build it with `cargo build --bins` or set design_space_url",
+            "failed to start {}: {error}; build it with `cargo build --bins`",
             binary.display()
         )
     })?;
@@ -59,7 +54,7 @@ pub async fn start_local(
             .get(format!("{base}/repos"))
             .header("Authorization", format!("Bearer {admin_token}"));
         if request.send().await.is_ok() {
-            return Ok((child, base, port, admin_token, agent_token));
+            return Ok((child, base, port, admin_token));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -68,16 +63,6 @@ pub async fn start_local(
         "ds-server did not answer within 5s; rebuild it with `cargo build --bins` and retry"
             .to_string(),
     )
-}
-
-pub fn agent_token_file(admin_token_file: &Path) -> PathBuf {
-    let mut path = admin_token_file.to_path_buf();
-    let name = path
-        .file_name()
-        .map(|name| format!("{}.agent", name.to_string_lossy()))
-        .unwrap_or_else(|| "design-space-token.agent".to_string());
-    path.set_file_name(name);
-    path
 }
 
 fn ensure_token(path: &PathBuf) -> Result<String, String> {
@@ -140,16 +125,9 @@ pub fn host_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
-pub fn read_token(path: &PathBuf) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .map(|token| token.trim().to_owned())
-        .filter(|token| !token.is_empty())
-}
-
 pub struct HttpDesignSpaceProvisioner {
     base: String,
-    agent_base: String,
+    ssh_base: String,
     client: reqwest::Client,
     token: Option<String>,
 }
@@ -157,12 +135,12 @@ pub struct HttpDesignSpaceProvisioner {
 impl HttpDesignSpaceProvisioner {
     pub fn new(
         base: impl Into<String>,
-        agent_base: impl Into<String>,
+        ssh_base: impl Into<String>,
         token: Option<String>,
     ) -> Self {
         Self {
             base: base.into().trim_end_matches('/').to_string(),
-            agent_base: agent_base.into().trim_end_matches('/').to_string(),
+            ssh_base: ssh_base.into().trim_end_matches('/').to_string(),
             client: reqwest::Client::new(),
             token,
         }
@@ -197,20 +175,6 @@ impl DesignSpaceProvisioner for HttpDesignSpaceProvisioner {
             .json()
             .await
             .map_err(|error| format!("design space response: {error}"))?;
-        Ok(format!("{}/{}", self.agent_base, created.name))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn derives_a_separate_agent_token_file() {
-        let admin = PathBuf::from("/tmp/design-space-token");
-        assert_eq!(
-            agent_token_file(&admin),
-            PathBuf::from("/tmp/design-space-token.agent")
-        );
+        Ok(format!("{}/{}", self.ssh_base, created.name))
     }
 }

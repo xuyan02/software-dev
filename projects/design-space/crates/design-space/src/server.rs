@@ -19,9 +19,9 @@
 
 use crate::catalog::Catalog;
 use crate::model::{
-    Commit, CommitHash, DesignObject, DesignStructurePayload, DirectoryPayload,
-    DocumentDirectoryPayload, DocumentPayload, GitOid, Hash32, Kind, NamespacePayload,
-    ObjectPayload, ParentRef, SymbolHash,
+    Commit, CommitHash, ConceptDirectoryPayload, DesignObject, DesignStructurePayload,
+    DirectoryPayload, DocumentDirectoryPayload, DocumentPayload, GitOid, Hash32, Kind,
+    NamespacePayload, ObjectPayload, ParentRef, SymbolHash,
 };
 use crate::remote::{
     FILE_ROOTS, MAX_TRANSFER, collect_files, parse_hash, parse_refs, publish, read_token_file,
@@ -262,6 +262,19 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
         ),
     )?;
 
+    let concepts = store.put_symbol("concepts")?;
+    catalog.insert(
+        concepts,
+        DesignObject::new(
+            Kind::ConceptDirectory,
+            ObjectPayload::ConceptDirectory(ConceptDirectoryPayload {
+                qualified_name: concepts,
+                parent: ParentRef::View,
+                children: vec![],
+            }),
+        ),
+    )?;
+
     // Preset design documents and the logical structure root. Creating them
     // with the repository means design workflows never start from a missing
     // technical design.
@@ -299,7 +312,7 @@ fn init_repo(root: &Path, branch: &str) -> Result<CommitHash> {
             ),
         )?;
     }
-    let proposals = store.put_symbol("documents/design/proposals")?;
+    let proposals = store.put_symbol("documents/design/drafts")?;
     catalog.insert(
         proposals,
         DesignObject::new(

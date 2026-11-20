@@ -234,9 +234,10 @@ impl Tool for IssueTransitionTool {
                 "required": ["issue_id", "to"],
                 "properties": {
                     "issue_id": { "type": "string", "format": "uuid" },
-                    "to": { "type": "string", "enum": ["in_progress", "resolved", "rejected", "duplicate", "closed", "open"] },
+                    "to": { "type": "string", "enum": ["pooled", "in_progress", "resolved", "rejected", "duplicate", "closed", "open"] },
                     "resolution": { "type": "string" },
-                    "duplicate_of": { "type": "string", "format": "uuid" }
+                    "duplicate_of": { "type": "string", "format": "uuid" },
+                    "pool": { "type": "string", "enum": ["design", "development", "requirements"] }
                 }
             }),
         }
@@ -259,6 +260,12 @@ impl Tool for IssueTransitionTool {
             .map(|value| value.parse::<Uuid>())
             .transpose()
             .map_err(|_| ToolError::InvalidArguments("invalid duplicate_of".to_string()))?;
+        let pool = arguments.get("pool").and_then(Value::as_str);
+        if to == "pooled" && pool.is_none() {
+            return Err(ToolError::InvalidArguments(
+                "pool is required for a pooled transition".to_string(),
+            ));
+        }
         if to == "duplicate" {
             let Some(duplicate_of) = duplicate_of else {
                 return Err(ToolError::InvalidArguments(
@@ -291,7 +298,7 @@ impl Tool for IssueTransitionTool {
         }
         let issue = self
             .client
-            .transition_issue(issue_id, to, resolution, duplicate_of)
+            .transition_issue(issue_id, to, resolution, duplicate_of, pool)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(issue)
@@ -332,6 +339,89 @@ impl Tool for IssueTriageBatchTool {
             .map_err(|error| ToolError::Failed(error.to_string()))?;
         pretty(batch)
     }
+}
+
+pub struct DesignPoolBatchTool {
+    client: Arc<FoundryClient>,
+}
+
+impl DesignPoolBatchTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for DesignPoolBatchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "design_pool_batch".to_string(),
+            description: "Return every Issue waiting in the design pool. \
+                          Call this once when planning a design iteration."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        pooled_issues(&self.client, "design").await
+    }
+}
+
+pub struct DevelopmentPoolBatchTool {
+    client: Arc<FoundryClient>,
+}
+
+impl DevelopmentPoolBatchTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for DevelopmentPoolBatchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "development_pool_batch".to_string(),
+            description: "Return every Issue waiting in the development pool. \
+                          Call this once when planning a development iteration."
+                .to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        pooled_issues(&self.client, "development").await
+    }
+}
+
+async fn pooled_issues(client: &FoundryClient, pool: &str) -> Result<ToolOutput, ToolError> {
+    let issues = client
+        .list_issues()
+        .await
+        .map_err(|error| ToolError::Failed(error.to_string()))?;
+    let pooled = issues
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|issue| {
+                    issue.get("status").and_then(Value::as_str) == Some("pooled")
+                        && issue.get("pool").and_then(Value::as_str) == Some(pool)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    pretty(Value::Array(pooled))
 }
 
 pub struct IssueListTool {

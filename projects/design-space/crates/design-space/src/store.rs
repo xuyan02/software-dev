@@ -416,6 +416,7 @@ mod tests {
                 namespaces,
                 design: ObjectHash::ZERO,
                 documents,
+                concepts: ObjectHash::ZERO,
             }),
         )
     }

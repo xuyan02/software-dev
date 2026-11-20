@@ -41,6 +41,7 @@ const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体�
 - 除 Part 外，每个 File、Directory、Namespace、Class、Interface、Function、Mixin、Method 都必须有 document，指向技术设计、目录设计或命名空间设计中的 Section。
 - Part 不关联文档；Method 的 parent 是 Part 时，文档挂到 Part 的父元素。
 - 文档内容只通过 ds doc 写；不要用 ds edit --design/--design-file。
+- 设计文档中的专业词汇必须有概念定义：在 concepts/ 下创建 Concept，写清 name、summary、explanation、characteristics、relations，并在文档中用 [[concept:<qname>|<术语>]] 引用；含义不清晰的词先建概念再使用。
 - 技术设计 Section 的父子层级由运行时执行 ds doc layout 统一整理；按 design-writing 写内容即可，不要为了整理层级手工移动 Section。
 - 不要执行 ds source sync、git 提交或推送；准备、提交、推送和 MR 由运行时完成。
 - 不要停在半成品；仓库大时按目录分批推进，完成一批继续下一批。
@@ -79,7 +80,7 @@ const FIX_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体。当�
 - 最终只返回 JSON：{"ok":true}。
 
 执行步骤：
-1. 用 ds status、ds diff 找到本次改动；用 ds doc comment list 读取相关 Section 的 open 评论。
+1. 用 ds status、ds diff 找到本次改动；用 ds doc comment list --open 一次读取全仓库 open 评论，不要逐个对象调用 ds doc comment list。
 2. 逐条重新读取代码、调用方和文档，确认问题是否真实存在，修正根因，不只改措辞。
 3. 评论问题解决后执行 ds doc comment resolve <section> <comment-id>。
 4. 自检：ds structure unassigned 为空，ds structure check 通过，ds verify 通过。
@@ -563,11 +564,7 @@ async fn missing_documents(
     ));
     let mut missing = Vec::new();
     for object in objects {
-        if object == "files"
-            || object == "namespaces"
-            || object == "design"
-            || documented.contains(&object)
-        {
+        if !requires_design_document(&object) || documented.contains(&object) {
             continue;
         }
         missing.push(object);
@@ -575,6 +572,18 @@ async fn missing_documents(
     missing.sort();
     missing.dedup();
     Ok(missing)
+}
+
+/// Objects that carry a `document` field. Concepts have their own payload and
+/// Parts are never documented, so neither may be reported as missing.
+fn requires_design_document(qname: &str) -> bool {
+    if matches!(qname, "files" | "namespaces" | "design") {
+        return false;
+    }
+    if qname == "concepts" || qname.starts_with("concepts/") {
+        return false;
+    }
+    !qname.contains("/part#")
 }
 
 async fn run_check(shell: &Arc<dyn Shell>, workspace: &str, args: &str) -> Result<(), String> {
@@ -597,7 +606,10 @@ async fn run_check(shell: &Arc<dyn Shell>, workspace: &str, args: &str) -> Resul
 async fn build_inventory(shell: &Arc<dyn Shell>, workspace: &str) -> Result<Value, NodeError> {
     let source_files = lines(&ds_source(shell, workspace, "ls".to_owned()).await?);
     let file_objects = lines(&ds_ok(shell, workspace, "ls --files".to_owned()).await?);
-    let code_objects = lines(&ds_ok(shell, workspace, "ls --namespaces".to_owned()).await?);
+    let code_objects = lines(&ds_ok(shell, workspace, "ls --namespaces".to_owned()).await?)
+        .into_iter()
+        .filter(|object| requires_design_document(object))
+        .collect::<Vec<_>>();
     let documented = parse_design(&ds_ok(shell, workspace, "ls --design".to_owned()).await?);
     let structure = ds(shell, workspace, "structure list".to_owned()).await?;
     let unassigned = ds_ok(shell, workspace, "structure unassigned".to_owned()).await?;
@@ -622,12 +634,7 @@ async fn build_inventory(shell: &Arc<dyn Shell>, workspace: &str) -> Result<Valu
     let missing = file_objects
         .iter()
         .chain(code_objects.iter())
-        .filter(|object| {
-            object.as_str() != "files"
-                && object.as_str() != "namespaces"
-                && object.as_str() != "design"
-                && !documented.contains(*object)
-        })
+        .filter(|object| requires_design_document(object) && !documented.contains(*object))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -1266,5 +1273,21 @@ mod tests {
     fn parses_document_qnames_from_design_listing() {
         let documented = parse_design("files/src/main.rs\tdocuments/design/technical/section1\n");
         assert!(documented.contains("files/src/main.rs"));
+    }
+
+    #[test]
+    fn concepts_and_parts_do_not_require_design_documents() {
+        assert!(!requires_design_document("files"));
+        assert!(!requires_design_document("namespaces"));
+        assert!(!requires_design_document("design"));
+        assert!(!requires_design_document("concepts"));
+        assert!(!requires_design_document("concepts/taskboard/task"));
+        assert!(!requires_design_document(
+            "namespaces/taskboard/utils/split_tags/part#abcd"
+        ));
+        assert!(requires_design_document(
+            "namespaces/taskboard/utils/split_tags"
+        ));
+        assert!(requires_design_document("files/src/main.rs"));
     }
 }

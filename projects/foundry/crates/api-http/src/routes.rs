@@ -193,9 +193,20 @@ pub struct AppState {
     pub auth: Arc<dyn AuthUseCases>,
     pub setup: Arc<SetupState>,
     pub editor: Arc<EditorAssets>,
-    /// Local design-space reader; absent in remote design-space mode.
-    pub design_space: Option<Arc<crate::design_space::DesignSpaceAccess>>,
+    /// Local design-space console reader.
+    pub design_space: Arc<crate::design_space::DesignSpaceAccess>,
     pub merge_requests: Arc<foundry_app::MergeRequestService>,
+    /// Deletes a project and its agent/design-space resources.
+    pub project_purger: Option<Arc<dyn ProjectPurger>>,
+}
+
+#[async_trait::async_trait]
+pub trait ProjectPurger: Send + Sync {
+    async fn purge(
+        &self,
+        actor: foundry_domain::Actor,
+        project_id: Uuid,
+    ) -> Result<(), foundry_app::ServiceError>;
 }
 
 /// The built workflow-editor SPA served under `/workflows/editor/`.
@@ -236,6 +247,24 @@ pub async fn health() -> Json<Value> {
         "service": "foundry",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Vendored Mermaid bundle for the design-space diagram view.
+pub async fn mermaid_script() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/javascript; charset=utf-8"),
+            ),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            ),
+        ],
+        foundry_web::MERMAID_SCRIPT,
+    )
+        .into_response()
 }
 
 // ---------------------------------------------------------------------------
@@ -1148,14 +1177,7 @@ pub async fn design_space_page(
         )
             .into_response();
     };
-    let Some(access) = state.design_space.as_ref() else {
-        return Html(foundry_web::design_space_unavailable_page(
-            &session.context,
-            &project,
-            "控制台没有连接到本地设计空间（Foundry 由远程 DESIGN_SPACE_URL 启动）。",
-        ))
-        .into_response();
-    };
+    let access = &state.design_space;
     let branches = access.branches(&project).await.unwrap_or_default();
     let mut branch = requested_design_space_branch(&project, &query);
     if !branches.iter().any(|candidate| candidate == &branch) {
@@ -1196,13 +1218,7 @@ pub async fn design_space_tree(
         )
             .into_response();
     };
-    let Some(access) = state.design_space.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "控制台没有连接到本地设计空间" })),
-        )
-            .into_response();
-    };
+    let access = &state.design_space;
     let branch = requested_design_space_branch(&project, &query);
     match access.overview(&project, &branch).await {
         Ok(overview) => Json(overview).into_response(),
@@ -1227,12 +1243,7 @@ pub async fn design_space_element(
         )
             .into_response();
     };
-    let Some(access) = state.design_space.as_ref() else {
-        return Html(foundry_web::design_space_element_error(
-            "控制台没有连接到本地设计空间",
-        ))
-        .into_response();
-    };
+    let access = &state.design_space;
     let branch = requested_design_space_branch(&project, &query);
     let source_url = format!("/projects/{id}/design-space/elements/{hash}/source?branch={branch}");
     match access.element(&project, &hash, &branch).await {
@@ -1258,12 +1269,7 @@ pub async fn design_space_element_source(
         )
             .into_response();
     };
-    let Some(access) = state.design_space.as_ref() else {
-        return Html(foundry_web::design_space_source_error(
-            "控制台没有连接到本地设计空间",
-        ))
-        .into_response();
-    };
+    let access = &state.design_space;
     let branch = requested_design_space_branch(&project, &query);
     match access.source(&project, &hash, &branch).await {
         Ok(source) => Html(foundry_web::design_space_source(&source)).into_response(),
@@ -2732,7 +2738,16 @@ pub async fn delete_project_form(
     {
         return response;
     }
-    match state.projects.delete(session.account.actor(), id).await {
+    let Some(purger) = state.project_purger.as_ref() else {
+        return project_detail_error(
+            &state,
+            &session,
+            id,
+            foundry_app::ServiceError::Internal("项目清理服务不可用".to_string()),
+        )
+        .await;
+    };
+    match purger.purge(session.account.actor(), id).await {
         Ok(()) => {
             let mut response = Redirect::to("/projects").into_response();
             if session.project.id == id
@@ -2899,7 +2914,14 @@ pub async fn delete_project(
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
     let session = auth::api_account(&state, &headers).await?;
-    state.projects.delete(session.actor(), id).await?;
+    let Some(purger) = state.project_purger.as_ref() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "project_purge_unavailable",
+            "项目清理服务不可用",
+        ));
+    };
+    purger.purge(session.actor(), id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4189,6 +4211,7 @@ pub async fn spawn_task_children(
             title: task.title,
             description: task.description,
             input: task.input,
+            depends_on: task.depends_on,
         })
         .collect();
     let children = state
@@ -4229,7 +4252,7 @@ pub async fn create_follow_up_task(
     }
     if !matches!(
         body.workflow.as_str(),
-        "design_baseline" | "design_correction" | "design_rework"
+        "design_baseline" | "design_correction" | "design"
     ) {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -4262,7 +4285,7 @@ pub async fn create_follow_up_task(
                 description: body.description,
                 input,
             },
-            vec![id],
+            Vec::new(),
             session.account.id,
         )
         .await?;

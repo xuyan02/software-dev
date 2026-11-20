@@ -414,6 +414,12 @@ SHA-256(...) == 文件名中的 hash
 0x14  design-structure
 0x15  system
 0x16  module
+0x17  concept-directory
+0x18  concept
+0x19  layer
+0x1A  document-block
+0x1B  document-mermaid
+0x1C  document-html
 ```
 
 `0x0B` 保留。逻辑模块使用 0x16；顶层代码对象上的 `module` 字段仍是源码语言模块引用，不是这里的逻辑模块。
@@ -438,6 +444,15 @@ SHA-256(...) == 文件名中的 hash
 | document-list | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
 | document-text | 有 | 无 | 无 | 无 | 无 | 无 |
 | document-topic | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| document-block | 有 | 无 | 无 | 无 | 无 | 无 |
+| document-mermaid | 有 | 无 | 无 | 无 | 无 | 无 |
+| document-html | 有 | 无 | 无 | 无 | 无 | 无 |
+| design-structure | 有 | 无 | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
+| system | 有 | 无 | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
+| module | 有 | 无 | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
+| concept-directory | 有 | 无 | 无 | 无 | 无 | `List<ObjectHash>` |
+| concept | 有 | 无 | 无 | 无 | 无 | 无 |
+| layer | 有 | 无 | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
 
 规则：
 
@@ -450,7 +465,7 @@ SHA-256(...) == 文件名中的 hash
 - Directory 和 View 没有 content_hash；
 - `document` 零表示没有文档引用；
 - `dependencies` 只允许出现在 class/interface/method/function/part/mixin；
-- `children` 只允许出现在 view/directory/file/namespace/class/interface/part/mixin/document-directory/document/document-section/document-list/document-topic；
+- `children` 只允许出现在 view/directory/file/namespace/class/interface/part/mixin/document-directory/document/document-section/document-list/document-topic/concept-directory/system/module/layer；
 - `children` 存 ObjectHash，不存子对象名字。
 
 ### 4.4.1 Parent
@@ -477,12 +492,21 @@ ParentRef =
 | part | `parent:SymbolHash`，原对象 |
 | mixin 顶层 | `file`、`namespace`、`module` 三个显式字段 |
 | mixin 内部 | `parent:SymbolHash`，上级 class/interface |
+| design-structure | `ParentRef`：View |
+| system | `parent:SymbolHash`，DesignStructure |
+| module | `parent:SymbolHash`，System、Module 或 Layer |
+| layer | `parent:SymbolHash`，System 或 Module |
+| concept-directory | `ParentRef`：根 `concepts` 是 View，其他是 ConceptDirectory |
+| concept | `parent:SymbolHash`，ConceptDirectory |
 | document-directory | `ParentRef`：根 `documents` 是 View，其他是 DocumentDirectory |
 | document | `parent:SymbolHash`，DocumentDirectory |
 | document-section | `parent:SymbolHash`，Document 或 DocumentSection |
 | document-list | `parent:SymbolHash`，DocumentSection、DocumentTopic 或 DocumentList |
 | document-text | `parent:SymbolHash`，DocumentSection、DocumentTopic 或 DocumentList |
 | document-topic | `parent:SymbolHash`，DocumentSection |
+| document-block | `parent:SymbolHash`，DocumentSection 或 DocumentTopic |
+| document-mermaid | `parent:SymbolHash`，DocumentSection 或 DocumentTopic |
+| document-html | `parent:SymbolHash`，DocumentSection 或 DocumentTopic |
 
 顶层 class/interface/function/mixin 的规则：
 
@@ -574,6 +598,7 @@ ViewPayload =
     namespaces:ObjectHash
     design:ObjectHash
     documents:ObjectHash
+    concepts:ObjectHash
 ```
 
 - View 没有 qualified_name；
@@ -583,18 +608,24 @@ ViewPayload =
 - View 没有 document；
 - View 没有 dependencies；
 - `source_commit` 使用 `GitOid` 的零值表示没有源码版本；
-- `files`、`namespaces`、`documents` 必须非零；
+- `files`、`namespaces` 必须非零；
+- `documents` 允许为零，表示早期 View 还没有文档根；新 View 必须非零；
 - `design` 当前允许是 32 字节全零，表示 design 视图尚未定义；
+- `concepts` 允许是 32 字节全零，表示概念空间尚未建立；`init` 和 `ds-server` 初始化会创建它；
+- `concepts` 非零时 `documents` 必须非零；
+- canonical encoding 省略全零的尾部字段：`documents` 为零时记录在 `design` 后结束；`documents` 非零而 `concepts` 为零时不写 `concepts`；这样旧 View 的 hash 保持不变；
 - 根 directory 的 qualified name 是保留符号 `files`；
 - 虚拟根 namespace 的 qualified name 是保留符号 `namespaces`；
 - 根 document directory 的 qualified name 是保留符号 `documents`；
+- 根 concept directory 的 qualified name 是保留符号 `concepts`；
 - 根 directory 的 parent 是 View；
 - 虚拟根 namespace 的 parent 是 View；
 - 根 document directory 的 parent 是 View；
-- View 的结构性子对象；根 directory、虚拟根 namespace 和根 document directory 的 parent 固定为 View；
+- 根 concept directory 的 parent 是 View；
+- View 的结构性子对象；根 directory、虚拟根 namespace、根 document directory 和根 concept directory 的 parent 固定为 View；
 - 顶层 namespace 的 qualified name 是 `namespaces/<name>`；
 - 全局命名空间中的 class/interface/function/mixin 的 namespace parent 是 `namespaces`，qualified name 形如 `namespaces/<Name>`；
-- `files`、`namespaces` 和 `documents` 是保留限定名，普通对象不能使用。
+- `files`、`namespaces`、`documents` 和 `concepts` 是保留限定名，普通对象不能使用。
 
 ```text
 GitOid = 32 bytes
@@ -856,6 +887,25 @@ DocumentTopicPayload =
     children:List<ObjectHash>
     comments:List<Comment>
 
+BlockPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    language:Text
+    text:Text
+    comments:List<Comment>
+
+MermaidBlockPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    text:Text
+    comments:List<Comment>
+
+HtmlBlockPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    text:Text
+    comments:List<Comment>
+
 DesignStructurePayload =
     qualified_name:SymbolHash
     parent:ParentRef
@@ -878,6 +928,30 @@ ModulePayload =
     members:List<SymbolHash>
     children:List<ObjectHash>
 
+LayerPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    title:Text
+    order:u32
+    document:SymbolHash
+    members:List<SymbolHash>
+    children:List<ObjectHash>
+
+ConceptDirectoryPayload =
+    qualified_name:SymbolHash
+    parent:ParentRef
+    children:List<ObjectHash>
+
+ConceptPayload =
+    qualified_name:SymbolHash
+    parent:SymbolHash
+    name:Text
+    summary:Text
+    explanation:Text
+    characteristics:List<Text>
+    relations:List<Text>
+    aliases:List<Text>
+
 Comment =
     id:u32
     resolved:u8      # 0 open, 1 resolved
@@ -890,27 +964,42 @@ Comment =
 - 其他 DocumentDirectory 的 parent 必须是 DocumentDirectory；
 - Document 的 parent 必须是 DocumentDirectory；
 - DocumentSection 的 parent 必须是 Document 或 DocumentSection；
-- DocumentSection 的 `body` 允许 DocumentText、DocumentList、DocumentTopic；
+- DocumentSection 的 `body` 允许 DocumentText、DocumentList、DocumentTopic、DocumentBlock、DocumentMermaid、DocumentHtml；
 - DocumentTopic 的 parent 必须是 DocumentSection；
-- DocumentTopic 的 `paragraphs` 允许 DocumentText、DocumentList；
+- DocumentTopic 的 `paragraphs` 允许 DocumentText、DocumentList、DocumentBlock、DocumentMermaid、DocumentHtml；
 - DocumentList 的 parent 必须是 DocumentSection、DocumentTopic 或 DocumentList；
 - DocumentList 的 `items` 允许 DocumentText、DocumentList；
 - DocumentText 的 parent 必须是 DocumentSection、DocumentTopic 或 DocumentList；
+- DocumentBlock 的 parent 必须是 DocumentSection 或 DocumentTopic；
+- DocumentMermaid 的 parent 必须是 DocumentSection 或 DocumentTopic；
+- DocumentHtml 的 parent 必须是 DocumentSection 或 DocumentTopic；
 - DesignStructure 的 qname 固定为 `design`，parent 为 View；它可选存在，存在时是结构树根；
-- System 的 parent 必须是 DesignStructure；System 和 Module 的 qname 都从 `design/` 开始；
-- Module 的 parent 必须是 System 或 Module；
-- Module 的 `members` 只允许顶层 Class/Interface/Function/Mixin，且一个成员在所有模块中最多出现一次；
-- System/Module 的 `children` 是子模块的 ObjectHash，按 hash 排序。
+- System 的 parent 必须是 DesignStructure；System、Module 和 Layer 的 qname 都从 `design/` 开始；
+- Module 的 parent 必须是 System、Module 或 Layer；
+- Layer 的 parent 必须是 System 或 Module，不能嵌套另一个 Layer；
+- Layer 的 `order` 从 1 开始，同一父对象下的 Layer `order` 互不相同；只有 `order` 相差 1 的 Layer 之间允许依赖；
+- 一个有 Layer 的 System/Module 不能直接拥有 `members` 或子 Module；这些必须放进 Layer；
+- System/Module/Layer 的 `members` 只允许顶层 Class/Interface/Function/Mixin，且一个成员在所有容器中最多出现一次；
+- 根 `concepts` 是 ConceptDirectory，parent 为 View；
+- ConceptDirectory 的 parent 必须是 View 或 ConceptDirectory；
+- Concept 的 parent 必须是 ConceptDirectory；Concept 的 qname 从 `concepts/` 开始；
+- Concept 的 `name` 和 `summary` 是非空单行文本，`explanation` 允许为空；
+- `characteristics`、`relations`、`aliases` 的每一项都是非空单行文本；
+- System/Module/Layer 的 `children` 是子模块或层的 ObjectHash，按 hash 排序。
 - `sections`、`body`、`paragraphs`、`items` 是**有序**的 qname 引用，不做排序；
 - 同一个有序列表内不允许重复 qname；
 - `children` 仍然存全部直接子对象的 ObjectHash，按 ObjectHash 升序排序；
-- DocumentText 没有 children；
-- `title` 和 `text` 都是单行文本，不能为空，不能包含 `\n` 或 `\r`；
+- DocumentText 没有 children；DocumentBlock 没有 children；DocumentMermaid 没有 children；DocumentHtml 没有 children；
+- `title` 和 DocumentText 的 `text` 都是单行文本，不能为空，不能包含 `\n` 或 `\r`；
+- DocumentBlock 的 `language` 是单行文本，可为空，不能包含 `\n` 或 `\r`；
+- DocumentBlock 的 `text` 非空，允许换行，按原样保存代码内容；
+- DocumentMermaid 的 `text` 非空，允许换行，按原样保存 Mermaid 源码；
+- DocumentHtml 的 `text` 非空，允许换行，按原样保存 HTML/SVG 源码；
 - 每个文档对象都有 `comments` 列表；评论 id 从 1 开始，在对象内唯一且升序；
 - `Comment.text` 非空，允许换行；`resolved` 只能是 0 或 1；
 - 文档片段的本地名由创建规则决定，只取决于父对象和所属集合：
   - 子章节 `section<n>`；
-  - 正文元素 `body<n>`，包括 DocumentText、DocumentList、DocumentTopic；
+  - 正文元素 `body<n>`，包括 DocumentText、DocumentList、DocumentTopic、DocumentBlock、DocumentMermaid、DocumentHtml；
   - 列表项 `item<n>`；
 - `n` 在同一父对象的对应集合内唯一，已有编号不重排；
 - 锚点 `section`、`body`、`item` 不是对象，不写入存储，只用于 CLI 定位。
@@ -1409,6 +1498,9 @@ hash 的情况按内部错误处理。
 18d. DocumentList 的 parent 必须是 document-section、document-topic 或 document-list；
 18e. DocumentText 的 parent 必须是 document-section、document-topic 或 document-list；
 18f. DocumentTopic 的 parent 必须是 document-section；
+18g. DocumentBlock 的 parent 必须是 document-section 或 document-topic；
+18h. DocumentMermaid 的 parent 必须是 document-section 或 document-topic；
+18i. DocumentHtml 的 parent 必须是 document-section 或 document-topic；
 19. 顶层 class/interface 的 `namespace` 必须非零；`file` 为零或 file；`module` 为零或 module；
 20. 内部 class/interface 的 `parent` 必须是 class/interface；
 21. Function 的 `namespace` 必须非零；`file` 为零或 file；`module` 为零或 module；

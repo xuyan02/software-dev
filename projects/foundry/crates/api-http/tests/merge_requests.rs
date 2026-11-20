@@ -409,7 +409,10 @@ async fn merge_rejects_design_content_changed_after_approval() {
         .merge(&harness.project, view.merge_request.id, harness.reviewer.id)
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("审批后设计内容发生变化"), "{error}");
+    assert!(
+        error.to_string().contains("审批后设计内容发生变化"),
+        "{error}"
+    );
     assert_eq!(harness.gateway.target.lock().unwrap().as_str(), TARGET);
 }
 

@@ -180,6 +180,7 @@ impl Catalog {
                         || match &object.payload {
                             ObjectPayload::System(p) => p.members.contains(&qname),
                             ObjectPayload::Module(p) => p.members.contains(&qname),
+                            ObjectPayload::Layer(p) => p.members.contains(&qname),
                             _ => false,
                         })
             })
@@ -244,9 +245,14 @@ impl Catalog {
         let mut seen = HashSet::new();
         visit(store, view_payload.files, &mut catalog, &mut seen)?;
         visit(store, view_payload.namespaces, &mut catalog, &mut seen)?;
-        visit(store, view_payload.documents, &mut catalog, &mut seen)?;
+        if !view_payload.documents.is_zero() {
+            visit(store, view_payload.documents, &mut catalog, &mut seen)?;
+        }
         if !view_payload.design.is_zero() {
             visit(store, view_payload.design, &mut catalog, &mut seen)?;
+        }
+        if !view_payload.concepts.is_zero() {
+            visit(store, view_payload.concepts, &mut catalog, &mut seen)?;
         }
         Ok(catalog)
     }
@@ -272,6 +278,7 @@ impl Catalog {
         let namespaces = symbol_hash("namespaces");
         let documents = symbol_hash("documents");
         let design = symbol_hash("design");
+        let concepts = symbol_hash("concepts");
 
         for (qname, object) in &self.entries {
             if object_name(object) != Some(*qname) {
@@ -285,6 +292,7 @@ impl Catalog {
                         && *qname != namespaces
                         && *qname != documents
                         && *qname != design
+                        && *qname != concepts
                     {
                         return Err(CatalogError::InvalidParent(normalize_name(*qname)));
                     }
@@ -293,6 +301,7 @@ impl Catalog {
                     && *qname != namespaces
                     && *qname != documents
                     && *qname != design
+                    && *qname != concepts
                 {
                     return Err(CatalogError::Orphan(normalize_name(*qname)));
                 }
@@ -339,9 +348,21 @@ impl Catalog {
                 message: "design root must be a design structure with a view parent".to_owned(),
             });
         }
+        let concepts_object = self.entries.get(&concepts);
+        if let Some(object) = concepts_object
+            && (object.kind != Kind::ConceptDirectory || !has_view_parent(object))
+        {
+            return Err(CatalogError::InvalidParentDetail {
+                object: object_label(store, concepts),
+                message: "concepts root must be a concept directory with a view parent".to_owned(),
+            });
+        }
         let mut expected_roots = BTreeSet::from([files, namespaces, documents]);
         if design_object.is_some() {
             expected_roots.insert(design);
+        }
+        if concepts_object.is_some() {
+            expected_roots.insert(concepts);
         }
         if rooted != expected_roots {
             return Err(CatalogError::InvalidParent("root set".into()));
@@ -354,6 +375,9 @@ impl Catalog {
         let mut queue = vec![files, namespaces, documents];
         if design_object.is_some() {
             queue.push(design);
+        }
+        if concepts_object.is_some() {
+            queue.push(concepts);
         }
         while let Some(qname) = queue.pop() {
             if !reachable.insert(qname) {
@@ -407,6 +431,18 @@ impl Catalog {
         } else {
             ObjectHash::ZERO
         };
+        let concepts_hash = if concepts_object.is_some() {
+            compute(
+                store,
+                &self.entries,
+                &edges,
+                concepts,
+                &mut memo,
+                &mut visiting,
+            )?
+        } else {
+            ObjectHash::ZERO
+        };
 
         let view = DesignObject::new(
             Kind::View,
@@ -416,6 +452,7 @@ impl Catalog {
                 namespaces: namespaces_hash,
                 design: design_hash,
                 documents: documents_hash,
+                concepts: concepts_hash,
             }),
         );
         let view_hash = object_hash(&view)?;
@@ -508,6 +545,15 @@ fn strip_review_metadata(object: &mut DesignObject) {
             p.comments.clear();
             p.children.clear();
         }
+        ObjectPayload::Block(p) => {
+            p.comments.clear();
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            p.comments.clear();
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            p.comments.clear();
+        }
         _ => {}
     }
 }
@@ -533,6 +579,12 @@ fn object_name(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::DesignStructure(p) => Some(p.qualified_name),
         ObjectPayload::System(p) => Some(p.qualified_name),
         ObjectPayload::Module(p) => Some(p.qualified_name),
+        ObjectPayload::ConceptDirectory(p) => Some(p.qualified_name),
+        ObjectPayload::Concept(p) => Some(p.qualified_name),
+        ObjectPayload::Layer(p) => Some(p.qualified_name),
+        ObjectPayload::Block(p) => Some(p.qualified_name),
+        ObjectPayload::MermaidBlock(p) => Some(p.qualified_name),
+        ObjectPayload::HtmlBlock(p) => Some(p.qualified_name),
     }
 }
 
@@ -553,10 +605,16 @@ fn children_of(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::DesignStructure(p) => &p.children,
         ObjectPayload::System(p) => &p.children,
         ObjectPayload::Module(p) => &p.children,
+        ObjectPayload::ConceptDirectory(p) => &p.children,
+        ObjectPayload::Layer(p) => &p.children,
         ObjectPayload::View(_)
         | ObjectPayload::Method(_)
         | ObjectPayload::Function(_)
-        | ObjectPayload::DocumentText(_) => &[],
+        | ObjectPayload::DocumentText(_)
+        | ObjectPayload::Concept(_)
+        | ObjectPayload::Block(_)
+        | ObjectPayload::MermaidBlock(_)
+        | ObjectPayload::HtmlBlock(_) => &[],
     }
 }
 
@@ -605,6 +663,16 @@ fn parents_of(object: &DesignObject) -> Vec<SymbolHash> {
         }
         ObjectPayload::System(p) => out.push(p.parent),
         ObjectPayload::Module(p) => out.push(p.parent),
+        ObjectPayload::ConceptDirectory(p) => {
+            if let ParentRef::Object(parent) = p.parent {
+                out.push(parent);
+            }
+        }
+        ObjectPayload::Concept(p) => out.push(p.parent),
+        ObjectPayload::Layer(p) => out.push(p.parent),
+        ObjectPayload::Block(p) => out.push(p.parent),
+        ObjectPayload::MermaidBlock(p) => out.push(p.parent),
+        ObjectPayload::HtmlBlock(p) => out.push(p.parent),
         ObjectPayload::View(_) => {}
     }
     out.retain(|hash| !hash.is_zero());
@@ -647,6 +715,7 @@ fn document_target(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::DesignStructure(p) => p.document,
         ObjectPayload::System(p) => p.document,
         ObjectPayload::Module(p) => p.document,
+        ObjectPayload::Layer(p) => p.document,
         _ => return None,
     };
     (!target.is_zero()).then_some(target)
@@ -657,6 +726,7 @@ fn has_view_parent(object: &DesignObject) -> bool {
         ObjectPayload::Directory(p) => matches!(p.parent, ParentRef::View),
         ObjectPayload::Namespace(p) => matches!(p.parent, ParentRef::View),
         ObjectPayload::DocumentDirectory(p) => matches!(p.parent, ParentRef::View),
+        ObjectPayload::ConceptDirectory(p) => matches!(p.parent, ParentRef::View),
         ObjectPayload::DesignStructure(p) => matches!(p.parent, ParentRef::View),
         _ => false,
     }
@@ -682,6 +752,8 @@ fn can_contain(object: &DesignObject) -> bool {
             | Kind::DesignStructure
             | Kind::System
             | Kind::Module
+            | Kind::ConceptDirectory
+            | Kind::Layer
     )
 }
 
@@ -702,6 +774,8 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::DesignStructure(p) => p.children = children,
         ObjectPayload::System(p) => p.children = children,
         ObjectPayload::Module(p) => p.children = children,
+        ObjectPayload::ConceptDirectory(p) => p.children = children,
+        ObjectPayload::Layer(p) => p.children = children,
         ObjectPayload::View(_) => return Err(CatalogError::NotAContainer(Kind::View)),
         ObjectPayload::Method(_) => {
             if !children.is_empty() {
@@ -716,6 +790,26 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::DocumentText(_) => {
             if !children.is_empty() {
                 return Err(CatalogError::NotAContainer(Kind::DocumentText));
+            }
+        }
+        ObjectPayload::Block(_) => {
+            if !children.is_empty() {
+                return Err(CatalogError::NotAContainer(Kind::Block));
+            }
+        }
+        ObjectPayload::MermaidBlock(_) => {
+            if !children.is_empty() {
+                return Err(CatalogError::NotAContainer(Kind::MermaidBlock));
+            }
+        }
+        ObjectPayload::HtmlBlock(_) => {
+            if !children.is_empty() {
+                return Err(CatalogError::NotAContainer(Kind::HtmlBlock));
+            }
+        }
+        ObjectPayload::Concept(_) => {
+            if !children.is_empty() {
+                return Err(CatalogError::NotAContainer(Kind::Concept));
             }
         }
     }
@@ -854,6 +948,34 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
             p.parent = map(p.parent);
             p.document = map(p.document);
             rewrite_symbols(&mut p.members, mapping);
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            p.qualified_name = map(p.qualified_name);
+            if let ParentRef::Object(parent) = p.parent {
+                p.parent = ParentRef::Object(map(parent));
+            }
+        }
+        ObjectPayload::Concept(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+        }
+        ObjectPayload::Layer(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+            p.document = map(p.document);
+            rewrite_symbols(&mut p.members, mapping);
+        }
+        ObjectPayload::Block(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.parent = map(p.parent);
         }
     }
 }
@@ -1166,6 +1288,36 @@ fn validate_parents(
                 "a section",
             )?;
         }
+        ObjectPayload::Block(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+                "a section or topic",
+            )?;
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+                "a section or topic",
+            )?;
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::DocumentSection, Kind::DocumentTopic],
+                "a section or topic",
+            )?;
+        }
         ObjectPayload::DesignStructure(_) => {}
         ObjectPayload::System(p) => {
             require_target(
@@ -1178,6 +1330,38 @@ fn validate_parents(
             )?;
         }
         ObjectPayload::Module(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::System, Kind::Module, Kind::Layer],
+                "a system, module or layer",
+            )?;
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            if let ParentRef::Object(parent) = p.parent {
+                require_target(
+                    entries,
+                    store,
+                    qname,
+                    parent,
+                    &[Kind::ConceptDirectory],
+                    "a concept directory",
+                )?;
+            }
+        }
+        ObjectPayload::Concept(p) => {
+            require_target(
+                entries,
+                store,
+                qname,
+                p.parent,
+                &[Kind::ConceptDirectory],
+                "a concept directory",
+            )?;
+        }
+        ObjectPayload::Layer(p) => {
             require_target(
                 entries,
                 store,
@@ -1488,7 +1672,14 @@ fn validate_document_references(
                     *qname,
                     &p.body,
                     "body",
-                    &[Kind::DocumentText, Kind::DocumentList, Kind::DocumentTopic],
+                    &[
+                        Kind::DocumentText,
+                        Kind::DocumentList,
+                        Kind::DocumentTopic,
+                        Kind::Block,
+                        Kind::MermaidBlock,
+                        Kind::HtmlBlock,
+                    ],
                 )?;
                 let sections = ordered_ref_hashes(
                     store,
@@ -1533,7 +1724,13 @@ fn validate_document_references(
                     *qname,
                     &p.paragraphs,
                     "paragraphs",
-                    &[Kind::DocumentText, Kind::DocumentList],
+                    &[
+                        Kind::DocumentText,
+                        Kind::DocumentList,
+                        Kind::Block,
+                        Kind::MermaidBlock,
+                        Kind::HtmlBlock,
+                    ],
                 )?;
                 check_ordered_refs(store, *qname, "paragraphs", &paragraphs, &derived)?;
             }
@@ -1658,6 +1855,26 @@ fn validate_document_names(
                 }
             }
             ObjectPayload::DocumentTopic(_) => valid_numbered_name(local, "body"),
+            ObjectPayload::Block(p) => match entries.get(&p.parent).map(|parent| parent.kind) {
+                Some(Kind::DocumentSection | Kind::DocumentTopic) => {
+                    valid_numbered_name(local, "body")
+                }
+                _ => false,
+            },
+            ObjectPayload::MermaidBlock(p) => {
+                match entries.get(&p.parent).map(|parent| parent.kind) {
+                    Some(Kind::DocumentSection | Kind::DocumentTopic) => {
+                        valid_numbered_name(local, "body")
+                    }
+                    _ => false,
+                }
+            }
+            ObjectPayload::HtmlBlock(p) => match entries.get(&p.parent).map(|parent| parent.kind) {
+                Some(Kind::DocumentSection | Kind::DocumentTopic) => {
+                    valid_numbered_name(local, "body")
+                }
+                _ => false,
+            },
             _ => continue,
         };
         if !valid {

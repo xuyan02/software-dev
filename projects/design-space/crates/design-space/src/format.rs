@@ -194,6 +194,28 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
             validate_comments(&p.comments, "document topic comments")?;
             Ok(())
         }
+        ObjectPayload::Block(p) => {
+            require_hash(p.qualified_name, "block qualified_name")?;
+            require_hash(p.parent, "block parent")?;
+            validate_text_allow_empty(&p.language, "block language")?;
+            validate_multiline_text(&p.text, "block text")?;
+            validate_comments(&p.comments, "block comments")?;
+            Ok(())
+        }
+        ObjectPayload::MermaidBlock(p) => {
+            require_hash(p.qualified_name, "mermaid block qualified_name")?;
+            require_hash(p.parent, "mermaid block parent")?;
+            validate_multiline_text(&p.text, "mermaid block text")?;
+            validate_comments(&p.comments, "mermaid block comments")?;
+            Ok(())
+        }
+        ObjectPayload::HtmlBlock(p) => {
+            require_hash(p.qualified_name, "html block qualified_name")?;
+            require_hash(p.parent, "html block parent")?;
+            validate_multiline_text(&p.text, "html block text")?;
+            validate_comments(&p.comments, "html block comments")?;
+            Ok(())
+        }
         ObjectPayload::DesignStructure(p) => {
             require_hash(p.qualified_name, "design structure qualified_name")?;
             validate_parent_ref(p.parent)?;
@@ -217,14 +239,45 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
             validate_object_hashes(&p.children, "module children")?;
             Ok(())
         }
+        ObjectPayload::ConceptDirectory(p) => {
+            require_hash(p.qualified_name, "concept directory qualified_name")?;
+            validate_parent_ref(p.parent)?;
+            validate_object_hashes(p.children.as_slice(), "concept directory children")?;
+            Ok(())
+        }
+        ObjectPayload::Concept(p) => {
+            require_hash(p.qualified_name, "concept qualified_name")?;
+            require_hash(p.parent, "concept parent")?;
+            validate_text(&p.name, "concept name")?;
+            validate_text(&p.summary, "concept summary")?;
+            validate_text_allow_empty(&p.explanation, "concept explanation")?;
+            validate_string_list(&p.characteristics, "concept characteristics")?;
+            validate_string_list(&p.relations, "concept relations")?;
+            validate_string_list(&p.aliases, "concept aliases")?;
+            Ok(())
+        }
+        ObjectPayload::Layer(p) => {
+            require_hash(p.qualified_name, "layer qualified_name")?;
+            require_hash(p.parent, "layer parent")?;
+            validate_text(&p.title, "layer title")?;
+            if p.order == 0 {
+                return Err(FormatError::InvalidValue("layer order"));
+            }
+            validate_symbol_list(&p.members, "layer members", true)?;
+            validate_object_hashes(&p.children, "layer children")?;
+            Ok(())
+        }
     }
 }
 
 fn validate_view(p: &ViewPayload) -> Result<()> {
     require_hash(p.files, "view files")?;
     require_hash(p.namespaces, "view namespaces")?;
-    require_hash(p.documents, "view documents")?;
-    // p.design may be zero until the design view exists.
+    // `documents` may be zero in views written before the document root
+    // existed; `design` and `concepts` may be zero until those spaces exist.
+    if p.documents.is_zero() && !p.concepts.is_zero() {
+        return Err(FormatError::InvalidValue("view concepts without documents"));
+    }
     Ok(())
 }
 
@@ -388,6 +441,27 @@ fn validate_text(text: &str, what: &'static str) -> Result<()> {
     Ok(())
 }
 
+fn validate_text_allow_empty(text: &str, what: &'static str) -> Result<()> {
+    if text.contains('\n') || text.contains('\r') {
+        return Err(FormatError::InvalidValue(what));
+    }
+    Ok(())
+}
+
+fn validate_multiline_text(text: &str, what: &'static str) -> Result<()> {
+    if text.is_empty() {
+        return Err(FormatError::InvalidValue(what));
+    }
+    Ok(())
+}
+
+fn validate_string_list(items: &[String], what: &'static str) -> Result<()> {
+    for item in items {
+        validate_text(item, what)?;
+    }
+    Ok(())
+}
+
 fn validate_comments(comments: &[DocComment], what: &'static str) -> Result<()> {
     let mut previous = 0u32;
     for comment in comments {
@@ -547,9 +621,15 @@ fn encode_payload(object: &DesignObject) -> Result<Vec<u8>> {
         ObjectPayload::DocumentList(p) => encode_document_list(p, &mut out),
         ObjectPayload::DocumentText(p) => encode_document_text(p, &mut out),
         ObjectPayload::DocumentTopic(p) => encode_document_topic(p, &mut out),
+        ObjectPayload::Block(p) => encode_block(p, &mut out),
+        ObjectPayload::MermaidBlock(p) => encode_mermaid_block(p, &mut out),
+        ObjectPayload::HtmlBlock(p) => encode_html_block(p, &mut out),
         ObjectPayload::DesignStructure(p) => encode_design_structure(p, &mut out),
         ObjectPayload::System(p) => encode_system(p, &mut out),
         ObjectPayload::Module(p) => encode_module(p, &mut out),
+        ObjectPayload::ConceptDirectory(p) => encode_concept_directory(p, &mut out),
+        ObjectPayload::Concept(p) => encode_concept(p, &mut out),
+        ObjectPayload::Layer(p) => encode_layer(p, &mut out),
     }
     Ok(out)
 }
@@ -576,9 +656,17 @@ fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> 
         Kind::DocumentList => ObjectPayload::DocumentList(decode_document_list(reader)?),
         Kind::DocumentText => ObjectPayload::DocumentText(decode_document_text(reader)?),
         Kind::DocumentTopic => ObjectPayload::DocumentTopic(decode_document_topic(reader)?),
+        Kind::Block => ObjectPayload::Block(decode_block(reader)?),
+        Kind::MermaidBlock => ObjectPayload::MermaidBlock(decode_mermaid_block(reader)?),
+        Kind::HtmlBlock => ObjectPayload::HtmlBlock(decode_html_block(reader)?),
         Kind::DesignStructure => ObjectPayload::DesignStructure(decode_design_structure(reader)?),
         Kind::System => ObjectPayload::System(decode_system(reader)?),
         Kind::Module => ObjectPayload::Module(decode_module(reader)?),
+        Kind::ConceptDirectory => {
+            ObjectPayload::ConceptDirectory(decode_concept_directory(reader)?)
+        }
+        Kind::Concept => ObjectPayload::Concept(decode_concept(reader)?),
+        Kind::Layer => ObjectPayload::Layer(decode_layer(reader)?),
     })
 }
 
@@ -587,16 +675,39 @@ fn encode_view(p: &ViewPayload, out: &mut Vec<u8>) {
     put_hash(out, p.files);
     put_hash(out, p.namespaces);
     put_hash(out, p.design);
-    put_hash(out, p.documents);
+    // Views written before the document root existed end here. Omit the
+    // optional tail so their canonical hash stays stable.
+    if !p.documents.is_zero() {
+        put_hash(out, p.documents);
+        if !p.concepts.is_zero() {
+            put_hash(out, p.concepts);
+        }
+    }
 }
 
 fn decode_view(r: &mut Reader<'_>) -> Result<ViewPayload> {
+    let source_commit = GitOid(read_32(r)?);
+    let files = ObjectHash(Hash32(read_32(r)?));
+    let namespaces = ObjectHash(Hash32(read_32(r)?));
+    let design = ObjectHash(Hash32(read_32(r)?));
+    // Older views predate the document root and the concept space.
+    let documents = if r.is_empty() {
+        ObjectHash::ZERO
+    } else {
+        ObjectHash(Hash32(read_32(r)?))
+    };
+    let concepts = if r.is_empty() {
+        ObjectHash::ZERO
+    } else {
+        ObjectHash(Hash32(read_32(r)?))
+    };
     Ok(ViewPayload {
-        source_commit: GitOid(read_32(r)?),
-        files: ObjectHash(Hash32(read_32(r)?)),
-        namespaces: ObjectHash(Hash32(read_32(r)?)),
-        design: ObjectHash(Hash32(read_32(r)?)),
-        documents: ObjectHash(Hash32(read_32(r)?)),
+        source_commit,
+        files,
+        namespaces,
+        design,
+        documents,
+        concepts,
     })
 }
 
@@ -930,6 +1041,56 @@ fn decode_document_topic(r: &mut Reader<'_>) -> Result<DocumentTopicPayload> {
     })
 }
 
+fn encode_block(p: &BlockPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.language);
+    put_string(out, &p.text);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_block(r: &mut Reader<'_>) -> Result<BlockPayload> {
+    Ok(BlockPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        language: read_string(r, "block language")?,
+        text: read_string(r, "block text")?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_mermaid_block(p: &MermaidBlockPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.text);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_mermaid_block(r: &mut Reader<'_>) -> Result<MermaidBlockPayload> {
+    Ok(MermaidBlockPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        text: read_string(r, "mermaid block text")?,
+        comments: decode_comments(r)?,
+    })
+}
+
+fn encode_html_block(p: &HtmlBlockPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.text);
+    encode_comments(out, &p.comments);
+}
+
+fn decode_html_block(r: &mut Reader<'_>) -> Result<HtmlBlockPayload> {
+    Ok(HtmlBlockPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        text: read_string(r, "html block text")?,
+        comments: decode_comments(r)?,
+    })
+}
+
 fn encode_design_structure(p: &DesignStructurePayload, out: &mut Vec<u8>) {
     put_hash(out, p.qualified_name);
     encode_parent_ref(out, p.parent);
@@ -1000,6 +1161,77 @@ fn decode_module(r: &mut Reader<'_>) -> Result<ModulePayload> {
         members: decode_symbols(r)?,
         children: decode_object_hashes(r)?,
     })
+}
+
+fn encode_concept_directory(p: &ConceptDirectoryPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_parent_ref(out, p.parent);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_concept_directory(r: &mut Reader<'_>) -> Result<ConceptDirectoryPayload> {
+    Ok(ConceptDirectoryPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_parent_ref(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_concept(p: &ConceptPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.name);
+    put_string(out, &p.summary);
+    put_string(out, &p.explanation);
+    encode_strings(out, &p.characteristics);
+    encode_strings(out, &p.relations);
+    encode_strings(out, &p.aliases);
+}
+
+fn decode_concept(r: &mut Reader<'_>) -> Result<ConceptPayload> {
+    Ok(ConceptPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        name: read_string(r, "concept name")?,
+        summary: read_string(r, "concept summary")?,
+        explanation: read_string(r, "concept explanation")?,
+        characteristics: decode_strings(r)?,
+        relations: decode_strings(r)?,
+        aliases: decode_strings(r)?,
+    })
+}
+
+fn encode_layer(p: &LayerPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    put_hash(out, p.parent);
+    put_string(out, &p.title);
+    out.extend_from_slice(&p.order.to_le_bytes());
+    put_hash(out, p.document);
+    encode_symbols(out, &p.members);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_layer(r: &mut Reader<'_>) -> Result<LayerPayload> {
+    Ok(LayerPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: SymbolHash(Hash32(read_32(r)?)),
+        title: read_string(r, "layer title")?,
+        order: r.read_u32()?,
+        document: SymbolHash(Hash32(read_32(r)?)),
+        members: decode_symbols(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_strings(out: &mut Vec<u8>, items: &[String]) {
+    put_len(out, items.len());
+    for item in items {
+        put_string(out, item);
+    }
+}
+
+fn decode_strings(r: &mut Reader<'_>) -> Result<Vec<String>> {
+    decode_vec(r, |r| read_string(r, "concept text"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,8 +1639,78 @@ mod tests {
                 namespaces: o(3),
                 design: ObjectHash::ZERO,
                 documents: o(4),
+                concepts: o(5),
             }),
         ));
+    }
+
+    fn view_hash(files: &str, namespaces: &str, design: &str, documents: &str) -> String {
+        let object = DesignObject::new(
+            Kind::View,
+            ObjectPayload::View(ViewPayload {
+                source_commit: GitOid([0; 32]),
+                files: ObjectHash(Hash32::from_hex(files).unwrap()),
+                namespaces: ObjectHash(Hash32::from_hex(namespaces).unwrap()),
+                design: ObjectHash(Hash32::from_hex(design).unwrap()),
+                documents: ObjectHash(Hash32::from_hex(documents).unwrap()),
+                concepts: ObjectHash::ZERO,
+            }),
+        );
+        object_hash(&object).unwrap().0.to_hex()
+    }
+
+    #[test]
+    fn keeps_the_hash_of_a_view_without_documents() {
+        assert_eq!(
+            view_hash(
+                "efadf253f5b3e52c54b2e0b4f580d9b7eb1e1aff00d67548200fdc0967289cf7",
+                "bcd909463a4f037771954f489d8aa471d3940c7895d30e5636a56ca724575f52",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            ),
+            "e67ef81f8bddd49877ff35d4998043efdd3f8f38961976488a1dac5007e78345"
+        );
+    }
+
+    #[test]
+    fn keeps_the_hash_of_a_view_without_concepts() {
+        assert_eq!(
+            view_hash(
+                "efadf253f5b3e52c54b2e0b4f580d9b7eb1e1aff00d67548200fdc0967289cf7",
+                "bcd909463a4f037771954f489d8aa471d3940c7895d30e5636a56ca724575f52",
+                "9a4492342fb2250696621676df648c37f393fe5a393f6352045c390f6159c567",
+                "a705a3e3ee8a439751c4ea9d902429caa45a87dd40b375b0b20f9651b522d924",
+            ),
+            "a50c5e057576ceb798aee79c006f69994488f9019a38efd91988190ed5df1d6d"
+        );
+    }
+
+    #[test]
+    fn decodes_a_legacy_view_without_documents() {
+        let object = DesignObject::new(
+            Kind::View,
+            ObjectPayload::View(ViewPayload {
+                source_commit: GitOid([0; 32]),
+                files: ObjectHash(
+                    Hash32::from_hex(
+                        "efadf253f5b3e52c54b2e0b4f580d9b7eb1e1aff00d67548200fdc0967289cf7",
+                    )
+                    .unwrap(),
+                ),
+                namespaces: ObjectHash(
+                    Hash32::from_hex(
+                        "bcd909463a4f037771954f489d8aa471d3940c7895d30e5636a56ca724575f52",
+                    )
+                    .unwrap(),
+                ),
+                design: ObjectHash::ZERO,
+                documents: ObjectHash::ZERO,
+                concepts: ObjectHash::ZERO,
+            }),
+        );
+        let encoded = encode_object(&object).unwrap();
+        assert_eq!(encoded.len(), 134);
+        assert_eq!(decode_object(&encoded).unwrap(), object);
     }
 
     #[test]
@@ -1679,6 +1981,98 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_document_block() {
+        roundtrip(DesignObject::new(
+            Kind::Block,
+            ObjectPayload::Block(BlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                language: "rust".into(),
+                text: "let token = login();\nnext_step();".into(),
+                comments: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_block_text() {
+        let object = DesignObject::new(
+            Kind::Block,
+            ObjectPayload::Block(BlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                language: String::new(),
+                text: String::new(),
+                comments: vec![],
+            }),
+        );
+        assert!(matches!(
+            validate_object(&object),
+            Err(FormatError::InvalidValue("block text"))
+        ));
+    }
+
+    #[test]
+    fn roundtrips_mermaid_block() {
+        roundtrip(DesignObject::new(
+            Kind::MermaidBlock,
+            ObjectPayload::MermaidBlock(MermaidBlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: "flowchart TD\n  A --> B".into(),
+                comments: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_mermaid_text() {
+        let object = DesignObject::new(
+            Kind::MermaidBlock,
+            ObjectPayload::MermaidBlock(MermaidBlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: String::new(),
+                comments: vec![],
+            }),
+        );
+        assert!(matches!(
+            validate_object(&object),
+            Err(FormatError::InvalidValue("mermaid block text"))
+        ));
+    }
+
+    #[test]
+    fn roundtrips_html_block() {
+        roundtrip(DesignObject::new(
+            Kind::HtmlBlock,
+            ObjectPayload::HtmlBlock(HtmlBlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: "<svg><circle cx=\"10\" cy=\"10\" r=\"8\"/></svg>".into(),
+                comments: vec![],
+            }),
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_html_text() {
+        let object = DesignObject::new(
+            Kind::HtmlBlock,
+            ObjectPayload::HtmlBlock(HtmlBlockPayload {
+                qualified_name: s(1),
+                parent: s(2),
+                text: String::new(),
+                comments: vec![],
+            }),
+        );
+        assert!(matches!(
+            validate_object(&object),
+            Err(FormatError::InvalidValue("html block text"))
+        ));
+    }
+
+    #[test]
     fn roundtrips_structure_objects() {
         roundtrip(DesignObject::new(
             Kind::DesignStructure,
@@ -1750,10 +2144,12 @@ mod tests {
                 namespaces: o(2),
                 design: ObjectHash::ZERO,
                 documents: o(3),
+                concepts: ObjectHash::ZERO,
             }),
         );
         let mut bytes = encode_object(&object).unwrap();
-        bytes.push(0);
+        // 32 bytes are read as the optional concept root; the 33rd is trailing.
+        bytes.extend(std::iter::repeat_n(0, 33));
         assert!(matches!(
             decode_object(&bytes),
             Err(FormatError::TrailingBytes)

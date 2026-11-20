@@ -56,7 +56,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
 - File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
-- Section 标题：代码元素用 qname，目录/文件用源码路径。
+- Section 标题：Class/Interface/Mixin 用短名；Function/Method 用完整函数原型（函数名、参数、返回类型），不能只写名字；目录/文件用源码路径；设计对象 qname 不变。
 
 写文档的步骤：
 1. ds show <对象 qname>，看 document: 字段；已有 Section 就直接用，不要重复创建；如果指向 Document，先在该 Document 下创建 Section 并关联。
@@ -129,7 +129,7 @@ const FIX_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 修改智能�
 - 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
 - File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
-- Section 标题：代码元素用 qname，目录/文件用源码路径。
+- Section 标题：Class/Interface/Mixin 用短名；Function/Method 用完整函数原型（函数名、参数、返回类型），不能只写名字；目录/文件用源码路径；设计对象 qname 不变。
 
 输出 JSON：{"ok":true}
 只返回这个 JSON 对象。"#;

@@ -9,7 +9,11 @@ use crate::workspace::ObjectFormat;
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::time::Duration;
+
+const GIT_NETWORK_ATTEMPTS: usize = 5;
+const GIT_NETWORK_BACKOFF: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobEntry {
@@ -64,16 +68,9 @@ impl SourceRepo {
             fs::create_dir_all(parent)?;
         }
         let cache_text = cache.to_str().context("source cache path is not UTF-8")?;
-        let output = Command::new("git")
-            .args(["clone", "--bare", "--quiet", &self.url, cache_text])
-            .output()
-            .context("run git clone")?;
-        if !output.status.success() {
-            bail!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-        }
+        let mut command = Command::new("git");
+        command.args(["clone", "--bare", "--quiet", &self.url, cache_text]);
+        run_network_git(command, "clone", Some(&cache))?;
         let default = self.git_text(["symbolic-ref", "--short", "HEAD"])?;
         self.strip_local_heads()?;
         self.set_current(&format!("branch {}", default.trim()))?;
@@ -84,13 +81,15 @@ impl SourceRepo {
         if !self.exists() {
             return self.clone_bare();
         }
-        self.git_status([
+        let mut command = Command::new("git");
+        command.arg("-C").arg(self.cache()).args([
             "fetch",
             "--prune",
             "--tags",
             "origin",
             "+refs/heads/*:refs/remotes/origin/*",
-        ])?;
+        ]);
+        run_network_git(command, "fetch", None)?;
         Ok(())
     }
 
@@ -379,6 +378,55 @@ fn looks_like_oid(text: &str) -> bool {
     (text.len() == 40 || text.len() == 64) && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Run a network git command, retrying transient TLS/connection failures.
+///
+/// `cleanup` is removed before a retry so a partial clone does not make the
+/// next attempt fail with "destination path already exists".
+fn run_network_git(mut command: Command, action: &str, cleanup: Option<&Path>) -> Result<Output> {
+    let mut delay = GIT_NETWORK_BACKOFF;
+    for attempt in 1..=GIT_NETWORK_ATTEMPTS {
+        let output = command.output().context("run git")?;
+        if output.status.success() {
+            return Ok(output);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if attempt == GIT_NETWORK_ATTEMPTS || !is_transient_git_error(&stderr) {
+            bail!("git {action} failed: {}", stderr.trim());
+        }
+        eprintln!(
+            "warning: git {action} failed (attempt {attempt}/{GIT_NETWORK_ATTEMPTS}): {}",
+            stderr.trim()
+        );
+        if let Some(path) = cleanup {
+            let _ = fs::remove_dir_all(path);
+        }
+        std::thread::sleep(delay);
+        delay = delay.saturating_mul(2);
+    }
+    unreachable!("git retry loop always returns")
+}
+
+fn is_transient_git_error(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    [
+        "gnutls recv error",
+        "tls connection was non-properly terminated",
+        "gnutls_handshake",
+        "ssl_error_syscall",
+        "connection reset",
+        "connection timed out",
+        "connection refused",
+        "could not resolve host",
+        "temporary failure in name resolution",
+        "the remote end hung up unexpectedly",
+        "early eof",
+        "rpc failed",
+        "http/2",
+    ]
+    .iter()
+    .any(|pattern| stderr.contains(pattern))
+}
+
 /// Compute a GitOid from a raw SHA-1/SHA-256 hash value and object format.
 pub fn git_oid_from_hash(hash: Hash32, format: ObjectFormat) -> GitOid {
     match format {
@@ -405,4 +453,29 @@ pub fn read_source_bytes(
         None => repo.resolve_current()?,
     };
     repo.read_path(&commit, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_git_error;
+
+    #[test]
+    fn recognizes_transient_git_network_errors() {
+        assert!(is_transient_git_error(
+            "fatal: unable to access 'https://github.com/x/y.git/': GnuTLS recv error (-110): The TLS connection was non-properly terminated."
+        ));
+        assert!(is_transient_git_error(
+            "fatal: the remote end hung up unexpectedly"
+        ));
+        assert!(is_transient_git_error("error: RPC failed; curl 56"));
+    }
+
+    #[test]
+    fn does_not_retry_permanent_git_errors() {
+        assert!(!is_transient_git_error(
+            "fatal: Authentication failed for 'https://github.com/x/y.git/'"
+        ));
+        assert!(!is_transient_git_error("fatal: repository 'x/y' not found"));
+        assert!(!is_transient_git_error("fatal: not a git repository"));
+    }
 }

@@ -1,0 +1,54 @@
+#!/bin/sh
+# Forced command for agent design-space SSH keys.
+#
+# The only accepted client command is the one ds builds for `ssh://` remotes:
+#
+#   ds-server --stdio --root /<repo-id>
+#
+# ds shell-quotes the root, so `'/<repo-id>'` is accepted as well.
+#
+# The repo must be listed in the allowlist bound to the key. Everything else
+# is rejected; there is no shell, no pty and no forwarding.
+set -eu
+
+allowlist="${1:?allowlist path}"
+command="${SSH_ORIGINAL_COMMAND:-}"
+
+prefix="ds-server --stdio --root "
+case "$command" in
+    "$prefix"*) root="${command#"$prefix"}" ;;
+    *)
+        echo "foundry-ds-stdio: unsupported command" >&2
+        exit 1
+        ;;
+esac
+
+# ds shell-quotes the root; accept both `/repo` and `'/repo'`.
+case "$root" in
+    \'*\' | \"*\")
+        root="${root#?}"
+        root="${root%?}"
+        ;;
+esac
+
+case "$root" in
+    /*) ;;
+    *)
+        echo "foundry-ds-stdio: invalid root" >&2
+        exit 1
+        ;;
+esac
+repo="${root#/}"
+case "$repo" in
+    ""|*/*|.*|*..*)
+        echo "foundry-ds-stdio: invalid repository" >&2
+        exit 1
+        ;;
+esac
+
+if [ ! -f "$allowlist" ] || ! grep -qxF "$repo" "$allowlist"; then
+    echo "foundry-ds-stdio: repository is not allowed" >&2
+    exit 1
+fi
+
+exec /usr/local/bin/ds-server --stdio --root "/repos/$repo"

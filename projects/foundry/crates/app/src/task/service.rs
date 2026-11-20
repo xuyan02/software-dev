@@ -53,6 +53,8 @@ pub struct SpawnTask {
     pub title: String,
     pub description: String,
     pub input: Value,
+    /// Indices of tasks in the same spawn batch that must complete first.
+    pub depends_on: Vec<usize>,
 }
 
 /// A project-scoped task that is not a child of another task, used for
@@ -397,7 +399,7 @@ impl TaskService {
         }
         let parent = self.load(project_id, parent_id).await?;
         let now = OffsetDateTime::now_utc();
-        let mut created = Vec::with_capacity(tasks.len());
+        let mut created: Vec<Uuid> = Vec::with_capacity(tasks.len());
         let mut previous: Option<Uuid> = None;
         for (index, spec) in tasks.into_iter().enumerate() {
             if spec.title.trim().is_empty() {
@@ -429,11 +431,21 @@ impl TaskService {
                 now,
             );
             task.input = spec.input;
-            let dependencies = if sequential {
+            let mut dependencies = if sequential {
                 previous.into_iter().collect::<Vec<_>>()
             } else {
                 Vec::new()
             };
+            for index in spec.depends_on {
+                let dependency = created.get(index).ok_or_else(|| {
+                    ServiceError::Validation(format!(
+                        "child task depends_on index {index} is not an earlier task"
+                    ))
+                })?;
+                dependencies.push(*dependency);
+            }
+            dependencies.sort_unstable();
+            dependencies.dedup();
             let events = [
                 DomainEvent::new(
                     DomainEventKind::TaskCreated,

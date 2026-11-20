@@ -11,6 +11,51 @@ cargo build --bins
 cargo run -p foundry-control-plane
 ```
 
+## 设计空间 SSH 端点
+
+智能体不再使用 ds bearer token。控制平面为每个 agent 账户生成 SSH key，公钥、
+加密后的私钥和吊销状态保存在 Postgres 的 `agent_ds_keys` 表；AES-GCM master key
+保存在 `~/.foundry/ds-key-master`，不写入数据库。公钥清单和 allowlist 写到
+`~/.foundry/ds-sshd`，由专用 sshd 容器读取。
+
+这把 key 属于 agent 账户，不是任务的临时凭证。agentd 启动并创建常驻 shell 时，
+通过 `/api/v1/agent/ds-credential` 取一次，写到胶囊的 `/run/foundry/ds_key` 和
+`/run/foundry/ds_known_hosts`。`ds` 访问 SSH remote 时直接读取这两个文件，不经过
+环境变量，也不需要智能体或任务传参。GitHub token 仍是任务级、短期的凭证。
+
+启动专用 sshd（端口默认 2222）：
+
+```bash
+cd projects/foundry
+cargo build --bins
+scripts/dev-ds-sshd.sh
+```
+
+容器挂载：
+
+- `~/.foundry/design-spaces` → `/repos`（读写）
+- `~/.foundry/ds-sshd` → `/run/foundry/ssh`（只读）
+
+`authorized_keys` 里的每一行只允许运行 `foundry-ds-stdio`，并且 repo 必须在
+该 agent 的 allowlist 中。删除 `agent_ds_keys` 里的 key 或将 `revoked_at` 置为非空，
+重新生成 `authorized_keys` 后即吊销该 agent 的访问。
+
+`~/.foundry/ds-key-master` 是数据库私钥的 AES-GCM master key，必须和数据库备份分开保存。
+丢失它会导致 `agent_ds_keys` 里的私钥无法解密，只能重新生成并轮换所有 agent key。
+
+## 项目删除
+
+删除项目是不可恢复的操作。控制平面会：
+
+1. 停止该项目所有 agentd 进程；
+2. 删除带 `foundry.agent_id` 标签的胶囊；
+3. 删除每个 agent 的 `<workspace>/<project-id>` 工作区；
+4. 删除 agent 日志文件和 `source-cache/<project-id>-*`；
+5. 删除 `~/.foundry/design-spaces/<project-id>` 设计空间仓库（包括 `ds init` 创建的骨架元素、所有提交和分支）；
+6. 删除数据库中的项目和 agent 定义，并删除未被其他定义使用的 agent 账户、SSH key、allowlist，刷新 `authorized_keys`。
+
+删除前确认没有仍需保留的设计空间或工作区数据。
+
 ## 更新 agent shell 镜像
 
 agent 的常驻 shell 使用 `shell_image`（默认 `localhost/openergasterion-shell:1`）。镜像里的 `ds` 是构建时复制进去的二进制，不会随 control plane 或工作区的重新编译自动更新。修改 `design-space` 的 CLI 后，必须重建镜像：
@@ -134,17 +179,18 @@ cargo xtask check
 
 ### Issue 分诊
 
-项目根流程会创建 `triage_check` 任务：
+项目根流程创建一个常驻的 `triage` 任务，只有一个分诊智能体：
 
-1. `triage_check` 的 checker 是纯代码智能体；它在 `check` 阶段查询待分诊 Issue；
-2. 有待分诊 Issue 时，创建 `triage` 子任务并进入 `waiting_triage`；`triage` 结束后回到 `check`；
-3. 没有待分诊 Issue 时进入 `waiting_issue`；Issue 创建/评论/重新打开会通过 `foundry_issue_changes` 通知唤醒它；
-4. `triage` 的 LLM 智能体一次读取全部待分诊 Issue，分类、判断重复和设计修正/返工；
+1. `triage` 在 `waiting` 阶段等待 `foundry_issue_changes` 唤醒；有待分诊 Issue 时发送 `waiting:issue_arrived` 进入 `triage`；
+2. `triage` 一次读取全部待分诊 Issue，分类、判断重复；
+3. 需要较大设计（新的设计决定、边界/契约变化或设计缺失）的 Issue 置为 `pooled(pool=design)`，并在 Issue 中写清要求；不直接创建设计任务；
+4. 局部设计修正创建 `design_correction` 后续任务，不进入设计池；
 5. 重复 Issue 直接转 `Duplicate`，写入 `duplicate_of`，不创建任务；
-6. 后续任务挂在项目根任务下，`depends_on` 指向当前 `triage` 任务；`triage` 完成前它们不会进入 Ready；
-7. 分诊完成后，Task Dispatcher 才调度这些设计任务。
+6. 分诊完成后发送 `triage:done` 回到 `waiting`。
 
-当前自动处理范围是设计基线和设计缺陷：`design_baseline`、`design_correction`、`design_rework`。旧 `issue_triage` 任务已停用。
+设计迭代由 `design_iteration` 任务驱动：设计分派智能体读取设计池，判断 `design` / `design_baseline`，创建子设计任务；Task Dispatcher 按空闲智能体分配，一个智能体同时只做一个任务。旧 `triage_check` 和两级分诊已移除。
+
+当前自动处理范围是设计基线和设计缺陷：`design_baseline`、`design_correction`、`design`。旧 `issue_triage` 任务已停用。
 
 任务进入 `InProgress` 后，Agent 进程在启动、重连和收到 `foundry_task_changes` 通知时，查询自己是 active actor 的任务，并自行决定是否执行。通知是瞬时的：不写 durable queue、不重试、不补发；通知丢失时，下一次通知或 Agent 重启会重新扫描。`issue_commented` 也走同一通知通道，因此人类在 Issue 回复会唤醒 Agent。
 

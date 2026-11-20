@@ -1,0 +1,26 @@
+FROM docker.m.daocloud.io/library/debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+      'deb http://mirrors.aliyun.com/debian bookworm main' \
+      'deb http://mirrors.aliyun.com/debian bookworm-updates main' \
+      'deb http://mirrors.aliyun.com/debian-security bookworm-security main' \
+      > /etc/apt/sources.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd
+
+# Copy the ds-server binary into the image before building:
+#   cp target/debug/ds-server deploy/ds-sshd/ds-server
+COPY ds-server /usr/local/bin/ds-server
+COPY foundry-ds-stdio /usr/local/bin/foundry-ds-stdio
+COPY sshd_config /etc/ssh/sshd_config
+RUN chmod 0755 /usr/local/bin/ds-server /usr/local/bin/foundry-ds-stdio
+
+EXPOSE 2222
+
+CMD ["/usr/sbin/sshd", "-D", "-e", "-f", "/etc/ssh/sshd_config"]

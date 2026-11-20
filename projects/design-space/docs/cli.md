@@ -73,7 +73,7 @@ ds source changes [--base <git-ref>]
 
 ds create <kind> <name> [options]
 ds edit <qname> [--name <local>] [options]
-ds rm <qname> [--force]
+ds rm <qname> [--force] [--recursive]
 
 ds dep add <src> <dst> --explicit [--evidence path:lines]
 ds dep add <src> <dst> --implicit [--rationale-file file]
@@ -100,9 +100,16 @@ ds ls [--files|--namespaces|--documents|--design] [--staged]
 ds doc mkdir <qname>
 ds doc create <qname> --title <text>
 ds doc section add <target> --title <text>
+ds doc section set-title <qname> --title <text>
 ds doc topic add <target> --title <text>
 ds doc text add <target> --text <text>
 ds doc text set <qname> --text <text>
+ds doc block add <target> [--language <lang>] --text <text>
+ds doc block set <qname> [--language <lang>] [--text <text>]
+ds doc mermaid add <target> --text <text>
+ds doc mermaid set <qname> --text <text>
+ds doc html add <target> --text <text>
+ds doc html set <qname> --text <text>
 ds doc list add <target>
 ds doc list item add <target> --text <text>
 ds doc comment add <qname> --text <text>
@@ -114,38 +121,82 @@ ds doc layout
 ds doc check
 ds structure init
 ds structure system create <name> --title <text> [--document <qname>]
-ds structure module create <name> --parent <system-or-module> --title <text> [--document <qname>]
-ds structure assign <system-or-module> <element...>
-ds structure unassign <system-or-module> <element...>
+ds structure module create <name> --parent <system-or-module-or-layer> --title <text> [--document <qname>]
+ds structure layer create <name> --parent <system-or-module> [--title <text>] [--order <n>] [--document <qname>]
+ds structure layer set <qname> [--title <text>] [--order <n>] [--document <qname>]
+ds structure layer rm <qname>
+ds structure assign <container> <element...>
+ds structure unassign <container> <element...>
 ds structure list
 ds structure show <qname>
 ds structure check
 ds structure unassigned
+ds concept mkdir <qname>
+ds concept create <qname> --summary <text> [--name <text>] [--explanation <text>]
+ds concept set <qname> [--name <text>] [--summary <text>] [--explanation <text>]
+ds concept feature add <qname> <text>
+ds concept feature rm <qname> <n>
+ds concept relation add <qname> <text>
+ds concept relation rm <qname> <n>
+ds concept alias add <qname> <text>
+ds concept alias rm <qname> <n>
+ds concept show <qname>
+ds concept ls [<qname>]
+ds concept mv <qname> <parent> [--name <local>]
+ds concept rm <qname>
+ds concept check
 ds gc
 ds repack
 ```
 
-## 2. 系统与模块
+## 2. 系统、模块与层
 
 逻辑结构树独立于文件和命名空间树：
 
 - 根固定为 `design`；
 - 系统是 `design/<system>`；
-- 模块是 `<system-or-module>/<module>`；
-- 系统和模块的成员只引用顶层 Class/Interface/Function/Mixin，且一个元素恰好属于一个系统或模块；
-- 系统可以同时有模块和直属成员；
-- 子模块通过 parent 嵌套，不写进 members。
+- 模块是 `<system-or-module-or-layer>/<module>`；
+- 层是 `<system-or-module>/<layer>`，只在 System 或 Module 内部存在，不能嵌套层；
+- 容器（System/Module/Layer）的成员只引用顶层 Class/Interface/Function/Mixin，且一个元素恰好属于一个容器；
+- 层是有序的：同级层的 `order` 从 1 开始、互不相同；只有相邻层之间允许依赖；
+- 一个 System/Module 一旦有层，它的其他代码成员和子模块都必须放进层里，不能直接挂在它下面；
+- 没有层的 System 可以有模块和直属成员；模块通过 parent 嵌套，不写进 members。
 
 ```bash
 ds structure init
 ds structure system create app --title '应用' --document documents/design/technical/section1
-ds structure module create core --parent design/app --title '核心' --document documents/design/technical/section2
-ds structure assign design/app namespaces/app/Entry
-ds structure assign design/app/core namespaces/app/Auth namespaces/app/Session
+ds structure layer create api --parent design/app --title '接口层' --document documents/design/technical/section2
+ds structure layer create core --parent design/app --title '核心层' --document documents/design/technical/section3
+ds structure module create handlers --parent design/app/api --title '处理器' --document documents/design/technical/section4
+ds structure assign design/app/api namespaces/app/Entry
+ds structure assign design/app/api/handlers namespaces/app/Auth namespaces/app/Session
 ds structure check
 ```
 
-`ds structure check` 检查成员存在、唯一归属、空模块、空系统以及所有顶层元素是否已归属。
+`ds structure layer create` 不传 `--order` 时追加到同级层末尾；`ds structure layer rm` 只能删除空层。
+
+`ds structure check` 检查成员存在、唯一归属、空模块、空系统、空层、层顺序、层嵌套、有层容器的直属成员/子模块、相邻层依赖以及所有顶层元素是否已归属。
+
+## 2.1 概念空间
+
+专业词汇用概念对象定义，组织在 `concepts` 目录树中：
+
+- 根固定为 `concepts`，由 `ds init` 创建；旧工作区首次使用概念命令时补建；
+- 概念目录是 `concepts/<dir>`，可以多级嵌套；
+- 概念是 `<concept-directory>/<concept>`，parent 必须是概念目录；
+- 概念包含 `name`、`summary`、`explanation`、`characteristics`、`relations`、`aliases`；
+- 文档正文用 `[[concept:<qname>|<label>]]` 引用概念，`ds concept check` 校验引用能解析到 Concept 对象；
+- `ds concept mv` 只能移动概念或空目录，非空目录先移动子项；
+- `ds concept rm` 只能删除概念或空目录。
+
+```bash
+ds concept mkdir concepts/agent
+ds concept create concepts/agent/agent --name '智能体' --summary '能自主执行任务的主体。'
+ds concept feature add concepts/agent/agent '有独立身份。'
+ds concept relation add concepts/agent/agent '智能体执行任务。'
+ds concept alias add concepts/agent/agent 'Agent'
+ds concept check
+```
 
 ## 3. clone
 
@@ -159,7 +210,9 @@ ds clone <remote> --source <git-url> [--branch main] [--dir <root>]
 - clone 会初始化 workspace、fetch remote、创建本地分支、设置 HEAD、index 和 worktree；
 - 不接受 `--format`，source format 使用默认 SHA-1；
 - 不接受 `--token-file`。HTTP remote 如果启用了认证，用环境变量
-  `DS_TOKEN_FILE` 指向 token 文件；SSH remote 使用 SSH 认证。
+  `DS_TOKEN_FILE` 指向 token 文件；SSH remote 使用 SSH 认证。如果
+  `/run/foundry/ds_key` 存在，`ds` 直接读取它和 `/run/foundry/ds_known_hosts`
+  作为 SSH 身份，不需要环境变量或命令参数。
 
 Git 没有统一的 token 文件机制；它使用 credential helper、`.netrc`、
 URL userinfo、SSH key 或 `http.extraHeader`。ds 的 HTTP 认证目前用
@@ -178,8 +231,10 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 | section | parent qname + `/section<n>` |
 | 正文元素（text / list / topic） | parent qname + `/body<n>` |
 | list item（text / list） | list qname + `/item<n>` |
+| system / module / layer | parent qname + `/` + name |
+| concept-directory / concept | parent qname + `/` + name |
 
-根对象 `files`、`namespaces`、`documents` 由 `init` 创建，不能通过 `create` 创建。
+根对象 `files`、`namespaces`、`documents`、`concepts` 由 `init` 创建；`design` 由 `structure init` 创建。它们都不能通过 `create` 创建。
 
 ## 5. source 语法
 
@@ -240,6 +295,9 @@ document-section
 document-list
 document-text
 document-topic
+document-block
+document-mermaid
+document-html
 ```
 
 层级：
@@ -249,8 +307,8 @@ documents
   DocumentDirectory
     Document
       DocumentSection
-        body: DocumentText | DocumentList | DocumentTopic
-          DocumentTopic.paragraphs: DocumentText | DocumentList
+        body: DocumentText | DocumentList | DocumentTopic | DocumentBlock | DocumentMermaid | DocumentHtml
+          DocumentTopic.paragraphs: DocumentText | DocumentList | DocumentBlock | DocumentMermaid | DocumentHtml
           DocumentList.items: DocumentText | DocumentList
         sections: DocumentSection
           ...
@@ -259,7 +317,10 @@ documents
 
 - `DocumentSection.body` 只放正文元素；子章节单独存在 `sections`；
 - `DocumentTopic` 是正文里带标题的内容块，标题下是段落列表；
-- `DocumentTopic` 的段落只允许 `DocumentText` 或 `DocumentList`；
+- `DocumentTopic` 的段落只允许 `DocumentText`、`DocumentList`、`DocumentBlock`、`DocumentMermaid` 或 `DocumentHtml`；
+- `DocumentBlock` 是 Markdown 围栏代码块，只能放进 Section 正文或 Topic 段落；
+- `DocumentMermaid` 是 Mermaid 流程图，只能放进 Section 正文或 Topic 段落；
+- `DocumentHtml` 是 HTML/SVG 预览，只能放进 Section 正文或 Topic 段落；
 - `DocumentList` 的项只允许 `DocumentText` 或 `DocumentList`；
 - `DocumentTopic` 只能直接属于 `DocumentSection`，不能嵌套 `DocumentTopic` 或 `DocumentSection`。
 
@@ -267,7 +328,7 @@ documents
 
 - DocumentDirectory、Document 的名字由调用方给：小写字母、数字、`-`、`_`；
 - 子章节自动命名为 `section1`、`section2`；
-- 正文元素自动命名为 `body1`、`body2`，不论它是 text、list 还是 topic；
+- 正文元素自动命名为 `body1`、`body2`，不论它是 text、list、topic、block、mermaid 还是 html；
 - 列表项自动命名为 `item1`、`item2`；
 - 自动编号只取决于父对象和集合，与子对象 kind 无关；
 - 编号在同一个父对象的对应集合内分配，从 1 开始，已有编号不重排。
@@ -313,6 +374,8 @@ ds doc section add documents/specs/auth/section1/section --title "登录流程"
 
 真实 Section qname 表示“作为兄弟插到它后面”；加子章节必须指向该 Section 下的 `section` 锚点，或它最后一个子章节。
 
+Function/Method 的文档 Section 标题必须写完整函数原型（函数名、参数、返回类型），不要只写名字，也不要带 `#<signature-hash>`；对象 qname 不变。用 `ds doc section set-title <qname> --title '<原型>'` 设置。`ds doc layout` 只创建占位标题，不会覆盖已有标题。
+
 ### 正文
 
 ```bash
@@ -350,6 +413,59 @@ ds doc text add documents/specs/auth/section1/body4/body --text "先校验凭据
 ```
 
 `DocumentTopic` 有 `title` 和 `paragraphs`。`paragraphs` 的命名规则与 Section 正文相同：`body1`、`body2`。
+
+### 代码块
+
+```bash
+# 在 body2 后面加一个 rust 代码块，得到 body3
+ds doc block add documents/specs/auth/section1/body2 --language rust --text $'let token = login();\nnext_step();'
+
+# 不带语言时输出裸围栏
+ds doc block add documents/specs/auth/section1/body3 --text "plain text"
+
+# 修改语言或内容
+ds doc block set documents/specs/auth/section1/body3 --language text --text "changed"
+```
+
+- `--language` 是 Markdown 围栏的 info string；省略时是裸围栏；
+- `--text` 允许换行，是代码块的原始内容；
+- 代码块只能放在 Section 正文或 Topic 段落，不能作为列表项；
+- 渲染为 Markdown 围栏代码块；代码内容不参与 `[[concept:...]]` 引用检查。
+
+### Mermaid 流程图
+
+```bash
+# 在 body2 后面加一个流程图，得到 body3
+ds doc mermaid add documents/specs/auth/section1/body2 --text $'flowchart TD\n  A[请求] --> B[校验]'
+
+# 替换流程图源码
+ds doc mermaid set documents/specs/auth/section1/body3 --text $'flowchart LR\n  A --> B'
+```
+
+- 只存 Mermaid 源码，不存渲染结果；
+- 智能体用 `ds doc mermaid add` 创建，不必手写围栏；
+- 流程图只能放在 Section 正文或 Topic 段落，不能作为列表项；
+- Foundry 设计空间会用内置的 mermaid.js 渲染成图；渲染失败时显示错误信息；
+- Mermaid 源码不参与 `[[concept:...]]` 引用检查。
+
+### HTML/SVG 预览
+
+```bash
+# 插入 UI 效果图或任意 HTML/SVG
+ds doc html add documents/specs/auth/section1/body2 --text '<div style="padding:12px">登录页效果图</div>'
+
+# 直接插入 SVG
+ds doc html add documents/specs/auth/section1/body3 --text '<svg viewBox="0 0 100 40"><rect width="100" height="40" fill="#eee"/></svg>'
+
+# 替换内容
+ds doc html set documents/specs/auth/section1/body3 --text '<div>新的效果图</div>'
+```
+
+- 存原始 HTML/SVG 源码，不存渲染结果；
+- 只能放在 Section 正文或 Topic 段落，不能作为列表项；
+- Foundry 设计空间使用无脚本沙箱 iframe 渲染，默认高度 360px，超出可滚动；
+- 沙箱不执行脚本、不允许表单和顶层跳转；外部资源被 CSP 禁止，图片使用 data URI；
+- HTML/SVG 源码不参与 `[[concept:...]]` 引用检查。
 
 ### 评论
 
@@ -480,7 +596,7 @@ ds edit <qname> [options]
 ds ls                    # 所有对象
 ds ls --files            # directory / file
 ds ls --namespaces       # namespace / class / interface / method / function / part / mixin
-ds ls --documents        # document-directory / document / document-section / document-list / document-text / document-topic
+ds ls --documents        # document-directory / document / document-section / document-list / document-text / document-topic / document-block / document-mermaid / document-html
 ds ls --design           # 有 document 引用的对象，输出 qname<TAB>document qname
 ```
 
@@ -507,13 +623,14 @@ D namespaces/app/Old
 ### 7.3 rm
 
 ```bash
-ds rm <qname> [--force]
+ds rm <qname> [--force] [--recursive]
 ```
 
 - 根对象不能删除；
-- 有子对象时拒绝，先删除子对象；
+- 有子对象时拒绝，先删除子对象；`--recursive` 按子树后序删除对象和全部 containment 后代；
 - 被关系或依赖引用时，默认拒绝；`--force` 先移除其他对象对它的关系/依赖，
-  再删除，并输出被修改的引用方；
+  再删除，并输出被修改的引用方；递归删除时，同一规则作用于子树中的每个对象，
+  子树内部的引用不算外部引用；
 - 文档片段的 containment 引用（父对象的 `body` / `sections` / `items`）自动移除，不需要 `--force`；
 - 只修改 worktree，不自动暂存。
 
@@ -693,4 +810,7 @@ PUT  /<repo>/files/<relative>     <- file bytes
 - 客户端用 `ds remote add <url> --token-file <path>` 配置 token 文件路径，
   用 `ds remote set-token [<path>]` 更换或清除；
 - SSH 传输不单独校验 token，认证由 SSH 完成；`--stdio` 与 `--token-file` 不能同时使用；
+- SSH remote 使用 `ssh` 默认身份；`/run/foundry/ds_key` 存在时，`ds` 直接读取该文件和
+  `/run/foundry/ds_known_hosts`，并对该 remote 使用 `IdentitiesOnly=yes` 和
+  `StrictHostKeyChecking=yes`；
 - 没有内置 TLS。Bearer token 在纯 HTTP 上是明文；对外暴露时应使用反向代理或 SSH。
