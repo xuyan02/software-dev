@@ -1258,10 +1258,8 @@ Foundry 设计空间在无脚本沙箱 iframe 中渲染，存储里只保留源�
 - 直属成员元素的 Section 挂在所属 System/Module/层的 Section 下；
 - 嵌套元素（InnerClass、InnerInterface、Method、嵌套 Mixin）的 Section 挂在父元素的 Section 下；
 - Part 不建 Section。
-- Section 标题：Class/Interface/Mixin 用名字最后一段；Function/Method 必须写源码中的完整函数原型（函数名、参数、返回类型），不能只写名字，也不能带 `#<signature hash>`；Namespace 用 qname 最后一段。设计对象的 qname 不变。
-- Function/Method 的标题由写作者设置：
-  `ds doc section set-title <section-qname> --title '<函数原型>'`。
-  `ds doc layout` 只创建占位标题，不覆盖已有标题。
+- Section 标题：Class/Interface/Function/Method/Mixin 用名字最后一段；Method 不带 `#<signature hash>`；Namespace 用 qname 最后一段。设计对象的 qname 不变。
+- Function/Method 的完整函数原型写在 Section 内的“函数原型”topic，不写进 Section 标题。
 
 `ds doc layout` 按结构树统一创建/移动 Section 并规范标题，`ds doc check` 校验层级、标题和“设计原则”Section 的位置。层级由工具保证，不要手工把 Section 放到不符合结构的父节点。
 
@@ -1813,21 +1811,29 @@ Function 文件：
 
 块序列：
 
-1. 定位
-2. 参数与返回值
-3. 设计说明（可省略，按复杂点拆 topic）
-4. 用法（可省略）
-5. 实现要点（可省略）
+1. 函数原型
+2. 定位
+3. 参数与返回值
+4. 设计说明（可省略，按复杂点拆 topic）
+5. 用法（可省略）
+6. 实现要点（可省略）
 
-不写职责、非职责、父类、接口和逐行实现；参数与返回值按专门块写，不写原始签名。
+不写职责、非职责、父类、接口和逐行实现；原始签名只写在“函数原型”块，参数与返回值按专门块写，不重复签名。
 
 各块的写法和示例见：
 
+- 函数原型：本节下方的“函数原型”规则；
 - 定位：1.2 的 Method / Function 定位；
 - 参数与返回值：1.3 的参数与返回值列表；
 - 设计说明：1.5 的 topic 组（Method/Function 变体）；
 - 用法：1.6 的 Method/Function 变体；
 - 实现要点：1.7 的 topic 组。
+
+**函数原型**
+
+- 第一个块是 topic“函数原型”，只写源码中的完整签名（函数名、参数、返回类型/错误类型），例如 `login(&mut self) -> Result<(), Error>`；
+- 用纯文本写签名，不加代码围栏，不写实现、用途或参数说明；
+- Section 标题仍只用对象短名，对象 qname 不变。
 
 **对象特有规则**
 

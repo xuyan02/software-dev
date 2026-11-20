@@ -235,7 +235,8 @@ documents/design/namespace     # 命名空间设计
 ```bash
 ds doc create documents/design/technical --title "技术设计"
 ds doc section add documents/design/technical/section --title "登录"
-ds doc section set-title documents/design/technical/section1 --title 'login(&mut self) -> Result<(), Error>'
+ds doc topic add documents/design/technical/section1/body --title "函数原型"
+ds doc text add documents/design/technical/section1/body1/body --text "login(&mut self) -> Result<(), Error>"
 ds doc topic add documents/design/technical/section1/body --title "认证流程"
 ds doc text add documents/design/technical/section1/body --text "登录使用 OAuth 2.0。"
 ds doc block add documents/design/technical/section1/body1 --language rust --text $'let token = login();'
@@ -405,7 +406,7 @@ ds doc layout   # 按结构树创建/移动 Section
 ds doc check    # 校验 Section 层级
 ```
 
-Function/Method 的 Section 标题必须写源码中的完整函数原型（函数名、参数、返回类型），不能只写名字；设计对象 qname 不变。`ds doc layout` 只创建占位标题，不会覆盖已有标题；用 `ds doc section set-title` 设置原型。
+Function/Method 的 Section 标题只用对象短名，不带 `#hash`；完整函数原型写在 Section 内的第一个 topic“函数原型”里。设计对象 qname 不变。
 
 提交前 `ds doc check` 必须通过。
 

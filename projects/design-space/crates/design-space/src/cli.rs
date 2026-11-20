@@ -749,13 +749,6 @@ enum DocSectionCommand {
         #[arg(long)]
         title: String,
     },
-    /// Set a section title.
-    SetTitle {
-        /// Section qname.
-        qname: String,
-        #[arg(long)]
-        title: String,
-    },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -1244,14 +1237,6 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
             }
             catalog.rename_symbols(&mapping)?;
             save_worktree(&ws, state, &catalog, &new_qname)?;
-        }
-        DocCommand::Section {
-            command: DocSectionCommand::SetTitle { qname, title },
-        } => {
-            let hash = ws.put_symbol(&qname)?;
-            set_section_title(&mut catalog, hash, &title)?;
-            save_worktree(&ws, state, &catalog, &qname)?;
-            println!("Updated {qname}");
         }
         DocCommand::Section {
             command: DocSectionCommand::Add { target, title },
@@ -2924,9 +2909,7 @@ struct DocPlacement {
     /// The owning System/Module/element, or `None` for a System whose parent is
     /// the technical document itself.
     parent: Option<SymbolHash>,
-    /// Expected title. `None` means the writer owns the title; `doc layout`
-    /// creates a placeholder and never rewrites an existing one.
-    title: Option<String>,
+    title: String,
 }
 
 fn expected_doc_placements(ws: &Workspace, catalog: &Catalog) -> Result<Vec<DocPlacement>> {
@@ -2968,7 +2951,7 @@ fn push_container_placement(
     out.push(DocPlacement {
         object,
         parent,
-        title: Some(title),
+        title,
     });
     let mut layers = catalog
         .children(object)
@@ -3033,7 +3016,7 @@ fn push_layer_placement(
     out.push(DocPlacement {
         object: layer,
         parent,
-        title: Some(payload.title.clone()),
+        title: payload.title.clone(),
     });
     let mut modules = catalog
         .children(layer)
@@ -3064,21 +3047,10 @@ fn push_element_placement(
     out: &mut Vec<DocPlacement>,
 ) -> Result<()> {
     let name = ws.get_symbol(element)?;
-    let object = catalog
-        .get(element)
-        .with_context(|| format!("object not found: {name}"))?;
-    // Function and method headings must show the prototype, which the writer
-    // knows from the source. Layout creates a placeholder but never overwrites
-    // the title. The object's qname is unchanged.
-    let title = if matches!(object.kind, Kind::Function | Kind::Method) {
-        None
-    } else {
-        Some(element_title(&name))
-    };
     out.push(DocPlacement {
         object: element,
         parent,
-        title,
+        title: element_title(&name),
     });
     let mut nested = Vec::new();
     for (qname, object) in catalog.iter() {
@@ -3257,16 +3229,12 @@ fn doc_layout(ws: &Workspace, catalog: &mut Catalog) -> Result<()> {
                 }
             }
             _ => {
-                let placeholder = element_title(&object_text);
-                let title = placement.title.as_deref().unwrap_or(&placeholder);
-                let created = add_doc_section(ws, catalog, parent, title)?;
+                let created = add_doc_section(ws, catalog, parent, &placement.title)?;
                 changes += 1;
                 created
             }
         };
-        if let Some(title) = &placement.title
-            && set_section_title(catalog, section, title)?
-        {
+        if set_section_title(catalog, section, &placement.title)? {
             changes += 1;
         }
         set_document(
@@ -3366,33 +3334,16 @@ fn doc_check(ws: &Workspace, catalog: &Catalog) -> Result<()> {
                 ws.get_symbol(expected)?
             ));
         }
-        if let Some(expected) = &placement.title
-            && let Some(section) = catalog.get(document)
+        if let Some(section) = catalog.get(document)
             && let ObjectPayload::DocumentSection(payload) = &section.payload
-            && payload.title != *expected
+            && payload.title != placement.title
         {
             problems.push(format!(
                 "{}: Section title is {:?}, expected {:?}",
                 ws.get_symbol(placement.object)?,
                 payload.title,
-                expected
+                placement.title
             ));
-        }
-        if placement.title.is_none()
-            && let Some(section) = catalog.get(document)
-            && let ObjectPayload::DocumentSection(payload) = &section.payload
-        {
-            let short = element_title(&ws.get_symbol(placement.object)?);
-            if payload.title.trim().is_empty()
-                || payload.title.trim() == short
-                || payload.title.contains('#')
-            {
-                problems.push(format!(
-                    "{}: Section title must show the function prototype, not {:?}",
-                    ws.get_symbol(placement.object)?,
-                    payload.title
-                ));
-            }
         }
     }
     let mut namespaces = catalog

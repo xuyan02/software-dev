@@ -2017,21 +2017,6 @@ fn lays_out_technical_design_sections_by_structure() {
     assert!(String::from_utf8_lossy(&check.stdout).contains("expected"));
 
     ok(root, &["doc", "layout"]);
-
-    let method_section = "documents/design/technical/section1/section1/section1/section2";
-    let prototype = "login(&mut self) -> Result<(), Error>";
-    ok(
-        root,
-        &[
-            "doc",
-            "section",
-            "set-title",
-            method_section,
-            "--title",
-            prototype,
-        ],
-    );
-
     let checked = ok(root, &["doc", "check"]);
     assert!(checked.contains("document hierarchy ok"));
 
@@ -2065,7 +2050,7 @@ fn lays_out_technical_design_sections_by_structure() {
         ),
         (
             "documents/design/technical/section1/section1/section1/section2",
-            "login(&mut self) -> Result<(), Error>",
+            "login",
         ),
         ("documents/design/technical/section1/section2", "Entry"),
     ];
@@ -2076,13 +2061,6 @@ fn lays_out_technical_design_sections_by_structure() {
             "{section}: {shown}"
         );
     }
-
-    ok(root, &["doc", "layout"]);
-    let shown = ok(root, &["show", method_section]);
-    assert!(
-        shown.contains(&format!("title: {prototype}")),
-        "layout must not overwrite a function prototype title: {shown}"
-    );
 }
 
 #[test]

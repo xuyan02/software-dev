@@ -100,7 +100,6 @@ ds ls [--files|--namespaces|--documents|--design] [--staged]
 ds doc mkdir <qname>
 ds doc create <qname> --title <text>
 ds doc section add <target> --title <text>
-ds doc section set-title <qname> --title <text>
 ds doc topic add <target> --title <text>
 ds doc text add <target> --text <text>
 ds doc text set <qname> --text <text>
@@ -374,7 +373,7 @@ ds doc section add documents/specs/auth/section1/section --title "登录流程"
 
 真实 Section qname 表示“作为兄弟插到它后面”；加子章节必须指向该 Section 下的 `section` 锚点，或它最后一个子章节。
 
-Function/Method 的文档 Section 标题必须写完整函数原型（函数名、参数、返回类型），不要只写名字，也不要带 `#<signature-hash>`；对象 qname 不变。用 `ds doc section set-title <qname> --title '<原型>'` 设置。`ds doc layout` 只创建占位标题，不会覆盖已有标题。
+Function/Method 的文档 Section 标题只用对象短名，不带 `#<signature-hash>`；完整函数原型写在 Section 内的第一个 topic“函数原型”里。对象 qname 不变。
 
 ### 正文
 
