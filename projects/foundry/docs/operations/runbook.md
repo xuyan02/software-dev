@@ -57,30 +57,49 @@ git -C /home/xuyan/work/software-dev push /home/xuyan/git/software-dev.git --all
 
 智能体不再使用 ds bearer token。控制平面为每个 agent 账户生成 SSH key，公钥、
 加密后的私钥和吊销状态保存在 Postgres 的 `agent_ds_keys` 表；AES-GCM master key
-保存在 `~/.foundry/ds-key-master`，不写入数据库。公钥清单和 allowlist 写到
-`~/.foundry/ds-sshd`，由专用 sshd 容器读取。
+保存在 `~/.foundry/ds-key-master`，不写入数据库。
+
+SSH 采用和 Git 相同的模型：
+
+- 宿主机只运行系统 sshd，不运行 design-space 专用 sshd 容器；
+- 所有 agent key 都登录同一个服务账户（默认 `foundry-ds`）；
+- 控制平面写出 `~/.foundry/ds-sshd/authorized_keys`，sshd 通过
+  `AuthorizedKeysCommand` 读取；
+- 每一行 key 都带 `restrict` 和 `command="foundry-ds-stdio ..."`，不能开 shell；
+- forced command 根据 key 对应的 allowlist 判断 repo，再执行
+  `ds-server --stdio --root <repos-root>/<repo>`。
+
+安装或更新（需要 root，操作幂等）：
+
+```bash
+cd projects/foundry
+cargo build --bins
+sudo scripts/install-ds-sshd.sh
+```
+
+安装脚本会安装 `openssh-server` 和 `acl`（如果缺少），创建服务账户
+`foundry-ds`，安装 `/usr/local/bin/foundry-ds-stdio` 和
+`/usr/local/bin/foundry-ds-authorized-keys`，写
+`/etc/ssh/sshd_config.d/10-foundry-ds.conf`，并给服务账户授予
+`~/.foundry/design-spaces` 的 ACL 读写权限。然后重启 sshd。
+
+配置 `design_space_ssh_url`，默认是 `ssh://foundry-ds@<宿主 IP>`。
+`ds-server` 使用控制平面同目录的二进制；不在同目录时设置
+`FOUNDRY_DS_SERVER=/absolute/path/to/ds-server`。切换 SSH 端点后重启控制平面，
+再重启 agentd 和胶囊，使 agent 重新获取新的 host key。
+
+HTTP ds-server 以操作者身份运行，SSH ds-server 以服务账户运行，两者写同一组仓库。
+控制平面需要用 `umask 002` 启动（systemd 下设置 `UMask=0002`）；SSH 侧由
+`foundry-ds-stdio` 设置同样的 umask，仓库 ACL 由安装脚本维护。
 
 这把 key 属于 agent 账户，不是任务的临时凭证。agentd 启动并创建常驻 shell 时，
 通过 `/api/v1/agent/ds-credential` 取一次，写到胶囊的 `/run/foundry/ds_key` 和
 `/run/foundry/ds_known_hosts`。`ds` 访问 SSH remote 时直接读取这两个文件，不经过
 环境变量，也不需要智能体或任务传参。GitHub token 仍是任务级、短期的凭证。
+`ds_known_hosts` 来自宿主 sshd 的 host key。
 
-启动专用 sshd（端口默认 2222）：
-
-```bash
-cd projects/foundry
-cargo build --bins
-scripts/dev-ds-sshd.sh
-```
-
-容器挂载：
-
-- `~/.foundry/design-spaces` → `/repos`（读写）
-- `~/.foundry/ds-sshd` → `/run/foundry/ssh`（只读）
-
-`authorized_keys` 里的每一行只允许运行 `foundry-ds-stdio`，并且 repo 必须在
-该 agent 的 allowlist 中。删除 `agent_ds_keys` 里的 key 或将 `revoked_at` 置为非空，
-重新生成 `authorized_keys` 后即吊销该 agent 的访问。
+删除 `agent_ds_keys` 里的 key 或将 `revoked_at` 置为非空，控制平面重新生成
+`authorized_keys` 后即吊销该 agent 的访问。
 
 `~/.foundry/ds-key-master` 是数据库私钥的 AES-GCM master key，必须和数据库备份分开保存。
 丢失它会导致 `agent_ds_keys` 里的私钥无法解密，只能重新生成并轮换所有 agent key。

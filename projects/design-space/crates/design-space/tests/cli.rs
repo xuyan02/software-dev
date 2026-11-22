@@ -1145,6 +1145,64 @@ fn imports_a_document_subtree_idempotently() {
 }
 
 #[test]
+fn doc_lint_grep_and_comment_json_return_qnames_and_text() {
+    let dir = tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    ok(&ws, &["init", "--source", "file:///nonexistent"]);
+    ok(&ws, &["doc", "mkdir", "documents/specs"]);
+    let plan = dir.path().join("plan.json");
+    fs::write(
+        &plan,
+        r#"{
+  "root": {"qname": "documents/specs/auth", "kind": "document", "title": "认证"},
+  "sections": [{
+    "title": "登录",
+    "body": [
+      {"type": "topic", "title": "参数", "body": [
+        {"type": "text", "text": "参数 user：用户。"},
+        {"type": "text", "text": "参数 bad：没有句号"}
+      ]},
+      {"type": "topic", "title": "返回值", "body": [
+        {"type": "text", "text": "返回：结果。"}
+      ]}
+    ]
+  }]
+}"#,
+    )
+    .unwrap();
+    ok(&ws, &["doc", "import", "--file", plan.to_str().unwrap()]);
+
+    let lint: serde_json::Value =
+        serde_json::from_str(&ok(&ws, &["doc", "lint", "--format", "json"])).unwrap();
+    assert!(lint.as_array().unwrap().iter().any(|issue| {
+        issue["rule"] == "parameter" && issue["text"] == "参数 bad：没有句号"
+    }));
+
+    let found: serde_json::Value =
+        serde_json::from_str(&ok(&ws, &["doc", "grep", "没有句号", "--format", "json"])).unwrap();
+    let text_qname = found[0]["qname"].as_str().unwrap().to_owned();
+
+    ok(
+        &ws,
+        &["doc", "comment", "add", &text_qname, "--text", "补句号"],
+    );
+    let comments: serde_json::Value = serde_json::from_str(&ok(
+        &ws,
+        &["doc", "comment", "list", "--open", "--format", "json"],
+    ))
+    .unwrap();
+    let comment = &comments.as_array().unwrap()[0];
+    assert_eq!(comment["qname"], text_qname);
+    assert_eq!(comment["comment"], "补句号");
+    assert!(
+        comment["current_text"]
+            .as_str()
+            .unwrap()
+            .contains("没有句号")
+    );
+}
+
+#[test]
 fn document_json_markdown_and_round_trip() {
     let dir = tempdir().unwrap();
     let root = dir.path();

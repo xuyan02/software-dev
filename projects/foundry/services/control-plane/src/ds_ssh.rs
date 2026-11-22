@@ -2,8 +2,9 @@
 //!
 //! Public keys, encrypted private keys and revocation state live in Postgres.
 //! The AES-GCM master key stays outside the database in
-//! `~/.foundry/ds-key-master`. Only public keys, allowlists and the sshd host
-//! key are mounted into the sshd container.
+//! `~/.foundry/ds-key-master`. The host sshd reads only the generated
+//! `authorized_keys` through `AuthorizedKeysCommand`; each key is restricted to
+//! `foundry-ds-stdio`, which validates the repo against that agent's allowlist.
 
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::digest;
@@ -17,6 +18,11 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const FORCED_COMMAND: &str = "/usr/local/bin/foundry-ds-stdio";
+const DEFAULT_HOST_KEY_FILES: &[&str] = &[
+    "/etc/ssh/ssh_host_ed25519_key.pub",
+    "/etc/ssh/ssh_host_ecdsa_key.pub",
+    "/etc/ssh/ssh_host_rsa_key.pub",
+];
 const NONCE_LEN: usize = 12;
 
 #[derive(Debug, Clone)]
@@ -29,27 +35,42 @@ pub struct DsSshCredential {
 pub struct DsSsh {
     server_root: PathBuf,
     base: String,
+    repos_root: PathBuf,
+    ds_server: PathBuf,
     pool: PgPool,
     master: [u8; 32],
     lock: Mutex<()>,
 }
 
 impl DsSsh {
-    pub fn new(foundry_dir: &Path, base: impl Into<String>, pool: PgPool) -> Result<Self, String> {
+    pub fn new(
+        foundry_dir: &Path,
+        base: impl Into<String>,
+        repos_root: PathBuf,
+        ds_server: PathBuf,
+        pool: PgPool,
+    ) -> Result<Self, String> {
         let server_root = foundry_dir.join("ds-sshd");
-        ensure_private_dir(&server_root)?;
-        ensure_private_dir(&server_root.join("allowlists"))?;
-        ensure_private_dir(&server_root.join("host"))?;
+        ensure_dir(&server_root, 0o755)?;
+        ensure_dir(&server_root.join("allowlists"), 0o755)?;
         let master = load_master_key(foundry_dir)?;
-        let ssh = Self {
+        Ok(Self {
             server_root,
             base: base.into().trim_end_matches('/').to_string(),
+            repos_root: absolute_path(repos_root),
+            ds_server: absolute_path(ds_server),
             pool,
             master,
             lock: Mutex::new(()),
-        };
-        ssh.ensure_host_key()?;
-        Ok(ssh)
+        })
+    }
+
+    /// Rewrite the host sshd key file from the database. Called at startup so
+    /// keys issued before a deployment change pick up the current forced
+    /// command without waiting for the next credential request.
+    pub async fn refresh_authorized_keys(&self) -> Result<(), String> {
+        let _guard = self.lock.lock().await;
+        self.write_authorized_keys().await
     }
 
     pub async fn credential(
@@ -141,14 +162,20 @@ impl DsSsh {
             let public_key: String = row
                 .try_get("public_key")
                 .map_err(|error| format!("read agent public key: {error}"))?;
-            text.push_str(&format!(
-                "restrict,no-pty,no-port-forwarding,command=\"{FORCED_COMMAND} /run/foundry/ssh/allowlists/{account_id}\" {}\n",
-                public_key.trim()
-            ));
+            let allowlist = self
+                .server_root
+                .join("allowlists")
+                .join(account_id.to_string());
+            text.push_str(&authorized_keys_line(
+                &public_key,
+                &allowlist,
+                &self.repos_root,
+                &self.ds_server,
+            )?);
         }
         let path = self.server_root.join("authorized_keys");
         write_atomic(&path, text.as_bytes())?;
-        set_mode(&path, 0o600)
+        set_mode(&path, 0o644)
     }
 
     fn write_allowlist(&self, account_id: Uuid, repo: &str) -> Result<(), String> {
@@ -156,27 +183,31 @@ impl DsSsh {
             .server_root
             .join("allowlists")
             .join(account_id.to_string());
-        write_atomic(&path, format!("{repo}\n").as_bytes())
-    }
-
-    fn ensure_host_key(&self) -> Result<(), String> {
-        let path = self.server_root.join("host/ssh_host_ed25519_key");
-        if !path.is_file() {
-            run_ssh_keygen(&path, "foundry-ds-host")?;
-        }
-        Ok(())
+        write_atomic(&path, format!("{repo}\n").as_bytes())?;
+        set_mode(&path, 0o644)
     }
 
     fn known_hosts(&self) -> Result<String, String> {
-        let public = fs::read_to_string(self.server_root.join("host/ssh_host_ed25519_key.pub"))
-            .map_err(|error| format!("read host public key: {error}"))?;
         let (host, port) = parse_base(&self.base)?;
         let host = if port == 22 {
             host
         } else {
             format!("[{host}]:{port}")
         };
-        Ok(format!("{host} {}\n", public.trim()))
+        let mut text = String::new();
+        for path in DEFAULT_HOST_KEY_FILES {
+            if let Ok(public) = fs::read_to_string(path) {
+                text.push_str(&format!("{host} {}\n", public.trim()));
+            }
+        }
+        if text.is_empty() {
+            return Err(format!(
+                "no host SSH public key found; install OpenSSH server and run the \
+                 design-space sshd installer (looked in {})",
+                DEFAULT_HOST_KEY_FILES.join(", ")
+            ));
+        }
+        Ok(text)
     }
 
     fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>, String> {
@@ -283,9 +314,47 @@ fn run_ssh_keygen(path: &Path, comment: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn authorized_keys_line(
+    public_key: &str,
+    allowlist: &Path,
+    repos_root: &Path,
+    ds_server: &Path,
+) -> Result<String, String> {
+    Ok(format!(
+        "restrict,command=\"{} {} {} {}\" {}\n",
+        FORCED_COMMAND,
+        shell_arg(allowlist)?,
+        shell_arg(repos_root)?,
+        shell_arg(ds_server)?,
+        public_key.trim()
+    ))
+}
+
+/// Quote a path for the forced command stored in `authorized_keys`.
+///
+/// sshd wraps the whole `command=` value in double quotes, so the path cannot
+/// contain a double quote or backslash. Single quotes delimit shell arguments,
+/// so they are rejected too rather than escaped.
+fn shell_arg(path: &Path) -> Result<String, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+    if text.is_empty()
+        || text
+            .bytes()
+            .any(|byte| matches!(byte, b'\'' | b'"' | b'\\' | b'\n' | b'\r'))
+    {
+        return Err(format!(
+            "path cannot be used in an SSH forced command: {}",
+            path.display()
+        ));
+    }
+    Ok(format!("'{text}'"))
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or_else(|| "missing parent".to_string())?;
-    ensure_private_dir(parent)?;
+    fs::create_dir_all(parent).map_err(|error| format!("create {}: {error}", parent.display()))?;
     let temp = parent.join(format!(".{}.tmp", Uuid::now_v7()));
     {
         let mut file = fs::File::create(&temp)
@@ -299,9 +368,22 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn ensure_private_dir(path: &Path) -> Result<(), String> {
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path;
+    }
+    std::env::current_dir()
+        .map(|directory| directory.join(&path))
+        .unwrap_or(path)
+}
+
+fn ensure_dir(path: &Path, mode: u32) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|error| format!("create {}: {error}", path.display()))?;
-    set_mode(path, 0o700)
+    set_mode(path, mode)
+}
+
+fn ensure_private_dir(path: &Path) -> Result<(), String> {
+    ensure_dir(path, 0o700)
 }
 
 fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
@@ -373,8 +455,42 @@ mod tests {
     #[test]
     fn parses_ssh_base_with_a_custom_port() {
         assert_eq!(
-            parse_base("ssh://root@127.0.0.1:2222").unwrap(),
+            parse_base("ssh://foundry-ds@127.0.0.1:2222").unwrap(),
             ("127.0.0.1".to_string(), 2222)
         );
+    }
+
+    #[test]
+    fn parses_ssh_base_with_the_default_port() {
+        assert_eq!(
+            parse_base("ssh://foundry-ds@127.0.0.1").unwrap(),
+            ("127.0.0.1".to_string(), 22)
+        );
+    }
+
+    #[test]
+    fn builds_a_forced_command_with_the_host_paths() {
+        let line = authorized_keys_line(
+            "ssh-ed25519 AAAA agent\n",
+            Path::new("/home/foundry/.foundry/ds-sshd/allowlists/agent"),
+            Path::new("/home/foundry/.foundry/design-spaces"),
+            Path::new("/usr/local/bin/ds-server"),
+        )
+        .unwrap();
+        assert_eq!(
+            line,
+            "restrict,command=\"/usr/local/bin/foundry-ds-stdio \
+             '/home/foundry/.foundry/ds-sshd/allowlists/agent' \
+             '/home/foundry/.foundry/design-spaces' \
+             '/usr/local/bin/ds-server'\" ssh-ed25519 AAAA agent\n"
+        );
+    }
+
+    #[test]
+    fn rejects_paths_that_cannot_be_quoted_for_ssh() {
+        assert!(shell_arg(Path::new("/tmp/has space")).is_ok());
+        assert!(shell_arg(Path::new("/tmp/has'quote")).is_err());
+        assert!(shell_arg(Path::new("/tmp/has\"quote")).is_err());
+        assert!(shell_arg(Path::new("")).is_err());
     }
 }

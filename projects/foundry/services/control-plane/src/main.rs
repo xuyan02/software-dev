@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
     let design_space_ssh_base = config
         .design_space_ssh_url
         .clone()
-        .unwrap_or_else(|| format!("ssh://root@{}:2222", design_space::host_ip()));
+        .unwrap_or_else(|| format!("ssh://foundry-ds@{}", design_space::host_ip()));
     tracing::info!(
         url = %design_space_base,
         ssh = %design_space_ssh_base,
@@ -96,10 +96,16 @@ async fn main() -> anyhow::Result<()> {
         ds_ssh::DsSsh::new(
             &foundry_shared::default_foundry_dir(),
             design_space_ssh_base.clone(),
+            config.design_space_root.clone(),
+            ds_server_binary()?,
             store.pool().clone(),
         )
         .map_err(|error| anyhow::anyhow!(error))?,
     );
+    ds_ssh
+        .refresh_authorized_keys()
+        .await
+        .map_err(|error| anyhow::anyhow!(error))?;
     migrate_design_space_urls(store.as_ref(), &design_space_ssh_base).await?;
     let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> =
         Arc::new(design_space::HttpDesignSpaceProvisioner::new(
@@ -598,6 +604,32 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             Err(error) => tracing::warn!(%error, "document review link release scan failed"),
         }
     }
+}
+
+/// The SSH forced command runs `ds-server` directly instead of going through
+/// the control plane. Prefer the sibling built by `cargo build --bins`, and
+/// fall back to a system-wide install.
+fn ds_server_binary() -> anyhow::Result<PathBuf> {
+    if let Some(path) = std::env::var_os("FOUNDRY_DS_SERVER") {
+        return Ok(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe()?;
+    let sibling = exe
+        .parent()
+        .map(|directory| directory.join("ds-server"))
+        .filter(|path| path.is_file());
+    if let Some(path) = sibling {
+        return Ok(path);
+    }
+    let installed = PathBuf::from("/usr/local/bin/ds-server");
+    if installed.is_file() {
+        return Ok(installed);
+    }
+    anyhow::bail!(
+        "ds-server binary not found next to {}; build it with `cargo build --bins` \
+         or set FOUNDRY_DS_SERVER",
+        exe.display()
+    )
 }
 
 /// Point every project at the local SSH transport. The repo name is the

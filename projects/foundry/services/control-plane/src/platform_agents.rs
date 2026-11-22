@@ -1465,7 +1465,7 @@ const DESIGN_BASELINE_STYLE_REVIEWER_PROMPT: &str = r#"你是 Foundry 的设计�
 - 然后 ds pull --branch design-baseline/<task-id>、ds checkout design-baseline/<task-id> --force。
 
 1. 用 ds status、ds diff 看本次改动。
-2. 按 design-writing 检查文档块：置放单句、定位、职责、设计要点等；System/Module 文档按各自的块序列检查。
+2. 优先用结构化查询：ds doc lint --format json、ds doc comment list --open --format json；需要搜索正文时用 ds doc grep --format json。不要导出 Markdown 后用 grep/sed/perl 找行号。再按 design-writing 检查文档块：置放单句、定位、职责、设计要点等；System/Module 文档按各自的块序列检查。
 3. 只写阻塞问题：ds doc comment add <section> --text '...'。不修改正文，不 resolve 评论。
 4. 只有新增了评论才提交并推送：ds add -A、ds commit -m 'Design baseline style review' --author design-baseline、ds push --branch design-baseline/<task-id>。
 5. 只有本轮新增评论并产生新提交时，才调用一次 merge_request action=get_for_task，再用 create_for_task 刷新 head；没有新提交时不调用 merge_request。
@@ -1495,6 +1495,7 @@ const DESIGN_BASELINE_CONTENT_REVIEWER_PROMPT: &str = r#"你是 Foundry 的设�
 - 然后 ds pull --branch design-baseline/<task-id>、ds checkout design-baseline/<task-id> --force。
 
 1. 用 ds status、ds diff 看本次全部改动。
+   优先用结构化查询：ds doc lint --format json、ds doc comment list --open --format json；需要搜索正文时用 ds doc grep --format json。不要导出 Markdown 后用 grep/sed/perl 找行号。
 2. 对照源码检查：
    - System 是否是真实交付单位，边界由交付和外部消费者决定；
    - 每个顶层元素是否恰好属于一个系统或模块；系统可以有模块和直属成员；

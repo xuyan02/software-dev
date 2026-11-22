@@ -11,7 +11,13 @@
 # is rejected; there is no shell, no pty and no forwarding.
 set -eu
 
+# The HTTP ds-server and the SSH ds-server write the same repository as two
+# different accounts. Group-writable files keep both able to write.
+umask 0002
+
 allowlist="${1:?allowlist path}"
+repos_root="${2:?repos root}"
+ds_server="${3:?ds-server path}"
 command="${SSH_ORIGINAL_COMMAND:-}"
 
 prefix="ds-server --stdio --root "
@@ -51,4 +57,4 @@ if [ ! -f "$allowlist" ] || ! grep -qxF "$repo" "$allowlist"; then
     exit 1
 fi
 
-exec /usr/local/bin/ds-server --stdio --root "/repos/$repo"
+exec "$ds_server" --stdio --root "$repos_root/$repo"

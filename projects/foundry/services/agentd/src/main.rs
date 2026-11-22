@@ -210,6 +210,30 @@ async fn install_ds_credential(
         protected.push_str(&shell_quote(DS_TOKEN_PATH));
     }
     shell_ok(shell, format!("chmod 600 {protected}")).await?;
+
+    // The workspace keeps its own copy of the remote URL in `.ds/config`.
+    // A project's URL can change when the deployment moves its SSH endpoint,
+    // so refresh it from the credential instead of leaving the agent on a
+    // stale address.
+    if let Some(url) = credential
+        .get("url")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        let workspace = format!("/work/{}/ds", definition.project_id);
+        let config = format!("{workspace}/.ds/config");
+        shell_ok(
+            shell,
+            format!(
+                "if [ -f {} ] && command -v ds >/dev/null 2>&1; then \
+                 ds remote set-url {} --dir {}; fi",
+                shell_quote(&config),
+                shell_quote(url.trim()),
+                shell_quote(&workspace)
+            ),
+        )
+        .await?;
+    }
     Ok(())
 }
 

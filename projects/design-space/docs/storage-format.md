@@ -339,7 +339,7 @@ object_format = "sha1" # 或 "sha256"
 `.ds/config` 只保存工作区本地状态，不再保存源码字段：
 
 ```toml
-remote = "ssh://root@host:2222/<project-id>"
+remote = "ssh://foundry-ds@host/<project-id>"
 ```
 
 - 老工作区的 `.ds/config` 里如果还有 `[source]`，`Workspace::open` 会自动把它

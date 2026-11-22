@@ -345,8 +345,7 @@ impl Tool for TaskOperationTool {
                 "required": ["task_id", "operation"],
                 "properties": {
                     "task_id": { "type": "string", "format": "uuid" },
-                    "operation": { "type": "string", "description": "Use the name returned by task_allowed_operations; it is already stage-qualified." },
-                    "idempotency_key": { "type": "string" }
+                    "operation": { "type": "string", "description": "Use the name returned by task_allowed_operations; it is already stage-qualified." }
                 }
             }),
         }
@@ -365,14 +364,22 @@ impl Tool for TaskOperationTool {
                     .to_string(),
             ));
         }
-        let key = optional_string(&arguments, "idempotency_key")
-            .unwrap_or_else(|| Uuid::now_v7().to_string());
-        let result = self
-            .client
+        // The model must not invent reusable keys: a repeated key from an
+        // earlier visit to the same stage is treated as an idempotent no-op
+        // and silently leaves the task stuck. Every attempt gets a fresh key.
+        let key = Uuid::now_v7().to_string();
+        self.client
             .send_task_operation(task_id, &operation, &key)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
-        pretty(result)
+        Ok(ToolOutput::success(
+            json!({
+                "ok": true,
+                "task_id": task_id,
+                "operation": operation,
+            })
+            .to_string(),
+        ))
     }
 }
 
@@ -415,7 +422,21 @@ impl Tool for TaskCommentTool {
             .comment_task(task_id, &body)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))?;
-        pretty(task)
+        let comment_id = task
+            .get("comments")
+            .and_then(Value::as_array)
+            .and_then(|comments| comments.last())
+            .and_then(|comment| comment.get("id"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        Ok(ToolOutput::success(
+            json!({
+                "ok": true,
+                "task_id": task_id,
+                "comment_id": comment_id,
+            })
+            .to_string(),
+        ))
     }
 }
 

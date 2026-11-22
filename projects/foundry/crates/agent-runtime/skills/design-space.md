@@ -203,6 +203,9 @@ ds source changes [--base <ref>]
 ds show <qname> [--source] [--staged]
 ds ls [--files] [--namespaces] [--design] [--staged]
 ds status --porcelain
+ds doc grep <pattern> [--format text|json]
+ds doc lint [--rules parameter,return] [--format text|json]
+ds doc comment list [--open] [--format text|json]
 ```
 
 `ds status --porcelain` 输出未暂存对象：状态和 qname，每行一个；需要 kind/source 时用 `--detail`，否则用 `ds show <qname>` 查询。
@@ -212,7 +215,10 @@ ds status --porcelain
 - `ds show --staged` 读 index；
 - `ds ls --files` 列 Directory/File 的 qname；
 - `ds ls --namespaces` 列非 File/Directory 的 qname；
-- `ds ls --design` 列已有 `document` 引用的对象，输出 qname 和 document qname。
+- `ds ls --design` 列已有 `document` 引用的对象，输出 qname 和 document qname；
+- `ds doc grep` 在文档正文中搜索并返回 qname，不要导出 Markdown 后用 grep 找行号；
+- `ds doc lint` 检查参数/返回值等字段格式，返回 qname、规则和违规文本；
+- `ds doc comment list --open --format json` 返回评论、目标 qname 和当前正文。
 
 ### 4.3 创建对象
 

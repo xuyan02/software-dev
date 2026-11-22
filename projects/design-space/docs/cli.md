@@ -115,9 +115,11 @@ ds doc list add <target>
 ds doc list item add <target> --text <text>
 ds doc comment add <qname> --text <text>
 ds doc comment resolve <qname> <comment-id>
-ds doc comment list <qname>
+ds doc comment list [<qname>] [--open] [--format text|json]
 ds doc comment clear
 ds doc show <qname> [--format text|json|md]
+ds doc grep <pattern> [--ignore-case] [--format text|json]
+ds doc lint [--rules parameter,return] [--format text|json]
 ds doc import --file <path>
 ds doc layout
 ds doc check
@@ -548,6 +550,24 @@ comment1 [resolved] 补充错误码
 ds doc show documents/specs/auth                 # 默认 text：缩进视图
 ds doc show documents/specs/auth --format json   # 可回灌 ds doc import
 ds doc show documents/specs/auth --format md     # Markdown 视图
+```
+
+`ds doc grep` 在文档对象正文中搜索，返回 qname，不返回 Markdown 行号：
+
+```bash
+ds doc grep "返回：成功时" --format json
+```
+
+`ds doc lint` 检查参数和返回值等字段格式，返回 qname、规则和违规文本：
+
+```bash
+ds doc lint --rules parameter,return --format json
+```
+
+`ds doc comment list --format json` 返回评论及其目标 qname 和当前正文，便于直接定位修改：
+
+```bash
+ds doc comment list --open --format json
 ```
 
 按顺序输出文档、章节、正文元素（text / list / topic）、topic 段落、列表和列表项。

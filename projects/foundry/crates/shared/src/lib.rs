@@ -43,8 +43,8 @@ pub struct Config {
     /// Bearer token file for the local ds-server admin API.
     pub design_space_token_file: PathBuf,
     /// SSH base URL agents use to reach the design space, for example
-    /// `ssh://agent@10.0.0.5:2222`. Defaults to the detected host IP and the
-    /// dedicated sshd port.
+    /// `ssh://foundry-ds@10.0.0.5`. Defaults to the detected host IP and the
+    /// host's sshd on port 22.
     pub design_space_ssh_url: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is

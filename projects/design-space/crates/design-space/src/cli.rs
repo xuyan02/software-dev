@@ -622,6 +622,26 @@ enum DocCommand {
         #[arg(long)]
         file: PathBuf,
     },
+    /// Search document text and return qnames instead of Markdown line numbers.
+    Grep {
+        /// Substring to search for.
+        pattern: String,
+        /// Case-insensitive matching.
+        #[arg(long)]
+        ignore_case: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
+    /// Check document field formats and return structured violations.
+    Lint {
+        /// Comma-separated rules: parameter,return.
+        #[arg(long, default_value = "parameter,return")]
+        rules: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
+    },
     /// Validate that the technical design sections match the structure tree.
     Check,
     /// Move/create technical design sections so they match the structure tree.
@@ -662,6 +682,9 @@ enum DocCommentCommand {
         /// Include comments from the object's whole document subtree.
         #[arg(long)]
         subtree: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
     },
     /// Remove every comment from the worktree.
     Clear,
@@ -1732,8 +1755,10 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                 qname,
                 open,
                 subtree,
+                format,
             } => {
                 let mut printed = 0usize;
+                let mut values = Vec::new();
                 match qname {
                     Some(qname) => {
                         let qname = qname.trim_end_matches('/').to_owned();
@@ -1761,7 +1786,13 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                                     if open && comment.resolved {
                                         continue;
                                     }
-                                    print_comment(Some(&name), comment);
+                                    if format == OutputFormat::Json {
+                                        values.push(comment_json(
+                                            &ws, &catalog, candidate, object, comment,
+                                        )?);
+                                    } else {
+                                        print_comment(Some(&name), comment);
+                                    }
                                     printed += 1;
                                 }
                             }
@@ -1775,7 +1806,12 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                                 if open && comment.resolved {
                                     continue;
                                 }
-                                print_comment(None, comment);
+                                if format == OutputFormat::Json {
+                                    values
+                                        .push(comment_json(&ws, &catalog, hash, object, comment)?);
+                                } else {
+                                    print_comment(None, comment);
+                                }
                                 printed += 1;
                             }
                         }
@@ -1794,13 +1830,20 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                                 if open && comment.resolved {
                                     continue;
                                 }
-                                print_comment(Some(&name), comment);
+                                if format == OutputFormat::Json {
+                                    values
+                                        .push(comment_json(&ws, &catalog, qname, object, comment)?);
+                                } else {
+                                    print_comment(Some(&name), comment);
+                                }
                                 printed += 1;
                             }
                         }
                     }
                 }
-                if printed == 0 {
+                if format == OutputFormat::Json {
+                    println!("{}", serde_json::to_string_pretty(&values)?);
+                } else if printed == 0 {
                     println!("no comments");
                 }
             }
@@ -1838,6 +1881,16 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
             let root = import_doc_plan(&ws, &mut catalog, &file)?;
             let name = ws.get_symbol(root)?;
             save_worktree(&ws, state, &catalog, &name)?;
+        }
+        DocCommand::Grep {
+            pattern,
+            ignore_case,
+            format,
+        } => {
+            doc_grep(&ws, &catalog, &pattern, ignore_case, format)?;
+        }
+        DocCommand::Lint { rules, format } => {
+            doc_lint(&ws, &catalog, &rules, format)?;
         }
         DocCommand::Check => {
             doc_check(&ws, &catalog)?;
@@ -4501,6 +4554,50 @@ fn escape_comment_text(text: &str) -> String {
         .replace('\t', "\\t")
 }
 
+fn comment_json(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    comment: &DocComment,
+) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "qname": ws.get_symbol(qname)?,
+        "kind": kind_name(object.kind),
+        "current_text": doc_preview(catalog, object),
+        "comment_id": comment.id,
+        "resolved": comment.resolved,
+        "comment": comment.text,
+    }))
+}
+
+fn doc_preview(catalog: &Catalog, object: &DesignObject) -> String {
+    match &object.payload {
+        ObjectPayload::DocumentText(p) => p.text.clone(),
+        ObjectPayload::DocumentTopic(p) => p
+            .paragraphs
+            .iter()
+            .find_map(|paragraph| catalog.get(*paragraph))
+            .map(|child| doc_preview(catalog, child))
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| p.title.clone()),
+        ObjectPayload::DocumentList(p) => p
+            .items
+            .iter()
+            .filter_map(|item| catalog.get(*item))
+            .map(|item| doc_preview(catalog, item))
+            .collect::<Vec<_>>()
+            .join("；"),
+        ObjectPayload::Block(p) => p.text.clone(),
+        ObjectPayload::MermaidBlock(p) => p.text.clone(),
+        ObjectPayload::HtmlBlock(p) => p.text.clone(),
+        ObjectPayload::DocumentSection(p) => p.title.clone(),
+        ObjectPayload::Document(p) => p.title.clone(),
+        ObjectPayload::DocumentDirectory(_) => String::new(),
+        _ => String::new(),
+    }
+}
+
 fn print_comment(qname: Option<&str>, comment: &DocComment) {
     let status = comment_status(comment);
     let text = escape_comment_text(&comment.text);
@@ -4537,6 +4634,164 @@ fn print_comments(comments: &[DocComment], indent: &str) {
             escape_comment_text(&comment.text)
         );
     }
+}
+
+fn doc_grep(
+    ws: &Workspace,
+    catalog: &Catalog,
+    pattern: &str,
+    ignore_case: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    if pattern.is_empty() {
+        bail!("grep pattern must not be empty");
+    }
+    let needle = if ignore_case {
+        pattern.to_lowercase()
+    } else {
+        pattern.to_owned()
+    };
+    let mut rows = Vec::new();
+    for (qname, object) in catalog.iter() {
+        let mut text = doc_preview(catalog, object);
+        match &object.payload {
+            ObjectPayload::DocumentTopic(p) => {
+                text = format!("{}\n{text}", p.title);
+            }
+            ObjectPayload::DocumentSection(p) => {
+                text = format!("{}\n{text}", p.title);
+            }
+            ObjectPayload::Document(p) => {
+                text = format!("{}\n{text}", p.title);
+            }
+            _ => {}
+        }
+        if text.is_empty() {
+            continue;
+        }
+        let haystack = if ignore_case {
+            text.to_lowercase()
+        } else {
+            text.clone()
+        };
+        if !haystack.contains(&needle) {
+            continue;
+        }
+        rows.push((
+            ws.get_symbol(qname)?,
+            kind_name(object.kind).to_owned(),
+            text,
+        ));
+    }
+    if format == OutputFormat::Json {
+        let values = rows
+            .into_iter()
+            .map(|(qname, kind, text)| {
+                serde_json::json!({"qname": qname, "kind": kind, "text": text})
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&values)?);
+    } else {
+        for (qname, kind, text) in rows {
+            println!("{qname}\t{kind}\t{}", text.replace('\n', " "));
+        }
+    }
+    Ok(())
+}
+
+fn doc_lint(ws: &Workspace, catalog: &Catalog, rules: &str, format: OutputFormat) -> Result<()> {
+    let enabled = rules
+        .split(',')
+        .map(str::trim)
+        .filter(|rule| !rule.is_empty())
+        .collect::<BTreeSet<_>>();
+    let mut issues = Vec::new();
+    for (topic_qname, object) in catalog.iter() {
+        let ObjectPayload::DocumentTopic(topic) = &object.payload else {
+            continue;
+        };
+        let rule = match topic.title.as_str() {
+            "参数" => "parameter",
+            "返回值" => "return",
+            _ => continue,
+        };
+        if !enabled.contains(rule) {
+            continue;
+        }
+        let topic_name = ws.get_symbol(topic_qname)?;
+        let mut has_text = false;
+        for paragraph in &topic.paragraphs {
+            let Some(child) = catalog.get(*paragraph) else {
+                continue;
+            };
+            let ObjectPayload::DocumentText(text) = &child.payload else {
+                continue;
+            };
+            has_text = true;
+            let child_name = ws.get_symbol(*paragraph)?;
+            for line in text.text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("<!--") {
+                    continue;
+                }
+                let valid = match rule {
+                    "parameter" => valid_parameter_line(line),
+                    "return" => valid_return_line(line),
+                    _ => true,
+                };
+                if !valid {
+                    issues.push(serde_json::json!({
+                        "qname": child_name,
+                        "topic": topic_name,
+                        "rule": rule,
+                        "text": line,
+                    }));
+                }
+            }
+        }
+        if !has_text {
+            issues.push(serde_json::json!({
+                "qname": topic_name,
+                "topic": topic_name,
+                "rule": rule,
+                "text": "",
+                "message": "topic has no text paragraph",
+            }));
+        }
+    }
+    if format == OutputFormat::Json {
+        println!("{}", serde_json::to_string_pretty(&issues)?);
+    } else {
+        for issue in &issues {
+            println!(
+                "{}\t{}\t{}",
+                issue["qname"].as_str().unwrap_or_default(),
+                issue["rule"].as_str().unwrap_or_default(),
+                issue["text"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn valid_parameter_line(line: &str) -> bool {
+    if line == "无参数。" {
+        return true;
+    }
+    let Some(rest) = line.strip_prefix("参数 ") else {
+        return false;
+    };
+    let Some((name, value)) = rest.split_once('：') else {
+        return false;
+    };
+    !name.trim().is_empty() && !value.trim().is_empty() && line.ends_with('。')
+}
+
+fn valid_return_line(line: &str) -> bool {
+    if line == "无返回值。" {
+        return true;
+    }
+    line.starts_with("返回：") && line.ends_with('。') && line.len() > "返回：。".len()
 }
 
 fn doc_show(ws: &Workspace, catalog: &Catalog, qname: &str, format: OutputFormat) -> Result<()> {

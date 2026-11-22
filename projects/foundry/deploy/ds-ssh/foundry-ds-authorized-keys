@@ -1,0 +1,22 @@
+#!/bin/sh
+# AuthorizedKeysCommand for the design-space service account.
+#
+# Usage (from sshd_config):
+#
+#   AuthorizedKeysCommand /usr/local/bin/foundry-ds-authorized-keys \
+#       %u foundry-ds /home/operator/.foundry/ds-sshd/authorized_keys
+#   AuthorizedKeysCommandUser foundry-ds
+#
+# The control plane owns the file. It contains only public keys, each with a
+# forced command, so the service account can read it without exposing any
+# private material. Other users get no keys from this command and keep their
+# normal AuthorizedKeysFile lookup.
+set -eu
+
+user="${1:-}"
+service_user="${2:-}"
+authorized_keys="${3:-}"
+
+[ "$user" = "$service_user" ] || exit 0
+[ -r "$authorized_keys" ] || exit 0
+exec /bin/cat "$authorized_keys"
