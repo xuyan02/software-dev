@@ -154,11 +154,20 @@ struct CreatedRepo {
 
 #[async_trait]
 impl DesignSpaceProvisioner for HttpDesignSpaceProvisioner {
-    async fn create_design_space(&self, repo: &str, branch: &str) -> Result<String, String> {
-        let mut request = self
-            .client
-            .post(format!("{}/repos", self.base))
-            .json(&serde_json::json!({ "name": repo, "branch": branch }));
+    async fn create_design_space(
+        &self,
+        repo: &str,
+        branch: &str,
+        source_url: &str,
+    ) -> Result<String, String> {
+        let mut request =
+            self.client
+                .post(format!("{}/repos", self.base))
+                .json(&serde_json::json!({
+                    "name": repo,
+                    "branch": branch,
+                    "source_url": source_url,
+                }));
         if let Some(token) = &self.token {
             request = request.header("Authorization", format!("Bearer {token}"));
         }

@@ -78,8 +78,6 @@ pub struct LlmParams {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub timeout: Option<Duration>,
-    /// Compress shared history before the request when it exceeds this budget.
-    pub history_token_budget: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +113,7 @@ impl LlmResponse {
                 id: format!("call-{}", TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed)),
                 name: name.into(),
                 arguments,
+                argument_error: None,
             }],
         ))
     }
@@ -137,6 +136,18 @@ impl LlmResponse {
 #[async_trait]
 pub trait ModelGateway: Send + Sync {
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ModelError>;
+
+    /// Total prompt+completion context supported by the selected model.
+    fn context_window(&self) -> Option<usize> {
+        None
+    }
+
+    /// History is compacted before a request would exceed this. It is derived
+    /// from the model, never from an individual agent.
+    fn history_token_budget(&self) -> Option<usize> {
+        self.context_window()
+            .map(|window| window.saturating_mul(3) / 4)
+    }
 }
 
 /// External skill registry. Skill names in an LLM node are resolved here.
@@ -174,6 +185,7 @@ impl<N> LlmNodeAdapter<N> {
 impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
     async fn run(&self, input: Value, ctx: &mut Context) -> Result<Value, NodeError> {
         let runtime = ctx.llm_runtime()?.clone();
+        let history_budget = runtime.models.history_token_budget();
         let (shared_system, model, params, tools) = {
             let config = ctx.current_llm_config()?;
             (
@@ -202,16 +214,27 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
         // previous node's JSON is not appended separately.
         let user_text = fixed_user.trim().to_owned();
         let fixed_tokens = estimate_tokens(&system) + estimate_tokens(&user_text);
-        compress_history(&runtime, &model, &params, fixed_tokens, 0, ctx).await?;
+        let _ = compress_history(&runtime, &model, history_budget, fixed_tokens, 0, ctx).await?;
 
         ctx.history_mut().push(LlmMessage::user(user_text));
         let mut messages = Vec::new();
         if !system.is_empty() {
-            messages.push(LlmMessage::system(system));
+            messages.push(LlmMessage::system(system.clone()));
         }
         messages.extend(ctx.history().messages().iter().cloned());
 
+        let mut output_retries = 0u8;
         loop {
+            // A single node can run a long tool loop. Re-check the budget on
+            // every iteration; otherwise one node can grow past the provider's
+            // context limit even though the node start was under budget.
+            if compress_history(&runtime, &model, history_budget, fixed_tokens, 0, ctx).await? {
+                messages.clear();
+                if !system.is_empty() {
+                    messages.push(LlmMessage::system(system.clone()));
+                }
+                messages.extend(ctx.history().messages().iter().cloned());
+            }
             let response = runtime
                 .models
                 .complete(LlmRequest {
@@ -227,7 +250,21 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
             ctx.history_mut().push(message.clone());
             messages.push(message.clone());
             if final_answer {
-                return parse_node_output(&message.content);
+                match parse_node_output(&message.content) {
+                    Ok(value) => return Ok(value),
+                    Err(error) if output_retries == 0 => {
+                        output_retries += 1;
+                        let correction = LlmMessage::user(format!(
+                            "Your previous final response could not be parsed as the JSON required by this node: {error}\n\
+                             Return only one JSON object matching this node's output contract. \
+                             Do not use Markdown fences, prose, or an empty response."
+                        ));
+                        ctx.history_mut().push(correction.clone());
+                        messages.push(correction);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             }
 
             let registry = ctx.tool_registry()?.clone();
@@ -239,6 +276,11 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
                         codes::DENIED,
                         "tool is not enabled for this node",
                     )
+                } else if let Some(error) = &call.argument_error {
+                    // The provider emitted arguments that are not valid JSON.
+                    // Report it as a tool error so the model can retry with
+                    // well-formed arguments; the call itself is not executed.
+                    tool_error_json(&call.name, codes::INVALID_ARGUMENTS, error)
                 } else {
                     match registry
                         .call(&call.name, call.arguments, &tool_context)
@@ -297,7 +339,7 @@ fn parse_node_output(content: &str) -> Result<Value, NodeError> {
 
 /// Escape control characters that appear inside JSON strings. Raw `\n` and
 /// `\t` are valid JSON whitespace outside strings, but not inside strings.
-fn escape_control_characters(text: &str) -> String {
+pub(crate) fn escape_control_characters(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut in_string = false;
     let mut escaped = false;
@@ -388,7 +430,7 @@ fn strip_json_fence(text: &str) -> &str {
     rest.strip_suffix("```").map(str::trim_end).unwrap_or(text)
 }
 
-fn truncate_for_error(text: &str) -> String {
+pub(crate) fn truncate_for_error(text: &str) -> String {
     const MAX_CHARS: usize = 500;
     if text.chars().count() <= MAX_CHARS {
         return text.to_owned();
@@ -398,26 +440,28 @@ fn truncate_for_error(text: &str) -> String {
     out
 }
 
+/// Returns true when the shared history was rewritten and callers must rebuild
+/// their outgoing message list.
 async fn compress_history(
     runtime: &LlmRuntime,
     model: &ModelProfileRef,
-    params: &LlmParams,
+    budget: Option<usize>,
     fixed_tokens: usize,
     input_tokens: usize,
     ctx: &mut Context,
-) -> Result<(), NodeError> {
-    let Some(budget) = params.history_token_budget else {
-        return Ok(());
+) -> Result<bool, NodeError> {
+    let Some(budget) = budget else {
+        return Ok(false);
     };
     let history_tokens = estimate_history_tokens(ctx.history().messages());
     if fixed_tokens + input_tokens + history_tokens <= budget {
-        return Ok(());
+        return Ok(false);
     }
 
     let keep_budget = (budget / 4).max(1);
     let keep_from = keep_start(ctx.history().messages(), keep_budget);
     if keep_from == 0 {
-        return Ok(());
+        return Ok(false);
     }
 
     let older = &ctx.history().messages()[..keep_from];
@@ -427,7 +471,7 @@ async fn compress_history(
         Err(_) => format!("[{} earlier messages omitted]", older.len()),
     };
     ctx.history_mut().replace_with_summary(keep_from, summary);
-    Ok(())
+    Ok(true)
 }
 
 async fn summarize_history(
@@ -465,7 +509,12 @@ fn estimate_history_tokens(messages: &[LlmMessage]) -> usize {
 }
 
 fn estimate_tokens(text: &str) -> usize {
-    text.chars().count() / 4 + 1
+    // ASCII averages roughly four characters per token. Non-ASCII text
+    // (especially CJK, common in design documents) is counted as one token
+    // per character so the budget errs on the safe side.
+    let ascii = text.chars().filter(|ch| ch.is_ascii()).count();
+    let non_ascii = text.chars().count() - ascii;
+    ascii.div_ceil(4) + non_ascii + 1
 }
 
 fn keep_start(messages: &[LlmMessage], keep_budget: usize) -> usize {
@@ -486,6 +535,9 @@ fn keep_start(messages: &[LlmMessage], keep_budget: usize) -> usize {
 }
 
 fn render_transcript(messages: &[LlmMessage]) -> String {
+    // The transcript is model input for the summary call. Cap it so a runaway
+    // history does not turn compression itself into another context overflow.
+    const MAX_TRANSCRIPT_CHARS: usize = 80_000;
     let mut out = String::new();
     for message in messages {
         let role = match message.role {
@@ -507,7 +559,20 @@ fn render_transcript(messages: &[LlmMessage]) -> String {
             out.push('\n');
         }
     }
-    out
+    if out.chars().count() <= MAX_TRANSCRIPT_CHARS {
+        return out;
+    }
+    let half = MAX_TRANSCRIPT_CHARS / 2;
+    let head: String = out.chars().take(half).collect();
+    let tail: String = out
+        .chars()
+        .rev()
+        .take(half)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    format!("{head}\n...[transcript truncated]...\n{tail}")
 }
 
 fn tool_error_json(tool: &str, code: u32, message: &str) -> String {
@@ -570,10 +635,34 @@ fn append_skills(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Agent, Graph, LlmConfig, LlmParams, PromptTemplate, ScriptedModel, ToolRegistry};
+    use crate::{
+        Agent, Graph, LlmConfig, LlmParams, PromptTemplate, ScriptedModel, Tool, ToolContext,
+        ToolDefinition, ToolError, ToolOutput, ToolRegistry,
+    };
     use std::sync::Arc;
 
     struct TestLlm;
+
+    struct BigTool;
+
+    #[async_trait]
+    impl Tool for BigTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "big".to_owned(),
+                description: "Return a large result.".to_owned(),
+                input_schema: serde_json::json!({ "type": "object" }),
+            }
+        }
+
+        async fn call(
+            &self,
+            _arguments: Value,
+            _context: &ToolContext,
+        ) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::Text("x".repeat(10_000)))
+        }
+    }
 
     impl LlmNode for TestLlm {
         fn system(&self) -> &PromptTemplate {
@@ -633,10 +722,14 @@ mod tests {
 
     #[tokio::test]
     async fn history_is_compressed_before_the_request() {
-        let model = Arc::new(ScriptedModel::new(vec![
-            LlmResponse::final_answer("SUMMARY"),
-            LlmResponse::final_answer(serde_json::json!({ "ok": true }).to_string()),
-        ]));
+        let model = Arc::new(
+            ScriptedModel::new(vec![
+                LlmResponse::final_answer("SUMMARY"),
+                LlmResponse::final_answer(serde_json::json!({ "ok": true }).to_string()),
+            ])
+            // A 54-token window yields the 40-token history budget used below.
+            .with_context_window(54),
+        );
         let llm = Arc::new(LlmRuntime::new(
             model.clone(),
             Arc::new(ToolRegistry::new()),
@@ -663,10 +756,7 @@ mod tests {
                 model: ModelProfileRef::new("test"),
                 shared_system: PromptTemplate::literal(""),
                 tools: Vec::new(),
-                params: LlmParams {
-                    history_token_budget: Some(40),
-                    ..LlmParams::default()
-                },
+                params: LlmParams::default(),
             },
         );
 
@@ -701,6 +791,79 @@ mod tests {
                 .messages
                 .iter()
                 .any(|message| message.content.starts_with("old message 0 "))
+        );
+    }
+
+    #[tokio::test]
+    async fn history_is_compressed_during_a_long_tool_loop() {
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(BigTool)).unwrap();
+        let model = Arc::new(
+            ScriptedModel::new(vec![
+                LlmResponse::final_answer("SUMMARY-1"),
+                LlmResponse::tool_call("big", serde_json::json!({})),
+                LlmResponse::final_answer("SUMMARY-2"),
+                LlmResponse::final_answer(serde_json::json!({ "ok": true }).to_string()),
+            ])
+            // A 667-token window yields the 500-token history budget used below.
+            .with_context_window(667),
+        );
+        let llm = Arc::new(LlmRuntime::new(
+            model.clone(),
+            Arc::new(tools),
+            Arc::new(NoSkills),
+        ));
+        let graph = Graph::builder("compress-loop")
+            .entry("agent")
+            .exit("done")
+            .llm_node("agent", TestLlm)
+            .edge("agent", 0, "done")
+            .build()
+            .unwrap();
+        let agent = Agent::new("compress-loop", graph, llm);
+
+        let mut context = Context::new();
+        for index in 0..20 {
+            context.history_mut().push(LlmMessage::user(format!(
+                "old message {index} {}",
+                "y".repeat(500)
+            )));
+        }
+        context.set_llm_config(
+            "agent",
+            LlmConfig {
+                model: ModelProfileRef::new("test"),
+                shared_system: PromptTemplate::literal(""),
+                tools: vec!["big".to_owned()],
+                params: LlmParams::default(),
+            },
+        );
+
+        let output = agent.run(context, serde_json::json!("new")).await.unwrap();
+        assert_eq!(output.output, serde_json::json!({ "ok": true }));
+
+        let requests = model.requests();
+        assert_eq!(requests.len(), 4);
+        let final_request = &requests[3];
+        assert!(final_request.messages.iter().any(|message| {
+            message
+                .content
+                .starts_with("[earlier conversation summary]")
+        }));
+        assert!(
+            !final_request
+                .messages
+                .iter()
+                .any(|message| message.content.starts_with("old message 0 "))
+        );
+        let chars: usize = final_request
+            .messages
+            .iter()
+            .map(|message| message.content.chars().count())
+            .sum();
+        assert!(
+            chars < 20_000,
+            "history should be compacted, got {chars} chars"
         );
     }
 }

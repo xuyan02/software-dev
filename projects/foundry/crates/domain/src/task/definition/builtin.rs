@@ -89,7 +89,11 @@ const SOURCES: &[(&str, &str, &str)] = &[
     ),
     ("design_baseline", "Design baseline", DESIGN_BASELINE),
     ("design_iteration", "Design iteration", DESIGN_ITERATION),
-    ("development_iteration", "Development iteration", DEVELOPMENT_ITERATION),
+    (
+        "development_iteration",
+        "Development iteration",
+        DEVELOPMENT_ITERATION,
+    ),
     (
         "software_development",
         "Software development",

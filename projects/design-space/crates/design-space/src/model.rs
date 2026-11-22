@@ -145,6 +145,10 @@ pub enum Kind {
     Block = 0x1A,
     MermaidBlock = 0x1B,
     HtmlBlock = 0x1C,
+    Struct = 0x1D,
+    InnerStruct = 0x1E,
+    Enum = 0x1F,
+    InnerEnum = 0x20,
 }
 
 impl Kind {
@@ -177,6 +181,10 @@ impl Kind {
             0x1A => Self::Block,
             0x1B => Self::MermaidBlock,
             0x1C => Self::HtmlBlock,
+            0x1D => Self::Struct,
+            0x1E => Self::InnerStruct,
+            0x1F => Self::Enum,
+            0x20 => Self::InnerEnum,
             _ => return None,
         })
     }
@@ -298,6 +306,30 @@ pub struct ClassPayload {
     pub superclass: SymbolHash,
     pub interfaces: Vec<SymbolHash>,
     pub mixins: Vec<SymbolHash>,
+    pub explicit_dependencies: Vec<Dependency>,
+    pub implicit_dependencies: Vec<Dependency>,
+    pub children: Vec<ObjectHash>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: ClassParent,
+    pub source: Option<SpanSource>,
+    pub content_hash: Hash32,
+    pub document: SymbolHash,
+    pub explicit_dependencies: Vec<Dependency>,
+    pub implicit_dependencies: Vec<Dependency>,
+    pub children: Vec<ObjectHash>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumPayload {
+    pub qualified_name: SymbolHash,
+    pub parent: ClassParent,
+    pub source: Option<SpanSource>,
+    pub content_hash: Hash32,
+    pub document: SymbolHash,
     pub explicit_dependencies: Vec<Dependency>,
     pub implicit_dependencies: Vec<Dependency>,
     pub children: Vec<ObjectHash>,
@@ -559,6 +591,10 @@ pub enum ObjectPayload {
     Namespace(NamespacePayload),
     Class(ClassPayload),
     InnerClass(ClassPayload),
+    Struct(StructPayload),
+    InnerStruct(StructPayload),
+    Enum(EnumPayload),
+    InnerEnum(EnumPayload),
     Interface(InterfacePayload),
     InnerInterface(InterfacePayload),
     Method(MethodPayload),
@@ -601,6 +637,10 @@ impl DesignObject {
             ObjectPayload::Namespace(_) => Kind::Namespace,
             ObjectPayload::Class(_) => Kind::Class,
             ObjectPayload::InnerClass(_) => Kind::InnerClass,
+            ObjectPayload::Struct(_) => Kind::Struct,
+            ObjectPayload::InnerStruct(_) => Kind::InnerStruct,
+            ObjectPayload::Enum(_) => Kind::Enum,
+            ObjectPayload::InnerEnum(_) => Kind::InnerEnum,
             ObjectPayload::Interface(_) => Kind::Interface,
             ObjectPayload::InnerInterface(_) => Kind::InnerInterface,
             ObjectPayload::Method(_) => Kind::Method,

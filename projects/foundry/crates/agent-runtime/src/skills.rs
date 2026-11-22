@@ -25,6 +25,10 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/design-writing.md"),
     },
     Skill {
+        id: "design-draft",
+        prompt: include_str!("../skills/design-draft.md"),
+    },
+    Skill {
         id: "design-content-review",
         prompt: include_str!("../skills/design-content-review.md"),
     },

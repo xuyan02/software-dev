@@ -224,7 +224,12 @@ struct TestDesignSpaces;
 
 #[async_trait]
 impl foundry_app::DesignSpaceProvisioner for TestDesignSpaces {
-    async fn create_design_space(&self, repo: &str, _branch: &str) -> Result<String, String> {
+    async fn create_design_space(
+        &self,
+        repo: &str,
+        _branch: &str,
+        _source_url: &str,
+    ) -> Result<String, String> {
         Ok(format!("http://test/{repo}"))
     }
 }

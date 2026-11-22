@@ -8,7 +8,10 @@
 use crate::format;
 use crate::model::{CommitHash, Hash32};
 use crate::pack;
-use crate::workspace::{State, Workspace};
+use crate::push::{PushBundle, PushCommand, PushRecord, RecordKind};
+use crate::workspace::{
+    ObjectFormat, REPO_CONFIG_FILE, RepoConfig, SourceConfig, State, Workspace,
+};
 use anyhow::{Context, Result, bail};
 use reqwest::blocking::Client;
 use std::collections::BTreeMap;
@@ -21,6 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) const FILE_ROOTS: [&str; 5] = ["objects", "docs", "symbols", "commits", "packs"];
 pub(crate) const MAX_TRANSFER: usize = 256 * 1024 * 1024;
 
+const MAX_SOURCE_URL: usize = 4096;
+
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The agent capsule installs the design-space key here. `ds` reads these
@@ -28,9 +33,31 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 const SSH_KEY_PATH: &str = "/run/foundry/ds_key";
 const SSH_KNOWN_HOSTS_PATH: &str = "/run/foundry/ds_known_hosts";
 
+/// Preinstalled HTTP bearer token. Like the SSH key, it is provisioned ahead
+/// of time; commands never accept or receive it as an argument.
+const HTTP_TOKEN_PATH: &str = "/run/foundry/ds_token";
+
 fn installed_file(path: &str) -> Option<PathBuf> {
     let path = PathBuf::from(path);
     path.is_file().then_some(path)
+}
+
+/// Read the preinstalled HTTP token, if any. The capsule path wins; local
+/// development can use the XDG config directory.
+fn installed_http_token() -> Result<Option<String>> {
+    let mut candidates = vec![PathBuf::from(HTTP_TOKEN_PATH)];
+    if let Some(base) = std::env::var_os("XDG_CONFIG_HOME") {
+        candidates.push(PathBuf::from(base).join("ds/token"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".config/ds/token"));
+    }
+    for path in candidates {
+        if path.is_file() {
+            return Ok(Some(read_token_file(&path)?));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Debug)]
@@ -62,7 +89,7 @@ pub struct SshRemote {
 }
 
 impl Remote {
-    pub fn open(url: &str, token_file: Option<&Path>) -> Result<Self> {
+    pub fn open(url: &str) -> Result<Self> {
         let url = url.trim();
         if let Some(path) = url.strip_prefix("file://") {
             return Ok(Self::Local(LocalRemote {
@@ -70,8 +97,7 @@ impl Remote {
             }));
         }
         if url.starts_with("http://") || url.starts_with("https://") {
-            let token = token_file.map(read_token_file).transpose()?;
-            return Ok(Self::Http(HttpRemote::new(url, token)?));
+            return Ok(Self::Http(HttpRemote::new(url, installed_http_token()?)?));
         }
         if url.starts_with("ssh://") {
             return Ok(Self::Ssh(SshRemote::new(url)?));
@@ -92,11 +118,11 @@ impl Remote {
         }
     }
 
-    pub fn push(&self, workspace: &Workspace, branch: &str) -> Result<CommitHash> {
+    pub fn push(&self, workspace: &Workspace, branch: &str, force: bool) -> Result<CommitHash> {
         match self {
             Self::Local(local) => local.push(workspace, branch),
-            Self::Http(http) => http.push(workspace, branch),
-            Self::Ssh(ssh) => ssh.push(workspace, branch),
+            Self::Http(http) => http.push(workspace, branch, force),
+            Self::Ssh(ssh) => ssh.push(workspace, branch, force),
         }
     }
 
@@ -159,6 +185,7 @@ impl LocalRemote {
             bail!("remote does not exist: {}", self.root.display());
         }
         copy_layout(&self.root, workspace.store().root())?;
+        copy_repo_config(&self.root, workspace.store().root())?;
         let refs = read_refs(&self.root)?;
         write_remote_refs(workspace, &refs)?;
         Ok(refs)
@@ -176,18 +203,19 @@ impl HttpRemote {
         })
     }
 
-    fn push(&self, workspace: &Workspace, branch: &str) -> Result<CommitHash> {
+    fn push(&self, workspace: &Workspace, branch: &str, force: bool) -> Result<CommitHash> {
         let commit = workspace
             .read_ref(branch)?
             .with_context(|| format!("branch {branch} has no commit"))?;
-        for (relative, path) in store_files(workspace.store().root())? {
-            let bytes = fs::read(&path)?;
-            self.put_bytes(&format!("/files/{relative}"), &bytes)?;
-        }
-        self.put_bytes(
-            "/refs",
-            format!("{branch}\t{}\n", commit.to_hex()).as_bytes(),
-        )?;
+        let refs = parse_refs(&self.get_text("/refs")?)?;
+        let files = self
+            .get_text("/files")?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        let bundle = build_push_bundle(workspace, branch, commit, &refs, &files, force)?;
+        self.post_bytes("/push", &bundle.encode())?;
         Ok(commit)
     }
 
@@ -236,19 +264,19 @@ impl HttpRemote {
         Ok(bytes)
     }
 
-    fn put_bytes(&self, path: &str, bytes: &[u8]) -> Result<()> {
+    fn post_bytes(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let mut request = self
             .client
-            .put(format!("{}{}", self.base, path))
+            .post(format!("{}{}", self.base, path))
             .body(bytes.to_vec());
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
         request
             .send()
-            .with_context(|| format!("PUT {path}"))?
+            .with_context(|| format!("POST {path}"))?
             .error_for_status()
-            .with_context(|| format!("PUT {path}"))?;
+            .with_context(|| format!("POST {path}"))?;
         Ok(())
     }
 }
@@ -307,20 +335,20 @@ impl SshRemote {
         format!("ssh://{}{port}{}", self.target, self.root)
     }
 
-    fn push(&self, workspace: &Workspace, branch: &str) -> Result<CommitHash> {
+    fn push(&self, workspace: &Workspace, branch: &str, force: bool) -> Result<CommitHash> {
         let commit = workspace
             .read_ref(branch)?
             .with_context(|| format!("branch {branch} has no commit"))?;
         let mut session = SshSession::open(self)?;
-        for (relative, path) in store_files(workspace.store().root())? {
-            let bytes = fs::read(&path)?;
-            session.request(
-                &format!("PUT {} {}", relative.len(), bytes.len()),
-                &[relative.as_bytes(), &bytes],
-            )?;
-        }
-        let body = format!("{branch}\t{}\n", commit.to_hex());
-        session.request(&format!("PUTREF {}", body.len()), &[body.as_bytes()])?;
+        let refs = parse_refs(&String::from_utf8(session.request("REFS", &[])?)?)?;
+        let files = String::from_utf8(session.request("FILES", &[])?)?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        let bundle = build_push_bundle(workspace, branch, commit, &refs, &files, force)?;
+        let bytes = bundle.encode();
+        session.request(&format!("PUSH {}", bytes.len()), &[&bytes])?;
         Ok(commit)
     }
 
@@ -527,6 +555,16 @@ fn copy_layout(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Fetch-only: copy the repository metadata into the local `.ds` directory.
+fn copy_repo_config(source: &Path, target: &Path) -> Result<()> {
+    let config = source.join(REPO_CONFIG_FILE);
+    if config.is_file() {
+        fs::create_dir_all(target)?;
+        fs::copy(config, target.join(REPO_CONFIG_FILE))?;
+    }
+    Ok(())
+}
+
 fn copy_tree(source: &Path, target: &Path) -> io::Result<()> {
     if !source.exists() {
         return Ok(());
@@ -589,6 +627,44 @@ fn store_files(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
+fn build_push_bundle(
+    workspace: &Workspace,
+    branch: &str,
+    commit: CommitHash,
+    refs: &[(String, CommitHash)],
+    remote_files: &std::collections::BTreeSet<String>,
+    force: bool,
+) -> Result<PushBundle> {
+    let expected_old = refs
+        .iter()
+        .find(|(remote_branch, _)| remote_branch == branch)
+        .map(|(_, commit)| *commit);
+    let mut records = Vec::new();
+    for (relative, path) in store_files(workspace.store().root())? {
+        if remote_files.contains(&relative) {
+            continue;
+        }
+        let kind = RecordKind::from_relative(Path::new(&relative))
+            .with_context(|| format!("unsupported push path: {relative}"))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .with_context(|| format!("invalid record path: {relative}"))?;
+        let hash = parse_hash(name).with_context(|| format!("invalid record hash: {relative}"))?;
+        let bytes = fs::read(&path)?;
+        records.push(PushRecord { kind, hash, bytes });
+    }
+    Ok(PushBundle::new(
+        vec![PushCommand {
+            branch: branch.to_owned(),
+            expected_old,
+            new_commit: commit,
+            force,
+        }],
+        records,
+    ))
+}
+
 pub(crate) fn publish(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     verify_upload(Path::new(relative), bytes)?;
     if bytes.len() > MAX_TRANSFER {
@@ -596,7 +672,11 @@ pub(crate) fn publish(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     }
     let target = root.join(relative);
     if target.is_file() {
-        return Ok(());
+        if relative == REPO_CONFIG_FILE {
+            fs::remove_file(&target)?;
+        } else {
+            return Ok(());
+        }
     }
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent)?;
@@ -638,8 +718,44 @@ pub(crate) fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn valid_source_url(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty()
+        || url.len() > MAX_SOURCE_URL
+        || url.chars().any(|ch| matches!(ch, '\0' | '\n' | '\r'))
+    {
+        return None;
+    }
+    Some(url.to_owned())
+}
+
+/// Write `repo.toml` into a repository root.
+pub(crate) fn write_repo_config(
+    root: &Path,
+    source_url: &str,
+    object_format: ObjectFormat,
+) -> Result<()> {
+    let url = valid_source_url(source_url).context("invalid source URL")?;
+    let config = RepoConfig {
+        source: SourceConfig { url, object_format },
+    };
+    let bytes = config.to_toml()?;
+    fs::create_dir_all(root.join("tmp"))?;
+    let temp = root.join("tmp").join(format!(
+        "repo-config-{}-{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temp, bytes)?;
+    fs::rename(temp, root.join(REPO_CONFIG_FILE))?;
+    Ok(())
+}
+
 /// Validate a path received from a remote before writing it under `.ds`.
 pub(crate) fn valid_relative(path: &Path) -> bool {
+    if path == Path::new(REPO_CONFIG_FILE) {
+        return true;
+    }
     let components: Vec<_> = path.components().collect();
     if components.is_empty()
         || !components
@@ -750,6 +866,14 @@ pub fn read_token_file(path: &Path) -> Result<String> {
 pub(crate) fn verify_upload(relative: &Path, bytes: &[u8]) -> Result<()> {
     if !valid_relative(relative) {
         bail!("invalid file path: {}", relative.display());
+    }
+    if relative == Path::new(REPO_CONFIG_FILE) {
+        let text = std::str::from_utf8(bytes).context("repo.toml is not UTF-8")?;
+        let config = RepoConfig::from_toml(text)?;
+        if valid_source_url(&config.source.url).is_none() {
+            bail!("invalid source URL in repo.toml");
+        }
+        return Ok(());
     }
     let components: Vec<_> = relative.components().collect();
     let Some(Component::Normal(root)) = components.first() else {

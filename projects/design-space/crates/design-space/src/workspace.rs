@@ -2,7 +2,8 @@
 //!
 //! This layer sits above [`crate::store::Store`] and owns:
 //!
-//! - `.ds/config`;
+//! - `.ds/repo.toml` (repository source metadata);
+//! - `.ds/config` (workspace-local settings such as the remote URL);
 //! - `.ds/refs/heads/*`;
 //! - `.ds/HEAD`;
 //! - `.ds/index` and `.ds/worktree`.
@@ -55,19 +56,42 @@ impl ObjectFormat {
     }
 }
 
+/// Repository metadata file. It lives at the remote repository root and is
+/// fetched into `.ds/repo.toml` for every workspace.
+pub const REPO_CONFIG_FILE: &str = "repo.toml";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Config {
-    source: SourceConfig,
+    /// Legacy location for source metadata. New workspaces keep it only in
+    /// `repo.toml`; `Workspace::open` migrates old configs automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source: Option<SourceConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remote: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    remote_token_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct SourceConfig {
-    url: String,
-    object_format: ObjectFormat,
+pub(crate) struct SourceConfig {
+    pub(crate) url: String,
+    pub(crate) object_format: ObjectFormat,
+}
+
+/// Repository-level metadata stored as `repo.toml` on the remote. It is not a
+/// design object and is not versioned; it records how to interpret the design
+/// space and where its read-only source repository lives.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RepoConfig {
+    pub(crate) source: SourceConfig,
+}
+
+impl RepoConfig {
+    pub(crate) fn to_toml(&self) -> Result<String> {
+        toml::to_string_pretty(self).map_err(|error| WorkspaceError::Config(error.to_string()))
+    }
+
+    pub(crate) fn from_toml(text: &str) -> Result<Self> {
+        toml::from_str(text).map_err(|error| WorkspaceError::Config(error.to_string()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,35 +99,57 @@ pub struct Workspace {
     meta: PathBuf,
     store: Store,
     config: Config,
+    repo: RepoConfig,
 }
 
 impl Workspace {
-    /// Initialize `.ds` metadata under `meta_root`.
+    /// Initialize `.ds` metadata under `meta_root` and write `repo.toml`.
     pub fn init(
         meta_root: impl Into<PathBuf>,
         source_url: impl Into<String>,
         object_format: ObjectFormat,
     ) -> Result<Self> {
-        let meta = meta_root.into();
+        let repo = RepoConfig {
+            source: SourceConfig {
+                url: source_url.into(),
+                object_format,
+            },
+        };
+        Self::create(meta_root.into(), repo, true)
+    }
+
+    /// Create the store and config for a clone before `repo.toml` is fetched.
+    /// The temporary in-memory source is replaced by [`Self::install_repo_config`].
+    pub fn bootstrap(meta_root: impl Into<PathBuf>) -> Result<Self> {
+        let repo = RepoConfig {
+            source: SourceConfig {
+                url: String::new(),
+                object_format: ObjectFormat::Sha1,
+            },
+        };
+        Self::create(meta_root.into(), repo, false)
+    }
+
+    fn create(meta: PathBuf, repo: RepoConfig, write_repo: bool) -> Result<Self> {
         fs::create_dir_all(&meta)?;
         let store = Store::open(&meta)?;
         for dir in ["refs/heads", "refs/remotes"] {
             fs::create_dir_all(meta.join(dir))?;
         }
         let config = Config {
-            source: SourceConfig {
-                url: source_url.into(),
-                object_format,
-            },
+            source: None,
             remote: None,
-            remote_token_file: None,
         };
         write_atomic(&meta, Path::new("config"), toml_bytes(&config)?.as_slice())?;
         write_atomic(&meta, Path::new("HEAD"), b"ref: refs/heads/main\n")?;
+        if write_repo {
+            write_repo_metadata(&meta, &repo)?;
+        }
         Ok(Self {
             meta,
             store,
             config,
+            repo,
         })
     }
 
@@ -113,12 +159,27 @@ impl Workspace {
         let bytes = fs::read(meta.join("config"))?;
         let text = String::from_utf8(bytes)
             .map_err(|_| WorkspaceError::Config("config is not UTF-8".into()))?;
-        let config: Config =
+        let mut config: Config =
             toml::from_str(&text).map_err(|error| WorkspaceError::Config(error.to_string()))?;
+        let repo = match read_repo_metadata(&meta)? {
+            Some(repo) => repo,
+            None => {
+                let Some(source) = config.source.take() else {
+                    return Err(WorkspaceError::Config(format!(
+                        "workspace is missing {REPO_CONFIG_FILE}"
+                    )));
+                };
+                let repo = RepoConfig { source };
+                write_repo_metadata(&meta, &repo)?;
+                write_atomic(&meta, Path::new("config"), toml_bytes(&config)?.as_slice())?;
+                repo
+            }
+        };
         Ok(Self {
             meta,
             store,
             config,
+            repo,
         })
     }
 
@@ -131,28 +192,34 @@ impl Workspace {
     }
 
     pub fn source_url(&self) -> &str {
-        &self.config.source.url
+        &self.repo.source.url
     }
 
     pub fn object_format(&self) -> ObjectFormat {
-        self.config.source.object_format
+        self.repo.source.object_format
     }
 
     pub fn remote_url(&self) -> Option<&str> {
         self.config.remote.as_deref()
     }
 
-    pub fn remote_token_file(&self) -> Option<&str> {
-        self.config.remote_token_file.as_deref()
+    /// Install repository metadata after a clone fetched `repo.toml`.
+    pub fn install_repo_config(
+        &mut self,
+        url: impl Into<String>,
+        object_format: ObjectFormat,
+    ) -> Result<()> {
+        self.repo = RepoConfig {
+            source: SourceConfig {
+                url: url.into(),
+                object_format,
+            },
+        };
+        write_repo_metadata(&self.meta, &self.repo)
     }
 
     pub fn set_remote_url(&mut self, url: impl Into<String>) -> Result<()> {
         self.config.remote = Some(url.into());
-        self.write_config()
-    }
-
-    pub fn set_remote_token_file(&mut self, path: Option<String>) -> Result<()> {
-        self.config.remote_token_file = path;
         self.write_config()
     }
 
@@ -300,6 +367,26 @@ fn toml_bytes(config: &Config) -> Result<Vec<u8>> {
     Ok(text.into_bytes())
 }
 
+fn read_repo_metadata(meta: &Path) -> Result<Option<RepoConfig>> {
+    let bytes = match fs::read(meta.join(REPO_CONFIG_FILE)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let text = String::from_utf8(bytes)
+        .map_err(|_| WorkspaceError::Config(format!("{REPO_CONFIG_FILE} is not UTF-8")))?;
+    Ok(Some(RepoConfig::from_toml(&text)?))
+}
+
+fn write_repo_metadata(meta: &Path, repo: &RepoConfig) -> Result<()> {
+    let text = repo.to_toml()?;
+    Ok(write_atomic(
+        meta,
+        Path::new(REPO_CONFIG_FILE),
+        text.as_bytes(),
+    )?)
+}
+
 fn encode_state(magic: &[u8; 4], state: State) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + 64);
     out.extend_from_slice(magic);
@@ -444,24 +531,41 @@ mod tests {
         assert_eq!(ws.source_url(), "https://example.com/repo.git");
         assert_eq!(ws.object_format(), ObjectFormat::Sha1);
         assert_eq!(ws.read_head().unwrap(), "ref: refs/heads/main");
+        let config = fs::read_to_string(ws.meta_root().join("config")).unwrap();
+        assert!(!config.contains("source"));
+        let repo = fs::read_to_string(ws.meta_root().join(REPO_CONFIG_FILE)).unwrap();
+        assert!(repo.contains("https://example.com/repo.git"));
         let reopened = Workspace::open(ws.meta_root()).unwrap();
         assert_eq!(reopened.source_url(), ws.source_url());
         assert_eq!(reopened.object_format(), ws.object_format());
     }
 
     #[test]
-    fn persists_remote_and_token_file() {
+    fn migrates_legacy_config_source_into_repo_toml() {
+        let dir = tempdir().unwrap();
+        let meta = dir.path().join(".ds");
+        fs::create_dir_all(&meta).unwrap();
+        fs::write(
+            meta.join("config"),
+            "remote = \"file:///remote\"\n\n[source]\nurl = \"https://legacy.example/repo.git\"\nobject_format = \"sha256\"\n",
+        )
+        .unwrap();
+
+        let ws = Workspace::open(&meta).unwrap();
+        assert_eq!(ws.source_url(), "https://legacy.example/repo.git");
+        assert_eq!(ws.object_format(), ObjectFormat::Sha256);
+        assert!(meta.join(REPO_CONFIG_FILE).is_file());
+        let config = fs::read_to_string(meta.join("config")).unwrap();
+        assert!(!config.contains("[source]"));
+        assert!(config.contains("file:///remote"));
+    }
+
+    #[test]
+    fn persists_remote() {
         let (_dir, mut ws) = workspace();
         ws.set_remote_url("https://example.com/ds").unwrap();
-        ws.set_remote_token_file(Some("/tmp/ds-token".into()))
-            .unwrap();
         let reopened = Workspace::open(ws.meta_root()).unwrap();
         assert_eq!(reopened.remote_url(), Some("https://example.com/ds"));
-        assert_eq!(reopened.remote_token_file(), Some("/tmp/ds-token"));
-
-        ws.set_remote_token_file(None).unwrap();
-        let reopened = Workspace::open(ws.meta_root()).unwrap();
-        assert_eq!(reopened.remote_token_file(), None);
     }
 
     #[test]

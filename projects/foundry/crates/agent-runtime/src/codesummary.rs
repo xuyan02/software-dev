@@ -50,20 +50,20 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
 - 关系目标可以暂时不存在，最后 ds verify 会解析。
 
 文档归属：
-- 代码对象（Class、Interface、Method、Function、Mixin）的文档写在 documents/design/technical 的 Section 里。
-- 顶级代码元素（Class、Interface、Function、Mixin）的 Section 挂在 {{unclassified_section}} 下。
+- 代码对象（Class、Struct、Enum、Interface、Method、Function、Mixin）的文档写在 documents/design/technical 的 Section 里。
+- 顶级代码元素（Class、Struct、Enum、Interface、Function、Mixin）的 Section 挂在 {{unclassified_section}} 下。
 - Namespace 的文档写在 documents/design/namespace 的 Section 里；顶级 Namespace 直接挂在 documents/design/namespace 下，嵌套 Namespace 挂在父 Namespace 的 document Section 下。
-- 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
+- 次级代码元素（Method、InnerClass、InnerStruct、InnerEnum、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
 - File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
 - Section 标题：代码元素用短名（Method 不带 `#hash`）；目录/文件用源码路径；设计对象 qname 不变。
-- Function/Method 的第一个 topic 写“函数原型”，内容为源码中的完整签名；不写进 Section 标题。
+- Function/Method 先写“定位”，再写 topic“函数原型”，内容为源码中的完整签名；不写进 Section 标题。
 
 写文档的步骤：
 1. ds show <对象 qname>，看 document: 字段；已有 Section 就直接用，不要重复创建；如果指向 Document，先在该 Document 下创建 Section 并关联。
 2. 没有 document 时，确定父 Section：
-   - 顶级 Class/Interface/Function/Mixin：{{unclassified_section}}；
-   - 次级 Class/Interface/Method/Mixin：ds show <父元素 qname>，取它的 document Section；如果父元素是 Part，向上取 Part 的父元素；
+   - 顶级 Class/Struct/Enum/Interface/Function/Mixin：{{unclassified_section}}；
+   - 次级 Class/Struct/Enum/Interface/Method/Mixin：ds show <父元素 qname>，取它的 document Section；如果父元素是 Part，向上取 Part 的父元素；
    - 顶级 Namespace：documents/design/namespace；
    - 嵌套 Namespace：ds show <父 Namespace qname>，取它的 document Section；
    - 顶级目录/文件：documents/design/directory；
@@ -71,7 +71,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
    - 如果父对象的 document 为空，先按同样规则为父对象创建 Section 并关联，再处理当前对象；必要时逐级向上创建。
 3. 在父对象（Document 或 Section）下创建 Section：ds doc section add <父 qname>/section --title '<标题>'；同一父对象下已有 Section 时，用上一个 Section 的 qname 作为目标，追加在它后面。
 4. 用 ds edit <对象 qname> --document <新 Section qname> 关联。
-5. Class/Interface/Method/Function/Mixin 的每个块（定位、职责、设计说明等）用 ds doc topic add <Section qname>/body --title '<块名>' 创建；块内容用 ds doc text add <topic qname>/body --text '<一段文字>' 写，后续段落用上一段返回的 qname 作为目标。列表用 ds doc list add <section-or-topic qname>/body 创建，列表项用 <list qname>/item 定位。块规则见 design-writing 技能。
+5. 代码元素分类：同时有数据和方法→Class，只有数据→Struct，只有枚举变体→Enum，只有抽象方法→Interface，可复用行为片段→Mixin；按 design-writing 技能中该对象类型的块序列创建块：设计原则直接建列表，其余块用 ds doc topic add <Section qname>/body --title '<块名>' 创建 topic；块内容用 ds doc text add <topic qname>/body --text '<一段文字>' 写，后续段落用上一段返回的 qname 作为目标。列表用 ds doc list add <section-or-topic qname>/body 创建，列表项用 <list qname>/item 定位。块规则见 design-writing 技能。
 6. Directory/File/Namespace 的单句正文直接用 ds doc text add <Section qname>/body --text '<一句>' 写入，不建 topic。
 
 文件总结工作项：
@@ -124,14 +124,14 @@ const FIX_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 修改智能�
 - ds 命令：ds show <qname>、ds ls --namespaces、ds source cat <path>、ds create/edit/rm、ds dep add/rm、ds doc ...、ds doc comment add/resolve/list、ds status、ds diff。
 
 文档归属：
-- 代码对象（Class、Interface、Method、Function、Mixin）的文档写在 documents/design/technical 的 Section 里。
-- 顶级代码元素（Class、Interface、Function、Mixin）的 Section 挂在 {{unclassified_section}} 下。
+- 代码对象（Class、Struct、Enum、Interface、Method、Function、Mixin）的文档写在 documents/design/technical 的 Section 里。
+- 顶级代码元素（Class、Struct、Enum、Interface、Function、Mixin）的 Section 挂在 {{unclassified_section}} 下。
 - Namespace 的文档写在 documents/design/namespace 的 Section 里；顶级 Namespace 直接挂在 documents/design/namespace 下，嵌套 Namespace 挂在父 Namespace 的 document Section 下。
-- 次级代码元素（Method、InnerClass、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
+- 次级代码元素（Method、InnerClass、InnerStruct、InnerEnum、InnerInterface、嵌套 Mixin）的 Section 挂在父元素的 document Section 下。
 - Directory、File 的文档写在 documents/design/directory 的 Section 里；Section 按源码目录树嵌套：顶级目录/文件直接挂在 documents/design/directory 下，子目录/文件挂在父目录的 document Section 下。
 - File 的单句写文件在系统/模块中的设计角色或能力，从文件内元素所属 Namespace/Module 推导；不写具体行为或实现细节。
 - Section 标题：代码元素用短名（Method 不带 `#hash`）；目录/文件用源码路径；设计对象 qname 不变。
-- Function/Method 的第一个 topic 写“函数原型”，内容为源码中的完整签名；不写进 Section 标题。
+- Function/Method 先写“定位”，再写 topic“函数原型”，内容为源码中的完整签名；不写进 Section 标题。
 
 输出 JSON：{"ok":true}
 只返回这个 JSON 对象。"#;
@@ -314,11 +314,14 @@ pub async fn run(
             LlmConfig {
                 model: ModelProfileRef::new(""),
                 shared_system: system.clone(),
-                tools: vec!["project".to_owned(), "shell".to_owned()],
-                params: LlmParams {
-                    history_token_budget: Some(60_000),
-                    ..LlmParams::default()
-                },
+                tools: vec![
+                    "project".to_owned(),
+                    "shell".to_owned(),
+                    "read_file".to_owned(),
+                    "write_file".to_owned(),
+                    "edit_file".to_owned(),
+                ],
+                params: LlmParams::default(),
             },
         );
     }
@@ -496,49 +499,10 @@ async fn ds_source_env(
     Ok(output.stdout)
 }
 
-fn git_env(workspace: &str) -> String {
-    let dir = format!("{workspace}/.credentials/git");
-    format!(
-        "GIT_TERMINAL_PROMPT=0 HOME={} GIT_CONFIG_GLOBAL={}/gitconfig",
-        q(&dir),
-        q(&dir)
-    )
-}
-
-async fn credential_git_url(
-    shell: &Arc<dyn Shell>,
-    workspace: &str,
-) -> Result<Option<String>, NodeError> {
-    let path = format!("{workspace}/.credentials/git/url");
-    let output = exec(shell, format!("cat {} 2>/dev/null", q(&path))).await?;
-    if output.exit_code == Some(0) {
-        let url = output.stdout.trim();
-        if !url.is_empty() {
-            return Ok(Some(url.to_owned()));
-        }
-    }
-    Ok(None)
-}
-
-async fn recorded_source_url(
-    shell: &Arc<dyn Shell>,
-    ds_workspace: &str,
-) -> Result<Option<String>, NodeError> {
-    let output = exec(
-        shell,
-        format!("grep '^url' {}/.ds/config 2>/dev/null", q(ds_workspace)),
-    )
-    .await?;
-    if output.exit_code != Some(0) {
-        return Ok(None);
-    }
-    let value = output
-        .stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("url = "))
-        .map(str::trim)
-        .map(|value| value.trim_matches('"').to_owned());
-    Ok(value)
+fn git_env(_workspace: &str) -> String {
+    // Git credentials and config are preconfigured in the shell image; agentd
+    // only refreshes the task-scoped credential file.
+    String::new()
 }
 
 fn workspace(ctx: &Context) -> Result<String, NodeError> {
@@ -751,18 +715,6 @@ impl Node for PrepareNode {
             == Some(0);
 
         let git_env = git_env(&workspace);
-        let credential_url = credential_git_url(&self.shell, &workspace).await?;
-        let git_url = credential_url
-            .clone()
-            .unwrap_or_else(|| project.git_repository.clone());
-        let recorded_url = if exists {
-            recorded_source_url(&self.shell, &ds_workspace).await?
-        } else {
-            None
-        };
-        let needs_reclone = exists
-            && credential_url.is_some()
-            && recorded_url.as_deref() != credential_url.as_deref();
 
         let group = group_input(ctx);
         let base_branch = group
@@ -779,7 +731,7 @@ impl Node for PrepareNode {
             base_branch.clone()
         };
 
-        if exists && !needs_reclone {
+        if exists {
             let reset = ds(&self.shell, &ds_workspace, "reset --hard".to_owned()).await?;
             let checkout = ds(
                 &self.shell,
@@ -789,15 +741,8 @@ impl Node for PrepareNode {
             .await?;
             if reset.exit_code != Some(0) || checkout.exit_code != Some(0) {
                 exec(&self.shell, format!("rm -rf {}", q(&ds_workspace))).await?;
-                clone_workspace(
-                    &self.shell,
-                    &ds_workspace,
-                    &project,
-                    &git_url,
-                    &git_env,
-                    &base_branch,
-                )
-                .await?;
+                clone_workspace(&self.shell, &ds_workspace, &project, &git_env, &base_branch)
+                    .await?;
             } else {
                 let _ = ds(&self.shell, &ds_workspace, "fetch".to_owned()).await;
                 let _ = ds(
@@ -816,15 +761,7 @@ impl Node for PrepareNode {
                 .await?;
             }
         } else {
-            clone_workspace(
-                &self.shell,
-                &ds_workspace,
-                &project,
-                &git_url,
-                &git_env,
-                &base_branch,
-            )
-            .await?;
+            clone_workspace(&self.shell, &ds_workspace, &project, &git_env, &base_branch).await?;
         }
 
         ctx.set_var("workspace", workspace.clone())?;
@@ -1163,7 +1100,6 @@ async fn clone_workspace(
     shell: &Arc<dyn Shell>,
     ds_workspace: &str,
     project: &ProjectInfo,
-    git_url: &str,
     git_env: &str,
     branch: &str,
 ) -> Result<(), NodeError> {
@@ -1171,10 +1107,9 @@ async fn clone_workspace(
     let output = exec(
         shell,
         format!(
-            "{} ds clone {} --source {} --branch {} --dir {}",
+            "{} ds clone {} --branch {} --dir {}",
             git_env,
             q(&project.design_space_url),
-            q(git_url),
             q(branch),
             q(ds_workspace)
         ),

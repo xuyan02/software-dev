@@ -567,6 +567,31 @@ impl MergeRequestService {
             .is_some())
     }
 
+    /// Compact task-scoped view: MR metadata, review Task and status, without
+    /// the full design diff. The diff can contain tens of thousands of object
+    /// changes and is not needed by review agents that only check branch/head.
+    pub async fn for_task_review(
+        &self,
+        project: &Project,
+        task_id: Uuid,
+        viewer: TaskViewer,
+    ) -> Result<Option<MergeRequestReview>, ServiceError> {
+        let Some(request) = self.repository.find_for_task(project.id, task_id).await? else {
+            return Ok(None);
+        };
+        let task = self.tasks.get(project.id, request.task_id, viewer).await?;
+        let status = request.view().status_from(
+            task.state,
+            task.stage.as_ref().map(|stage| stage.as_str()),
+            task.result.as_ref().map(|result| result.as_str()),
+        );
+        Ok(Some(MergeRequestReview {
+            merge_request: request.view(),
+            task,
+            status,
+        }))
+    }
+
     pub async fn for_task(
         &self,
         project: &Project,

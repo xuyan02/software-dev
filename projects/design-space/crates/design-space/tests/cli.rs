@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use tempfile::tempdir;
 
@@ -27,6 +27,53 @@ fn status_has(text: &str, name: &str) -> bool {
         line.split_once('\t')
             .is_some_and(|(_, qname)| qname == name)
     })
+}
+
+#[test]
+fn creates_structs_and_enums_including_nested_ones() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+    ok(
+        root,
+        &["create", "struct", "Point", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &["create", "enum", "Color", "--namespace", "namespaces/app"],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "inner-struct",
+            "Meta",
+            "--parent",
+            "namespaces/app/Point",
+        ],
+    );
+    ok(
+        root,
+        &[
+            "create",
+            "inner-enum",
+            "Kind",
+            "--parent",
+            "namespaces/app/Point",
+        ],
+    );
+
+    let listed = ok(root, &["ls"]);
+    assert!(listed.contains("namespaces/app/Point"));
+    assert!(listed.contains("namespaces/app/Color"));
+    assert!(listed.contains("namespaces/app/Point/Meta"));
+    assert!(listed.contains("namespaces/app/Point/Kind"));
+    assert!(ok(root, &["show", "namespaces/app/Point"]).contains("kind: Struct"));
+    assert!(ok(root, &["show", "namespaces/app/Color"]).contains("kind: Enum"));
 }
 
 #[test]
@@ -275,18 +322,19 @@ fn clones_a_remote_branch() {
     ok(&source, &["commit", "-m", "initial"]);
     ok(&source, &["remote", "add", remote.to_str().unwrap()]);
     ok(&source, &["push"]);
+    // The server writes this file when it provisions the design space.
+    fs::write(
+        remote.join("repo.toml"),
+        "[source]\nurl = \"file:///nonexistent\"\nobject_format = \"sha1\"\n",
+    )
+    .unwrap();
 
     ok(
         &clone,
-        &[
-            "clone",
-            remote.to_str().unwrap(),
-            "--source",
-            "file:///nonexistent",
-            "--branch",
-            "main",
-        ],
+        &["clone", remote.to_str().unwrap(), "--branch", "main"],
     );
+    let repo_config = fs::read_to_string(clone.join(".ds/repo.toml")).unwrap();
+    assert!(repo_config.contains("file:///nonexistent"));
     let listed = ok(&clone, &["ls"]);
     assert!(listed.contains("namespaces/app/Auth"));
     assert!(ok(&clone, &["show", "namespaces/app/Auth"]).contains("kind: Class"));
@@ -308,6 +356,36 @@ fn clones_a_remote_branch() {
     ok(&clone, &["commit", "-m", "clone push"]);
     ok(&clone, &["push"]);
     ok(&clone, &["fetch"]);
+    assert!(
+        fs::read_to_string(remote.join("repo.toml"))
+            .unwrap()
+            .contains("file:///nonexistent"),
+        "push must not modify repository metadata"
+    );
+}
+
+#[test]
+fn clones_repository_metadata_without_a_source_argument() {
+    let dir = tempdir().unwrap();
+    let repos = dir.path().join("repos");
+    let collection = design_space::server::RepoCollection::open(&repos).unwrap();
+    collection
+        .create_with_source("app", "main", Some("https://example.com/source.git"))
+        .unwrap();
+    let clone = dir.path().join("clone");
+    ok(
+        &clone,
+        &[
+            "clone",
+            repos.join("app").to_str().unwrap(),
+            "--branch",
+            "main",
+        ],
+    );
+    let repo_config = fs::read_to_string(clone.join(".ds/repo.toml")).unwrap();
+    assert!(repo_config.contains("https://example.com/source.git"));
+    let local_config = fs::read_to_string(clone.join(".ds/config")).unwrap();
+    assert!(!local_config.contains("source"));
 }
 
 #[test]
@@ -478,6 +556,106 @@ fn git(dir: &Path, args: &[&str]) {
         output.status.success(),
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn source_fetch_follows_repo_toml_origin_changes() {
+    let dir = tempdir().unwrap();
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    for (repo, file) in [(&first, "first.rs"), (&second, "second.rs")] {
+        fs::create_dir_all(repo).unwrap();
+        fs::write(repo.join(file), "fn f() {}\n").unwrap();
+        git(repo, &["init", "-q"]);
+        git(repo, &["config", "user.email", "test@example.com"]);
+        git(repo, &["config", "user.name", "test"]);
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "initial"]);
+        git(repo, &["branch", "-M", "master"]);
+    }
+
+    let ws = dir.path().join("ws");
+    ok(
+        &ws,
+        &["init", "--source", &format!("file://{}", first.display())],
+    );
+    ok(&ws, &["source", "fetch"]);
+    assert!(ok(&ws, &["source", "ls"]).contains("first.rs"));
+
+    fs::write(
+        ws.join(".ds/repo.toml"),
+        format!(
+            "[source]\nurl = \"file://{}\"\nobject_format = \"sha1\"\n",
+            second.display()
+        ),
+    )
+    .unwrap();
+    ok(&ws, &["source", "fetch"]);
+    let listed = ok(&ws, &["source", "ls"]);
+    assert!(listed.contains("second.rs"));
+    assert!(!listed.contains("first.rs"));
+}
+
+#[test]
+fn source_fetch_creates_a_root_git_worktree() {
+    let dir = tempdir().unwrap();
+    let source = dir.path().join("source");
+    let ws = dir.path().join("ws");
+    fs::create_dir_all(source.join("src")).unwrap();
+    fs::write(source.join("src/a.rs"), "fn a() {}\n").unwrap();
+    git(&source, &["init", "-q"]);
+    git(&source, &["config", "user.email", "test@example.com"]);
+    git(&source, &["config", "user.name", "test"]);
+    git(&source, &["add", "-A"]);
+    git(&source, &["commit", "-qm", "initial"]);
+    git(&source, &["branch", "-M", "master"]);
+
+    let url = format!("file://{}", source.display());
+    ok(&ws, &["init", "--source", &url]);
+    ok(&ws, &["source", "fetch"]);
+
+    let gitfile = fs::read_to_string(ws.join(".git")).unwrap();
+    assert!(gitfile.contains(".ds/source/worktrees/root"));
+    assert_eq!(
+        fs::read_to_string(ws.join("src/a.rs")).unwrap(),
+        "fn a() {}\n"
+    );
+
+    let output = Command::new("git")
+        .current_dir(&ws)
+        .args(["status", "--short"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    fs::write(ws.join("src/a.rs"), "fn a() { /* changed */ }\n").unwrap();
+    let output = Command::new("git")
+        .current_dir(&ws)
+        .args(["status", "--short"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("src/a.rs"));
+
+    let output = Command::new("git")
+        .current_dir(&ws)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+            .canonicalize()
+            .unwrap(),
+        ws.canonicalize().unwrap()
     );
 }
 
@@ -888,6 +1066,210 @@ fn creates_and_orders_document_fragments() {
     ok(root, &["add", "-A"]);
     ok(root, &["verify"]);
     ok(root, &["commit", "-m", "documents"]);
+}
+
+#[test]
+fn imports_a_document_subtree_idempotently() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+
+    let plan = root.join("plan.json");
+    fs::write(
+        &plan,
+        r#"{
+  "root": {"qname": "documents/specs/auth", "kind": "document", "title": "认证"},
+  "sections": [
+    {
+      "title": "登录",
+      "document": ["namespaces/app"],
+      "body": [{"type": "text", "text": "第一段"}],
+      "sections": [
+        {
+          "title": "验证码",
+          "body": [
+            {"type": "text", "text": "第二段"},
+            {"type": "list", "items": ["第一项", "第二项"]},
+            {"type": "block", "language": "rust", "text": "fn main() {}"},
+            {"type": "mermaid", "text": "graph TD; A-->B;"},
+            {"type": "html", "text": "<b>hi</b>"},
+            {"type": "topic", "title": "示例", "body": [{"type": "text", "text": "主题段落"}]}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    let plan_arg = plan.to_str().unwrap();
+
+    let first = ok(root, &["doc", "import", "--file", plan_arg]);
+    assert!(first.contains("Imported 2 section(s)"), "{first}");
+    ok(root, &["verify"]);
+
+    let shown = ok(root, &["doc", "show", "documents/specs/auth"]);
+    assert!(shown.contains("section \"登录\""), "{shown}");
+    assert!(shown.contains("section \"验证码\""), "{shown}");
+    for text in [
+        "第一段",
+        "第二段",
+        "第一项",
+        "第二项",
+        "fn main() {}",
+        "graph TD; A-->B;",
+        "<b>hi</b>",
+        "主题段落",
+    ] {
+        assert!(shown.contains(text), "missing {text:?}:\n{shown}");
+    }
+    assert!(
+        ok(root, &["show", "namespaces/app"]).contains("document: documents/specs/auth/section1")
+    );
+
+    // Running the same plan again must reuse the sections instead of
+    // duplicating them or their body elements.
+    let second = ok(root, &["doc", "import", "--file", plan_arg]);
+    assert!(second.contains("Imported 0 section(s)"), "{second}");
+    let shown = ok(root, &["doc", "show", "documents/specs/auth"]);
+    assert_eq!(shown.matches("section \"登录\"").count(), 1);
+    assert_eq!(shown.matches("section \"验证码\"").count(), 1);
+    assert_eq!(shown.matches("第一段").count(), 1);
+    assert_eq!(shown.matches("第一项").count(), 1);
+    ok(root, &["verify"]);
+}
+
+#[test]
+fn document_json_markdown_and_round_trip() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    ok(root, &["init", "--source", "file:///nonexistent"]);
+    ok(root, &["doc", "mkdir", "documents/specs"]);
+    ok(
+        root,
+        &["create", "namespace", "app", "--parent", "namespaces"],
+    );
+
+    let plan = root.join("plan.json");
+    fs::write(
+        &plan,
+        r#"{
+  "root": {"qname": "documents/specs/auth", "kind": "document", "title": "认证"},
+  "sections": [
+    {
+      "title": "登录",
+      "document": ["namespaces/app"],
+      "body": [{"type": "text", "text": "第一段"}],
+      "sections": [
+        {
+          "title": "验证码",
+          "body": [
+            {"type": "list", "items": ["第一项", "第二项"]},
+            {"type": "block", "language": "rust", "text": "fn main() {}"},
+            {"type": "mermaid", "text": "graph TD; A-->B;"},
+            {"type": "html", "text": "<b>hi</b>"},
+            {"type": "topic", "title": "示例", "body": [{"type": "text", "text": "主题段落"}]}
+          ]
+        }
+      ]
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+    ok(root, &["doc", "import", "--file", plan.to_str().unwrap()]);
+
+    let json = ok(
+        root,
+        &["doc", "show", "documents/specs/auth", "--format", "json"],
+    );
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["root"]["qname"], "documents/specs/auth");
+    assert_eq!(value["root"]["kind"], "document");
+    assert_eq!(value["root"]["title"], "认证");
+    assert_eq!(value["sections"][0]["title"], "登录");
+    assert_eq!(value["sections"][0]["document"][0], "namespaces/app");
+    assert_eq!(
+        value["sections"][0]["sections"][0]["body"][0]["items"][0]["text"],
+        "第一项"
+    );
+    assert!(
+        value["sections"][0]["sections"][0]["body"][0]["items"][0]["qname"]
+            .as_str()
+            .unwrap()
+            .ends_with("/item1")
+    );
+
+    // The exported JSON is valid import input; re-importing is a no-op.
+    let exported = root.join("exported.json");
+    fs::write(&exported, &json).unwrap();
+    let reimport = ok(
+        root,
+        &["doc", "import", "--file", exported.to_str().unwrap()],
+    );
+    assert!(reimport.contains("Imported 0 section(s)"), "{reimport}");
+
+    // A qname in the exported JSON targets that exact object, even when the
+    // text changes.
+    let mut updated = value.clone();
+    updated["sections"][0]["sections"][0]["body"][0]["items"][0]["text"] =
+        serde_json::json!("第一项（修改后）");
+    let updated_path = root.join("updated.json");
+    fs::write(&updated_path, serde_json::to_string(&updated).unwrap()).unwrap();
+    ok(
+        root,
+        &["doc", "import", "--file", updated_path.to_str().unwrap()],
+    );
+    let updated_json = ok(
+        root,
+        &["doc", "show", "documents/specs/auth", "--format", "json"],
+    );
+    let updated_value: serde_json::Value = serde_json::from_str(&updated_json).unwrap();
+    let item = &updated_value["sections"][0]["sections"][0]["body"][0]["items"][0];
+    assert_eq!(item["text"], "第一项（修改后）");
+    assert!(item["qname"].as_str().unwrap().ends_with("/item1"));
+
+    let md = ok(
+        root,
+        &["doc", "show", "documents/specs/auth", "--format", "md"],
+    );
+    for text in [
+        "# 认证",
+        "## 登录",
+        "### 验证码",
+        "第一段",
+        "第一项",
+        "```rust",
+        "fn main() {}",
+        "```mermaid",
+        "graph TD; A-->B;",
+        "```html",
+        "<b>hi</b>",
+        "示例",
+        "主题段落",
+        "<!-- document: namespaces/app -->",
+    ] {
+        assert!(md.contains(text), "missing {text:?}:\n{md}");
+    }
+
+    let object = ok(root, &["show", "namespaces/app", "--format", "json"]);
+    let value: serde_json::Value = serde_json::from_str(&object).unwrap();
+    assert_eq!(value["qname"], "namespaces/app");
+    assert_eq!(value["kind"], "namespace");
+    assert_eq!(value["document"], "documents/specs/auth/section1");
+
+    let md = ok(root, &["show", "namespaces/app", "--format", "md"]);
+    assert!(md.contains("# namespaces/app"), "{md}");
+    assert!(md.contains("- kind: namespace"), "{md}");
+    assert!(
+        md.contains("- document: documents/specs/auth/section1"),
+        "{md}"
+    );
 }
 
 #[test]

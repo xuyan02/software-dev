@@ -1,8 +1,8 @@
-//! Read-only access to the source git repository.
+//! Source git repository access.
 //!
 //! `.ds/source` is a bare clone. `.ds/source-head` records the current ref as
-//! `branch <name>` or `commit <hex>`. Source commands never checkout a worktree
-//! and never execute repository code.
+//! `branch <name>` or `commit <hex>`. A linked worktree at the workspace root
+//! exposes the checked-out source files to normal `git` commands.
 
 use crate::model::{GitOid, Hash32};
 use crate::workspace::ObjectFormat;
@@ -10,10 +10,12 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const GIT_NETWORK_ATTEMPTS: usize = 5;
 const GIT_NETWORK_BACKOFF: Duration = Duration::from_secs(1);
+static WORKTREE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobEntry {
@@ -81,6 +83,14 @@ impl SourceRepo {
         if !self.exists() {
             return self.clone_bare();
         }
+        // `repo.toml` is the source of truth. If it changed, follow the new
+        // URL instead of continuing to fetch from the old origin.
+        let origin = self
+            .git_text(["remote", "get-url", "origin"])
+            .unwrap_or_default();
+        if origin.trim() != self.url {
+            self.git_status(["remote", "set-url", "origin", self.url.as_str()])?;
+        }
         let mut command = Command::new("git");
         command.arg("-C").arg(self.cache()).args([
             "fetch",
@@ -110,6 +120,9 @@ impl SourceRepo {
         if name.is_empty() {
             bail!("empty git ref");
         }
+        if self.worktree_exists() && self.worktree_dirty()? {
+            bail!("source worktree has uncommitted changes; refusing to switch refs");
+        }
         let commit = self.resolve_source(name)?;
         let branch = name.strip_prefix("origin/").unwrap_or(name);
         let branch_ref = format!("refs/remotes/origin/{branch}");
@@ -118,24 +131,252 @@ impl SourceRepo {
             .is_ok();
         if is_branch {
             self.set_current(&format!("branch {branch}"))?;
+            self.checkout_worktree(&commit)?;
             Ok(SourceRef {
                 label: format!("branch {branch}"),
             })
         } else {
             self.set_current(&format!("commit {commit}"))?;
+            self.checkout_worktree(&commit)?;
             Ok(SourceRef {
                 label: format!("commit {commit}"),
             })
         }
     }
 
+    fn workspace_root(&self) -> PathBuf {
+        self.root
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| self.root.clone())
+    }
+
+    pub fn worktree_path(&self) -> PathBuf {
+        self.workspace_root()
+    }
+
+    pub fn worktree_exists(&self) -> bool {
+        self.workspace_root().join(".git").is_file()
+    }
+
+    /// Create the workspace-root linked worktree if it does not exist.
+    pub fn ensure_worktree(&self) -> Result<()> {
+        if self.worktree_exists() {
+            let gitfile = self.workspace_root().join(".git");
+            let text = fs::read_to_string(&gitfile)?;
+            if !text.contains(".ds/source/worktrees/root") {
+                bail!(
+                    "workspace root has a different .git pointer; refusing to replace it: {}",
+                    gitfile.display()
+                );
+            }
+            self.ensure_exclude()?;
+            return Ok(());
+        }
+        if !self.exists() {
+            bail!("source repository is missing; run `ds source fetch`");
+        }
+        let commit = self.resolve_current()?;
+        self.create_worktree(&commit)
+    }
+
+    pub fn checkout_worktree(&self, commit: &str) -> Result<()> {
+        if !self.worktree_exists() {
+            return self.create_worktree(commit);
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(self.workspace_root())
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "submodule.recurse=false",
+                "checkout",
+                "--force",
+                "--detach",
+                commit,
+            ])
+            .output()
+            .context("checkout source worktree")?;
+        if !output.status.success() {
+            bail!(
+                "checkout source worktree failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        self.ensure_exclude()
+    }
+
+    fn create_worktree(&self, commit: &str) -> Result<()> {
+        let root = self.workspace_root();
+        fs::create_dir_all(&root)?;
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            if entry.file_name() == ".ds" {
+                continue;
+            }
+            bail!(
+                "workspace root is not empty; cannot create source worktree ({})",
+                entry.path().display()
+            );
+        }
+        let parent = root
+            .parent()
+            .context("workspace root has no parent")?
+            .to_path_buf();
+        let temp = parent.join(format!(
+            ".ds-worktree-{}-{}",
+            std::process::id(),
+            WORKTREE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        if temp.exists() {
+            fs::remove_dir_all(&temp)?;
+        }
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "submodule.recurse=false",
+            ])
+            .arg("--git-dir")
+            .arg(self.cache())
+            .args(["worktree", "add", "--detach", "--force"])
+            .arg(&temp)
+            .arg(commit)
+            .output()
+            .context("create source worktree")?;
+        if !output.status.success() {
+            let _ = fs::remove_dir_all(&temp);
+            bail!(
+                "create source worktree failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        if temp.join(".ds").exists() {
+            let _ = fs::remove_dir_all(&temp);
+            bail!(
+                "source repository contains a .ds directory; cannot use the workspace root as its worktree"
+            );
+        }
+        let gitfile = fs::read_to_string(temp.join(".git"))?;
+        let admin = gitfile
+            .trim()
+            .strip_prefix("gitdir: ")
+            .map(PathBuf::from)
+            .context("source worktree has no gitdir pointer")?;
+        for entry in fs::read_dir(&temp)? {
+            let entry = entry?;
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let target = root.join(entry.file_name());
+            if target.exists() {
+                let _ = fs::remove_dir_all(&temp);
+                bail!(
+                    "source file collides with workspace data: {}",
+                    target.display()
+                );
+            }
+            fs::rename(entry.path(), target)?;
+        }
+        let worktrees = self.cache().join("worktrees");
+        let final_admin = worktrees.join("root");
+        if final_admin.exists() {
+            fs::remove_dir_all(&final_admin)?;
+        }
+        fs::rename(&admin, &final_admin)?;
+        fs::write(root.join(".git"), "gitdir: .ds/source/worktrees/root\n")?;
+        fs::write(final_admin.join("gitdir"), "../../../.git\n")?;
+        let _ = fs::remove_dir_all(&temp);
+        self.ensure_exclude()
+    }
+
+    fn ensure_exclude(&self) -> Result<()> {
+        let info = self.cache().join("info");
+        fs::create_dir_all(&info)?;
+        let path = info.join("exclude");
+        let mut text = fs::read_to_string(&path).unwrap_or_default();
+        if !text.lines().any(|line| line.trim() == ".ds/") {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(".ds/\n");
+        }
+        fs::write(path, text)?;
+        Ok(())
+    }
+
     pub fn resolve_current(&self) -> Result<String> {
+        if let Some(head) = self.worktree_head()? {
+            return Ok(head);
+        }
+        self.resolve_head()
+    }
+
+    /// Commit selected by `source-head`, independent of the worktree HEAD.
+    pub fn resolve_head(&self) -> Result<String> {
         let current = self.current_ref()?;
         let target = current
             .strip_prefix("branch ")
             .or_else(|| current.strip_prefix("commit "))
             .with_context(|| format!("malformed source-head: {current}"))?;
         self.resolve_source(target)
+    }
+
+    fn worktree_dirty(&self) -> Result<bool> {
+        if !self.worktree_exists() {
+            return Ok(false);
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(self.workspace_root())
+            .args(["status", "--porcelain"])
+            .output()
+            .context("read source worktree status")?;
+        if !output.status.success() {
+            bail!(
+                "read source worktree status failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(!output.stdout.is_empty())
+    }
+
+    pub fn sync_worktree_to_head(&self) -> Result<()> {
+        if !self.worktree_exists() {
+            return self.ensure_worktree();
+        }
+        if self.worktree_dirty()? {
+            bail!("source worktree has uncommitted changes; refusing to overwrite");
+        }
+        let commit = self.resolve_head()?;
+        self.checkout_worktree(&commit)
+    }
+
+    fn worktree_head(&self) -> Result<Option<String>> {
+        if !self.worktree_exists() {
+            return Ok(None);
+        }
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(self.workspace_root())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .context("read source worktree HEAD")?;
+        if !output.status.success() {
+            bail!(
+                "read source worktree HEAD failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(Some(
+            String::from_utf8(output.stdout)
+                .context("source worktree HEAD is not UTF-8")?
+                .trim()
+                .to_owned(),
+        ))
     }
 
     pub fn resolve_source(&self, git_ref: &str) -> Result<String> {

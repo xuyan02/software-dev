@@ -1,6 +1,6 @@
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssuePool, IssueSeverity, IssueSource,
-    IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId, WorkflowLayout,
+    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssuePool, IssueSeverity,
+    IssueSource, IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId, WorkflowLayout,
     WorkflowVersionRef,
 };
 

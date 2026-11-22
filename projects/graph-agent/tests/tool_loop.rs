@@ -158,6 +158,16 @@ fn call(id: &str, name: &str, arguments: Value) -> LlmToolCall {
         id: id.to_owned(),
         name: name.to_owned(),
         arguments,
+        argument_error: None,
+    }
+}
+
+fn malformed_call(id: &str, name: &str, error: &str) -> LlmToolCall {
+    LlmToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        arguments: json!({}),
+        argument_error: Some(error.to_owned()),
     }
 }
 
@@ -171,7 +181,10 @@ async fn executes_tool_calls_until_the_model_stops() {
                 "",
                 vec![call("call-1", "echo", json!({"text": "hello"}))],
             )),
-            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
+            LlmResponse::new(LlmMessage::assistant(
+                json!({"ok": true}).to_string(),
+                vec![],
+            )),
         ],
         tools,
     );
@@ -208,7 +221,10 @@ async fn tool_errors_are_returned_to_the_model() {
                 "",
                 vec![call("call-1", "fail", json!({}))],
             )),
-            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
+            LlmResponse::new(LlmMessage::assistant(
+                json!({"ok": true}).to_string(),
+                vec![],
+            )),
         ],
         tools,
     );
@@ -236,6 +252,51 @@ async fn tool_errors_are_returned_to_the_model() {
 }
 
 #[tokio::test]
+async fn invalid_tool_arguments_are_returned_to_the_model() {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(EchoTool)).unwrap();
+    let (agent, model) = runtime(
+        vec![
+            LlmResponse::new(LlmMessage::assistant(
+                "",
+                vec![malformed_call(
+                    "call-1",
+                    "echo",
+                    "arguments are not valid JSON: expected ',' or ']'",
+                )],
+            )),
+            LlmResponse::new(LlmMessage::assistant(
+                json!({"ok": true}).to_string(),
+                vec![],
+            )),
+        ],
+        tools,
+    );
+
+    agent.run(context(), json!(null)).await.unwrap();
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2);
+    let tool_message = requests[1]
+        .messages
+        .iter()
+        .find(|message| message.role == LlmRole::Tool)
+        .expect("tool result");
+    assert_eq!(tool_message.tool_call_id.as_deref(), Some("call-1"));
+    let error: Value = serde_json::from_str(&tool_message.content).unwrap();
+    assert_eq!(error["tool"], "echo");
+    assert_eq!(
+        error["error"]["code"],
+        graph_agent::codes::INVALID_ARGUMENTS
+    );
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected ',' or ']'")
+    );
+}
+
+#[tokio::test]
 async fn tools_not_enabled_for_the_node_are_denied() {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool)).unwrap();
@@ -246,7 +307,10 @@ async fn tools_not_enabled_for_the_node_are_denied() {
                 "",
                 vec![call("call-1", "fail", json!({}))],
             )),
-            LlmResponse::new(LlmMessage::assistant(json!({"ok": true}).to_string(), vec![])),
+            LlmResponse::new(LlmMessage::assistant(
+                json!({"ok": true}).to_string(),
+                vec![],
+            )),
         ],
         tools,
     );

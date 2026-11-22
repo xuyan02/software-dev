@@ -151,6 +151,18 @@ fn workflow_roles_carry_an_assignment() {
 }
 
 #[test]
+fn iteration_workflows_wait_for_the_dispatcher_after_creation() {
+    for id in ["design_iteration", "development_iteration"] {
+        let workflow = builtin(id);
+        let state = aggregate(task(id, TaskState::Pending, None), vec![], vec![], vec![]);
+        let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+        assert_eq!(created.task.state, TaskState::Pending, "{id}");
+        assert_eq!(created.task.stage.as_deref(), Some("dispatch"), "{id}");
+        assert!(created.task.result.is_none(), "{id}");
+    }
+}
+
+#[test]
 fn builtin_definitions_parse_validate_and_round_trip() {
     let workflows = builtin_workflows();
     let mut ids: Vec<&str> = workflows.iter().map(|workflow| workflow.id()).collect();

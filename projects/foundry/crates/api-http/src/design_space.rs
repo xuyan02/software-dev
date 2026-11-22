@@ -954,6 +954,14 @@ fn source_path(store: &Store, object: &DesignObject) -> Result<Option<String>, S
             .source
             .as_ref()
             .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => p
+            .source
+            .as_ref()
+            .map(|source| store.get_symbol(source.path)),
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p
             .source
             .as_ref()
@@ -997,6 +1005,12 @@ fn source_span(object: &DesignObject) -> (u32, u32) {
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             p.source.as_ref().map(|source| source.span)
         }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            p.source.as_ref().map(|source| source.span)
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            p.source.as_ref().map(|source| source.span)
+        }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             p.source.as_ref().map(|source| source.span)
         }
@@ -1034,6 +1048,8 @@ fn document_target(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::File(p) => p.document,
         ObjectPayload::Namespace(p) => p.document,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => p.document,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => p.document,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document,
         ObjectPayload::Method(p) => p.document,
         ObjectPayload::Function(p) => p.document,
@@ -1177,7 +1193,8 @@ fn render_doc(
     let object = catalog
         .get(qname)
         .ok_or_else(|| format!("document fragment not found: {}", qname.to_hex()))?;
-    let marker = comment_marker(object);
+    let target = store.get_symbol(qname).map_err(display)?;
+    let marker = comment_marker(object, &target);
     match &object.payload {
         ObjectPayload::DocumentDirectory(_) => {
             if !marker.is_empty() {
@@ -1273,7 +1290,6 @@ fn render_doc(
         }
         _ => return Err("document reference does not point at a document fragment".to_owned()),
     }
-    let target = store.get_symbol(qname).map_err(display)?;
     for comment in document_comments(object) {
         comments.push(DesignSpaceComment {
             id: comment.id,
@@ -1447,10 +1463,10 @@ fn find_object_by_qname<'a>(
     })
 }
 /// bodies stay out of the document flow and open in a popover on click.
-fn comment_marker(object: &DesignObject) -> String {
+fn comment_marker(object: &DesignObject, target: &str) -> String {
     let ids = document_comments(object)
         .iter()
-        .map(|comment| comment.id.to_string())
+        .map(|comment| format!("{target}#{}", comment.id))
         .collect::<Vec<_>>();
     if ids.is_empty() {
         String::new()
@@ -1482,6 +1498,10 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Namespace => "namespace",
         Kind::Class => "class",
         Kind::InnerClass => "inner-class",
+        Kind::Struct => "struct",
+        Kind::InnerStruct => "inner-struct",
+        Kind::Enum => "enum",
+        Kind::InnerEnum => "inner-enum",
         Kind::Interface => "interface",
         Kind::InnerInterface => "inner-interface",
         Kind::Method => "method",
@@ -2112,7 +2132,7 @@ mod tests {
                 .design
                 .as_deref()
                 .unwrap()
-                .contains("## 登录{{comments:7}}")
+                .contains("## 登录{{comments:documents/design/technical/section1#7}}")
         );
         assert_eq!(detail.comments.len(), 1);
         assert_eq!(detail.comments[0].id, 7);

@@ -1062,7 +1062,8 @@ fn inline_markdown(text: &str, depth: usize) -> String {
                         String::new()
                     };
                     out.push_str(&format!(
-                        r#"<button type="button" class="doc-comment-chip" data-comments="{ids}" aria-label="查看 {count} 条设计评论" title="查看评论"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 2.5h12v8.5H7.2L3.5 13.5V11H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M4.5 5.5h7M4.5 8h5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>{count_html}</button>"#
+                        r#"<button type="button" class="doc-comment-chip" data-comments="{ids}" aria-label="查看 {count} 条设计评论" title="查看评论"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 2.5h12v8.5H7.2L3.5 13.5V11H2z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M4.5 5.5h7M4.5 8h5" fill="none" stroke="currentColor" stroke-linecap="round"/></svg>{count_html}</button>"#,
+                        ids = escape(&ids),
                     ));
                     index = end;
                 } else {
@@ -1095,7 +1096,9 @@ fn doc_comment_marker(characters: &[char], start: usize) -> Option<(String, usiz
     let mut ids = String::new();
     while index < characters.len() && characters[index] != '}' {
         let character = characters[index];
-        if !(character.is_ascii_digit() || character == ',') {
+        if !(character.is_ascii_alphanumeric()
+            || matches!(character, ',' | '#' | '_' | '.' | '/' | '-'))
+        {
             return None;
         }
         ids.push(character);
@@ -3289,22 +3292,13 @@ pub fn issue_page(ctx: &ConsoleContext, issue: &Issue, linked_tasks: &[IssueLink
             },
         )
     };
-    let current = linked_tasks
-        .iter()
-        .find(|task| task.active)
-        .map(render_task)
-        .unwrap_or_else(|| r#"<p class="empty">尚未关联当前任务。</p>"#.to_string());
-    let history_rows = linked_tasks
-        .iter()
-        .filter(|task| !task.active)
-        .map(render_task)
-        .collect::<String>();
-    let history_rows = if history_rows.is_empty() {
-        r#"<p class="empty">没有历史任务。</p>"#.to_string()
+    let current = linked_tasks.iter().map(render_task).collect::<String>();
+    let current = if current.is_empty() {
+        r#"<p class="empty">尚未关联任务。</p>"#.to_string()
     } else {
-        history_rows
+        current
     };
-    let linked_tasks = format!("<h2>当前任务</h2>{current}<h2>历史任务</h2>{history_rows}");
+    let linked_tasks = format!("<h2>当前任务</h2>{current}");
 
     let history = if issue.history.is_empty() {
         "<li>无状态变更</li>".to_string()
@@ -4343,13 +4337,14 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
             .iter()
             .map(|comment| {
                 format!(
-                    r#"<div class="doc-comment" data-comment="{id}" data-resolved="{resolved}">
+                    r#"<div class="doc-comment" data-comment="{id}" data-comment-key="{key}" data-resolved="{resolved}">
   <div class="doc-comment-head"><span class="badge">{status}</span><strong>评论 {id}</strong><code>{target}</code></div>
   <div class="doc-comment-body">{text}</div>
 </div>"#,
                     resolved = if comment.resolved { "true" } else { "false" },
                     status = if comment.resolved { "已解决" } else { "未解决" },
                     id = comment.id,
+                    key = escape(&format!("{}#{}", comment.target, comment.id)),
                     target = escape(&comment.target),
                     text = escape(&comment.text).replace("\n", "<br>"),
                 )
@@ -5606,7 +5601,9 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     const cards = [];
     let unresolved = 0;
     for (const id of ids) {
-      const card = store.querySelector('.doc-comment[data-comment="' + CSS.escape(id) + '"]');
+      const card = [...store.querySelectorAll('.doc-comment')].find((item) =>
+        id.includes('#') ? item.dataset.commentKey === id : item.dataset.comment === id
+      );
       if (!card) continue;
       cards.push(card.cloneNode(true));
       if (card.getAttribute('data-resolved') !== 'true') unresolved += 1;
@@ -6948,7 +6945,7 @@ mod tests {
                 start_line: 0,
                 end_line: 0,
                 design: Some(
-                    "# 概览{{comments:1}}\n\n正文。{{comments:2,3}}\n\n## 小节{{comments:4}}"
+                    "# 概览{{comments:documents/design/technical/section1#1}}\n\n正文。{{comments:documents/design/technical/section1#2,documents/design/technical/section2/body1#3}}\n\n## 小节{{comments:documents/design/technical/section3#4}}"
                         .to_string(),
                 ),
                 comments: vec![
@@ -6981,11 +6978,18 @@ mod tests {
             },
             "/projects/x/design-space/elements/y/source",
         );
-        assert!(html.contains(r#"class="doc-comment-chip" data-comments="1""#));
-        assert!(html.contains(r#"class="doc-comment-chip" data-comments="2,3""#));
-        assert!(html.contains(r#"class="doc-comment-chip" data-comments="4""#));
+        assert!(html.contains(
+            r#"class="doc-comment-chip" data-comments="documents/design/technical/section1#1""#
+        ));
+        assert!(html.contains(
+            r#"class="doc-comment-chip" data-comments="documents/design/technical/section1#2,documents/design/technical/section2/body1#3""#
+        ));
+        assert!(html.contains(
+            r#"class="doc-comment-chip" data-comments="documents/design/technical/section3#4""#
+        ));
         assert!(html.contains(r#"id="doc-comment-store" hidden"#));
         assert!(html.contains(r#"data-comment="1""#));
+        assert!(html.contains(r#"data-comment-key="documents/design/technical/section1#1""#));
         assert!(html.contains("需要补充失败语义"));
         assert!(html.contains("第二条未解决评论"));
         assert!(!html.contains("{{comments:"));

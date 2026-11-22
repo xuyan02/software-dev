@@ -119,7 +119,11 @@ where
 
         let design_space_url = self
             .design_spaces
-            .create_design_space(&project.id.to_string(), &project.design_space_branch)
+            .create_design_space(
+                &project.id.to_string(),
+                &project.design_space_branch,
+                &project.git_repository,
+            )
             .await
             .map_err(ServiceError::Internal)?;
         if design_space_url.trim().is_empty() {

@@ -58,7 +58,7 @@ ds log
 - `show --source` reads the anchored span from the view's source commit;
 - reachability-based GC and PAK1 pack read/write (`repack`);
 - remotes: local directories, HTTP (`ds-server`), and SSH; `remote
-  add/show/set-url/set-token`, `push`, `fetch`, `pull`;
+  add/show/set-url`, `push`, `fetch`, `pull`;
 - HTTP bearer-token authentication;
 - server-side upload verification and canonical path checks.
 
@@ -71,21 +71,25 @@ mkdir -p /srv/design-spaces
 ds-server --root /srv/design-spaces --listen 127.0.0.1:7700 \
   --token-file /srv/design.token
 
-# Create a repository (name + optional branch, default main):
+# Create a repository (name + optional branch, default main).
+# source_url is recorded in the repository's repo.toml for `ds clone`.
 curl -X POST http://127.0.0.1:7700/repos \
   -H 'Authorization: Bearer <token>' \
   -H 'Content-Type: application/json' \
-  -d '{"name":"design"}'
+  -d '{"name":"design","source_url":"https://example.com/repo.git"}'
+
+# The client reads the HTTP token from a preconfigured path, never from a
+# command argument:
+install -m 600 /srv/design.token ~/.config/ds/token
 
 # In the workspace:
-ds remote add http://127.0.0.1:7700/design --token-file /srv/design.token
+ds remote add http://127.0.0.1:7700/design
 ds push
 ds fetch
 ds pull
 
-# Clone:
-DS_TOKEN_FILE=/srv/design.token \
-  ds clone http://127.0.0.1:7700/design --source <git-url> --branch main
+# Clone (source URL comes from the remote's repo.toml):
+ds clone http://127.0.0.1:7700/design --branch main
 
 # SSH: ds-server must be on the remote PATH; the path is one repository.
 ds remote add ssh://user@host/srv/design-spaces/design
@@ -94,6 +98,8 @@ ds push
 
 Remote URLs also accept local paths and `file://` URLs. HTTP authentication is a
 single bearer token; omit `--token-file` on `ds-server` to serve without
-authentication. There is no built-in TLS, so authenticate only over a trusted
+authentication. The client reads `/run/foundry/ds_token`, then
+`$XDG_CONFIG_HOME/ds/token`, then `~/.config/ds/token`; commands do not accept a
+token argument. There is no built-in TLS, so authenticate only over a trusted
 network, a TLS reverse proxy, or SSH. SSH remotes use SSH authentication and do
 not read the token file.

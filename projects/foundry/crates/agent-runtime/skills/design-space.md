@@ -26,9 +26,13 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 |---|---|---|---|---|
 | Directory | 源码目录 | `files/<目录路径>` | 目录路径 | 子目录、File |
 | File | 源码文件 | `files/<文件路径>` | 文件路径 | 通常无；文件中的类型挂在 Namespace 下，通过 `--file` 关联 |
-| Namespace | 逻辑命名空间，不等于物理目录 | `namespaces/<...>`（父是 `namespaces` 或另一个 Namespace） | 可选的 `path:start-end` | Namespace、Class、Interface、Function、Mixin |
-| Class | 顶层类、结构体、trait 等类型声明 | `<namespace>/<name>` | `path:start-end` | InnerClass、InnerInterface、Method |
-| InnerClass | 嵌套在另一个类型里的类/结构体/trait | `<parent type>/<name>` | `path:start-end` | InnerClass、InnerInterface、Method |
+| Namespace | 逻辑命名空间，不等于物理目录 | `namespaces/<...>`（父是 `namespaces` 或另一个 Namespace） | 可选的 `path:start-end` | Namespace、Class、Struct、Enum、Interface、Function、Mixin |
+| Class | 同时有数据和方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerClass、InnerStruct、InnerEnum、Method |
+| InnerClass | 嵌套在另一个类型里的 Class | `<parent type>/<name>` | `path:start-end` | InnerClass、InnerStruct、InnerEnum、Method |
+| Struct | 只有数据、没有方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerStruct、InnerEnum |
+| InnerStruct | 嵌套在另一个类型里的 Struct | `<parent type>/<name>` | `path:start-end` | InnerStruct、InnerEnum |
+| Enum | 只有枚举变体、没有方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerEnum |
+| InnerEnum | 嵌套在另一个类型里的 Enum | `<parent type>/<name>` | `path:start-end` | 无 |
 | Interface | 顶层接口、协议、抽象契约 | `<namespace>/<name>` | `path:start-end` | InnerInterface、Method |
 | InnerInterface | 嵌套在类型里的接口/契约 | `<parent type>/<name>` | `path:start-end` | Method |
 | Method | 类型内部的可调用成员 | `<parent>/<name>#<签名哈希>` | `path:start-end` | 无 |
@@ -45,7 +49,7 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 
 ### 2.2 File
 
-表示一个源码文件。File 通常不作为类型的 parent；文件中声明的顶层 Class/Interface/Function/Mixin 挂在 Namespace 下，并通过 `--file files/<路径>` 关联到这个文件。
+表示一个源码文件。File 通常不作为类型的 parent；文件中声明的顶层 Class/Struct/Enum/Interface/Function/Mixin 挂在 Namespace 下，并通过 `--file files/<路径>` 关联到这个文件。
 
 ### 2.3 Namespace
 
@@ -102,6 +106,35 @@ qname 分别走 namespace 或 parent 类型，不使用 File 前缀。
 - `document-html` 是 HTML/SVG 预览，存原始源码 `text`，渲染在无脚本沙箱 iframe 中；只能放进 Section 正文或 Topic 段落。
 - 自动名只取决于父对象和集合：子章节 `section<n>`，正文元素 `body<n>`，列表项 `item<n>`。不要手写这些名字。
 - 正文元素插入到 Section 或 Topic 的正文：目标用 `<section-qname>/body`、`<topic-qname>/body` 头锚点，或已有正文元素 qname。
+- 读取文档用 `ds doc show <qname> --format json|md`；`json` 输出包含每个 Section、正文元素和列表项的 qname，可直接定位后续修改，也可回灌 `ds doc import`；`md` 是更短的等价视图，不含 qname。通用对象用 `ds show <name> --format json|md`。
+- 批量创建整棵文档子树用 `ds doc import --file plan.json`：一次进程完成全部 Section、正文和对象关联，按 `title` 复用已有 Section，可重复执行。计划形如：
+
+  ```json
+  {
+    "root": "documents/design/directory",
+    "sections": [
+      {
+        "title": "src",
+        "document": ["files/src"],
+        "body": [{"type": "text", "text": "置放源码。"}],
+        "sections": []
+      }
+    ]
+  }
+  ```
+
+  不要对大量对象循环调用 `ds doc section add` / `ds doc text add`，那会产生每个对象两三条进程。
+
+### 2.10 批量操作
+
+原则：一次进程完成尽量多的步骤，不要按对象循环起 `ds`。每条命令都会全量加载并重建工作区。
+
+- **创建/更新文档树**：`ds doc import --file plan.json`。一次进程建完整棵子树，按 `title` 复用已有 Section，重复执行幂等；计划格式见上面的 `root` / `sections` / `body`。
+- **导出再回灌**：`ds doc show <qname> --format json > plan.json`，然后 `ds doc import --file plan.json`。二次导入输出 `Imported 0 section(s)` 表示没有变化。
+- **读取**：`ds doc show <qname> --format json|md`；通用对象用 `ds show <name> --format json|md`。不要为每个对象单独起一次 `ds show`，能用一次 `doc show` 拿到整棵树就用一次。
+- **删除子树**：`ds rm <qname> --recursive --force`。`--force` 会清掉 `files/...` 指向该树的 `document:` 引用；删除只改 worktree，之后还需要 `ds add -A` 和 `ds commit`。
+- **单对象修改**：用 `ds edit`；不要每改一个字段就 `add`/`commit`，把同一批改动集中到一次 `ds add -A` + `ds commit`。
+- **批量操作 JSON 约定**（`upsert` / `delete` / `show` 的 envelope）见 design-space 仓库的 `docs/document-io.md`；`ds batch` 执行器尚未实现，当前用上述命令组合。
 
 文档内容写什么、格式是什么，见 `design-writing` 技能。
 
@@ -111,7 +144,7 @@ qname 分别走 namespace 或 parent 类型，不使用 File 前缀。
 
 - Directory / File：`files/<源码路径>`，例如 `files/src/main.rs`、`files/src/app`；
 - 顶层 Namespace：`namespaces/<name>[/<name>...]`；
-- 顶层 Class/Interface/Function/Mixin：`<namespace qname>/<name>`；
+- 顶层 Class/Struct/Enum/Interface/Function/Mixin：`<namespace qname>/<name>`；
 - 嵌套类型：`<parent qname>/<name>`；
 - Method：`<parent qname>/<name>#<signature hash>`；
 - Part：`<parent qname>/part#<content hash>`。
@@ -122,8 +155,8 @@ Method 和 Part 的 qname 后缀由 `ds` 计算，创建后用 `ds ls` 或 `ds s
 
 - Directory / File：`--parent <Directory qname>`（或 `files`）；
 - Namespace：`--parent namespaces` 或另一个 Namespace，不要把 File/Directory 当成 namespace；
-- 顶层 Class / Interface / Function / Mixin：`--namespace <namespace qname>`（必填），可选 `--file <file qname>` 和 `--module <module qname>` 记录文件/模块归属；
-- 嵌套 Class/Interface 用 `inner-class`/`inner-interface`，并给 `--parent <type qname>`；parent 不是 File；
+- 顶层 Class / Struct / Enum / Interface / Function / Mixin：`--namespace <namespace qname>`（必填），可选 `--file <file qname>` 和 `--module <module qname>` 记录文件/模块归属；
+- 嵌套 Class/Struct/Enum/Interface 用 `inner-class`/`inner-struct`/`inner-enum`/`inner-interface`，并给 `--parent <type qname>`；parent 不是 File；
 - Mixin 仍按 `--namespace`（顶层）或 `--parent`（嵌套）选择；
 - Method：`--parent <class/interface/mixin/part qname>`，并给 `--signature`；
 - Part：`--parent <qname>`，并给 `--source path:start-end`。
@@ -148,6 +181,7 @@ Method 和 Part 的 qname 后缀由 `ds` 计算，创建后用 `ds ls` 或 `ds s
 ```bash
 ds source fetch
 ds source checkout <branch>
+ds source worktree
 ds source status
 ds source ls [<path>]
 ds source cat <path>
@@ -155,7 +189,9 @@ ds source log [<ref>]
 ds source changes [--base <ref>]
 ```
 
-- `ds source fetch` 拉取源码分支；`checkout` 切换当前源码 ref；
+- `ds source fetch` 拉取源码分支，并在工作区根目录创建/复用 Git worktree；`checkout` 切换当前源码 ref 和 worktree；
+- 工作区根目录就是源码 Git worktree：源码文件直接出现在这里，可以直接运行 `git status`、`git diff`、`git commit`；
+- `.ds/` 是设计空间元数据，已被源码 Git 排除；不要把 `.ds/` 纳入源码提交；
 - `ds source ls` 列出当前源码提交中的文件路径；
 - `ds source cat` 读取源码内容；
 - `ds source changes` 比较“最近一次设计提交记录的源码 commit”和当前源码 HEAD，输出 A/M/D/R；
@@ -188,6 +224,10 @@ ds create class <name> --namespace <ns> [--file <file>] [--source path:start-end
   [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]... [--document <qname>]
 ds create inner-class <name> --parent <type qname> [--source path:start-end] \
   [--superclass <qname>] [--interface <qname>]... [--mixin <qname>]...
+ds create struct <name> --namespace <ns> [--file <file>] [--source path:start-end] [--document <qname>]
+ds create inner-struct <name> --parent <type qname> [--source path:start-end] [--document <qname>]
+ds create enum <name> --namespace <ns> [--file <file>] [--source path:start-end] [--document <qname>]
+ds create inner-enum <name> --parent <type qname> [--source path:start-end] [--document <qname>]
 ds create interface <name> --namespace <ns> [--extends <qname>] [--source path:start-end]
 ds create inner-interface <name> --parent <type qname> [--extends <qname>]
 ds create function <name> --namespace <ns> [--file <file>] [--source path:start-end]
@@ -365,7 +405,7 @@ ds push --branch <branch>
 - 系统 qname 为 `design/<system>`；
 - 模块 qname 为 `<system-or-module-or-layer>/<module>`；
 - 层 qname 为 `<system-or-module>/<layer>`，不能嵌套层；
-- 容器（System/Module/Layer）的成员只引用顶层 Class/Interface/Function/Mixin；一个元素恰好属于一个容器；
+- 容器（System/Module/Layer）的成员只引用顶层 Class/Struct/Enum/Interface/Function/Mixin；一个元素恰好属于一个容器；
 - 没有层的系统可以同时有 Module 和直属成员，不要求二选一；
 - 子模块通过 parent 关系嵌套，不要写进 members；
 - 层是有序的：同级层的 `order` 从 1 开始、互不相同，只有相邻层之间允许依赖；
@@ -393,7 +433,7 @@ ds structure check
 
 `ds structure check` 会检查成员存在、唯一归属、空模块、空系统、空层、层顺序、层嵌套、有层容器的直属成员/子模块、相邻层依赖、所有顶层元素已归属；它和 `ds verify` 一样是提交前必须通过的检查。系统没有模块但有直属成员是合法的。
 
-System/Module/层的创建标准、复杂度判断和文档内容见 `design-writing` 技能。
+System/Module/层的定义和文档内容见 `design-writing` 技能；结构、归属和复杂度规则见本文档。
 
 ## 6. 文档写作
 
@@ -406,7 +446,7 @@ ds doc layout   # 按结构树创建/移动 Section
 ds doc check    # 校验 Section 层级
 ```
 
-Function/Method 的 Section 标题只用对象短名，不带 `#hash`；完整函数原型写在 Section 内的第一个 topic“函数原型”里。设计对象 qname 不变。
+Function/Method 的 Section 标题只用对象短名，不带 `#hash`；“定位”之后写 topic“函数原型”，完整函数原型写在该 topic 里。设计对象 qname 不变。
 
 提交前 `ds doc check` 必须通过。
 

@@ -1,12 +1,17 @@
-FROM docker.m.daocloud.io/library/debian:bookworm-slim
+# `ds` is copied in prebuilt from the host, so the runtime glibc must be at
+# least as new as the build host's. Ubuntu 24.04 (glibc 2.39) matches the
+# current build host; a bookworm base (glibc 2.36) cannot load the binary.
+FROM docker.m.daocloud.io/library/ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Git credentials are injected by agentd into a task-scoped tmpfs file.
+ENV GIT_TERMINAL_PROMPT=0
 
-RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+RUN rm -f /etc/apt/sources.list.d/ubuntu.sources && \
     printf '%s\n' \
-      'deb http://mirrors.aliyun.com/debian bookworm main' \
-      'deb http://mirrors.aliyun.com/debian bookworm-updates main' \
-      'deb http://mirrors.aliyun.com/debian-security bookworm-security main' \
+      'deb http://mirrors.aliyun.com/ubuntu/ noble main restricted universe multiverse' \
+      'deb http://mirrors.aliyun.com/ubuntu/ noble-updates main restricted universe multiverse' \
+      'deb http://mirrors.aliyun.com/ubuntu/ noble-security main restricted universe multiverse' \
       > /etc/apt/sources.list
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -19,5 +24,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY ds /usr/local/bin/ds
 RUN chmod +x /usr/local/bin/ds
+
+# Agents never configure Git themselves. The credential helper reads the
+# task-scoped file agentd writes to /run/foundry/git-credentials.
+RUN printf '%s\n' \
+      '[credential]' \
+      '    helper = "store --file=/run/foundry/git-credentials"' \
+      '[safe]' \
+      '    directory = *' \
+      > /etc/gitconfig
 
 WORKDIR /work

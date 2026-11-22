@@ -517,7 +517,7 @@ MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
 | `POST` | `/api/v1/tasks/{id}/abandon` | 放弃可重试失败阶段的任务 |
 | `POST` | `/api/v1/tasks/{id}/actors` | 把真人绑定到 human 任务角色 |
 | `POST` | `/api/v1/tasks/{id}/merge-requests` | 为已存在任务创建或刷新 DS MR |
-| `GET` | `/api/v1/tasks/{id}/merge-request` | 读取任务关联的 DS MR |
+| `GET` | `/api/v1/tasks/{id}/merge-request` | 读取任务关联的 DS MR 摘要（不含完整 changes） |
 | `POST` | `/api/v1/projects/{project}/design-space/branches/delete` | 删除设计空间分支 |
 
 创建子任务：

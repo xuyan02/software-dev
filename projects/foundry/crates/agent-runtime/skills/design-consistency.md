@@ -58,26 +58,21 @@ design-consistency/<根任务 id>
 
 #### 命令参考
 
-项目工具返回 `id`、`git_repository`、`git_branch`、`design_space_url`。设计空间分支固定为 `source`，不是项目配置。工作区建议使用：
-
-```bash
-GIT_HOME=/work/<project-id>/.credentials/git
-GIT="GIT_TERMINAL_PROMPT=0 HOME=$GIT_HOME GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig"
-```
+项目工具返回 `id`、`git_repository`、`git_branch`、`design_space_url`。设计空间分支固定为 `source`，不是项目配置。Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `ds` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 由设计空间仓库自带的 `repo.toml` 提供，`ds clone` 不需要指定。
 
 首次克隆：
 
 ```bash
 mkdir -p /work/<project-id>
-$GIT ds clone <design_space_url> --source <git_repository> --branch source --dir /work/<project-id>/ds
+ds clone <design_space_url> --branch source --dir /work/<project-id>/ds
 ```
 
 扫描：
 
 ```bash
 cd /work/<project-id>/ds
-$GIT ds source fetch
-$GIT ds source checkout <git_branch>
+ds source fetch
+ds source checkout <git_branch>
 CHANGED=$(ds source changes)
 ```
 
@@ -112,7 +107,7 @@ ds ls --namespaces
 ds structure unassigned
 ```
 
-对每个候选模块，读取元素文档用 `ds show`；文档中的定位、职责和设计说明是划分模块的主要证据。
+对每个候选模块，读取元素文档用 `ds show`；文档中的定位、职责和设计要点是划分模块的主要证据。
 5. 草稿 JSON 至少包含：systems、每个系统的证据、每个系统的顶层元素、候选模块和理由、未解决疑问。
 6. 发送 `structure_survey:surveyed`；失败发送 `structure_survey:failed`。
 
@@ -161,7 +156,7 @@ ds push --branch design-consistency/<根任务 id>
 
 检查结构本身，不检查文风：
 
-- 每个顶层 Class/Interface/Function/Mixin 是否恰好属于一个系统、模块或层；
+- 每个顶层 Class/Struct/Enum/Interface/Function/Mixin 是否恰好属于一个系统、模块或层；
 - System 是否对应真实交付单位；模块边界是否按功能和设计目的划分，而不是文件/目录映射；
 - 是否为了简单系统强行建模块，是否把程序入口/启动/工具当成模块；
 - 只含一个函数或一个普通类型的模块是否被强行创建；系统是否因为没有模块而被误判为空；

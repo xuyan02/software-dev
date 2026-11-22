@@ -7,7 +7,8 @@
   "vars": {
     "expected": {
       "type": "int",
-      "display_name": "Expected development tasks"
+      "display_name": "Expected development tasks",
+      "initial": -1
     },
     "done": {
       "type": "int",

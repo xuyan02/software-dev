@@ -1,7 +1,7 @@
 use crate::auth::{hash_token, new_session_token, verify_password};
 use crate::error::ServiceError;
 use crate::ports::{AccountRepository, SessionRepository};
-use foundry_domain::{Account, Session};
+use foundry_domain::{Account, AccountKind, Session};
 use std::sync::Arc;
 use time::OffsetDateTime;
 
@@ -64,10 +64,11 @@ where
         if token.trim().is_empty() {
             return Ok(None);
         }
-        let Some(session) = self.sessions.get_by_token_hash(&hash_token(token)).await? else {
+        let now = OffsetDateTime::now_utc();
+        let Some(mut session) = self.sessions.get_by_token_hash(&hash_token(token)).await? else {
             return Ok(None);
         };
-        if !session.is_valid(OffsetDateTime::now_utc()) {
+        if !session.is_valid(now) {
             return Ok(None);
         }
         let Some(account) = self.accounts.get(session.account_id).await? else {
@@ -75,6 +76,15 @@ where
         };
         if !account.is_active() {
             return Ok(None);
+        }
+        // An agent task can run for longer than the initial session TTL. Slide
+        // the session forward while the agent keeps using it; throttle writes
+        // until the session is within a day of expiring.
+        if account.kind == AccountKind::Agent
+            && session.expires_at - now < time::Duration::hours(24)
+        {
+            session.expires_at = now + time::Duration::hours(self.session_ttl_hours.max(1));
+            self.sessions.save(&session).await?;
         }
         Ok(Some(account))
     }

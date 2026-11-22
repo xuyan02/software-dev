@@ -3,6 +3,7 @@
 //! Covers OpenAI, DeepSeek, Ollama, vLLM and any other server exposing
 //! `/chat/completions` with function calling.
 
+use crate::llm::{escape_control_characters, truncate_for_error};
 use crate::{
     LlmMessage, LlmRequest, LlmResponse, LlmRole, LlmToolCall, ModelError, ModelGateway,
     ToolDefinition, Usage,
@@ -10,6 +11,8 @@ use crate::{
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
@@ -17,6 +20,8 @@ pub struct OpenAiCompatibleConfig {
     pub base_url: String,
     pub api_key: String,
     pub model: String,
+    /// Prompt+completion context supported by the model.
+    pub context_window: Option<usize>,
     pub timeout: Duration,
     pub max_retries: u32,
     /// Enable provider-native reasoning for DeepSeek-compatible endpoints.
@@ -31,15 +36,43 @@ impl OpenAiCompatibleConfig {
         api_key: impl Into<String>,
         model: impl Into<String>,
     ) -> Self {
+        let model = model.into();
+        let context_window = context_window_for_model(&model);
         Self {
             base_url: base_url.into(),
             api_key: api_key.into(),
-            model: model.into(),
+            model,
+            context_window,
             timeout: Duration::from_secs(120),
             max_retries: 2,
             thinking: true,
             reasoning_effort: Some("high".to_string()),
         }
+    }
+
+    /// Override the inferred context window for a model.
+    pub fn with_context_window(mut self, context_window: usize) -> Self {
+        self.context_window = Some(context_window);
+        self
+    }
+}
+
+/// Context window of known model families. Unknown models get a conservative
+/// default; callers can override it on [`OpenAiCompatibleConfig`].
+pub fn context_window_for_model(model: &str) -> Option<usize> {
+    let model = model.to_ascii_lowercase();
+    if model.contains("deepseek") {
+        Some(1_048_576)
+    } else if model.contains("gpt-4.1") {
+        Some(1_047_576)
+    } else if model.contains("gpt-4o") {
+        Some(128_000)
+    } else if model.contains("claude") {
+        Some(200_000)
+    } else if model.contains("qwen") {
+        Some(131_072)
+    } else {
+        Some(128_000)
     }
 }
 
@@ -60,6 +93,10 @@ impl OpenAiCompatibleModel {
 
 #[async_trait]
 impl ModelGateway for OpenAiCompatibleModel {
+    fn context_window(&self) -> Option<usize> {
+        self.config.context_window
+    }
+
     async fn complete(&self, request: LlmRequest) -> Result<LlmResponse, ModelError> {
         let body = request_body(&self.config, &request);
         let url = format!(
@@ -85,7 +122,12 @@ impl ModelGateway for OpenAiCompatibleModel {
                             .text()
                             .await
                             .map_err(|error| ModelError::Backend(error.to_string()))?;
-                        return parse_response(&text);
+                        let model = if request.model.as_str().is_empty() {
+                            self.config.model.as_str()
+                        } else {
+                            request.model.as_str()
+                        };
+                        return parse_response(&text, model);
                     }
                     if status.as_u16() == 429 {
                         // A rate limit is not a terminal failure. Wait and
@@ -132,9 +174,7 @@ impl ModelGateway for OpenAiCompatibleModel {
 }
 
 fn backoff(attempt: u32) -> Duration {
-    let millis = 250u64
-        .saturating_mul(1u64 << attempt.min(7))
-        .min(60_000);
+    let millis = 250u64.saturating_mul(1u64 << attempt.min(7)).min(60_000);
     Duration::from_millis(millis)
 }
 
@@ -174,6 +214,7 @@ fn request_body(config: &OpenAiCompatibleConfig, request: &LlmRequest) -> Value 
         body["thinking"] = json!({
             "type": if config.thinking { "enabled" } else { "disabled" }
         });
+        body["response_format"] = json!({ "type": "json_object" });
         if config.thinking
             && let Some(effort) = &config.reasoning_effort
         {
@@ -253,6 +294,8 @@ struct ChatResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ChoiceMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -286,7 +329,7 @@ struct UsageJson {
     completion_tokens: u64,
 }
 
-fn parse_response(text: &str) -> Result<LlmResponse, ModelError> {
+fn parse_response(text: &str, model: &str) -> Result<LlmResponse, ModelError> {
     let response: ChatResponse = serde_json::from_str(text)
         .map_err(|error| ModelError::InvalidResponse(error.to_string()))?;
     let choice = response
@@ -296,25 +339,64 @@ fn parse_response(text: &str) -> Result<LlmResponse, ModelError> {
         .ok_or_else(|| ModelError::InvalidResponse("response has no choices".to_string()))?;
     let mut tool_calls = Vec::new();
     for call in choice.message.tool_calls {
+        let mut argument_error = None;
         let arguments = if call.function.arguments.trim().is_empty() {
             Value::Object(Default::default())
         } else {
-            serde_json::from_str(&call.function.arguments).map_err(|error| {
-                ModelError::InvalidResponse(format!(
-                    "tool call {} has invalid arguments: {error}",
-                    call.function.name
-                ))
-            })?
+            match serde_json::from_str(&call.function.arguments) {
+                Ok(arguments) => arguments,
+                Err(first) => {
+                    // Models frequently put raw newlines or tabs inside JSON
+                    // strings. Repair only those before giving up.
+                    let repaired = escape_control_characters(&call.function.arguments);
+                    match serde_json::from_str(&repaired) {
+                        Ok(arguments) => arguments,
+                        Err(_) => {
+                            // Keep the call and let the tool loop report the
+                            // failure back to the model. Failing the whole run
+                            // here discards otherwise usable reasoning and
+                            // gives the model no chance to correct itself.
+                            argument_error = Some(format!(
+                                "arguments are not valid JSON: {first}; raw arguments: {}",
+                                truncate_for_error(&call.function.arguments)
+                            ));
+                            Value::Object(Default::default())
+                        }
+                    }
+                }
+            }
         };
         tool_calls.push(LlmToolCall {
             id: call.id,
             name: call.function.name,
             arguments,
+            argument_error,
         });
+    }
+    let mut content = choice.message.content.unwrap_or_default();
+    if tool_calls.is_empty()
+        && let Some((parsed, remaining)) = parse_dsml_tool_calls(&content)
+    {
+        tool_calls = parsed;
+        content = remaining;
+    }
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        tracing::warn!(
+            model = %model,
+            finish_reason = ?choice.finish_reason,
+            content_chars = content.chars().count(),
+            reasoning_chars = choice
+                .message
+                .reasoning_content
+                .as_deref()
+                .map(|text| text.chars().count())
+                .unwrap_or(0),
+            "model returned empty content without tool calls"
+        );
     }
     Ok(LlmResponse {
         message: LlmMessage::assistant_with_reasoning(
-            choice.message.content.unwrap_or_default(),
+            content,
             tool_calls,
             choice.message.reasoning_content,
         ),
@@ -326,6 +408,107 @@ fn parse_response(text: &str) -> Result<LlmResponse, ModelError> {
             })
             .unwrap_or_default(),
     })
+}
+
+/// Some providers return tool calls as DSML markup in the assistant content
+/// instead of the structured `tool_calls` field. Parse the markup so the node
+/// can execute the calls instead of trying to parse it as JSON.
+fn parse_dsml_tool_calls(content: &str) -> Option<(Vec<LlmToolCall>, String)> {
+    if !content.contains("DSML") || !content.contains("invoke") {
+        return None;
+    }
+    let marker = content.find("DSML")?;
+    let start = content[..marker].rfind('<').unwrap_or(marker);
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    let seed = hasher.finish();
+    let mut calls = Vec::new();
+    let mut search_from = start;
+    while let Some(relative) = content[search_from..].find("invoke") {
+        let at = search_from + relative;
+        let tag = &content[at..];
+        let Some(name) = dsml_tag_attribute(tag, "name") else {
+            search_from = at + "invoke".len();
+            continue;
+        };
+        let Some(open_end) = tag.find('>') else {
+            break;
+        };
+        let body_start = at + open_end + 1;
+        let body_end = dsml_closing_tag(&content[body_start..], "invoke")
+            .map(|offset| body_start + offset)
+            .unwrap_or(content.len());
+        let arguments = dsml_parameters(&content[body_start..body_end]);
+        let index = calls.len();
+        calls.push(LlmToolCall {
+            id: format!("call_dsml_{seed:x}_{index}"),
+            name,
+            arguments,
+            argument_error: None,
+        });
+        search_from = body_end.saturating_add(1);
+        if calls.len() >= 64 {
+            break;
+        }
+    }
+    if calls.is_empty() {
+        None
+    } else {
+        Some((calls, content[..start].trim().to_owned()))
+    }
+}
+
+fn dsml_tag_attribute(tag: &str, name: &str) -> Option<String> {
+    let end = tag.find('>')?;
+    let head = &tag[..end];
+    let needle = format!("{name}=\"");
+    let start = head.find(&needle)? + needle.len();
+    let rest = &head[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_owned())
+}
+
+fn dsml_closing_tag(input: &str, name: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(relative) = input[from..].find("</") {
+        let at = from + relative;
+        let head: String = input[at..].chars().take(80).collect();
+        if head.contains(name) {
+            return Some(at);
+        }
+        from = at + 2;
+    }
+    None
+}
+
+fn dsml_parameters(body: &str) -> Value {
+    let mut map = serde_json::Map::new();
+    let mut from = 0;
+    while let Some(relative) = body[from..].find("parameter") {
+        let at = from + relative;
+        let tag = &body[at..];
+        let Some(name) = dsml_tag_attribute(tag, "name") else {
+            from = at + "parameter".len();
+            continue;
+        };
+        let Some(open_end) = tag.find('>') else {
+            break;
+        };
+        let value_start = at + open_end + 1;
+        let value_end = dsml_closing_tag(&body[value_start..], "parameter")
+            .map(|offset| value_start + offset)
+            .unwrap_or(body.len());
+        let raw = &body[value_start..value_end];
+        let is_string = dsml_tag_attribute(tag, "string").as_deref() == Some("true");
+        let value = if is_string {
+            Value::String(raw.to_owned())
+        } else {
+            serde_json::from_str(raw.trim()).unwrap_or_else(|_| Value::String(raw.to_owned()))
+        };
+        map.insert(name, value);
+        from = value_end.saturating_add(1).min(body.len());
+    }
+    Value::Object(map)
 }
 
 #[cfg(test)]
@@ -407,7 +590,6 @@ mod tests {
                 max_tokens: Some(100),
                 temperature: Some(0.2),
                 timeout: None,
-                history_token_budget: None,
             },
             messages: vec![LlmMessage::system("system"), LlmMessage::user("hello")],
             tools: vec![ToolDefinition {
@@ -416,6 +598,18 @@ mod tests {
                 input_schema: json!({ "type": "object" }),
             }],
         }
+    }
+
+    #[test]
+    fn infers_the_context_window_from_the_model() {
+        assert_eq!(context_window_for_model("deepseek-flash"), Some(1_048_576));
+        assert_eq!(context_window_for_model("gpt-4o"), Some(128_000));
+        assert_eq!(context_window_for_model("claude-sonnet"), Some(200_000));
+        let config = OpenAiCompatibleConfig::new("http://localhost", "key", "deepseek-flash");
+        assert_eq!(config.context_window, Some(1_048_576));
+        let overridden = OpenAiCompatibleConfig::new("http://localhost", "key", "unknown")
+            .with_context_window(32_000);
+        assert_eq!(overridden.context_window, Some(32_000));
     }
 
     #[tokio::test]
@@ -443,6 +637,7 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["tools"][0]["function"]["name"], "echo");
         assert!(body.get("thinking").is_none());
+        assert!(body.get("response_format").is_none());
     }
 
     #[tokio::test]
@@ -477,6 +672,7 @@ mod tests {
 
         let body = captured.lock().unwrap().first().cloned().unwrap();
         assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["response_format"]["type"], "json_object");
         assert_eq!(body["reasoning_effort"], "high");
     }
 
@@ -531,5 +727,98 @@ mod tests {
         assert_eq!(response.message.tool_calls.len(), 1);
         assert_eq!(response.message.tool_calls[0].name, "echo");
         assert_eq!(response.message.tool_calls[0].arguments["text"], "hi");
+        assert!(response.message.tool_calls[0].argument_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn parses_dsml_tool_calls_returned_as_content() {
+        let (base_url, _captured) = mock_server(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": "<｜｜DSML｜｜ invoke name=\"shell\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">ls -la</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n<｜｜DSML｜｜ calls>\n</｜｜DSML｜｜ calls>"
+                }
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "deepseek-chat",
+        ))
+        .unwrap();
+        let response = model.complete(request()).await.unwrap();
+        assert!(response.message.content.is_empty());
+        assert_eq!(response.message.tool_calls.len(), 1);
+        let call = &response.message.tool_calls[0];
+        assert_eq!(call.name, "shell");
+        assert_eq!(call.arguments["command"], "ls -la");
+        assert!(call.argument_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn repairs_raw_control_characters_in_tool_arguments() {
+        // The provider must escape the newline inside the JSON string; models
+        // often emit it raw instead.
+        let (base_url, _captured) = mock_server(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "echo",
+                            "arguments": "{\"text\":\"line1\nline2\"}"
+                        }
+                    }]
+                }
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "test-model",
+        ))
+        .unwrap();
+        let response = model.complete(request()).await.unwrap();
+        let call = &response.message.tool_calls[0];
+        assert_eq!(call.arguments["text"], "line1\nline2");
+        assert!(call.argument_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_unparseable_tool_arguments_for_the_model_to_retry() {
+        let (base_url, _captured) = mock_server(json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {
+                            "name": "task_spawn_children",
+                            "arguments": "{\"tasks\":[{\"title\":\"a\"}"
+                        }
+                    }]
+                }
+            }]
+        }))
+        .await;
+        let model = OpenAiCompatibleModel::new(OpenAiCompatibleConfig::new(
+            base_url,
+            "test-key",
+            "test-model",
+        ))
+        .unwrap();
+        let response = model.complete(request()).await.unwrap();
+        let call = &response.message.tool_calls[0];
+        assert_eq!(call.name, "task_spawn_children");
+        assert_eq!(call.arguments, json!({}));
+        let error = call.argument_error.as_deref().expect("argument error");
+        assert!(error.contains("arguments are not valid JSON"));
     }
 }

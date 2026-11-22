@@ -49,7 +49,7 @@ pub use llm::{
 };
 pub use message::{LlmMessage, LlmRole, LlmToolCall, Usage};
 pub use node::{Node, NodeError};
-pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel};
+pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel, context_window_for_model};
 pub use scripted::ScriptedModel;
 pub use template::{PromptTemplate, TemplateError};
 pub use tool::{

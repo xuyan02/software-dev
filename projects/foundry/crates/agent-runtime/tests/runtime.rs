@@ -63,7 +63,12 @@ async fn tool_call_then_final_answer() {
 
 #[tokio::test]
 async fn context_is_rendered_into_the_user_message() {
-    let (runtime, model) = runtime(vec![LlmResponse::final_answer(json!({"message": "ok"}).to_string())], ToolRegistry::new());
+    let (runtime, model) = runtime(
+        vec![LlmResponse::final_answer(
+            json!({"message": "ok"}).to_string(),
+        )],
+        ToolRegistry::new(),
+    );
     let mut request = AgentRunRequest::new("agent", "task", "system", "user request");
     request
         .context

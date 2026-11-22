@@ -24,7 +24,7 @@ const NAMESPACE_DOC: &str = "documents/design/namespace";
 const DOC_DIRECTORY: &str = "documents/design";
 
 const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体。当前阶段：baseline。
-你的任务是一次性为整个代码库建立设计体系：System、Module、Namespace、Directory、Class、Interface、Function、Method 和 Part，并完成技术设计、目录设计、命名空间设计三份文档。
+你的任务是一次性为整个代码库建立设计体系：System、Module、Namespace、Directory、Class、Struct、Enum、Interface、Function、Method 和 Part，并完成技术设计、目录设计、命名空间设计三份文档。
 
 工作区：{{ds_workspace}}
 源码分支：{{git_branch}}
@@ -38,22 +38,23 @@ const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体�
 - 只在当前工作区操作；所有设计写入用 ds 命令，不手改 .ds。
 - 只建模本仓库设计空间内的对象；外部库、标准库、第三方类型不建模。
 - 根对象 files、namespaces、documents 不建 Section，也不写 document。
-- 除 Part 外，每个 File、Directory、Namespace、Class、Interface、Function、Mixin、Method 都必须有 document，指向技术设计、目录设计或命名空间设计中的 Section。
+- 除 Part 外，每个 File、Directory、Namespace、Class、Struct、Enum、Interface、Function、Mixin、Method 都必须有 document，指向技术设计、目录设计或命名空间设计中的 Section。
 - Part 不关联文档；Method 的 parent 是 Part 时，文档挂到 Part 的父元素。
 - 文档内容只通过 ds doc 写；不要用 ds edit --design/--design-file。
 - 设计文档中的专业词汇必须有概念定义：在 concepts/ 下创建 Concept，写清 name、summary、explanation、characteristics、relations，并在文档中用 [[concept:<qname>|<术语>]] 引用；含义不清晰的词先建概念再使用。
 - 技术设计 Section 的父子层级由运行时执行 ds doc layout 统一整理；按 design-writing 写内容即可，不要为了整理层级手工移动 Section。
+- 设计文档的重点是设计要点：所有无法自然推定、需要说明的设计内容都要写进去，使读者只凭文档就能理解设计并决定怎么写代码。
 - 不要执行 ds source sync、git 提交或推送；准备、提交、推送和 MR 由运行时完成。
 - 不要停在半成品；仓库大时按目录分批推进，完成一批继续下一批。
 - 最终只返回 JSON：{"ok":true}。
 
 执行顺序：
-1. 读运行时代码生成的 inventory，先判断是否存在跨对象的统一设计决定。有的话，在技术设计文档中创建顶层 Section“设计原则”（用 documents/design/technical/section 头锚点，插到最前），按 design-writing 1.8 写范围、规则、理由与代价；没有就不建，不写通用口号或实现策略。然后建立系统；只有复杂度需要时才建立模块。System 和 Module 的定义、创建标准、文档块见 design-writing 技能。
-2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。按 design-writing 的 Module 资格测试决定是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。System/Module 如果存在只约束本容器内多个对象的设计原则，写“设计原则”块；单对象规则写进对应对象的块。
+1. 读运行时代码生成的 inventory，先判断是否存在子树范围内的统一设计决定。有的话，在技术设计文档中创建顶层 Section“设计原则”（用 documents/design/technical/section 头锚点，插到最前），按 design-writing 3.12 写简短的设计规范；没有就不建，不写通用口号或实现策略。然后建立系统；只有复杂度需要时才建立模块。System 和 Module 的定义和文档块见 design-writing 技能。
+2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。判断是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。System/Module 如果存在只约束本容器子树内对象的设计原则，写“设计原则”块；只影响单个成员或部分子树的规则写进对应对象的块。
 3. 建立 Namespace：按逻辑概念创建 namespaces/*，用 --file 关联源码文件；在命名空间设计文档中给每个 Namespace 建 Section，Section 标题用 Namespace 短名（qname 最后一段），不要用完整 qname；正文写“置放……”单句。
 4. 目录设计：按目录树给 files/ 下每个 Directory 建 Section，写“置放……”单句，覆盖整个子树，不枚举子项。
 5. 文件设计：对每个 File，先用 ds show 查文件内顶层元素所属的 Namespace/Module，再写文件设计目的单句：这个文件在系统/模块中承担什么角色、承载什么能力，不写具体行为或实现细节。例如 main.rs 写“置放命令行程序入口的代码”，不要写“置放实现命令行问候输出的代码”。
-6. 代码元素：逐文件读源码，创建 Class/Interface/Function/Mixin/Method/InnerClass/Part，写 source span、signature、file、关系和依赖；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 必须写“参数与返回值”块：每个参数写名字、类型和含义，返回值写类型、含义和失败语义；没有参数或返回值时写“无参数。”或“无返回值。”。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
+6. 代码元素：逐文件读源码，创建 Class/Struct/Enum/Interface/Function/Mixin/Method/InnerClass/InnerStruct/InnerEnum/Part，写 source span、signature、file、关系和依赖；分类规则：同时有数据和方法→Class，只有数据→Struct，只有枚举变体→Enum，只有抽象方法→Interface，可复用行为片段→Mixin，类型内部的方法→Method，其他代码片段→Part；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 必须分别写“参数”和“返回值”两个块：参数写名字和含义（类型由函数原型表达），返回值写含义和失败语义；没有参数或返回值时写“无参数。”或“无返回值。”。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
 7. 归属：每个顶层元素用 ds structure assign 加入恰好一个系统或模块。简单系统直接加入系统；系统可以同时有模块和直属成员；不允许重复归属、未归属、空系统或空模块。程序入口不单独建模块。
 8. 自检：ds structure unassigned 为空，ds structure check 通过，ds verify 通过；缺什么继续补。
 9. 完成后返回 {"ok":true}。"#;
@@ -75,7 +76,7 @@ const FIX_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体。当�
 - 评论指出的问题真正解决后才 resolve，不要假 resolve。
 - 评论不成立时写说明评论并保留原评论。
 - 修正后同步更新受影响的技术设计、目录设计、命名空间设计，保持 System/Module 文档与成员一致。
-- 设计原则只写跨对象的结构性决定，必须写清范围、规则、理由与代价；通用口号和实现策略不算原则。
+- 设计原则只写覆盖整个子树的结构性决定，必须写成简短、可判定的设计规范；通用口号和实现策略不算原则。
 - File 文档写文件在系统/模块中的设计角色或能力；不写具体行为或实现细节。
 - 最终只返回 JSON：{"ok":true}。
 
@@ -253,11 +254,14 @@ pub async fn run(
         LlmConfig {
             model: ModelProfileRef::new(""),
             shared_system: system,
-            tools: vec!["project".to_owned(), "shell".to_owned()],
-            params: LlmParams {
-                history_token_budget: Some(60_000),
-                ..LlmParams::default()
-            },
+            tools: vec![
+                "project".to_owned(),
+                "shell".to_owned(),
+                "read_file".to_owned(),
+                "write_file".to_owned(),
+                "edit_file".to_owned(),
+            ],
+            params: LlmParams::default(),
         },
     );
     context.set_tool_context(graph_agent::ToolContext {
@@ -695,24 +699,12 @@ async fn prepare_workspace(
         .exit_code
         == Some(0);
     let git_env = git_env(workspace);
-    let credential_url = credential_git_url(shell, workspace).await?;
-    let git_url = credential_url
-        .clone()
-        .unwrap_or_else(|| project.git_repository.clone());
-    let recorded_url = if exists {
-        recorded_source_url(shell, ds_workspace).await?
-    } else {
-        None
-    };
-    let needs_reclone =
-        exists && credential_url.is_some() && recorded_url.as_deref() != credential_url.as_deref();
 
-    if !exists || needs_reclone {
+    if !exists {
         clone_workspace(
             shell,
             ds_workspace,
             project,
-            &git_url,
             &git_env,
             &project.design_space_branch,
         )
@@ -794,17 +786,12 @@ async fn restore_workspace(
         .exit_code
         == Some(0);
     let git_env = git_env(workspace);
-    let credential_url = credential_git_url(shell, workspace).await?;
-    let git_url = credential_url
-        .clone()
-        .unwrap_or_else(|| project.git_repository.clone());
 
     if !exists {
         clone_workspace(
             shell,
             ds_workspace,
             project,
-            &git_url,
             &git_env,
             &project.design_space_branch,
         )
@@ -864,7 +851,6 @@ async fn clone_workspace(
     shell: &Arc<dyn Shell>,
     ds_workspace: &str,
     project: &ProjectInfo,
-    git_url: &str,
     git_env: &str,
     branch: &str,
 ) -> Result<(), NodeError> {
@@ -872,10 +858,9 @@ async fn clone_workspace(
     let output = exec(
         shell,
         format!(
-            "{} ds clone {} --source {} --branch {} --dir {}",
+            "{} ds clone {} --branch {} --dir {}",
             git_env,
             q(&project.design_space_url),
-            q(git_url),
             q(branch),
             q(ds_workspace)
         ),
@@ -1120,49 +1105,10 @@ async fn ds_source_env(
     Ok(output.stdout)
 }
 
-fn git_env(workspace: &str) -> String {
-    let dir = format!("{workspace}/.credentials/git");
-    format!(
-        "GIT_TERMINAL_PROMPT=0 HOME={} GIT_CONFIG_GLOBAL={}/gitconfig",
-        q(&dir),
-        q(&dir)
-    )
-}
-
-async fn credential_git_url(
-    shell: &Arc<dyn Shell>,
-    workspace: &str,
-) -> Result<Option<String>, NodeError> {
-    let path = format!("{workspace}/.credentials/git/url");
-    let output = exec(shell, format!("cat {} 2>/dev/null", q(&path))).await?;
-    if output.exit_code == Some(0) {
-        let url = output.stdout.trim();
-        if !url.is_empty() {
-            return Ok(Some(url.to_owned()));
-        }
-    }
-    Ok(None)
-}
-
-async fn recorded_source_url(
-    shell: &Arc<dyn Shell>,
-    ds_workspace: &str,
-) -> Result<Option<String>, NodeError> {
-    let output = exec(
-        shell,
-        format!("grep '^url' {}/.ds/config 2>/dev/null", q(ds_workspace)),
-    )
-    .await?;
-    if output.exit_code != Some(0) {
-        return Ok(None);
-    }
-    let value = output
-        .stdout
-        .lines()
-        .find_map(|line| line.strip_prefix("url = "))
-        .map(str::trim)
-        .map(|value| value.trim_matches('"').to_owned());
-    Ok(value)
+fn git_env(_workspace: &str) -> String {
+    // Git credentials and config are preconfigured in the shell image; agentd
+    // only refreshes the task-scoped credential file.
+    String::new()
 }
 
 fn lines(text: &str) -> Vec<String> {

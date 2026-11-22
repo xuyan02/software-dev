@@ -7,7 +7,8 @@
   "vars": {
     "expected": {
       "type": "int",
-      "display_name": "Expected design tasks"
+      "display_name": "Expected design tasks",
+      "initial": -1
     },
     "done": {
       "type": "int",
@@ -21,9 +22,9 @@
       "type": "bool",
       "display_name": "No work"
     },
-    "ready": {
-      "type": "bool",
-      "display_name": "Ready"
+    "outcome": {
+      "type": "string",
+      "display_name": "Outcome"
     }
   },
   "initial_stage": "dispatch",
@@ -72,22 +73,30 @@
       "operations": [
         {
           "name": "ready",
-          "display_name": "本轮可开发",
-          "description": "本轮设计已合入并通过可开发门，议题可以进入实现。",
+          "display_name": "本轮验收通过",
+          "description": "本轮计划的设计任务全部完成且质量合格，轮次议题已写验收结论并关闭。",
           "roles": ["verifier"],
-          "action": "ready = true"
+          "action": "outcome = 'ready'"
         },
         {
           "name": "blocked",
-          "display_name": "本轮存在阻塞",
-          "description": "部分设计未完成或未通过可开发门，相关议题回池。",
+          "display_name": "本轮存在无法完成项",
+          "description": "存在无法完成的设计，相关议题已退回议题池，轮次议题已写结论并关闭。",
           "roles": ["verifier"],
-          "action": "ready = false"
+          "action": "outcome = 'blocked'"
+        },
+        {
+          "name": "rework",
+          "display_name": "需要继续完善",
+          "description": "存在不合格但可继续完善的设计；已创建同类型后续任务并转交议题。",
+          "roles": ["verifier"],
+          "action": "outcome = 'rework'\nexpected = count_children('design') + count_children('design_baseline')"
         }
       ],
       "transitions": [
-        {"on": "ready", "action": "result = 'completed'", "to": "ended"},
-        {"on": "not ready", "action": "result = 'blocked'", "to": "ended"}
+        {"on": "outcome == 'ready'", "action": "result = 'completed'", "to": "ended"},
+        {"on": "outcome == 'blocked'", "action": "result = 'blocked'", "to": "ended"},
+        {"on": "outcome == 'rework'", "to": "waiting"}
       ]
     }
   ]

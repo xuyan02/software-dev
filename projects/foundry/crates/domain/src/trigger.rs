@@ -143,9 +143,7 @@ impl TriggerSchedule {
                 .parse::<u8>()
                 .map_err(|_| TriggerError(vec![format!("invalid minute: {value}")]))?;
             if hour > 23 || minute > 59 {
-                return Err(TriggerError(vec![format!(
-                    "invalid daily time: {value}"
-                )]));
+                return Err(TriggerError(vec![format!("invalid daily time: {value}")]));
             }
             return Ok(Self::DailyAt { hour, minute });
         }
@@ -156,9 +154,7 @@ impl TriggerSchedule {
         let now = now.to_offset(time::UtcOffset::UTC);
         Ok(match self {
             Self::Manual => None,
-            Self::EveryMinutes(minutes) => {
-                Some(now + time::Duration::minutes(*minutes as i64))
-            }
+            Self::EveryMinutes(minutes) => Some(now + time::Duration::minutes(*minutes as i64)),
             Self::DailyAt { hour, minute } => {
                 let time = time::Time::from_hms(*hour, *minute, 0)
                     .map_err(|error| TriggerError(vec![error.to_string()]))?;
@@ -259,13 +255,10 @@ mod tests {
                 .is_some()
         );
         assert!(
-            TriggerSchedule::DailyAt {
-                hour: 9,
-                minute: 0
-            }
-            .next_after(now)
-            .unwrap()
-            .is_some()
+            TriggerSchedule::DailyAt { hour: 9, minute: 0 }
+                .next_after(now)
+                .unwrap()
+                .is_some()
         );
     }
 }

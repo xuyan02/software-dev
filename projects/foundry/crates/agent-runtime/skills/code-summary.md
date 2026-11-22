@@ -97,7 +97,7 @@
 | Directory | 整个子树在系统中的位置，放哪类内容，边界在哪里 |
 | File | 这个文件承担的职责或放置的顶层类型 |
 | Namespace | 这个命名空间代表的模块和模块边界 |
-| Class | 定位、职责、非职责、契约、状态、生命周期、协作、扩展和关键权衡 |
+| Class | 定位、职责、非职责、功能、非功能、字段列表、不变量、约束、设计原则、父类/接口/混入、用法、设计要点 |
 | Interface | 抽象目的、契约、实现者义务、失败语义和扩展约束 |
 | Method / Function | 意图、输入输出契约、前置后置条件、副作用、错误和并发语义 |
 | Mixin | 增加的行为、应用前提、组合规则和冲突处理 |
@@ -125,8 +125,8 @@
 6. 更新 File、Namespace 和除 Part 外代码对象的 `document` 引用；
 7. 按 `design-writing` 写文档：
    - File、Namespace 写一个单句；
-   - Class、Interface、Method、Function、Mixin 的块写成 `document-topic`；
-   - 设计说明写反推出的设计，不写代码流水账；
+   - Class、Struct、Enum、Interface、Method、Function、Mixin 的块写成 `document-topic`；
+   - 设计要点写反推出的设计，不写代码流水账；
 8. 不确定的设计点写成文档评论；
 9. 输出 `{"ok":true}`。
 

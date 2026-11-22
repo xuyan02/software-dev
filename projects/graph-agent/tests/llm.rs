@@ -156,6 +156,41 @@ impl ModelGateway for PlainModel {
     }
 }
 
+struct RetryModel {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl ModelGateway for RetryModel {
+    async fn complete(&self, _request: LlmRequest) -> Result<LlmResponse, ModelError> {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call == 0 {
+            Ok(LlmResponse::final_answer("not json"))
+        } else {
+            Ok(LlmResponse::final_answer("{\"ok\":true}"))
+        }
+    }
+}
+
+#[tokio::test]
+async fn retries_once_after_an_unparseable_final_reply() {
+    let model = Arc::new(RetryModel {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut ctx = Context::new();
+    configure_context(&mut ctx);
+    let graph = llm_graph();
+    let llm = Arc::new(LlmRuntime::new(
+        Arc::clone(&model) as Arc<dyn ModelGateway>,
+        Arc::new(ToolRegistry::new()),
+        Arc::new(TestSkills),
+    ));
+    let agent = Agent::new("llm-agent", graph, llm);
+    let output = agent.run(ctx, json!({"kind": "file"})).await.unwrap();
+    assert_eq!(output.output, json!({"ok": true}));
+    assert_eq!(model.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
 #[tokio::test]
 async fn rejects_a_non_json_final_reply() {
     let mut ctx = Context::new();

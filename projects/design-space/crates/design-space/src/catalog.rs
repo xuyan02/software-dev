@@ -565,6 +565,8 @@ fn object_name(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::File(p) => Some(p.qualified_name),
         ObjectPayload::Namespace(p) => Some(p.qualified_name),
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.qualified_name),
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => Some(p.qualified_name),
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => Some(p.qualified_name),
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.qualified_name),
         ObjectPayload::Method(p) => Some(p.qualified_name),
         ObjectPayload::Function(p) => Some(p.qualified_name),
@@ -594,6 +596,8 @@ fn children_of(object: &DesignObject) -> &[ObjectHash] {
         ObjectPayload::File(p) => &p.children,
         ObjectPayload::Namespace(p) => &p.children,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => &p.children,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => &p.children,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => &p.children,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => &p.children,
         ObjectPayload::Part(p) => &p.children,
         ObjectPayload::Mixin(p) => &p.children,
@@ -633,6 +637,12 @@ fn parents_of(object: &DesignObject) -> Vec<SymbolHash> {
             }
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            push_class_parents(&p.parent, &mut out)
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            push_class_parents(&p.parent, &mut out)
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
             push_class_parents(&p.parent, &mut out)
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
@@ -740,6 +750,10 @@ fn can_contain(object: &DesignObject) -> bool {
             | Kind::Namespace
             | Kind::Class
             | Kind::InnerClass
+            | Kind::Struct
+            | Kind::InnerStruct
+            | Kind::Enum
+            | Kind::InnerEnum
             | Kind::Interface
             | Kind::InnerInterface
             | Kind::Part
@@ -763,6 +777,8 @@ fn set_children(object: &mut DesignObject, children: Vec<ObjectHash>) -> Result<
         ObjectPayload::File(p) => p.children = children,
         ObjectPayload::Namespace(p) => p.children = children,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.children = children,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => p.children = children,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => p.children = children,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.children = children,
         ObjectPayload::Part(p) => p.children = children,
         ObjectPayload::Mixin(p) => p.children = children,
@@ -854,6 +870,20 @@ fn rewrite_object(object: &mut DesignObject, mapping: &BTreeMap<SymbolHash, Symb
             p.superclass = map(p.superclass);
             rewrite_symbols(&mut p.interfaces, mapping);
             rewrite_symbols(&mut p.mixins, mapping);
+            rewrite_dependencies(&mut p.explicit_dependencies, mapping);
+            rewrite_dependencies(&mut p.implicit_dependencies, mapping);
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
+            rewrite_class_parent(&mut p.parent, mapping);
+            rewrite_dependencies(&mut p.explicit_dependencies, mapping);
+            rewrite_dependencies(&mut p.implicit_dependencies, mapping);
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            p.qualified_name = map(p.qualified_name);
+            p.document = map(p.document);
+            rewrite_class_parent(&mut p.parent, mapping);
             rewrite_dependencies(&mut p.explicit_dependencies, mapping);
             rewrite_dependencies(&mut p.implicit_dependencies, mapping);
         }
@@ -1102,13 +1132,18 @@ fn validate_modules(store: &Store, entries: &BTreeMap<SymbolHash, DesignObject>)
             };
             if !matches!(
                 target.kind,
-                Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+                Kind::Class
+                    | Kind::Struct
+                    | Kind::Enum
+                    | Kind::Interface
+                    | Kind::Function
+                    | Kind::Mixin
             ) {
                 return Err(CatalogError::InvalidModuleMember {
                     object: object_label(store, *qname),
                     target: object_label(store, *member),
                     message:
-                        "only top-level classes, interfaces, functions and mixins can be members"
+                        "only top-level classes, structs, enums, interfaces, functions and mixins can be members"
                             .to_owned(),
                 });
             }
@@ -1166,6 +1201,12 @@ fn validate_parents(
             }
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            validate_type_parents(store, entries, qname, &p.parent)?;
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            validate_type_parents(store, entries, qname, &p.parent)?;
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
             validate_type_parents(store, entries, qname, &p.parent)?;
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
@@ -1392,10 +1433,14 @@ fn validate_type_parents(
                 &[
                     Kind::Class,
                     Kind::InnerClass,
+                    Kind::Struct,
+                    Kind::InnerStruct,
+                    Kind::Enum,
+                    Kind::InnerEnum,
                     Kind::Interface,
                     Kind::InnerInterface,
                 ],
-                "a class or interface",
+                "a class, struct, enum, or interface",
             )?;
         }
         ClassParent::TopLevel {

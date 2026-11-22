@@ -101,6 +101,10 @@ pub fn validate_object(object: &DesignObject) -> Result<()> {
         }
         ObjectPayload::Class(p) => validate_class_payload(p, true),
         ObjectPayload::InnerClass(p) => validate_class_payload(p, false),
+        ObjectPayload::Struct(p) => validate_struct_payload(p, true),
+        ObjectPayload::InnerStruct(p) => validate_struct_payload(p, false),
+        ObjectPayload::Enum(p) => validate_enum_payload(p, true),
+        ObjectPayload::InnerEnum(p) => validate_enum_payload(p, false),
         ObjectPayload::Interface(p) => validate_interface_payload(p, true),
         ObjectPayload::InnerInterface(p) => validate_interface_payload(p, false),
         ObjectPayload::Method(p) => {
@@ -298,6 +302,28 @@ fn validate_class_payload(p: &ClassPayload, top_level: bool) -> Result<()> {
     validate_dependencies(&p.explicit_dependencies, "class explicit dependencies")?;
     validate_dependencies(&p.implicit_dependencies, "class implicit dependencies")?;
     validate_object_hashes(&p.children, "class children")?;
+    Ok(())
+}
+
+fn validate_struct_payload(p: &StructPayload, top_level: bool) -> Result<()> {
+    require_hash(p.qualified_name, "struct qualified_name")?;
+    validate_type_parent_form(p.parent, top_level, "struct")?;
+    validate_opt_span_source(p.source)?;
+    validate_content_hash(p.content_hash, p.source.is_some(), false, "struct")?;
+    validate_dependencies(&p.explicit_dependencies, "struct explicit dependencies")?;
+    validate_dependencies(&p.implicit_dependencies, "struct implicit dependencies")?;
+    validate_object_hashes(&p.children, "struct children")?;
+    Ok(())
+}
+
+fn validate_enum_payload(p: &EnumPayload, top_level: bool) -> Result<()> {
+    require_hash(p.qualified_name, "enum qualified_name")?;
+    validate_type_parent_form(p.parent, top_level, "enum")?;
+    validate_opt_span_source(p.source)?;
+    validate_content_hash(p.content_hash, p.source.is_some(), false, "enum")?;
+    validate_dependencies(&p.explicit_dependencies, "enum explicit dependencies")?;
+    validate_dependencies(&p.implicit_dependencies, "enum implicit dependencies")?;
+    validate_object_hashes(&p.children, "enum children")?;
     Ok(())
 }
 
@@ -608,6 +634,8 @@ fn encode_payload(object: &DesignObject) -> Result<Vec<u8>> {
         ObjectPayload::File(p) => encode_file(p, &mut out),
         ObjectPayload::Namespace(p) => encode_namespace(p, &mut out),
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => encode_class(p, &mut out),
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => encode_struct(p, &mut out),
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => encode_enum(p, &mut out),
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             encode_interface(p, &mut out)
         }
@@ -642,6 +670,10 @@ fn decode_payload(kind: Kind, reader: &mut Reader<'_>) -> Result<ObjectPayload> 
         Kind::Namespace => ObjectPayload::Namespace(decode_namespace(reader)?),
         Kind::Class => ObjectPayload::Class(decode_class(reader)?),
         Kind::InnerClass => ObjectPayload::InnerClass(decode_class(reader)?),
+        Kind::Struct => ObjectPayload::Struct(decode_struct(reader)?),
+        Kind::InnerStruct => ObjectPayload::InnerStruct(decode_struct(reader)?),
+        Kind::Enum => ObjectPayload::Enum(decode_enum(reader)?),
+        Kind::InnerEnum => ObjectPayload::InnerEnum(decode_enum(reader)?),
         Kind::Interface => ObjectPayload::Interface(decode_interface(reader)?),
         Kind::InnerInterface => ObjectPayload::InnerInterface(decode_interface(reader)?),
         Kind::Method => ObjectPayload::Method(decode_method(reader)?),
@@ -793,6 +825,54 @@ fn decode_class(r: &mut Reader<'_>) -> Result<ClassPayload> {
         superclass: SymbolHash(Hash32(read_32(r)?)),
         interfaces: decode_symbols(r)?,
         mixins: decode_symbols(r)?,
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_struct(p: &StructPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_class_parent(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.document);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_struct(r: &mut Reader<'_>) -> Result<StructPayload> {
+    Ok(StructPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_class_parent(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        document: SymbolHash(Hash32(read_32(r)?)),
+        explicit_dependencies: decode_dependencies(r)?,
+        implicit_dependencies: decode_dependencies(r)?,
+        children: decode_object_hashes(r)?,
+    })
+}
+
+fn encode_enum(p: &EnumPayload, out: &mut Vec<u8>) {
+    put_hash(out, p.qualified_name);
+    encode_class_parent(out, p.parent);
+    encode_opt_span_source(out, p.source);
+    put_raw_hash(out, p.content_hash);
+    put_hash(out, p.document);
+    encode_dependencies(out, &p.explicit_dependencies);
+    encode_dependencies(out, &p.implicit_dependencies);
+    encode_object_hashes(out, &p.children);
+}
+
+fn decode_enum(r: &mut Reader<'_>) -> Result<EnumPayload> {
+    Ok(EnumPayload {
+        qualified_name: SymbolHash(Hash32(read_32(r)?)),
+        parent: decode_class_parent(r)?,
+        source: decode_opt_span_source(r)?,
+        content_hash: Hash32(read_32(r)?),
+        document: SymbolHash(Hash32(read_32(r)?)),
         explicit_dependencies: decode_dependencies(r)?,
         implicit_dependencies: decode_dependencies(r)?,
         children: decode_object_hashes(r)?,

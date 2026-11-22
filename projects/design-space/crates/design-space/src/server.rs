@@ -18,15 +18,18 @@
 //! HTTP can require a shared bearer token; SSH relies on SSH authentication.
 
 use crate::catalog::Catalog;
+use crate::lock::RepoLock;
 use crate::model::{
     Commit, CommitHash, ConceptDirectoryPayload, DesignObject, DesignStructurePayload,
     DirectoryPayload, DocumentDirectoryPayload, DocumentPayload, GitOid, Hash32, Kind,
     NamespacePayload, ObjectPayload, ParentRef, SymbolHash,
 };
+use crate::push::{PushBundle, record_path};
 use crate::remote::{
     FILE_ROOTS, MAX_TRANSFER, collect_files, parse_hash, parse_refs, publish, read_token_file,
-    valid_branch, valid_relative, write_ref,
+    valid_branch, valid_relative, valid_source_url, verify_upload, write_ref, write_repo_config,
 };
+use crate::workspace::{ObjectFormat, REPO_CONFIG_FILE};
 use anyhow::{Context, Result, bail};
 use axum::Json;
 use axum::Router;
@@ -36,7 +39,7 @@ use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -44,6 +47,7 @@ use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_PATH: usize = 4096;
@@ -83,6 +87,8 @@ pub enum CreateRepoError {
     InvalidName(String),
     #[error("invalid branch: {0}")]
     InvalidBranch(String),
+    #[error("invalid source URL: {0}")]
+    InvalidSourceUrl(String),
     #[error("repository already exists: {0}")]
     Exists(String),
     #[error("{0}")]
@@ -109,12 +115,31 @@ impl RepoCollection {
         name: &str,
         branch: &str,
     ) -> std::result::Result<CreatedRepo, CreateRepoError> {
+        self.create_with_source(name, branch, None)
+    }
+
+    /// Create a repository and write the source Git URL to the repository's
+    /// plain `source-url` metadata file. The file is transferred with the
+    /// repository, so clients learn the URL through a normal fetch.
+    pub fn create_with_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_url: Option<&str>,
+    ) -> std::result::Result<CreatedRepo, CreateRepoError> {
         if !valid_repo_name(name) {
             return Err(CreateRepoError::InvalidName(name.to_owned()));
         }
         if !valid_branch(branch) {
             return Err(CreateRepoError::InvalidBranch(branch.to_owned()));
         }
+        let source_url = match source_url {
+            Some(url) => Some(
+                valid_source_url(url)
+                    .ok_or_else(|| CreateRepoError::InvalidSourceUrl(url.to_owned()))?,
+            ),
+            None => None,
+        };
         let path = self.root.join(name);
         match fs::create_dir(&path) {
             Ok(()) => {}
@@ -124,11 +149,19 @@ impl RepoCollection {
             Err(error) => return Err(CreateRepoError::Other(error.into())),
         }
         match init_repo(&path, branch) {
-            Ok(commit) => Ok(CreatedRepo {
-                name: name.to_owned(),
-                branch: branch.to_owned(),
-                commit: commit.to_hex(),
-            }),
+            Ok(commit) => {
+                if let Some(source_url) = &source_url
+                    && let Err(error) = write_repo_config(&path, source_url, ObjectFormat::Sha1)
+                {
+                    let _ = fs::remove_dir_all(&path);
+                    return Err(CreateRepoError::Other(error));
+                }
+                Ok(CreatedRepo {
+                    name: name.to_owned(),
+                    branch: branch.to_owned(),
+                    commit: commit.to_hex(),
+                })
+            }
             Err(error) => {
                 let _ = fs::remove_dir_all(&path);
                 Err(CreateRepoError::Other(error))
@@ -376,6 +409,7 @@ impl RemoteServer {
         ] {
             fs::create_dir_all(root.join(dir))?;
         }
+        recover_refs_journal(&root)?;
         Ok(Self {
             root,
             token_hash: None,
@@ -437,6 +471,9 @@ impl RemoteServer {
             }
             relative.push(relative_path);
         }
+        if self.root.join(REPO_CONFIG_FILE).is_file() {
+            relative.push(REPO_CONFIG_FILE.to_owned());
+        }
         relative.sort();
         let mut out = String::new();
         for relative in relative {
@@ -459,6 +496,9 @@ impl RemoteServer {
     }
 
     pub fn write(&self, relative: &str, bytes: &[u8]) -> Result<()> {
+        if relative == REPO_CONFIG_FILE {
+            bail!("repository metadata is read-only");
+        }
         if bytes.len() > MAX_TRANSFER {
             bail!("upload is too large: {relative}");
         }
@@ -476,6 +516,7 @@ impl RemoteServer {
         if !valid_branch(branch) {
             bail!("invalid branch name: {branch}");
         }
+        let _lock = RepoLock::acquire(&self.root)?;
         let path = self.root.join("refs/heads").join(branch);
         match fs::remove_file(&path) {
             Ok(()) => Ok(()),
@@ -485,6 +526,7 @@ impl RemoteServer {
     }
 
     pub fn write_refs(&self, body: &[u8]) -> Result<()> {
+        let _lock = RepoLock::acquire(&self.root)?;
         let body = std::str::from_utf8(body).context("ref update is not UTF-8")?;
         let refs = parse_refs(body)?;
         let store = crate::store::Store::open(&self.root)?;
@@ -499,11 +541,218 @@ impl RemoteServer {
         Ok(())
     }
 
+    /// Apply one `PUSH1` bundle: verify records in quarantine, validate ref
+    /// commands against quarantine plus the existing store, publish verified
+    /// records, then update refs under the short ref lock.
+    pub fn push_bundle(&self, bytes: &[u8]) -> Result<()> {
+        let bundle = PushBundle::decode(bytes)?;
+        let quarantine = Quarantine::new(&self.root)?;
+        for record in &bundle.records {
+            let relative = record_path(record.kind, record.hash);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            verify_upload(Path::new(&relative), &record.bytes)
+                .with_context(|| format!("invalid record {relative}"))?;
+            publish(quarantine.path(), &relative, &record.bytes)
+                .with_context(|| format!("cannot quarantine {relative}"))?;
+        }
+        let store = crate::store::Store::open_with_fallback(quarantine.path(), &self.root)?;
+        let mut seen = std::collections::HashSet::new();
+        for command in &bundle.commands {
+            if !valid_branch(&command.branch) {
+                bail!("invalid branch name: {}", command.branch);
+            }
+            if !seen.insert(command.branch.as_str()) {
+                bail!("duplicate branch command: {}", command.branch);
+            }
+            let commit = store
+                .get_commit(command.new_commit)
+                .with_context(|| format!("branch {} points at a missing commit", command.branch))?;
+            Catalog::load(&store, commit.view).with_context(|| {
+                format!("branch {} references an incomplete design", command.branch)
+            })?;
+            if !command.force
+                && let Some(old) = command.expected_old
+                && !is_ancestor(&store, old, command.new_commit)?
+            {
+                bail!(
+                    "branch {} is not a fast-forward: {} -> {}",
+                    command.branch,
+                    old.to_hex(),
+                    command.new_commit.to_hex()
+                );
+            }
+        }
+        let _lock = RepoLock::acquire(&self.root)?;
+        for record in &bundle.records {
+            let relative = record_path(record.kind, record.hash);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            publish(&self.root, &relative, &record.bytes)
+                .with_context(|| format!("cannot publish {relative}"))?;
+        }
+        let mut previous = Vec::new();
+        for command in &bundle.commands {
+            let current = self.read_ref(&command.branch)?;
+            if current != command.expected_old {
+                bail!(
+                    "branch {} changed: expected {}, found {}",
+                    command.branch,
+                    command
+                        .expected_old
+                        .map(|commit| commit.to_hex())
+                        .unwrap_or_else(|| "<absent>".to_owned()),
+                    current
+                        .map(|commit| commit.to_hex())
+                        .unwrap_or_else(|| "<absent>".to_owned()),
+                );
+            }
+            previous.push((command.branch.clone(), current));
+        }
+        let commands = bundle
+            .commands
+            .iter()
+            .map(|command| (command.branch.clone(), command.new_commit))
+            .collect::<Vec<_>>();
+        write_refs_journal(&self.root, &commands)?;
+        let mut written: Vec<(String, Option<CommitHash>)> = Vec::new();
+        for (index, command) in bundle.commands.iter().enumerate() {
+            if let Err(error) = write_ref(&self.root, &command.branch, command.new_commit) {
+                for (branch, old) in written.into_iter().rev() {
+                    let _ = restore_ref(&self.root, &branch, old);
+                }
+                let _ = fs::remove_file(self.root.join("refs.transaction"));
+                return Err(error);
+            }
+            written.push((command.branch.clone(), previous[index].1));
+        }
+        let _ = fs::remove_file(self.root.join("refs.transaction"));
+        Ok(())
+    }
+
+    fn read_ref(&self, branch: &str) -> Result<Option<CommitHash>> {
+        let path = self.root.join("refs/heads").join(branch);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(&path)?;
+        let hash = parse_hash(text.trim())
+            .with_context(|| format!("invalid ref stored on remote: {branch}"))?;
+        Ok(Some(CommitHash(hash)))
+    }
+
     fn resolve(&self, relative: &str) -> Result<PathBuf> {
         if relative.contains('\0') || !valid_relative(Path::new(relative)) {
             bail!("invalid relative path: {relative}");
         }
         Ok(self.root.join(relative))
+    }
+}
+
+const REFS_JOURNAL: &str = "refs.transaction";
+
+fn write_refs_journal(root: &Path, refs: &[(String, CommitHash)]) -> Result<()> {
+    let mut body = String::new();
+    for (branch, commit) in refs {
+        body.push_str(branch);
+        body.push('\t');
+        body.push_str(&commit.to_hex());
+        body.push('\n');
+    }
+    let temp = root.join("tmp").join(format!(
+        "refs-{}-{}.tmp",
+        std::process::id(),
+        QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(root.join("tmp"))?;
+    {
+        let mut file = fs::File::create(&temp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(temp, root.join(REFS_JOURNAL))?;
+    Ok(())
+}
+
+fn recover_refs_journal(root: &Path) -> Result<()> {
+    let path = root.join(REFS_JOURNAL);
+    if !path.is_file() {
+        return Ok(());
+    }
+    let _lock = RepoLock::acquire(root)?;
+    let body = fs::read_to_string(&path)?;
+    for line in body.lines().filter(|line| !line.is_empty()) {
+        let (branch, commit) = line
+            .split_once('\t')
+            .with_context(|| format!("invalid refs journal line: {line}"))?;
+        if !valid_branch(branch) {
+            bail!("invalid branch in refs journal: {branch}");
+        }
+        let hash = parse_hash(commit)
+            .with_context(|| format!("invalid commit in refs journal: {commit}"))?;
+        write_ref(root, branch, CommitHash(hash))?;
+    }
+    fs::remove_file(path)?;
+    Ok(())
+}
+
+static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct Quarantine {
+    path: PathBuf,
+}
+
+impl Quarantine {
+    fn new(root: &Path) -> Result<Self> {
+        let incoming = root.join("incoming");
+        fs::create_dir_all(&incoming)?;
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = incoming.join(id);
+        fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Quarantine {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn is_ancestor(
+    store: &crate::store::Store,
+    ancestor: CommitHash,
+    descendant: CommitHash,
+) -> Result<bool> {
+    let mut current = descendant;
+    loop {
+        if current == ancestor {
+            return Ok(true);
+        }
+        if current.is_zero() {
+            return Ok(false);
+        }
+        current = store.get_commit(current)?.parent;
+    }
+}
+
+fn restore_ref(root: &Path, branch: &str, old: Option<CommitHash>) -> Result<()> {
+    match old {
+        Some(commit) => write_ref(root, branch, commit),
+        None => {
+            let path = root.join("refs/heads").join(branch);
+            match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        }
     }
 }
 
@@ -534,6 +783,7 @@ fn app(collection: Arc<RepoCollection>) -> Router {
         .route("/{repo}/refs/{*branch}", axum::routing::delete(delete_ref))
         .route("/{repo}/files", get(list_files))
         .route("/{repo}/files/{*path}", get(get_file).put(put_file))
+        .route("/{repo}/push", post(receive_push))
         .layer(DefaultBodyLimit::max(MAX_TRANSFER))
         .layer(middleware::from_fn_with_state(
             collection.clone(),
@@ -610,6 +860,9 @@ struct CreateRepoRequest {
     name: String,
     #[serde(default)]
     branch: Option<String>,
+    /// Read-only source Git repository recorded in the initial View.
+    #[serde(default)]
+    source_url: Option<String>,
 }
 
 async fn create_repo(
@@ -622,7 +875,7 @@ async fn create_repo(
     }
     let branch = body.branch.as_deref().unwrap_or("main");
     let created = collection
-        .create(&body.name, branch)
+        .create_with_source(&body.name, branch, body.source_url.as_deref())
         .map_err(|error| match error {
             CreateRepoError::Exists(name) => (
                 StatusCode::CONFLICT,
@@ -635,6 +888,10 @@ async fn create_repo(
             CreateRepoError::InvalidBranch(branch) => {
                 (StatusCode::BAD_REQUEST, format!("invalid branch: {branch}"))
             }
+            CreateRepoError::InvalidSourceUrl(url) => (
+                StatusCode::BAD_REQUEST,
+                format!("invalid source URL: {url}"),
+            ),
             CreateRepoError::Other(error) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}"))
             }
@@ -686,6 +943,32 @@ async fn put_refs(
     }
     let server = open_repo(&collection, &repo)?;
     server.write_refs(&body).map_err(bad_request)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn receive_push(
+    State(collection): State<Arc<RepoCollection>>,
+    Extension(role): Extension<AuthRole>,
+    AxumPath(repo): AxumPath<String>,
+    body: Bytes,
+) -> ApiResult {
+    if role == AuthRole::Agent {
+        let bundle = PushBundle::decode(&body)
+            .map_err(|error| (StatusCode::BAD_REQUEST, format!("{error:#}")))?;
+        if bundle
+            .commands
+            .iter()
+            .any(|command| protected_branch(&command.branch))
+        {
+            return Ok((
+                StatusCode::FORBIDDEN,
+                "agent token may not move a protected branch\n",
+            )
+                .into_response());
+        }
+    }
+    let server = open_repo(&collection, &repo)?;
+    server.push_bundle(&body).map_err(bad_request)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -802,6 +1085,13 @@ fn handle<R: BufRead>(server: &RemoteServer, input: &mut R, line: &str) -> Resul
             server.write_refs(&body)?;
             Ok(Vec::new())
         }
+        "PUSH" => {
+            let length = length(parts.next(), MAX_TRANSFER)?;
+            no_more(parts)?;
+            let body = read_bytes(input, length)?;
+            server.push_bundle(&body)?;
+            Ok(b"ok\n".to_vec())
+        }
         _ => bail!("unknown request: {operation}"),
     }
 }
@@ -876,6 +1166,101 @@ mod tests {
     fn record_path(kind: &str, hash: crate::model::Hash32) -> String {
         let hex = hash.to_hex();
         format!("{kind}/{}/{}/{}", &hex[..2], &hex[2..4], hex)
+    }
+
+    #[test]
+    fn recovers_pending_ref_journal_on_open() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("remote");
+        let server = RemoteServer::open(&root).unwrap();
+        let (object_hash, object_bytes) = object_record("files");
+        let (commit_hash, commit_bytes) = commit_record(object_hash);
+        server
+            .write(&record_path("objects", object_hash.0), &object_bytes)
+            .unwrap();
+        server
+            .write(&record_path("commits", commit_hash.0), &commit_bytes)
+            .unwrap();
+        fs::write(
+            root.join(REFS_JOURNAL),
+            format!("main\t{}\n", commit_hash.to_hex()),
+        )
+        .unwrap();
+        let reopened = RemoteServer::open(&root).unwrap();
+        assert_eq!(
+            reopened.refs().unwrap(),
+            format!("main\t{}\n", commit_hash.to_hex())
+        );
+        assert!(!root.join(REFS_JOURNAL).exists());
+    }
+
+    #[test]
+    fn applies_push_bundle_and_rejects_stale_refs() {
+        use crate::push::{PushBundle, PushCommand, PushRecord, RecordKind};
+        let dir = tempdir().unwrap();
+        let server = RemoteServer::open(dir.path().join("remote")).unwrap();
+        let (files_hash, files_bytes) = object_record("files");
+        let (namespaces_hash, namespaces_bytes) = object_record("namespaces");
+        let view = DesignObject::new(
+            Kind::View,
+            ObjectPayload::View(crate::model::ViewPayload {
+                source_commit: GitOid::ZERO,
+                files: files_hash,
+                namespaces: namespaces_hash,
+                design: crate::model::ObjectHash::ZERO,
+                documents: crate::model::ObjectHash::ZERO,
+                concepts: crate::model::ObjectHash::ZERO,
+            }),
+        );
+        let view_hash = object_hash(&view).unwrap();
+        let view_bytes = encode_object(&view).unwrap();
+        let (commit_hash, commit_bytes) = commit_record(view_hash);
+        let bundle = PushBundle::new(
+            vec![PushCommand {
+                branch: "main".to_owned(),
+                expected_old: None,
+                new_commit: commit_hash,
+                force: false,
+            }],
+            vec![
+                PushRecord {
+                    kind: RecordKind::Object,
+                    hash: files_hash.0,
+                    bytes: files_bytes,
+                },
+                PushRecord {
+                    kind: RecordKind::Object,
+                    hash: namespaces_hash.0,
+                    bytes: namespaces_bytes,
+                },
+                PushRecord {
+                    kind: RecordKind::Object,
+                    hash: view_hash.0,
+                    bytes: view_bytes,
+                },
+                PushRecord {
+                    kind: RecordKind::Commit,
+                    hash: commit_hash.0,
+                    bytes: commit_bytes,
+                },
+            ],
+        );
+        server.push_bundle(&bundle.encode()).unwrap();
+        assert_eq!(
+            server.refs().unwrap(),
+            format!("main\t{}\n", commit_hash.to_hex())
+        );
+
+        let stale = PushBundle::new(
+            vec![PushCommand {
+                branch: "main".to_owned(),
+                expected_old: None,
+                new_commit: commit_hash,
+                force: false,
+            }],
+            vec![],
+        );
+        assert!(server.push_bundle(&stale.encode()).is_err());
     }
 
     #[test]
@@ -987,6 +1372,43 @@ mod tests {
             collection.create("beta", "bad branch"),
             Err(CreateRepoError::InvalidBranch(_))
         ));
+    }
+
+    #[test]
+    fn records_the_source_url_in_repository_metadata() {
+        let dir = tempdir().unwrap();
+        let collection = RepoCollection::open(dir.path().join("repos")).unwrap();
+        let created = collection
+            .create_with_source("alpha", "main", Some("https://example.com/source.git"))
+            .unwrap();
+        let server = collection.server("alpha").unwrap().unwrap();
+
+        assert!(
+            server.read(REPO_CONFIG_FILE).unwrap().is_some(),
+            "repo.toml must be part of the repository"
+        );
+        assert!(
+            server
+                .files()
+                .unwrap()
+                .lines()
+                .any(|line| line == REPO_CONFIG_FILE)
+        );
+        let text = fs::read_to_string(dir.path().join("repos/alpha/repo.toml")).unwrap();
+        let config = crate::workspace::RepoConfig::from_toml(&text).unwrap();
+        assert_eq!(config.source.url, "https://example.com/source.git");
+        assert_eq!(config.source.object_format, ObjectFormat::Sha1);
+        assert_eq!(created.commit.len(), 64);
+
+        assert!(
+            server
+                .write(
+                    REPO_CONFIG_FILE,
+                    b"[source]\nurl = \"https://evil.example/repo.git\"\nobject_format = \"sha1\"\n"
+                )
+                .is_err(),
+            "clients must not overwrite repository metadata"
+        );
     }
 
     #[test]

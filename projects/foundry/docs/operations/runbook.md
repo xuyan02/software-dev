@@ -11,6 +11,48 @@ cargo build --bins
 cargo run -p foundry-control-plane
 ```
 
+## 本地源码仓库
+
+可以从本地 git daemon 读取源码，避免依赖 GitHub 网络：
+
+```bash
+cd projects/foundry
+scripts/dev-git-daemon.sh
+```
+
+脚本创建 `~/git/software-dev.git` 裸仓库，并在 `foundry-git` 容器里以**只读**方式提供：
+
+```text
+git://<host-ip>:9418/software-dev.git
+```
+
+把项目的 `git_repository` 设为该 URL。宿主仓库有新提交后同步裸仓库：
+
+```bash
+git -C /home/xuyan/work/software-dev push /home/xuyan/git/software-dev.git --all
+```
+
+切换 source URL 后，先更新仓库的 `repo.toml` 并让工作区执行 `ds fetch`；`ds source fetch` 会把 `.ds/source` 的 `origin` 改成新 URL 后继续 fetch。新工作区 clone 时直接使用 `repo.toml` 里的 URL。这个 daemon 没有认证，只应在受信网络使用；它只提供 fetch，不接受 push。
+
+## 胶囊凭据布局
+
+所有运行时凭据都在 `/run/foundry`（目录 0700，文件 0600）。智能体和任务都不传
+凭据参数，工具直接读这些固定路径。
+
+| 路径 | 作用域 | 注入/清理 |
+|---|---|---|
+| `/run/foundry/ds_key` | agent 账户，shell 生命周期 | 创建 shell 时由 agentd 从 `/api/v1/agent/ds-credential` 注入 |
+| `/run/foundry/ds_known_hosts` | 同上 | 同上 |
+| `/run/foundry/ds_token` | agent 账户，可选 | 仅当控制平面返回 HTTP token 时注入；Foundry 使用 SSH 端点，通常不存在 |
+| `/run/foundry/git-credentials` | 任务 | 任务开始时注入，每 30 分钟刷新，任务结束删除 |
+
+- 镜像里的 `/etc/gitconfig` 固定配置
+  `credential.helper = store --file=/run/foundry/git-credentials`；
+- `ds` 的 SSH 身份读 `ds_key`/`ds_known_hosts`，HTTP token 读 `ds_token`；
+- 任务清理只删除 `git-credentials`，不会删除 `ds_key`；
+- 不再往 `/work/<project>/.credentials` 写任何凭据；
+- `repo.toml` 是设计空间仓库的数据，不是凭据，放在仓库根，clone 时取到 `.ds/repo.toml`。
+
 ## 设计空间 SSH 端点
 
 智能体不再使用 ds bearer token。控制平面为每个 agent 账户生成 SSH key，公钥、

@@ -51,6 +51,8 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 #[derive(Debug, Clone)]
 pub struct Store {
     root: PathBuf,
+    /// Read-only fallback used by push quarantine validation.
+    fallback: Option<PathBuf>,
 }
 
 impl Store {
@@ -60,7 +62,21 @@ impl Store {
         for dir in ["objects", "commits", "docs", "symbols", "packs", "tmp"] {
             fs::create_dir_all(root.join(dir))?;
         }
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            fallback: None,
+        })
+    }
+
+    /// A store containing quarantine records, reading missing records from
+    /// `fallback`. Never writes to the fallback.
+    pub fn open_with_fallback(
+        root: impl Into<PathBuf>,
+        fallback: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let mut store = Self::open(root)?;
+        store.fallback = Some(fallback.into());
+        Ok(store)
     }
 
     pub fn root(&self) -> &Path {
@@ -191,6 +207,11 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 if let Some(bytes) = self.read_packed(kind, hash)? {
                     return Ok(bytes);
+                }
+                if let Some(fallback) = &self.fallback
+                    && fallback != &self.root
+                {
+                    return Store::open(fallback.clone())?.read(kind, hash);
                 }
                 return Err(error.into());
             }

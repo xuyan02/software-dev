@@ -17,8 +17,8 @@ pub mod ports;
 pub mod project_service;
 pub mod requirements_doc;
 pub mod task;
-pub mod trigger;
 pub mod task_link;
+pub mod trigger;
 pub mod workflow;
 
 pub use account_service::*;
@@ -35,6 +35,6 @@ pub use ports::*;
 pub use project_service::*;
 pub use requirements_doc::*;
 pub use task::*;
-pub use trigger::*;
 pub use task_link::*;
+pub use trigger::*;
 pub use workflow::*;

@@ -124,7 +124,12 @@ impl DesignSpaceGateway for TestMergeGateway {
 
 #[async_trait::async_trait]
 impl foundry_app::ports::DesignSpaceProvisioner for TestDesignSpaces {
-    async fn create_design_space(&self, repo: &str, _branch: &str) -> Result<String, String> {
+    async fn create_design_space(
+        &self,
+        repo: &str,
+        _branch: &str,
+        _source_url: &str,
+    ) -> Result<String, String> {
         Ok(format!("http://test/{repo}"))
     }
 }
@@ -1221,7 +1226,7 @@ async fn triggers_can_be_created_and_run_manually() {
 }
 
 #[tokio::test]
-async fn project_creation_creates_the_default_daily_check_trigger() {
+async fn project_creation_creates_the_default_triggers() {
     let harness = harness().await;
     let project = body_json(
         &harness.router,
@@ -1251,11 +1256,24 @@ async fn project_creation_creates_the_default_daily_check_trigger() {
     )
     .await;
     let triggers = triggers.as_array().unwrap();
-    assert_eq!(triggers.len(), 1);
-    assert_eq!(triggers[0]["workflow_id"], "daily_check");
-    assert_eq!(triggers[0]["description"], "按计划运行设计检查。");
-    assert_eq!(triggers[0]["description_template"], "运行设计检查。");
-    assert_eq!(triggers[0]["schedule"], "daily@09:00");
+    assert_eq!(triggers.len(), 3);
+    let daily = triggers
+        .iter()
+        .find(|trigger| trigger["workflow_id"] == "daily_check")
+        .expect("daily check trigger");
+    assert_eq!(daily["description"], "按计划运行设计检查。");
+    assert_eq!(daily["description_template"], "运行设计检查。");
+    assert_eq!(daily["schedule"], "daily@09:00");
+    let design = triggers
+        .iter()
+        .find(|trigger| trigger["workflow_id"] == "design_iteration")
+        .expect("design iteration trigger");
+    assert_eq!(design["schedule"], "every:10080");
+    let development = triggers
+        .iter()
+        .find(|trigger| trigger["workflow_id"] == "development_iteration")
+        .expect("development iteration trigger");
+    assert_eq!(development["schedule"], "every:10080");
 }
 
 #[tokio::test]

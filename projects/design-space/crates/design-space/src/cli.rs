@@ -5,12 +5,14 @@
 
 use crate::catalog::{Catalog, structural_dependencies};
 use crate::format::{self, content_hash, symbol_hash};
+use crate::lock::RepoLock;
 use crate::model::*;
 use crate::remote::Remote;
 use crate::source::SourceRepo;
-use crate::workspace::{ObjectFormat, State, Workspace};
+use crate::workspace::{ObjectFormat, REPO_CONFIG_FILE, RepoConfig, State, Workspace};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::Write;
@@ -26,12 +28,20 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+    Md,
+}
+
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
     /// Initialize a design workspace.
     Init {
-        /// Source git URL recorded in .ds/config.
+        /// Source git URL recorded in .ds/repo.toml.
         #[arg(long)]
         source: String,
         /// Source repository object format.
@@ -42,9 +52,6 @@ enum Command {
     Clone {
         /// Design-space remote URL.
         remote: String,
-        /// Source git URL recorded in .ds/config.
-        #[arg(long)]
-        source: String,
         /// Remote branch to clone.
         #[arg(long, default_value = "main")]
         branch: String,
@@ -87,6 +94,9 @@ enum Command {
     Push {
         #[arg(long)]
         branch: Option<String>,
+        /// Allow a non-fast-forward ref update.
+        #[arg(long)]
+        force: bool,
     },
     /// Download remote refs and objects.
     Fetch,
@@ -204,6 +214,9 @@ enum Command {
         /// Read the index instead of the worktree.
         #[arg(long)]
         staged: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
     },
     /// Walk the commit chain.
     Log {
@@ -238,6 +251,10 @@ enum KindArg {
     Namespace,
     Class,
     InnerClass,
+    Struct,
+    InnerStruct,
+    Enum,
+    InnerEnum,
     Interface,
     InnerInterface,
     Method,
@@ -253,11 +270,11 @@ struct CreateArgs {
     /// Local name. Qualified name is generated from the parent/namespace.
     name: String,
     /// Parent for directory/file/namespace, the enclosing type for a nested
-    /// class/interface/mixin, or the parent of a method/part. Top-level types
-    /// use --namespace (plus optional --file/--module), not --parent.
+    /// class/struct/enum/interface/mixin, or the parent of a method/part.
+    /// Top-level types use --namespace (plus optional --file/--module), not --parent.
     #[arg(long)]
     parent: Option<String>,
-    /// Namespace parent for a top-level class/interface/function/mixin.
+    /// Namespace parent for a top-level class/struct/enum/interface/function/mixin.
     #[arg(long)]
     namespace: Option<String>,
     /// File parent for a top-level code object.
@@ -384,18 +401,11 @@ enum DepCommand {
 #[derive(Debug, Clone, Subcommand)]
 enum RemoteCommand {
     /// Set the remote for this workspace.
-    Add {
-        url: String,
-        /// Read the HTTP bearer token from this file.
-        #[arg(long)]
-        token_file: Option<PathBuf>,
-    },
+    Add { url: String },
     /// Print the configured remote.
     Show,
     /// Replace the configured remote URL.
     SetUrl { url: String },
-    /// Set the HTTP bearer token file; omit the path to clear it.
-    SetToken { path: Option<PathBuf> },
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -404,6 +414,8 @@ enum SourceCommand {
     Fetch,
     /// Switch the current source ref.
     Checkout { git_ref: String },
+    /// Create the workspace-root source worktree if needed.
+    Worktree,
     /// Show the current source ref and commit.
     Status,
     /// List source blobs at the current source commit.
@@ -450,7 +462,7 @@ enum StructureCommand {
     Assign {
         /// System, module or layer qualified name.
         module: String,
-        /// Top-level class/interface/function/mixin qualified names.
+        /// Top-level class/struct/enum/interface/function/mixin qualified names.
         members: Vec<String>,
     },
     /// Remove members from a system, module or layer.
@@ -604,6 +616,12 @@ enum DocCommand {
         #[command(subcommand)]
         command: DocCommentCommand,
     },
+    /// Import a document subtree from a JSON plan in one process.
+    Import {
+        /// JSON plan path; `-` reads standard input.
+        #[arg(long)]
+        file: PathBuf,
+    },
     /// Validate that the technical design sections match the structure tree.
     Check,
     /// Move/create technical design sections so they match the structure tree.
@@ -612,6 +630,9 @@ enum DocCommand {
     Show {
         /// Document, section, topic, list, text, block or document directory qname.
         qname: String,
+        /// Output format.
+        #[arg(long, value_enum, default_value = "text")]
+        format: OutputFormat,
     },
 }
 
@@ -875,11 +896,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Init { source, format } => init(cli.dir, &source, format.into()),
-        Command::Clone {
-            remote,
-            source,
-            branch,
-        } => clone(cli.dir, &remote, &source, &branch),
+        Command::Clone { remote, branch } => clone(cli.dir, &remote, &branch),
         Command::Create(args) => create(cli.dir, args),
         Command::Edit(args) => edit(cli.dir, args),
         Command::Doc { command } => doc(cli.dir, command),
@@ -888,7 +905,7 @@ pub fn run() -> Result<()> {
         Command::Dep { command } => dep(cli.dir, command),
         Command::Source { command } => source(cli.dir, command),
         Command::Remote { command } => remote(cli.dir, command),
-        Command::Push { branch } => push(cli.dir, branch),
+        Command::Push { branch, force } => push(cli.dir, branch, force),
         Command::Fetch => fetch(cli.dir),
         Command::Pull { branch } => pull(cli.dir, branch),
         Command::Add {
@@ -929,7 +946,8 @@ pub fn run() -> Result<()> {
             name,
             source,
             staged,
-        } => show(cli.dir, &name, source, staged),
+            format,
+        } => show(cli.dir, &name, source, staged, format),
         Command::Log { limit } => log(cli.dir, limit),
         Command::Gc => gc(cli.dir),
         Command::Repack => repack(cli.dir),
@@ -1074,22 +1092,37 @@ fn init(dir: Option<PathBuf>, source: &str, format: ObjectFormat) -> Result<()> 
     Ok(())
 }
 
-fn clone(dir: Option<PathBuf>, remote_url: &str, source: &str, branch: &str) -> Result<()> {
+fn clone(dir: Option<PathBuf>, remote_url: &str, branch: &str) -> Result<()> {
     let root = dir.unwrap_or(std::env::current_dir()?);
     let meta = root.join(".ds");
     if meta.join("config").exists() {
         bail!("{} already exists", meta.display());
     }
-    let mut ws = Workspace::init(&meta, source, ObjectFormat::Sha1)?;
-    let token_file = std::env::var_os("DS_TOKEN_FILE")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
+    let mut ws = Workspace::bootstrap(&meta)?;
     ws.set_remote_url(remote_url)?;
-    if let Some(path) = &token_file {
-        ws.set_remote_token_file(Some(path.to_string_lossy().into_owned()))?;
-    }
-    let remote = Remote::open(remote_url, token_file.as_deref())?;
+    let remote = Remote::open(remote_url)?;
     remote.fetch(&ws)?;
+
+    let config_path = meta.join(REPO_CONFIG_FILE);
+    let text = match fs::read_to_string(&config_path) {
+        Ok(text) => text,
+        Err(_) => {
+            let _ = fs::remove_dir_all(&meta);
+            bail!(
+                "design-space remote has no {REPO_CONFIG_FILE}; \
+                 the server must create the repository with its source URL"
+            );
+        }
+    };
+    let config = match RepoConfig::from_toml(&text) {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&meta);
+            return Err(error.into());
+        }
+    };
+    ws.install_repo_config(&config.source.url, config.source.object_format)?;
+
     let commit_hash = ws
         .read_remote_ref(branch)?
         .with_context(|| format!("remote branch not found: {branch}"))?;
@@ -1801,6 +1834,11 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
                 save_worktree(&ws, state, &catalog, "comments cleared")?;
             }
         },
+        DocCommand::Import { file } => {
+            let root = import_doc_plan(&ws, &mut catalog, &file)?;
+            let name = ws.get_symbol(root)?;
+            save_worktree(&ws, state, &catalog, &name)?;
+        }
         DocCommand::Check => {
             doc_check(&ws, &catalog)?;
         }
@@ -1808,8 +1846,8 @@ fn doc(dir: Option<PathBuf>, command: DocCommand) -> Result<()> {
             doc_layout(&ws, &mut catalog)?;
             save_worktree(&ws, state, &catalog, "documents/design/technical")?;
         }
-        DocCommand::Show { qname } => {
-            doc_show(&ws, &catalog, &qname)?;
+        DocCommand::Show { qname, format } => {
+            doc_show(&ws, &catalog, &qname, format)?;
         }
     }
     Ok(())
@@ -1926,7 +1964,7 @@ fn concept(dir: Option<PathBuf>, command: ConceptCommand) -> Result<()> {
         }
         ConceptCommand::Show { qname } => {
             drop(catalog);
-            return show(dir_arg, &qname, false, false);
+            return show(dir_arg, &qname, false, false, OutputFormat::Text);
         }
         ConceptCommand::Ls { qname } => {
             let qname = qname.as_deref().unwrap_or(root_text);
@@ -2563,7 +2601,12 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
             for (qname, object) in catalog.iter() {
                 if matches!(
                     object.kind,
-                    Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+                    Kind::Class
+                        | Kind::Struct
+                        | Kind::Enum
+                        | Kind::Interface
+                        | Kind::Function
+                        | Kind::Mixin
                 ) {
                     top_level.push(qname);
                     if !assigned.contains(&qname) {
@@ -2737,7 +2780,12 @@ fn structure(dir: Option<PathBuf>, command: StructureCommand) -> Result<()> {
                 .filter(|(qname, object)| {
                     matches!(
                         object.kind,
-                        Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+                        Kind::Class
+                            | Kind::Struct
+                            | Kind::Enum
+                            | Kind::Interface
+                            | Kind::Function
+                            | Kind::Mixin
                     ) && !assigned.contains(qname)
                 })
                 .map(|(qname, _)| ws.get_symbol(qname).unwrap_or_default())
@@ -2815,7 +2863,12 @@ fn structure_member_hashes(
             .with_context(|| format!("member not found: {member}"))?;
         if !matches!(
             object.kind,
-            Kind::Class | Kind::Interface | Kind::Function | Kind::Mixin
+            Kind::Class
+                | Kind::Struct
+                | Kind::Enum
+                | Kind::Interface
+                | Kind::Function
+                | Kind::Mixin
         ) {
             bail!("not a top-level code element: {member}");
         }
@@ -3078,6 +3131,14 @@ fn nested_element_parent(object: &DesignObject) -> Option<SymbolHash> {
             ClassParent::Nested { parent } => Some(parent),
             ClassParent::TopLevel { .. } => None,
         },
+        ObjectPayload::InnerStruct(p) => match p.parent {
+            ClassParent::Nested { parent } => Some(parent),
+            ClassParent::TopLevel { .. } => None,
+        },
+        ObjectPayload::InnerEnum(p) => match p.parent {
+            ClassParent::Nested { parent } => Some(parent),
+            ClassParent::TopLevel { .. } => None,
+        },
         ObjectPayload::Method(p) => Some(p.parent),
         ObjectPayload::Mixin(p) => match p.parent {
             ClassParent::Nested { parent } => Some(parent),
@@ -3161,6 +3222,760 @@ fn add_doc_section(
         .unwrap_or(0);
     insert_doc_ref(catalog, parent, DocRole::Sections, index, qname)?;
     Ok(qname)
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportPlan {
+    root: ImportRoot,
+    #[serde(default)]
+    body: Vec<ImportBody>,
+    #[serde(default)]
+    sections: Vec<ImportSection>,
+    #[serde(default)]
+    documents: Vec<ImportPlan>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ImportRoot {
+    Existing(String),
+    Create(ImportRootCreate),
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportRootCreate {
+    qname: String,
+    #[serde(default)]
+    kind: ImportRootKind,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ImportRootKind {
+    #[default]
+    Document,
+    Directory,
+    Section,
+    Topic,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportSection {
+    #[serde(default)]
+    qname: Option<String>,
+    title: String,
+    #[serde(default)]
+    body: Vec<ImportBody>,
+    #[serde(default)]
+    document: Vec<String>,
+    #[serde(default)]
+    sections: Vec<ImportSection>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ImportBody {
+    Text {
+        #[serde(default)]
+        qname: Option<String>,
+        text: String,
+    },
+    Block {
+        #[serde(default)]
+        qname: Option<String>,
+        #[serde(default)]
+        language: String,
+        text: String,
+    },
+    Mermaid {
+        #[serde(default)]
+        qname: Option<String>,
+        text: String,
+    },
+    Html {
+        #[serde(default)]
+        qname: Option<String>,
+        text: String,
+    },
+    Topic {
+        #[serde(default)]
+        qname: Option<String>,
+        title: String,
+        #[serde(default)]
+        body: Vec<ImportBody>,
+    },
+    List {
+        #[serde(default)]
+        qname: Option<String>,
+        items: Vec<ImportListItem>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ImportListItem {
+    Text(String),
+    Object {
+        #[serde(default)]
+        qname: Option<String>,
+        text: String,
+    },
+}
+
+impl ImportListItem {
+    fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text,
+            Self::Object { text, .. } => text,
+        }
+    }
+
+    fn qname(&self) -> Option<&str> {
+        match self {
+            Self::Text(_) => None,
+            Self::Object { qname, .. } => qname.as_deref(),
+        }
+    }
+}
+
+fn import_doc_plan(ws: &Workspace, catalog: &mut Catalog, file: &Path) -> Result<SymbolHash> {
+    let text = if file == Path::new("-") {
+        std::io::read_to_string(std::io::stdin()).context("read import plan from stdin")?
+    } else {
+        fs::read_to_string(file).with_context(|| format!("read import plan: {}", file.display()))?
+    };
+    let plan: ImportPlan = serde_json::from_str(&text)
+        .with_context(|| format!("parse import plan: {}", file.display()))?;
+    let mut created = 0usize;
+    let root = import_plan(ws, catalog, &plan, &mut created)?;
+    println!("Imported {created} section(s)");
+    Ok(root)
+}
+
+fn import_plan(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    plan: &ImportPlan,
+    created: &mut usize,
+) -> Result<SymbolHash> {
+    let root = import_root(ws, catalog, &plan.root)?;
+    let kind = catalog.get(root).map(|object| object.kind);
+    if !plan.body.is_empty() {
+        match kind {
+            Some(Kind::DocumentSection) | Some(Kind::DocumentTopic) => {}
+            _ => bail!("root body requires a section or topic root"),
+        }
+        let in_topic = kind == Some(Kind::DocumentTopic);
+        for body in &plan.body {
+            import_body(ws, catalog, root, body, in_topic)?;
+        }
+    }
+    if !plan.documents.is_empty() && kind != Some(Kind::DocumentDirectory) {
+        bail!("documents requires a document-directory root");
+    }
+    for section in &plan.sections {
+        import_section(ws, catalog, root, section, created)?;
+    }
+    for document in &plan.documents {
+        import_plan(ws, catalog, document, created)?;
+    }
+    Ok(root)
+}
+
+fn import_root(ws: &Workspace, catalog: &mut Catalog, spec: &ImportRoot) -> Result<SymbolHash> {
+    match spec {
+        ImportRoot::Existing(qname) => {
+            let root = ws.put_symbol(qname)?;
+            let object = catalog
+                .get(root)
+                .with_context(|| format!("document root not found: {qname}"))?;
+            if !matches!(
+                object.kind,
+                Kind::Document
+                    | Kind::DocumentDirectory
+                    | Kind::DocumentSection
+                    | Kind::DocumentTopic
+            ) {
+                bail!("document root must be a document, directory, section or topic: {qname}");
+            }
+            Ok(root)
+        }
+        ImportRoot::Create(create) => {
+            let root = ws.put_symbol(&create.qname)?;
+            if let Some(object) = catalog.get(root) {
+                let kind = match object.kind {
+                    Kind::Document => ImportRootKind::Document,
+                    Kind::DocumentDirectory => ImportRootKind::Directory,
+                    Kind::DocumentSection => ImportRootKind::Section,
+                    Kind::DocumentTopic => ImportRootKind::Topic,
+                    _ => bail!(
+                        "document root exists but is not a document node: {}",
+                        create.qname
+                    ),
+                };
+                if kind != create.kind {
+                    bail!(
+                        "document root {} exists with a different kind",
+                        create.qname
+                    );
+                }
+                return Ok(root);
+            }
+            let (parent, local) = doc_parent_and_local(ws, catalog, &create.qname)?;
+            let parent_object = catalog
+                .get(parent)
+                .with_context(|| format!("parent not found: {}", create.qname))?;
+            let parent_ok = match create.kind {
+                ImportRootKind::Directory | ImportRootKind::Document => {
+                    parent_object.kind == Kind::DocumentDirectory
+                }
+                ImportRootKind::Section => {
+                    matches!(parent_object.kind, Kind::Document | Kind::DocumentSection)
+                }
+                ImportRootKind::Topic => parent_object.kind == Kind::DocumentSection,
+            };
+            if !parent_ok {
+                bail!(
+                    "cannot create {} under {}",
+                    create.qname,
+                    ws.get_symbol(parent)?
+                );
+            }
+            let qname = child_qname(ws, parent, &local)?;
+            if catalog.get(qname).is_some() {
+                bail!("object already exists: {}", create.qname);
+            }
+            let title = create
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_owned)
+                .unwrap_or(local);
+            let object = match create.kind {
+                ImportRootKind::Directory => DesignObject::new(
+                    Kind::DocumentDirectory,
+                    ObjectPayload::DocumentDirectory(DocumentDirectoryPayload {
+                        qualified_name: qname,
+                        parent: ParentRef::Object(parent),
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+                ImportRootKind::Document => DesignObject::new(
+                    Kind::Document,
+                    ObjectPayload::Document(DocumentPayload {
+                        qualified_name: qname,
+                        parent,
+                        title,
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+                ImportRootKind::Section => DesignObject::new(
+                    Kind::DocumentSection,
+                    ObjectPayload::DocumentSection(DocumentSectionPayload {
+                        qualified_name: qname,
+                        parent,
+                        title,
+                        body: vec![],
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+                ImportRootKind::Topic => DesignObject::new(
+                    Kind::DocumentTopic,
+                    ObjectPayload::DocumentTopic(DocumentTopicPayload {
+                        qualified_name: qname,
+                        parent,
+                        title,
+                        paragraphs: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            };
+            format::validate_object(&object)?;
+            catalog.insert(qname, object)?;
+            Ok(qname)
+        }
+    }
+}
+
+fn import_section(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    node: &ImportSection,
+    created: &mut usize,
+) -> Result<SymbolHash> {
+    let title = node.title.trim();
+    if title.is_empty() {
+        bail!("section title must not be empty");
+    }
+    let section = match resolve_import_object(
+        ws,
+        catalog,
+        node.qname.as_deref(),
+        parent,
+        &[Kind::DocumentSection],
+    )? {
+        Some(section) => section,
+        None => match find_child_section(catalog, parent, title) {
+            Some(section) => section,
+            None => {
+                *created += 1;
+                add_doc_section(ws, catalog, parent, title)?
+            }
+        },
+    };
+    if let Some(object) = catalog.get_mut(section)
+        && let ObjectPayload::DocumentSection(p) = &mut object.payload
+        && p.title != title
+    {
+        p.title = title.to_owned();
+    }
+    for body in &node.body {
+        import_body(ws, catalog, section, body, false)?;
+    }
+    for target in &node.document {
+        link_document(ws, catalog, target, section)?;
+    }
+    for child in &node.sections {
+        import_section(ws, catalog, section, child, created)?;
+    }
+    Ok(section)
+}
+
+/// Resolve an exported qname to an existing object under `parent`. A qname
+/// that is present but missing, of the wrong kind, or under another parent is
+/// an error: the caller asked to update a specific object, not to create one.
+fn resolve_import_object(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: Option<&str>,
+    parent: SymbolHash,
+    kinds: &[Kind],
+) -> Result<Option<SymbolHash>> {
+    let Some(qname) = qname else {
+        return Ok(None);
+    };
+    let hash = ws.put_symbol(qname)?;
+    let object = catalog
+        .get(hash)
+        .with_context(|| format!("object not found: {qname}"))?;
+    if !kinds.contains(&object.kind) {
+        bail!(
+            "object {qname} has kind {:?}, expected {:?}",
+            object.kind,
+            kinds
+        );
+    }
+    if doc_parent_of(object) != Some(parent) {
+        bail!(
+            "object {qname} is not a child of {}",
+            ws.get_symbol(parent)?
+        );
+    }
+    Ok(Some(hash))
+}
+
+fn doc_parent_of(object: &DesignObject) -> Option<SymbolHash> {
+    match &object.payload {
+        ObjectPayload::DocumentSection(p) => Some(p.parent),
+        ObjectPayload::DocumentTopic(p) => Some(p.parent),
+        ObjectPayload::DocumentList(p) => Some(p.parent),
+        ObjectPayload::DocumentText(p) => Some(p.parent),
+        ObjectPayload::Block(p) => Some(p.parent),
+        ObjectPayload::MermaidBlock(p) => Some(p.parent),
+        ObjectPayload::HtmlBlock(p) => Some(p.parent),
+        _ => None,
+    }
+}
+
+fn import_body(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    body: &ImportBody,
+    in_topic: bool,
+) -> Result<()> {
+    match body {
+        ImportBody::Text { qname, text } => {
+            if let Some(existing) =
+                resolve_import_object(ws, catalog, qname.as_deref(), parent, &[Kind::DocumentText])?
+            {
+                if let Some(object) = catalog.get_mut(existing)
+                    && let ObjectPayload::DocumentText(p) = &mut object.payload
+                {
+                    p.text = text.clone();
+                }
+                return Ok(());
+            }
+            if body_text_exists(catalog, parent, text) {
+                return Ok(());
+            }
+            append_body(ws, catalog, parent, |qname, parent| {
+                (
+                    Kind::DocumentText,
+                    ObjectPayload::DocumentText(DocumentTextPayload {
+                        qualified_name: qname,
+                        parent,
+                        text: text.clone(),
+                        comments: vec![],
+                    }),
+                )
+            })?;
+        }
+        ImportBody::Block {
+            qname,
+            language,
+            text,
+        } => {
+            if let Some(existing) =
+                resolve_import_object(ws, catalog, qname.as_deref(), parent, &[Kind::Block])?
+            {
+                if let Some(object) = catalog.get_mut(existing)
+                    && let ObjectPayload::Block(p) = &mut object.payload
+                {
+                    p.language = language.clone();
+                    p.text = text.clone();
+                }
+                return Ok(());
+            }
+            if body_block_exists(catalog, parent, language, text) {
+                return Ok(());
+            }
+            append_body(ws, catalog, parent, |qname, parent| {
+                (
+                    Kind::Block,
+                    ObjectPayload::Block(BlockPayload {
+                        qualified_name: qname,
+                        parent,
+                        language: language.clone(),
+                        text: text.clone(),
+                        comments: vec![],
+                    }),
+                )
+            })?;
+        }
+        ImportBody::Mermaid { qname, text } => {
+            if let Some(existing) =
+                resolve_import_object(ws, catalog, qname.as_deref(), parent, &[Kind::MermaidBlock])?
+            {
+                if let Some(object) = catalog.get_mut(existing)
+                    && let ObjectPayload::MermaidBlock(p) = &mut object.payload
+                {
+                    p.text = text.clone();
+                }
+                return Ok(());
+            }
+            if body_text_block_exists(catalog, parent, text, BodyKind::Mermaid) {
+                return Ok(());
+            }
+            append_body(ws, catalog, parent, |qname, parent| {
+                (
+                    Kind::MermaidBlock,
+                    ObjectPayload::MermaidBlock(MermaidBlockPayload {
+                        qualified_name: qname,
+                        parent,
+                        text: text.clone(),
+                        comments: vec![],
+                    }),
+                )
+            })?;
+        }
+        ImportBody::Html { qname, text } => {
+            if let Some(existing) =
+                resolve_import_object(ws, catalog, qname.as_deref(), parent, &[Kind::HtmlBlock])?
+            {
+                if let Some(object) = catalog.get_mut(existing)
+                    && let ObjectPayload::HtmlBlock(p) = &mut object.payload
+                {
+                    p.text = text.clone();
+                }
+                return Ok(());
+            }
+            if body_text_block_exists(catalog, parent, text, BodyKind::Html) {
+                return Ok(());
+            }
+            append_body(ws, catalog, parent, |qname, parent| {
+                (
+                    Kind::HtmlBlock,
+                    ObjectPayload::HtmlBlock(HtmlBlockPayload {
+                        qualified_name: qname,
+                        parent,
+                        text: text.clone(),
+                        comments: vec![],
+                    }),
+                )
+            })?;
+        }
+        ImportBody::Topic {
+            qname,
+            title,
+            body: paragraphs,
+        } => {
+            if in_topic {
+                bail!("a topic cannot contain another topic");
+            }
+            let topic = match resolve_import_object(
+                ws,
+                catalog,
+                qname.as_deref(),
+                parent,
+                &[Kind::DocumentTopic],
+            )? {
+                Some(topic) => topic,
+                None => match find_child_topic(catalog, parent, title) {
+                    Some(topic) => topic,
+                    None => append_body(ws, catalog, parent, |qname, parent| {
+                        (
+                            Kind::DocumentTopic,
+                            ObjectPayload::DocumentTopic(DocumentTopicPayload {
+                                qualified_name: qname,
+                                parent,
+                                title: title.clone(),
+                                paragraphs: vec![],
+                                children: vec![],
+                                comments: vec![],
+                            }),
+                        )
+                    })?,
+                },
+            };
+            if let Some(object) = catalog.get_mut(topic)
+                && let ObjectPayload::DocumentTopic(p) = &mut object.payload
+            {
+                p.title = title.clone();
+            }
+            for paragraph in paragraphs {
+                import_body(ws, catalog, topic, paragraph, true)?;
+            }
+        }
+        ImportBody::List { qname, items } => {
+            let existing = resolve_import_object(
+                ws,
+                catalog,
+                qname.as_deref(),
+                parent,
+                &[Kind::DocumentList],
+            )?;
+            let list = match existing {
+                Some(list) => list,
+                None => {
+                    if body_list_exists(catalog, parent, items) {
+                        return Ok(());
+                    }
+                    append_body(ws, catalog, parent, |qname, parent| {
+                        (
+                            Kind::DocumentList,
+                            ObjectPayload::DocumentList(DocumentListPayload {
+                                qualified_name: qname,
+                                parent,
+                                items: vec![],
+                                children: vec![],
+                                comments: vec![],
+                            }),
+                        )
+                    })?
+                }
+            };
+            import_list_items(ws, catalog, list, items)?;
+        }
+    }
+    Ok(())
+}
+
+fn import_list_items(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    list: SymbolHash,
+    items: &[ImportListItem],
+) -> Result<()> {
+    let existing = match catalog.get(list).map(|object| &object.payload) {
+        Some(ObjectPayload::DocumentList(p)) => p.items.clone(),
+        _ => bail!("not a document list: {}", ws.get_symbol(list)?),
+    };
+    for (index, item) in items.iter().enumerate() {
+        let target = match item.qname() {
+            Some(qname) => Some(
+                resolve_import_object(ws, catalog, Some(qname), list, &[Kind::DocumentText])?
+                    .with_context(|| format!("object not found: {qname}"))?,
+            ),
+            None => existing.get(index).copied(),
+        };
+        if let Some(target) = target {
+            if let Some(object) = catalog.get_mut(target)
+                && let ObjectPayload::DocumentText(p) = &mut object.payload
+            {
+                p.text = item.text().to_owned();
+            }
+        } else {
+            append_list_item(ws, catalog, list, item.text())?;
+        }
+    }
+    Ok(())
+}
+
+fn append_body(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    parent: SymbolHash,
+    build: impl FnOnce(SymbolHash, SymbolHash) -> (Kind, ObjectPayload),
+) -> Result<SymbolHash> {
+    let local = next_doc_id(ws, catalog, parent, "body")?;
+    let qname = child_qname(ws, parent, &local)?;
+    let (kind, payload) = build(qname, parent);
+    let object = DesignObject::new(kind, payload);
+    format::validate_object(&object)?;
+    catalog.insert(qname, object)?;
+    let index = catalog
+        .get(parent)
+        .and_then(|object| ordered_refs(object, DocRole::Body))
+        .map(Vec::len)
+        .unwrap_or(0);
+    insert_doc_ref(catalog, parent, DocRole::Body, index, qname)?;
+    Ok(qname)
+}
+
+fn append_list_item(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    list: SymbolHash,
+    text: &str,
+) -> Result<()> {
+    let local = next_doc_id(ws, catalog, list, "item")?;
+    let qname = child_qname(ws, list, &local)?;
+    let object = DesignObject::new(
+        Kind::DocumentText,
+        ObjectPayload::DocumentText(DocumentTextPayload {
+            qualified_name: qname,
+            parent: list,
+            text: text.to_owned(),
+            comments: vec![],
+        }),
+    );
+    format::validate_object(&object)?;
+    catalog.insert(qname, object)?;
+    let index = catalog
+        .get(list)
+        .and_then(|object| ordered_refs(object, DocRole::Items))
+        .map(Vec::len)
+        .unwrap_or(0);
+    insert_doc_ref(catalog, list, DocRole::Items, index, qname)?;
+    Ok(())
+}
+
+fn link_document(
+    ws: &Workspace,
+    catalog: &mut Catalog,
+    target: &str,
+    section: SymbolHash,
+) -> Result<()> {
+    let hash = ws.put_symbol(target)?;
+    let object = catalog
+        .get_mut(hash)
+        .with_context(|| format!("object not found: {target}"))?;
+    set_document(object, section)?;
+    format::validate_object(object)?;
+    Ok(())
+}
+
+fn find_child_section(catalog: &Catalog, parent: SymbolHash, title: &str) -> Option<SymbolHash> {
+    catalog.get(parent).and_then(|object| {
+        ordered_refs(object, DocRole::Sections)?
+            .iter()
+            .find_map(|hash| {
+                let child = catalog.get(*hash)?;
+                match &child.payload {
+                    ObjectPayload::DocumentSection(payload) if payload.title == title => {
+                        Some(*hash)
+                    }
+                    _ => None,
+                }
+            })
+    })
+}
+
+fn find_child_topic(catalog: &Catalog, parent: SymbolHash, title: &str) -> Option<SymbolHash> {
+    doc_body_refs(catalog, parent).into_iter().find(|hash| {
+        catalog.get(*hash).is_some_and(
+            |object| matches!(&object.payload, ObjectPayload::DocumentTopic(p) if p.title == title),
+        )
+    })
+}
+
+fn doc_body_refs(catalog: &Catalog, parent: SymbolHash) -> Vec<SymbolHash> {
+    catalog
+        .get(parent)
+        .and_then(|object| ordered_refs(object, DocRole::Body))
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn body_text_exists(catalog: &Catalog, parent: SymbolHash, text: &str) -> bool {
+    doc_body_refs(catalog, parent).into_iter().any(|hash| {
+        catalog.get(hash).is_some_and(
+            |object| matches!(&object.payload, ObjectPayload::DocumentText(p) if p.text == text),
+        )
+    })
+}
+
+fn body_block_exists(catalog: &Catalog, parent: SymbolHash, language: &str, text: &str) -> bool {
+    doc_body_refs(catalog, parent).into_iter().any(|hash| {
+        catalog.get(hash).is_some_and(|object| {
+            matches!(
+                &object.payload,
+                ObjectPayload::Block(p) if p.language == language && p.text == text
+            )
+        })
+    })
+}
+
+#[derive(Clone, Copy)]
+enum BodyKind {
+    Mermaid,
+    Html,
+}
+
+fn body_text_block_exists(
+    catalog: &Catalog,
+    parent: SymbolHash,
+    text: &str,
+    kind: BodyKind,
+) -> bool {
+    doc_body_refs(catalog, parent).into_iter().any(|hash| {
+        let Some(object) = catalog.get(hash) else {
+            return false;
+        };
+        match (kind, &object.payload) {
+            (BodyKind::Mermaid, ObjectPayload::MermaidBlock(p)) => p.text == text,
+            (BodyKind::Html, ObjectPayload::HtmlBlock(p)) => p.text == text,
+            _ => false,
+        }
+    })
+}
+
+fn body_list_exists(catalog: &Catalog, parent: SymbolHash, items: &[ImportListItem]) -> bool {
+    doc_body_refs(catalog, parent).into_iter().any(|hash| {
+        let Some(object) = catalog.get(hash) else {
+            return false;
+        };
+        let ObjectPayload::DocumentList(list) = &object.payload else {
+            return false;
+        };
+        list.items.len() == items.len()
+            && list.items.iter().zip(items).all(|(item, text)| {
+                catalog.get(*item).is_some_and(|object| {
+                    matches!(&object.payload, ObjectPayload::DocumentText(p) if p.text == text.text())
+                })
+            })
+    })
 }
 
 fn move_doc_section(
@@ -3724,12 +4539,372 @@ fn print_comments(comments: &[DocComment], indent: &str) {
     }
 }
 
-fn doc_show(ws: &Workspace, catalog: &Catalog, qname: &str) -> Result<()> {
+fn doc_show(ws: &Workspace, catalog: &Catalog, qname: &str, format: OutputFormat) -> Result<()> {
     let hash = symbol_hash(qname);
     let object = catalog
         .get(hash)
         .with_context(|| format!("object not found: {qname}"))?;
-    render_doc(ws, catalog, hash, object, 0)
+    match format {
+        OutputFormat::Text => render_doc(ws, catalog, hash, object, 0),
+        OutputFormat::Json => {
+            let value = doc_export_json(ws, catalog, hash, object)?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            Ok(())
+        }
+        OutputFormat::Md => {
+            let links = document_links(ws, catalog);
+            let mut out = String::new();
+            render_doc_md(ws, catalog, hash, object, 0, &links, &mut out)?;
+            print!("{out}");
+            Ok(())
+        }
+    }
+}
+
+/// Objects linked to each document section, as qname strings.
+fn document_links(ws: &Workspace, catalog: &Catalog) -> BTreeMap<SymbolHash, Vec<String>> {
+    let mut links: BTreeMap<SymbolHash, Vec<String>> = BTreeMap::new();
+    for (qname, object) in catalog.iter() {
+        let Some(section) = document_of(object).filter(|section| !section.is_zero()) else {
+            continue;
+        };
+        if let Ok(name) = ws.get_symbol(qname) {
+            links.entry(section).or_default().push(name);
+        }
+    }
+    for names in links.values_mut() {
+        names.sort();
+    }
+    links
+}
+
+fn doc_export_json(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+) -> Result<serde_json::Value> {
+    let links = document_links(ws, catalog);
+    doc_export_node(ws, catalog, qname, object, &links)
+}
+
+fn doc_export_node(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    links: &BTreeMap<SymbolHash, Vec<String>>,
+) -> Result<serde_json::Value> {
+    let name = ws.get_symbol(qname)?;
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(_) => {
+            let mut documents = Vec::new();
+            for child in catalog.children(qname) {
+                let Some(child_object) = catalog.get(child) else {
+                    continue;
+                };
+                if child_object.kind == Kind::Document {
+                    documents.push(doc_export_node(ws, catalog, child, child_object, links)?);
+                }
+            }
+            Ok(serde_json::json!({
+                "root": {"qname": name, "kind": "directory"},
+                "documents": documents,
+            }))
+        }
+        ObjectPayload::Document(p) => {
+            let mut sections = Vec::new();
+            for section in &p.sections {
+                let Some(child) = catalog.get(*section) else {
+                    continue;
+                };
+                sections.push(export_section(ws, catalog, *section, child, links)?);
+            }
+            Ok(serde_json::json!({
+                "root": {"qname": name, "kind": "document", "title": p.title},
+                "sections": sections,
+            }))
+        }
+        ObjectPayload::DocumentSection(p) => {
+            let mut sections = Vec::new();
+            for section in &p.sections {
+                let Some(child) = catalog.get(*section) else {
+                    continue;
+                };
+                sections.push(export_section(ws, catalog, *section, child, links)?);
+            }
+            Ok(serde_json::json!({
+                "root": {"qname": name, "kind": "section", "title": p.title},
+                "body": export_body(ws, catalog, &p.body)?,
+                "sections": sections,
+            }))
+        }
+        ObjectPayload::DocumentTopic(p) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "topic", "title": p.title},
+            "body": export_body(ws, catalog, &p.paragraphs)?,
+        })),
+        ObjectPayload::DocumentList(_) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "list"},
+            "body": export_body(ws, catalog, &[qname])?,
+        })),
+        ObjectPayload::DocumentText(_) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "text"},
+            "body": export_body(ws, catalog, &[qname])?,
+        })),
+        ObjectPayload::Block(_) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "block"},
+            "body": export_body(ws, catalog, &[qname])?,
+        })),
+        ObjectPayload::MermaidBlock(_) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "mermaid"},
+            "body": export_body(ws, catalog, &[qname])?,
+        })),
+        ObjectPayload::HtmlBlock(_) => Ok(serde_json::json!({
+            "root": {"qname": name, "kind": "html"},
+            "body": export_body(ws, catalog, &[qname])?,
+        })),
+        _ => bail!("not a document object: {name}"),
+    }
+}
+
+fn export_section(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    links: &BTreeMap<SymbolHash, Vec<String>>,
+) -> Result<serde_json::Value> {
+    let name = ws.get_symbol(qname)?;
+    let ObjectPayload::DocumentSection(p) = &object.payload else {
+        bail!("not a document section: {name}");
+    };
+    let mut sections = Vec::new();
+    for section in &p.sections {
+        let Some(child) = catalog.get(*section) else {
+            continue;
+        };
+        sections.push(export_section(ws, catalog, *section, child, links)?);
+    }
+    Ok(serde_json::json!({
+        "qname": name,
+        "kind": "section",
+        "title": p.title,
+        "document": links.get(&qname).cloned().unwrap_or_default(),
+        "body": export_body(ws, catalog, &p.body)?,
+        "sections": sections,
+    }))
+}
+
+fn export_body(
+    ws: &Workspace,
+    catalog: &Catalog,
+    refs: &[SymbolHash],
+) -> Result<Vec<serde_json::Value>> {
+    let mut out = Vec::new();
+    for reference in refs {
+        let Some(object) = catalog.get(*reference) else {
+            continue;
+        };
+        let name = ws.get_symbol(*reference)?;
+        let value = match &object.payload {
+            ObjectPayload::DocumentText(p) => serde_json::json!({
+                "type": "text",
+                "qname": name,
+                "text": p.text,
+            }),
+            ObjectPayload::DocumentList(p) => {
+                let mut items = Vec::new();
+                for item in &p.items {
+                    if let Some(ObjectPayload::DocumentText(text)) =
+                        catalog.get(*item).map(|object| &object.payload)
+                    {
+                        items.push(serde_json::json!({
+                            "qname": ws.get_symbol(*item)?,
+                            "text": text.text,
+                        }));
+                    }
+                }
+                serde_json::json!({"type": "list", "qname": name, "items": items})
+            }
+            ObjectPayload::Block(p) => serde_json::json!({
+                "type": "block",
+                "qname": name,
+                "language": p.language,
+                "text": p.text,
+            }),
+            ObjectPayload::MermaidBlock(p) => serde_json::json!({
+                "type": "mermaid",
+                "qname": name,
+                "text": p.text,
+            }),
+            ObjectPayload::HtmlBlock(p) => serde_json::json!({
+                "type": "html",
+                "qname": name,
+                "text": p.text,
+            }),
+            ObjectPayload::DocumentTopic(p) => serde_json::json!({
+                "type": "topic",
+                "qname": name,
+                "title": p.title,
+                "body": export_body(ws, catalog, &p.paragraphs)?,
+            }),
+            _ => continue,
+        };
+        out.push(value);
+    }
+    Ok(out)
+}
+
+fn render_doc_md(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    depth: usize,
+    links: &BTreeMap<SymbolHash, Vec<String>>,
+    out: &mut String,
+) -> Result<()> {
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(_) => {
+            if depth == 0 {
+                out.push_str(&format!("# {}\n\n", ws.get_symbol(qname)?));
+            }
+            for child in catalog.children(qname) {
+                let Some(child_object) = catalog.get(child) else {
+                    continue;
+                };
+                if child_object.kind == Kind::Document {
+                    render_doc_md(ws, catalog, child, child_object, depth + 1, links, out)?;
+                }
+            }
+        }
+        ObjectPayload::Document(p) => {
+            push_heading(out, depth + 1, &p.title);
+            for section in &p.sections {
+                let Some(child) = catalog.get(*section) else {
+                    continue;
+                };
+                render_section_md(ws, catalog, *section, child, depth + 2, links, out)?;
+            }
+        }
+        ObjectPayload::DocumentSection(p) => {
+            push_heading(out, depth + 1, &p.title);
+            render_body_md(catalog, &p.body, depth + 2, out)?;
+            render_doc_links(links, qname, out);
+            for section in &p.sections {
+                let Some(child) = catalog.get(*section) else {
+                    continue;
+                };
+                render_section_md(ws, catalog, *section, child, depth + 2, links, out)?;
+            }
+        }
+        ObjectPayload::DocumentTopic(p) => {
+            push_heading(out, depth + 1, &p.title);
+            render_body_md(catalog, &p.paragraphs, depth + 2, out)?;
+        }
+        ObjectPayload::DocumentList(p) => {
+            let items = list_items(catalog, p);
+            out.push_str(&format!("{}\n\n", items.join("\n")));
+        }
+        ObjectPayload::DocumentText(p) => out.push_str(&format!("{}\n\n", p.text)),
+        ObjectPayload::Block(p) => push_fence(out, &p.language, &p.text),
+        ObjectPayload::MermaidBlock(p) => push_fence(out, "mermaid", &p.text),
+        ObjectPayload::HtmlBlock(p) => push_fence(out, "html", &p.text),
+        _ => bail!("not a document object: {}", ws.get_symbol(qname)?),
+    }
+    Ok(())
+}
+
+fn render_section_md(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    level: usize,
+    links: &BTreeMap<SymbolHash, Vec<String>>,
+    out: &mut String,
+) -> Result<()> {
+    let ObjectPayload::DocumentSection(p) = &object.payload else {
+        bail!("not a document section: {}", ws.get_symbol(qname)?);
+    };
+    push_heading(out, level, &p.title);
+    render_body_md(catalog, &p.body, level + 1, out)?;
+    render_doc_links(links, qname, out);
+    for section in &p.sections {
+        let Some(child) = catalog.get(*section) else {
+            continue;
+        };
+        render_section_md(ws, catalog, *section, child, level + 1, links, out)?;
+    }
+    Ok(())
+}
+
+fn render_body_md(
+    catalog: &Catalog,
+    refs: &[SymbolHash],
+    level: usize,
+    out: &mut String,
+) -> Result<()> {
+    for reference in refs {
+        let Some(object) = catalog.get(*reference) else {
+            continue;
+        };
+        match &object.payload {
+            ObjectPayload::DocumentText(p) => out.push_str(&format!("{}\n\n", p.text)),
+            ObjectPayload::DocumentList(p) => {
+                let items = list_items(catalog, p);
+                out.push_str(&items.join("\n"));
+                out.push_str("\n\n");
+            }
+            ObjectPayload::Block(p) => push_fence(out, &p.language, &p.text),
+            ObjectPayload::MermaidBlock(p) => push_fence(out, "mermaid", &p.text),
+            ObjectPayload::HtmlBlock(p) => push_fence(out, "html", &p.text),
+            ObjectPayload::DocumentTopic(p) => {
+                push_heading(out, level, &p.title);
+                render_body_md(catalog, &p.paragraphs, level + 1, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn list_items(catalog: &Catalog, list: &DocumentListPayload) -> Vec<String> {
+    list.items
+        .iter()
+        .filter_map(|item| catalog.get(*item))
+        .filter_map(|object| match &object.payload {
+            ObjectPayload::DocumentText(text) => Some(format!("- {}", text.text)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn render_doc_links(
+    links: &BTreeMap<SymbolHash, Vec<String>>,
+    qname: SymbolHash,
+    out: &mut String,
+) {
+    if let Some(names) = links.get(&qname)
+        && !names.is_empty()
+    {
+        out.push_str(&format!("<!-- document: {} -->\n\n", names.join(", ")));
+    }
+}
+
+fn push_heading(out: &mut String, level: usize, title: &str) {
+    out.push_str(&"#".repeat(level.clamp(1, 6)));
+    out.push(' ');
+    out.push_str(title);
+    out.push_str("\n\n");
+}
+
+fn push_fence(out: &mut String, language: &str, text: &str) {
+    out.push_str("```");
+    out.push_str(language);
+    out.push('\n');
+    out.push_str(text.trim_end_matches('\n'));
+    out.push_str("\n```\n\n");
 }
 
 /// Reading order for the preset design documents: directory, namespace,
@@ -3838,63 +5013,37 @@ fn render_doc(
 fn remote(dir: Option<PathBuf>, command: RemoteCommand) -> Result<()> {
     let mut ws = open_workspace(dir)?;
     match command {
-        RemoteCommand::Add { url, token_file } => {
+        RemoteCommand::Add { url } => {
             if ws.remote_url().is_some() {
                 bail!("remote already configured; use `ds remote set-url`");
             }
-            let token_file = token_file.map(prepare_token_file).transpose()?;
             ws.set_remote_url(url.clone())?;
             println!("remote: {url}");
-            if let Some(path) = token_file {
-                ws.set_remote_token_file(Some(path.clone()))?;
-                println!("token-file: {path}");
-            }
         }
         RemoteCommand::Show => match ws.remote_url() {
-            Some(url) => {
-                println!("{url}");
-                if let Some(path) = ws.remote_token_file() {
-                    println!("token-file: {path}");
-                }
-            }
+            Some(url) => println!("{url}"),
             None => println!("no remote configured"),
         },
         RemoteCommand::SetUrl { url } => {
             ws.set_remote_url(url.clone())?;
             println!("remote: {url}");
         }
-        RemoteCommand::SetToken { path } => {
-            let path = path.map(prepare_token_file).transpose()?;
-            ws.set_remote_token_file(path)?;
-            match ws.remote_token_file() {
-                Some(path) => println!("token-file: {path}"),
-                None => println!("token-file cleared"),
-            }
-        }
     }
     Ok(())
-}
-
-fn prepare_token_file(path: PathBuf) -> Result<String> {
-    crate::remote::read_token_file(&path)?;
-    let path = fs::canonicalize(&path)
-        .with_context(|| format!("resolve token file: {}", path.display()))?;
-    Ok(path.to_string_lossy().into_owned())
 }
 
 fn remote_for(ws: &Workspace) -> Result<Remote> {
     let url = ws
         .remote_url()
         .context("no remote configured; run `ds remote add <path>`")?;
-    let token_file = ws.remote_token_file().map(PathBuf::from);
-    Remote::open(url, token_file.as_deref())
+    Remote::open(url)
 }
 
-fn push(dir: Option<PathBuf>, branch: Option<String>) -> Result<()> {
+fn push(dir: Option<PathBuf>, branch: Option<String>, force: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let remote = remote_for(&ws)?;
     let branch = branch.unwrap_or(current_branch(&ws)?);
-    let commit = remote.push(&ws, &branch)?;
+    let commit = remote.push(&ws, &branch, force)?;
     println!(
         "Pushed {branch} to {}: {}",
         remote.display(),
@@ -3945,6 +5094,12 @@ fn object_source_path(ws: &Workspace, object: &DesignObject) -> Result<Option<St
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             p.source.as_ref().map(|source| source.path)
         }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            p.source.as_ref().map(|source| source.path)
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            p.source.as_ref().map(|source| source.path)
+        }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             p.source.as_ref().map(|source| source.path)
         }
@@ -3986,6 +5141,16 @@ fn set_object_source(ws: &Workspace, object: &mut DesignObject, path: &str) -> R
             }
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            if let Some(source) = p.source.as_mut() {
+                source.path = symbol;
+            }
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
             if let Some(source) = p.source.as_mut() {
                 source.path = symbol;
             }
@@ -4364,6 +5529,7 @@ fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
     match command {
         SourceCommand::Fetch => {
             repo.fetch()?;
+            repo.sync_worktree_to_head()?;
             let commit = repo.resolve_current()?;
             println!("Fetched source; current commit {commit}");
         }
@@ -4375,6 +5541,10 @@ fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
             let commit = repo.resolve_current()?;
             println!("Checked out {} ({commit})", source_ref.label);
         }
+        SourceCommand::Worktree => {
+            repo.ensure_worktree()?;
+            println!("{}", repo.worktree_path().display());
+        }
         SourceCommand::Status => {
             if !repo.exists() {
                 println!("source: not fetched");
@@ -4382,6 +5552,7 @@ fn source(dir: Option<PathBuf>, command: SourceCommand) -> Result<()> {
             }
             println!("ref:    {}", repo.current_ref()?);
             println!("commit: {}", repo.resolve_current()?);
+            println!("worktree: {}", repo.worktree_path().display());
         }
         SourceCommand::Ls { path } => {
             if !repo.exists() {
@@ -4665,6 +5836,50 @@ fn apply_structure_edit(
                 Some(false),
             )?;
         }
+        ObjectPayload::Struct(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(true),
+            )?;
+        }
+        ObjectPayload::InnerStruct(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(false),
+            )?;
+        }
+        ObjectPayload::Enum(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(true),
+            )?;
+        }
+        ObjectPayload::InnerEnum(p) => {
+            edit_class_parent(
+                ws,
+                catalog,
+                &mut p.parent,
+                &mut p.qualified_name,
+                &local,
+                args,
+                Some(false),
+            )?;
+        }
         ObjectPayload::Interface(p) => {
             edit_class_parent(
                 ws,
@@ -4827,6 +6042,12 @@ fn apply_rename(ws: &Workspace, object: &mut DesignObject, name: Option<&str>) -
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
             rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
         }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
+        }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
             rename_type(ws, &p.parent, &mut p.qualified_name, name)?;
         }
@@ -4904,6 +6125,10 @@ fn edit_class_parent(
             &[
                 Kind::Class,
                 Kind::InnerClass,
+                Kind::Struct,
+                Kind::InnerStruct,
+                Kind::Enum,
+                Kind::InnerEnum,
                 Kind::Interface,
                 Kind::InnerInterface,
             ],
@@ -5116,6 +6341,8 @@ fn set_document(object: &mut DesignObject, document: SymbolHash) -> Result<()> {
         ObjectPayload::File(p) => p.document = document,
         ObjectPayload::Namespace(p) => p.document = document,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document = document,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => p.document = document,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => p.document = document,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document = document,
         ObjectPayload::Method(p) => p.document = document,
         ObjectPayload::Function(p) => p.document = document,
@@ -5159,6 +6386,16 @@ fn apply_source(ws: &Workspace, object: &mut DesignObject, spec: &str) -> Result
             p.content_hash = source.content_hash;
         }
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            let source = read_source(ws, Some(spec), true)?.context("source missing")?;
+            p.source = Some(source.span_source());
+            p.content_hash = source.content_hash;
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            let source = read_source(ws, Some(spec), true)?.context("source missing")?;
+            p.source = Some(source.span_source());
+            p.content_hash = source.content_hash;
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
             let source = read_source(ws, Some(spec), true)?.context("source missing")?;
             p.source = Some(source.span_source());
             p.content_hash = source.content_hash;
@@ -5286,6 +6523,16 @@ fn read_evidence(ws: &Workspace, spec: &str) -> Result<DependencyEvidence> {
 fn add_dependency(object: &mut DesignObject, dependency: Dependency, explicit: bool) -> Result<()> {
     let list = match &mut object.payload {
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => select_dependency_list(
+            p.explicit_dependencies.as_mut(),
+            p.implicit_dependencies.as_mut(),
+            explicit,
+        )?,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => select_dependency_list(
+            p.explicit_dependencies.as_mut(),
+            p.implicit_dependencies.as_mut(),
+            explicit,
+        )?,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => select_dependency_list(
             p.explicit_dependencies.as_mut(),
             p.implicit_dependencies.as_mut(),
             explicit,
@@ -5476,6 +6723,22 @@ fn remove_dependencies(list: &mut Vec<Dependency>, target: SymbolHash) -> bool {
 fn remove_dependency(object: &mut DesignObject, target: SymbolHash, explicit: bool) -> Result<()> {
     match &mut object.payload {
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => remove_from(
+            if explicit {
+                &mut p.explicit_dependencies
+            } else {
+                &mut p.implicit_dependencies
+            },
+            target,
+        ),
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => remove_from(
+            if explicit {
+                &mut p.explicit_dependencies
+            } else {
+                &mut p.implicit_dependencies
+            },
+            target,
+        ),
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => remove_from(
             if explicit {
                 &mut p.explicit_dependencies
             } else {
@@ -5997,6 +7260,10 @@ fn kind_name(kind: Kind) -> &'static str {
         Kind::Namespace => "namespace",
         Kind::Class => "class",
         Kind::InnerClass => "inner-class",
+        Kind::Struct => "struct",
+        Kind::InnerStruct => "inner-struct",
+        Kind::Enum => "enum",
+        Kind::InnerEnum => "inner-enum",
         Kind::Interface => "interface",
         Kind::InnerInterface => "inner-interface",
         Kind::Method => "method",
@@ -6244,6 +7511,46 @@ fn object_fields(ws: &Workspace, object: &DesignObject) -> Result<BTreeMap<&'sta
             fields.insert("superclass", symbol_text(ws, p.superclass));
             fields.insert("interfaces", symbol_list_text(ws, &p.interfaces));
             fields.insert("mixins", symbol_list_text(ws, &p.mixins));
+            fields.insert(
+                "explicit_dependencies",
+                dependencies_text(ws, &p.explicit_dependencies)?,
+            );
+            fields.insert(
+                "implicit_dependencies",
+                dependencies_text(ws, &p.implicit_dependencies)?,
+            );
+            fields.insert("document", symbol_text(ws, p.document));
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            fields.insert("parent", class_parent_text(ws, &p.parent));
+            fields.insert(
+                "source",
+                p.source
+                    .as_ref()
+                    .map(|source| span_source_text(ws, source))
+                    .unwrap_or_else(|| "<none>".to_owned()),
+            );
+            fields.insert("content_hash", format_hash(p.content_hash));
+            fields.insert(
+                "explicit_dependencies",
+                dependencies_text(ws, &p.explicit_dependencies)?,
+            );
+            fields.insert(
+                "implicit_dependencies",
+                dependencies_text(ws, &p.implicit_dependencies)?,
+            );
+            fields.insert("document", symbol_text(ws, p.document));
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            fields.insert("parent", class_parent_text(ws, &p.parent));
+            fields.insert(
+                "source",
+                p.source
+                    .as_ref()
+                    .map(|source| span_source_text(ws, source))
+                    .unwrap_or_else(|| "<none>".to_owned()),
+            );
+            fields.insert("content_hash", format_hash(p.content_hash));
             fields.insert(
                 "explicit_dependencies",
                 dependencies_text(ws, &p.explicit_dependencies)?,
@@ -6777,6 +8084,8 @@ fn document_of(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::File(p) => p.document,
         ObjectPayload::Namespace(p) => p.document,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => p.document,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => p.document,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => p.document,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => p.document,
         ObjectPayload::Method(p) => p.document,
         ObjectPayload::Function(p) => p.document,
@@ -6801,7 +8110,313 @@ fn document_of(object: &DesignObject) -> Option<SymbolHash> {
     (!target.is_zero()).then_some(target)
 }
 
-fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<()> {
+fn show(
+    dir: Option<PathBuf>,
+    name: &str,
+    source: bool,
+    staged: bool,
+    format: OutputFormat,
+) -> Result<()> {
+    if format == OutputFormat::Text {
+        return show_text(dir, name, source, staged);
+    }
+    let ws = open_workspace(dir)?;
+    let state = if staged {
+        ws.read_index()?
+            .context("index is not initialized; run `ds init`")?
+    } else {
+        ws.read_worktree()?
+            .context("worktree is not initialized; run `ds init`")?
+    };
+    let catalog = Catalog::load(ws.store(), state.root_view)?;
+    let qname = ws.put_symbol(name)?;
+    let object = catalog
+        .get(qname)
+        .with_context(|| format!("object not found: {name}"))?;
+    if is_document_object(object) {
+        match format {
+            OutputFormat::Json => {
+                let value = doc_export_json(&ws, &catalog, qname, object)?;
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            }
+            OutputFormat::Md => {
+                let links = document_links(&ws, &catalog);
+                let mut out = String::new();
+                render_doc_md(&ws, &catalog, qname, object, 0, &links, &mut out)?;
+                print!("{out}");
+            }
+            OutputFormat::Text => unreachable!(),
+        }
+        return Ok(());
+    }
+    match format {
+        OutputFormat::Json => {
+            let value = object_json(&ws, &catalog, qname, object)?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        }
+        OutputFormat::Md => {
+            let mut out = String::new();
+            render_object_md(&ws, &catalog, qname, object, &mut out)?;
+            print!("{out}");
+        }
+        OutputFormat::Text => unreachable!(),
+    }
+    Ok(())
+}
+
+fn is_document_object(object: &DesignObject) -> bool {
+    matches!(
+        object.kind,
+        Kind::DocumentDirectory
+            | Kind::Document
+            | Kind::DocumentSection
+            | Kind::DocumentList
+            | Kind::DocumentText
+            | Kind::DocumentTopic
+            | Kind::Block
+            | Kind::MermaidBlock
+            | Kind::HtmlBlock
+    )
+}
+
+fn object_json(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+) -> Result<serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    map.insert("qname".into(), serde_json::json!(ws.get_symbol(qname)?));
+    map.insert("kind".into(), serde_json::json!(kind_name(object.kind)));
+    match &object.payload {
+        ObjectPayload::View(_) => {}
+        ObjectPayload::Directory(p) => {
+            insert_path_source(&mut map, "source", ws, p.source)?;
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::File(p) => {
+            insert_path_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Namespace(p) => {
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(class_parent_text(ws, &p.parent)),
+            );
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "superclass", ws, p.superclass);
+            insert_symbols(&mut map, "interfaces", ws, &p.interfaces);
+            insert_symbols(&mut map, "mixins", ws, &p.mixins);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(class_parent_text(ws, &p.parent)),
+            );
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "extends", ws, p.extends);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Method(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "overrides", ws, p.overrides);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Function(p) => {
+            insert_symbol(&mut map, "file", ws, p.file);
+            insert_symbol(&mut map, "namespace", ws, p.namespace);
+            insert_symbol(&mut map, "module", ws, p.module);
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Part(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            insert_span_source(&mut map, "source", ws, Some(p.source))?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+        }
+        ObjectPayload::Mixin(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(class_parent_text(ws, &p.parent)),
+            );
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbols(&mut map, "on", ws, &p.on);
+            insert_symbol(&mut map, "superclass", ws, p.superclass);
+            insert_symbols(&mut map, "interfaces", ws, &p.interfaces);
+            insert_symbols(&mut map, "mixins", ws, &p.mixins);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::DesignStructure(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(parent_ref_text(ws, p.parent)),
+            );
+            map.insert("title".into(), serde_json::json!(p.title));
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::System(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            map.insert("title".into(), serde_json::json!(p.title));
+            insert_symbol(&mut map, "document", ws, p.document);
+            insert_symbols(&mut map, "members", ws, &p.members);
+        }
+        ObjectPayload::Module(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            map.insert("title".into(), serde_json::json!(p.title));
+            insert_symbol(&mut map, "document", ws, p.document);
+            insert_symbols(&mut map, "members", ws, &p.members);
+        }
+        ObjectPayload::Layer(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            map.insert("title".into(), serde_json::json!(p.title));
+            map.insert("order".into(), serde_json::json!(p.order));
+            insert_symbol(&mut map, "document", ws, p.document);
+            insert_symbols(&mut map, "members", ws, &p.members);
+        }
+        ObjectPayload::ConceptDirectory(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(parent_ref_text(ws, p.parent)),
+            );
+        }
+        ObjectPayload::Concept(p) => {
+            insert_symbol(&mut map, "parent", ws, p.parent);
+            map.insert("name".into(), serde_json::json!(p.name));
+            map.insert("summary".into(), serde_json::json!(p.summary));
+            map.insert("explanation".into(), serde_json::json!(p.explanation));
+            map.insert(
+                "characteristics".into(),
+                serde_json::json!(p.characteristics),
+            );
+            map.insert("relations".into(), serde_json::json!(p.relations));
+            map.insert("aliases".into(), serde_json::json!(p.aliases));
+        }
+        _ => {}
+    }
+    let children = catalog.children(qname);
+    if !children.is_empty() {
+        let names = children
+            .iter()
+            .map(|child| symbol_text(ws, *child))
+            .collect::<Vec<_>>();
+        map.insert("children".into(), serde_json::json!(names));
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+fn insert_symbol(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    ws: &Workspace,
+    symbol: SymbolHash,
+) {
+    if !symbol.is_zero() {
+        map.insert(key.into(), serde_json::json!(symbol_text(ws, symbol)));
+    }
+}
+
+fn insert_symbols(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    ws: &Workspace,
+    symbols: &[SymbolHash],
+) {
+    if !symbols.is_empty() {
+        let names = symbols
+            .iter()
+            .map(|symbol| symbol_text(ws, *symbol))
+            .collect::<Vec<_>>();
+        map.insert(key.into(), serde_json::json!(names));
+    }
+}
+
+fn insert_hash(map: &mut serde_json::Map<String, serde_json::Value>, key: &str, hash: Hash32) {
+    if !hash.is_zero() {
+        map.insert(key.into(), serde_json::json!(hash.to_hex()));
+    }
+}
+
+fn insert_path_source(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    ws: &Workspace,
+    source: Option<PathSource>,
+) -> Result<()> {
+    if let Some(source) = source {
+        map.insert(key.into(), serde_json::json!(ws.get_symbol(source.path)?));
+    }
+    Ok(())
+}
+
+fn insert_span_source(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    ws: &Workspace,
+    source: Option<SpanSource>,
+) -> Result<()> {
+    if let Some(source) = source {
+        map.insert(
+            key.into(),
+            serde_json::json!(format!(
+                "{}:{}-{} bytes {}-{}",
+                ws.get_symbol(source.path)?,
+                source.span.start_line,
+                source.span.end_line,
+                source.span.start_byte,
+                source.span.end_byte
+            )),
+        );
+    }
+    Ok(())
+}
+
+fn render_object_md(
+    ws: &Workspace,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    object: &DesignObject,
+    out: &mut String,
+) -> Result<()> {
+    let value = object_json(ws, catalog, qname, object)?;
+    out.push_str(&format!("# {}\n\n", ws.get_symbol(qname)?));
+    if let Some(map) = value.as_object() {
+        for (key, value) in map {
+            if key == "qname" {
+                continue;
+            }
+            match value {
+                serde_json::Value::String(text) => out.push_str(&format!("- {key}: {text}\n")),
+                serde_json::Value::Number(number) => out.push_str(&format!("- {key}: {number}\n")),
+                serde_json::Value::Array(items) => {
+                    let text = items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!("- {key}: {text}\n"));
+                }
+                _ => {}
+            }
+        }
+    }
+    out.push('\n');
+    Ok(())
+}
+
+fn show_text(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<()> {
     let ws = open_workspace(dir)?;
     let state = if staged {
         ws.read_index()?
@@ -6840,6 +8455,18 @@ fn show(dir: Option<PathBuf>, name: &str, source: bool, staged: bool) -> Result<
             print_optional_symbol("superclass", p.superclass, &ws)?;
             print_symbol_list("interfaces", &p.interfaces, &ws)?;
             print_symbol_list("mixins", &p.mixins, &ws)?;
+            print_document(&ws, p.document);
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            print_class_parent(p.parent, &ws)?;
+            print_span_source(p.source, &ws)?;
+            print_content_hash(p.content_hash);
+            print_document(&ws, p.document);
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            print_class_parent(p.parent, &ws)?;
+            print_span_source(p.source, &ws)?;
+            print_content_hash(p.content_hash);
             print_document(&ws, p.document);
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
@@ -7001,6 +8628,8 @@ fn print_source_content(ws: &Workspace, catalog: &Catalog, object: &DesignObject
         },
         ObjectPayload::Namespace(p) => span_anchor(p.source)?,
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => span_anchor(p.source)?,
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => span_anchor(p.source)?,
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => span_anchor(p.source)?,
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => span_anchor(p.source)?,
         ObjectPayload::Method(p) => span_anchor(p.source)?,
         ObjectPayload::Function(p) => span_anchor(p.source)?,
@@ -7068,6 +8697,7 @@ fn log(dir: Option<PathBuf>, limit: usize) -> Result<()> {
 fn gc(dir: Option<PathBuf>) -> Result<()> {
     let ws = open_workspace(dir)?;
     let store = ws.store();
+    let _lock = RepoLock::acquire(store.root())?;
     store.expand_packs()?;
     let mut objects = HashSet::new();
     let mut commits = HashSet::new();
@@ -7125,6 +8755,7 @@ fn gc(dir: Option<PathBuf>) -> Result<()> {
 
 fn repack(dir: Option<PathBuf>) -> Result<()> {
     let ws = open_workspace(dir)?;
+    let _lock = RepoLock::acquire(ws.store().root())?;
     let hash = ws.store().repack()?;
     println!("Packed store {}", hash.to_hex());
     Ok(())
@@ -7235,6 +8866,26 @@ fn object_symbols(object: &DesignObject) -> Vec<SymbolHash> {
             out.push(p.superclass);
             out.extend(p.interfaces.iter().copied());
             out.extend(p.mixins.iter().copied());
+            push_deps(&mut out, &p.explicit_dependencies);
+            push_deps(&mut out, &p.implicit_dependencies);
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            push_class_parent(&mut out, p.parent);
+            if let Some(source) = p.source {
+                out.push(source.path);
+            }
+            push_deps(&mut out, &p.explicit_dependencies);
+            push_deps(&mut out, &p.implicit_dependencies);
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            out.push(p.qualified_name);
+            out.push(p.document);
+            push_class_parent(&mut out, p.parent);
+            if let Some(source) = p.source {
+                out.push(source.path);
+            }
             push_deps(&mut out, &p.explicit_dependencies);
             push_deps(&mut out, &p.implicit_dependencies);
         }
@@ -7376,6 +9027,14 @@ fn object_docs(object: &DesignObject) -> Vec<DocHash> {
         ObjectPayload::View(_) => {}
         ObjectPayload::Directory(_) | ObjectPayload::File(_) | ObjectPayload::Namespace(_) => {}
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
+            out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
+            out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
             out.extend(p.explicit_dependencies.iter().map(|d| d.rationale));
             out.extend(p.implicit_dependencies.iter().map(|d| d.rationale));
         }
@@ -7660,6 +9319,102 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
                 }),
             )
         }
+        KindArg::Struct => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::Struct,
+                ObjectPayload::Struct(StructPayload {
+                    qualified_name: qname,
+                    parent,
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    document,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
+        KindArg::InnerStruct => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let parent = match parent {
+                ClassParent::Nested { parent } => parent,
+                ClassParent::TopLevel { .. } => {
+                    bail!("inner struct requires a nested parent")
+                }
+            };
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::InnerStruct,
+                ObjectPayload::InnerStruct(StructPayload {
+                    qualified_name: qname,
+                    parent: ClassParent::Nested { parent },
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    document,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
+        KindArg::Enum => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::Enum,
+                ObjectPayload::Enum(EnumPayload {
+                    qualified_name: qname,
+                    parent,
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    document,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
+        KindArg::InnerEnum => {
+            let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
+            let parent = match parent {
+                ClassParent::Nested { parent } => parent,
+                ClassParent::TopLevel { .. } => {
+                    bail!("inner enum requires a nested parent")
+                }
+            };
+            let source = read_source(ws, args.source.as_deref(), true)?;
+            let content = source
+                .as_ref()
+                .map(|s| s.content_hash)
+                .unwrap_or(Hash32::ZERO);
+            DesignObject::new(
+                Kind::InnerEnum,
+                ObjectPayload::InnerEnum(EnumPayload {
+                    qualified_name: qname,
+                    parent: ClassParent::Nested { parent },
+                    source: source.map(|s| s.span_source()),
+                    content_hash: content,
+                    document,
+                    explicit_dependencies: vec![],
+                    implicit_dependencies: vec![],
+                    children: vec![],
+                }),
+            )
+        }
         KindArg::Interface => {
             let (qname, parent) = code_qname_and_parent(ws, catalog, args)?;
             let source = read_source(ws, args.source.as_deref(), true)?;
@@ -7835,10 +9590,10 @@ fn build_object(ws: &Workspace, catalog: &Catalog, args: &CreateArgs) -> Result<
 
 fn validate_create_args(args: &CreateArgs) -> Result<()> {
     match args.kind {
-        KindArg::Class | KindArg::Interface => {
+        KindArg::Class | KindArg::Struct | KindArg::Enum | KindArg::Interface => {
             if args.parent.is_some() {
                 bail!(
-                    "a top-level type has no parent; use inner-class/inner-interface \
+                    "a top-level type has no parent; use an inner-* kind \
                      for a nested type"
                 );
             }
@@ -7846,7 +9601,10 @@ fn validate_create_args(args: &CreateArgs) -> Result<()> {
                 bail!("a top-level type requires --namespace");
             }
         }
-        KindArg::InnerClass | KindArg::InnerInterface => {
+        KindArg::InnerClass
+        | KindArg::InnerStruct
+        | KindArg::InnerEnum
+        | KindArg::InnerInterface => {
             if args.parent.is_none() {
                 bail!("an inner type requires --parent");
             }
@@ -7916,7 +9674,15 @@ fn code_qname_and_parent(
             .with_context(|| format!("parent not found: {parent:?}"))?;
         if !matches!(
             parent_object.kind,
-            Kind::Class | Kind::InnerClass | Kind::Interface | Kind::InnerInterface | Kind::Mixin
+            Kind::Class
+                | Kind::InnerClass
+                | Kind::Struct
+                | Kind::InnerStruct
+                | Kind::Enum
+                | Kind::InnerEnum
+                | Kind::Interface
+                | Kind::InnerInterface
+                | Kind::Mixin
         ) {
             bail!("a nested type parent must be a type: {parent:?}");
         }
@@ -8137,6 +9903,8 @@ fn object_qname(object: &DesignObject) -> Option<SymbolHash> {
         ObjectPayload::File(p) => Some(p.qualified_name),
         ObjectPayload::Namespace(p) => Some(p.qualified_name),
         ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => Some(p.qualified_name),
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => Some(p.qualified_name),
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => Some(p.qualified_name),
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => Some(p.qualified_name),
         ObjectPayload::Method(p) => Some(p.qualified_name),
         ObjectPayload::Function(p) => Some(p.qualified_name),

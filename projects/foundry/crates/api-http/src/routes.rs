@@ -1054,6 +1054,16 @@ pub async fn create_project_form(
             if let Err(error) = state.triggers.ensure_daily_check(project.id).await {
                 tracing::warn!(project_id = %project.id, %error, "cannot create default daily-check trigger");
             }
+            if let Err(error) = state.triggers.ensure_design_iteration(project.id).await {
+                tracing::warn!(project_id = %project.id, %error, "cannot create default design-iteration trigger");
+            }
+            if let Err(error) = state
+                .triggers
+                .ensure_development_iteration(project.id)
+                .await
+            {
+                tracing::warn!(project_id = %project.id, %error, "cannot create default development-iteration trigger");
+            }
             state.agents.ensure_project_dispatcher(project.id).await;
             Redirect::to(&format!("/projects/{}", project.id)).into_response()
         }
@@ -1602,11 +1612,11 @@ pub async fn get_merge_request_for_task(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(task_id): Path<Uuid>,
-) -> Result<Json<foundry_domain::MergeRequestDetail>, ApiError> {
+) -> Result<Json<foundry_domain::MergeRequestReview>, ApiError> {
     let session = task_api_session(&state, &headers, task_id).await?;
-    let detail = state
+    let review = state
         .merge_requests
-        .for_task(
+        .for_task_review(
             &session.project,
             task_id,
             merge_request_viewer(&session.account),
@@ -1619,7 +1629,7 @@ pub async fn get_merge_request_for_task(
                 "this task has no merge request",
             )
         })?;
-    Ok(Json(detail))
+    Ok(Json(review))
 }
 
 pub async fn delete_design_space_branch(
@@ -2876,6 +2886,16 @@ pub async fn create_project(
         .await?;
     if let Err(error) = state.triggers.ensure_daily_check(project.id).await {
         tracing::warn!(project_id = %project.id, %error, "cannot create default daily-check trigger");
+    }
+    if let Err(error) = state.triggers.ensure_design_iteration(project.id).await {
+        tracing::warn!(project_id = %project.id, %error, "cannot create default design-iteration trigger");
+    }
+    if let Err(error) = state
+        .triggers
+        .ensure_development_iteration(project.id)
+        .await
+    {
+        tracing::warn!(project_id = %project.id, %error, "cannot create default development-iteration trigger");
     }
     state.agents.ensure_project_dispatcher(project.id).await;
     Ok((StatusCode::CREATED, Json(project)))
@@ -4424,9 +4444,9 @@ pub async fn send_task_operation(
         if operation_name == "merged" && stage == Some("merge") {
             let merged = state
                 .merge_requests
-                .for_task(&session.project, id, task_viewer(&session))
+                .for_task_review(&session.project, id, task_viewer(&session))
                 .await?
-                .is_some_and(|detail| detail.status == MergeRequestStatus::Merged);
+                .is_some_and(|review| review.status == MergeRequestStatus::Merged);
             if !merged {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,

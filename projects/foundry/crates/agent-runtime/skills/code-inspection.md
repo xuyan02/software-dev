@@ -15,14 +15,7 @@
   - `design_inspection`：代码和设计空间都为空时正常；代码不为空而设计空间为空时是设计缺失，必须上报 Issue；
   - `consistency_inspection`：代码不为空而设计空间为空时，说明设计缺失，必须上报 Issue。
 
-工作区：
-
-```bash
-GIT_HOME=/work/<project-id>/.credentials/git
-export HOME=$GIT_HOME
-export GIT_CONFIG_GLOBAL=$GIT_HOME/gitconfig
-export GIT_TERMINAL_PROMPT=0
-```
+Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `ds` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 由设计空间仓库自带的 `repo.toml` 提供，`ds clone` 不需要指定。
 
 设计空间工作区：
 
@@ -33,7 +26,7 @@ export GIT_TERMINAL_PROMPT=0
 缺失时创建：
 
 ```bash
-ds clone <design_space_url> --source <git_repository> --branch source --dir /work/<project-id>/ds
+ds clone <design_space_url> --branch source --dir /work/<project-id>/ds
 ```
 
 源码由设计空间管理，不需要另建 git checkout：

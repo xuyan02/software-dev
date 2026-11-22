@@ -13,8 +13,10 @@
 pub mod catalog;
 pub mod cli;
 pub mod format;
+pub mod lock;
 pub mod model;
 pub mod pack;
+pub mod push;
 pub mod remote;
 pub mod server;
 pub mod source;

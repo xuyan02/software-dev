@@ -205,6 +205,7 @@ count 是元素数量，不是字节数。
       heads/<branch>
       remotes/origin/<branch>
     source/                 # bare git clone
+    repo.toml               # fetched repository metadata
     objects/<aa>/<bb>/<object_hash>
     commits/<aa>/<bb>/<commit_hash>
     docs/<aa>/<bb>/<doc_hash>
@@ -221,9 +222,17 @@ count 是元素数量，不是字节数。
 - `tmp/` 只存临时写入文件，不是 canonical storage；
 - `docs/` 和 `symbols/` 不是设计空间节点，不进入 View 树，也不进入提交链；
 - 所有内容寻址文件的文件名都是内容 hash 的十六进制；
+- 工作区根目录可以是源码 Git 的 linked worktree：
+  - 根 `.git` 是文件，内容为 `gitdir: .ds/source/worktrees/root`；
+  - `.ds/source` 同时是源码 bare 对象库；
+  - worktree 的 HEAD/index 在 `.ds/source/worktrees/root/`；
+  - `.ds/` 通过 `.ds/source/info/exclude` 对源码 Git 隐藏；
+  - worktree 由 `ds source fetch`、`ds source checkout` 或 `ds source worktree` 创建；
 - 远程存储根使用同样的 `objects/`、`commits/`、`docs/`、`symbols/`、
-  `packs/`、`refs/heads/` 布局，不包含工作区私有的 source/index/worktree。传输规则见
-  `docs/cli.md` 第 10 节。
+  `packs/`、`refs/heads/` 布局，不包含工作区私有的 source/index/worktree；
+- 远程仓库根还有一个 `repo.toml`，是本仓库的元数据文件，不属于内容寻址存储，
+  也不受版本保护。它由服务端建库时写入；客户端 push 不传输、不修改它，
+  fetch/clone 只把它取到本地 `.ds/repo.toml`。传输规则见 `docs/cli.md` 第 10 节。
 
 ### 2.1 tmp/
 
@@ -309,9 +318,9 @@ rename("/tmp/object.tmp", "/media/.../.ds/objects/...")
 
 它只是这些内容发布过程中的中间文件。
 
-### 2.2 config
+### 2.2 config 和 repo.toml
 
-`.ds/config` 是 TOML。源码相关字段：
+仓库级源码元数据统一放在 `repo.toml`：
 
 ```toml
 [source]
@@ -319,12 +328,26 @@ url = "https://example.com/repo.git"
 object_format = "sha1" # 或 "sha256"
 ```
 
-- `source.object_format` 是源码 Git 仓库的 object format；
-- 它由 `git rev-parse --show-object-format` 在 init 时确定；
-- 它属于整个设计空间，不属于单个 View；
-- Git 仓库的 object format 是仓库级属性，不能逐 commit 混用；
-- 没有 source 时，`[source]` 可以不存在；此时 View 的 `source_commit` 必须是零；
-- `source.url` 和 `source.object_format` 在 init 后不再改变。
+- `ds init` 写 `.ds/repo.toml`；
+- `ds clone` / `ds fetch` 把远端仓库根的 `repo.toml` 取到 `.ds/repo.toml`；
+- `ds source *`、`ds commit` 等命令只读 `.ds/repo.toml`；
+- `source.object_format` 是源码 Git 仓库的 object format，由 init 时
+  `git rev-parse --show-object-format` 确定；
+- 它属于整个设计空间，不属于单个 View；Git object format 是仓库级属性，
+  不能逐 commit 混用。
+
+`.ds/config` 只保存工作区本地状态，不再保存源码字段：
+
+```toml
+remote = "ssh://root@host:2222/<project-id>"
+```
+
+- 老工作区的 `.ds/config` 里如果还有 `[source]`，`Workspace::open` 会自动把它
+  迁移到 `.ds/repo.toml` 并重写 config；
+- 远端仓库根的 `repo.toml` 由服务端创建仓库时写入，是仓库的一部分，但不是
+  设计对象、不进入 View、不进提交链、不做内容寻址；
+- 客户端 push 不传输 `repo.toml`，服务端的 `PUT repo.toml` 会被拒绝；
+- `ds clone` 没有 `--source`；已有远端仓库没有 `repo.toml` 时 clone 会报错。
 
 `<aa>/<bb>` 是 hash 十六进制的前两个字节：
 
@@ -420,6 +443,10 @@ SHA-256(...) == 文件名中的 hash
 0x1A  document-block
 0x1B  document-mermaid
 0x1C  document-html
+0x1D  struct
+0x1E  inner-struct
+0x1F  enum
+0x20  inner-enum
 ```
 
 `0x0B` 保留。逻辑模块使用 0x16；顶层代码对象上的 `module` 字段仍是源码语言模块引用，不是这里的逻辑模块。
@@ -434,7 +461,7 @@ SHA-256(...) == 文件名中的 hash
 | directory | 有 | `Opt<PathSource>` | 无 | `SymbolHash`，零表示无 | 无 | `List<ObjectHash>` |
 | file | 有 | `Opt<PathSource>` | `Hash32`，零表示无 | 同上 | 无 | `List<ObjectHash>` |
 | namespace | 有 | `Opt<SpanSource>` | 同上 | 同上 | 无 | `List<ObjectHash>` |
-| class/interface | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
+| class/struct/enum/interface | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
 | method/function | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | 无 |
 | part | 有 | `SpanSource` 必填 | `Hash32` 必填非零 | 无 | 有，显式/隐式 | `List<ObjectHash>` |
 | mixin | 有 | `Opt<SpanSource>` | 同上 | 同上 | 有，显式/隐式 | `List<ObjectHash>` |
@@ -464,8 +491,8 @@ SHA-256(...) == 文件名中的 hash
 - 空 span 的 content_hash 是 SHA-256(空字节)，不是零；
 - Directory 和 View 没有 content_hash；
 - `document` 零表示没有文档引用；
-- `dependencies` 只允许出现在 class/interface/method/function/part/mixin；
-- `children` 只允许出现在 view/directory/file/namespace/class/interface/part/mixin/document-directory/document/document-section/document-list/document-topic/concept-directory/system/module/layer；
+- `dependencies` 只允许出现在 class/struct/enum/interface/method/function/part/mixin；
+- `children` 只允许出现在 view/directory/file/namespace/class/struct/enum/interface/part/mixin/document-directory/document/document-section/document-list/document-topic/concept-directory/system/module/layer；
 - `children` 存 ObjectHash，不存子对象名字。
 
 ### 4.4.1 Parent
@@ -485,8 +512,8 @@ ParentRef =
 | directory | `ParentRef`：根 directory 是 View，其他是 Directory |
 | file | `SymbolHash`：Directory |
 | namespace | `ParentRef`：虚拟根 namespace 是 View，其他是 Namespace |
-| class/interface 顶层 | `file`、`namespace`、`module` 三个显式字段 |
-| class/interface 内部 | `parent:SymbolHash`，上级 class/interface |
+| class/struct/enum/interface 顶层 | `file`、`namespace`、`module` 三个显式字段 |
+| class/struct/enum/interface 内部 | `parent:SymbolHash`，上级类型 |
 | function | `file`、`namespace`、`module` 三个显式字段 |
 | method | `parent:SymbolHash`，class/interface/part |
 | part | `parent:SymbolHash`，原对象 |
@@ -624,7 +651,7 @@ ViewPayload =
 - 根 concept directory 的 parent 是 View；
 - View 的结构性子对象；根 directory、虚拟根 namespace、根 document directory 和根 concept directory 的 parent 固定为 View；
 - 顶层 namespace 的 qualified name 是 `namespaces/<name>`；
-- 全局命名空间中的 class/interface/function/mixin 的 namespace parent 是 `namespaces`，qualified name 形如 `namespaces/<Name>`；
+- 全局命名空间中的 class/struct/enum/interface/function/mixin 的 namespace parent 是 `namespaces`，qualified name 形如 `namespaces/<Name>`；
 - `files`、`namespaces`、`documents` 和 `concepts` 是保留限定名，普通对象不能使用。
 
 ```text
@@ -633,7 +660,7 @@ GitOid = 32 bytes
 
 - 32 字节全零表示没有 source_commit；
 - 非零表示源码 git 仓库的 commit OID；
-- 具体是 20 字节 SHA-1 还是 32 字节 SHA-256，由 `.ds/config` 的
+- 具体是 20 字节 SHA-1 还是 32 字节 SHA-256，由 `.ds/repo.toml` 的
   `source.object_format` 解释；
 - `source.object_format = "sha1"` 时，前 20 字节是 OID，后 12 字节必须为零；
 - `source.object_format = "sha256"` 时，32 字节全部是 OID；
@@ -729,8 +756,8 @@ ClassParent =
         parent:SymbolHash
 ```
 
-顶层 class/interface 的 `namespace` 必须非零；`file` 和 `module` 可以为零。
-内部 class/interface 的 `parent` 只能指向 class/interface。
+顶层 class/struct/enum/interface 的 `namespace` 必须非零；`file` 和 `module` 可以为零。
+内部 class/struct/enum/interface 的 `parent` 只能指向类型对象。
 
 Interface 的 `extends` 为零表示没有父接口；非零时只能指向一个 interface。
 

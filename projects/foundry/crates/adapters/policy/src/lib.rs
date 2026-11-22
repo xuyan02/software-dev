@@ -3,8 +3,8 @@
 //! `DemoPolicy` encodes the MVP separation of duties:
 //!
 //! * humans may do anything the domain state machine allows;
-//! * agents may receive, classify, discuss and work issues, but may not reject
-//!   a product-level issue or confirm it closed;
+//! * agents may receive, classify, pool, work and close issues, but may not
+//!   reject a product-level issue or reopen a terminal issue;
 //! * the system itself may not initiate user-facing changes.
 //!
 //! Replace it with an OPA/Cedar client when the policy outgrows code.
@@ -19,7 +19,10 @@ impl PolicyEngine for DemoPolicy {
     fn check(&self, context: &ActionContext) -> Result<(), PolicyDenied> {
         match (&context.actor, &context.action) {
             (Actor::Human { .. }, _) => Ok(()),
-            (Actor::Agent { .. }, Action::CreateIssue | Action::CommentIssue | Action::TriageIssue) => Ok(()),
+            (
+                Actor::Agent { .. },
+                Action::CreateIssue | Action::CommentIssue | Action::TriageIssue,
+            ) => Ok(()),
             (Actor::Agent { .. }, Action::TransitionIssue { from, to }) => {
                 if agent_issue_transition_allowed(*from, *to) {
                     Ok(())
@@ -36,13 +39,16 @@ impl PolicyEngine for DemoPolicy {
     }
 }
 
-/// Agents can start and move work forward, but cannot make the disposition
-/// decisions (`Rejected`, `Duplicate`, `Closed`) or reopen a closed issue.
+/// Agents route work through the pools, resolve it, and close resolved work.
+/// Rejection and reopening a terminal issue stay human decisions.
 fn agent_issue_transition_allowed(from: IssueStatus, to: IssueStatus) -> bool {
     use IssueStatus::*;
     matches!(
         (from, to),
-        (Open, InProgress) | (Open, Resolved) | (InProgress, Resolved)
+        (Open, Pooled | InProgress | Resolved | Duplicate)
+            | (Pooled, Pooled | InProgress | Resolved | Duplicate)
+            | (InProgress, Pooled | InProgress | Resolved | Duplicate)
+            | (Resolved, Closed)
     )
 }
 
@@ -79,22 +85,34 @@ mod tests {
     }
 
     #[test]
-    fn agent_cannot_reject_or_close_an_issue() {
+    fn agent_routes_issues_through_the_pools() {
+        for (from, to) in [
+            (IssueStatus::Open, IssueStatus::Pooled),
+            (IssueStatus::Pooled, IssueStatus::InProgress),
+            (IssueStatus::InProgress, IssueStatus::Pooled),
+            (IssueStatus::InProgress, IssueStatus::Duplicate),
+        ] {
+            DemoPolicy
+                .check(&issue_context(Actor::agent("worker", "worker"), from, to))
+                .unwrap_or_else(|error| panic!("{from:?} -> {to:?}: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn agent_can_close_resolved_work_but_not_reject() {
+        DemoPolicy
+            .check(&issue_context(
+                Actor::agent("fixer", "developer"),
+                IssueStatus::Resolved,
+                IssueStatus::Closed,
+            ))
+            .unwrap();
         assert!(
             DemoPolicy
                 .check(&issue_context(
                     Actor::agent("reviewer", "fixer"),
                     IssueStatus::Open,
                     IssueStatus::Rejected,
-                ))
-                .is_err()
-        );
-        assert!(
-            DemoPolicy
-                .check(&issue_context(
-                    Actor::agent("fixer", "developer"),
-                    IssueStatus::Resolved,
-                    IssueStatus::Closed,
                 ))
                 .is_err()
         );

@@ -18,6 +18,13 @@ pub struct LlmToolCall {
     pub name: String,
     #[serde(default)]
     pub arguments: Value,
+    /// Why the provider-supplied `arguments` could not be parsed.
+    ///
+    /// The runtime must not invoke the tool when this is set; it returns the
+    /// message to the model as an invalid-arguments tool result so the model
+    /// can retry instead of failing the whole run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argument_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

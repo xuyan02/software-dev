@@ -14,7 +14,7 @@ edit（design、source、parent/namespace/file/module/name、继承/接口/mixin
 doc mkdir/create/section/text/list（文档对象）
 dep add/rm/list（结构关系自动计入显式依赖）
 source fetch/checkout/status/ls/cat/log/sync
-remote add/show/set-url/set-token
+remote add/show/set-url
 push/fetch/pull（本地目录、HTTP、SSH；HTTP 支持 Bearer token）
 gc
 repack
@@ -60,10 +60,12 @@ ds-server --stdio --root <repo-dir>               # SSH 传输协议（单个仓
 
 ```bash
 ds init --source <git-url> [--dir <root>]
-ds clone <remote> --source <git-url> [--branch main]
+ds clone <remote> [--branch main]
+ds push [--branch <branch>] [--force]
 
 ds source fetch
 ds source checkout <ref>
+ds source worktree
 ds source status
 ds source ls [<path>]
 ds source cat <path>
@@ -94,7 +96,7 @@ ds checkout <branch> [--force]
 ds checkout -b <branch>
 ds branch delete <branch>
 
-ds show <name> [--source] [--staged]
+ds show <name> [--source] [--staged] [--format text|json|md]
 ds log [--limit N]
 ds ls [--files|--namespaces|--documents|--design] [--staged]
 ds doc mkdir <qname>
@@ -115,7 +117,8 @@ ds doc comment add <qname> --text <text>
 ds doc comment resolve <qname> <comment-id>
 ds doc comment list <qname>
 ds doc comment clear
-ds doc show <qname>
+ds doc show <qname> [--format text|json|md]
+ds doc import --file <path>
 ds doc layout
 ds doc check
 ds structure init
@@ -200,22 +203,21 @@ ds concept check
 ## 3. clone
 
 ```bash
-ds clone <remote> --source <git-url> [--branch main] [--dir <root>]
+ds clone <remote> [--branch main] [--dir <root>]
 ```
 
 - `remote` 可以是本地路径、`file://`、HTTP(S) 或 SSH；
-- `--source` 写入 workspace config，后续 `source` 命令使用；
+- clone 不接受 `--source`：源码 URL 和 object format 来自远端仓库根的
+  `repo.toml`，fetch 时一起取到 `.ds/repo.toml`；`.ds/config` 只保存 `remote`；
+- `ds init` 同样写 `.ds/repo.toml`，所以 init 和 clone 的工作区结构一致；
+- `repo.toml` 由服务端建库时写入，客户端 push 不会传输或修改它；
 - `--branch` 默认 `main`；
 - clone 会初始化 workspace、fetch remote、创建本地分支、设置 HEAD、index 和 worktree；
-- 不接受 `--format`，source format 使用默认 SHA-1；
-- 不接受 `--token-file`。HTTP remote 如果启用了认证，用环境变量
-  `DS_TOKEN_FILE` 指向 token 文件；SSH remote 使用 SSH 认证。如果
-  `/run/foundry/ds_key` 存在，`ds` 直接读取它和 `/run/foundry/ds_known_hosts`
-  作为 SSH 身份，不需要环境变量或命令参数。
-
-Git 没有统一的 token 文件机制；它使用 credential helper、`.netrc`、
-URL userinfo、SSH key 或 `http.extraHeader`。ds 的 HTTP 认证目前用
-Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
+- clone 不自动拉取源码；执行 `ds source fetch` 或 `ds source worktree` 后，工作区根目录成为源码 Git worktree；
+- 不接受 token 参数或环境变量。HTTP remote 自动读取预配置 token：
+  `/run/foundry/ds_token`、`$XDG_CONFIG_HOME/ds/token`、`~/.config/ds/token`；
+- SSH remote 使用 SSH 认证。如果 `/run/foundry/ds_key` 存在，`ds` 直接读取它和
+  `/run/foundry/ds_known_hosts` 作为 SSH 身份，不需要环境变量或命令参数。
 
 ## 4. qualified name 生成
 
@@ -243,7 +245,7 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 ```
 
 - directory/file：只接受 path；
-- namespace/class/interface/method/function/mixin：path 或 path:start-end；
+- namespace/class/struct/enum/interface/method/function/mixin：path 或 path:start-end；
 - part：必须 path:start-end；
 - source 原始字节计算 content_hash；
 - 无 source 时 content_hash 为零；
@@ -258,6 +260,10 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 | namespace | `--parent` | `--source path[:lines]`、`--document` | dependencies、children |
 | class | `--namespace` | `--file`、`--module`、`--source`、`--document`、`--superclass`、`--interface`、`--mixin` | `--parent` |
 | inner-class | `--parent` | `--source`、`--document`、`--superclass`、`--interface`、`--mixin` | namespace、file、module |
+| struct | `--namespace` | `--file`、`--module`、`--source`、`--document` | `--parent`、superclass、interface、mixin |
+| inner-struct | `--parent` | `--source`、`--document` | namespace、file、module、superclass、interface、mixin |
+| enum | `--namespace` | `--file`、`--module`、`--source`、`--document` | `--parent`、superclass、interface、mixin |
+| inner-enum | `--parent` | `--source`、`--document` | namespace、file、module、superclass、interface、mixin |
 | interface | `--namespace` | `--file`、`--module`、`--source`、`--document`、`--extends` | `--parent`、superclass、interface、mixin |
 | inner-interface | `--parent` | `--source`、`--document`、`--extends` | namespace、file、module、superclass、mixin |
 | method | `--parent`、`--signature` | `--source`、`--document`、`--overrides` | children、superclass、interface、mixin |
@@ -266,7 +272,7 @@ Bearer token，`DS_TOKEN_FILE` 相当于一个最小的 credential helper。
 | mixin 顶层 | `--namespace` | `--file`、`--module`、`--source`、`--document`、`--on`、`--superclass`、`--interface`、`--mixin` | — |
 | mixin 内部 | `--parent` | `--source`、`--document`、`--on`、`--superclass`、`--interface`、`--mixin` | namespace、file、module |
 
-顶层类型只用 `--namespace`（可选 `--file`、`--module`）；`--parent` 只用于内部类型，parent 必须是 class/interface/mixin。directory/file 的 parent 必须是 directory，namespace 的 parent 必须是 namespace。
+顶层类型只用 `--namespace`（可选 `--file`、`--module`）；`--parent` 只用于内部类型，parent 必须是 class、struct、enum、interface 或 mixin。directory/file 的 parent 必须是 directory，namespace 的 parent 必须是 namespace。
 
 重复参数：
 
@@ -373,7 +379,7 @@ ds doc section add documents/specs/auth/section1/section --title "登录流程"
 
 真实 Section qname 表示“作为兄弟插到它后面”；加子章节必须指向该 Section 下的 `section` 锚点，或它最后一个子章节。
 
-Function/Method 的文档 Section 标题只用对象短名，不带 `#<signature-hash>`；完整函数原型写在 Section 内的第一个 topic“函数原型”里。对象 qname 不变。
+Function/Method 的文档 Section 标题只用对象短名，不带 `#<signature-hash>`；“定位”之后写 topic“函数原型”，完整函数原型写在该 topic 里。对象 qname 不变。
 
 ### 正文
 
@@ -466,6 +472,49 @@ ds doc html set documents/specs/auth/section1/body3 --text '<div>新的效果图
 - 沙箱不执行脚本、不允许表单和顶层跳转；外部资源被 CSP 禁止，图片使用 data URI；
 - HTML/SVG 源码不参与 `[[concept:...]]` 引用检查。
 
+### 批量导入
+
+`ds doc import` 在一个进程里按 JSON 计划创建整棵文档子树，适合为大量 File/Directory 批量建立初始文档。重复执行是幂等的：同名 Section 会复用，相同的正文元素不会重复追加。
+
+```bash
+ds doc import --file plan.json
+# 或从标准输入读
+ds doc import --file -
+```
+
+计划格式：
+
+```json
+{
+  "root": {"qname": "documents/specs/auth", "kind": "document", "title": "认证"},
+  "sections": [
+    {
+      "title": "登录",
+      "document": ["namespaces/app"],
+      "body": [{"type": "text", "text": "登录使用 OAuth 2.0。"}],
+      "sections": [
+        {
+          "title": "验证码",
+          "body": [
+            {"type": "list", "items": ["第一项", "第二项"]},
+            {"type": "block", "language": "rust", "text": "fn main() {}"},
+            {"type": "mermaid", "text": "graph TD; A-->B;"},
+            {"type": "html", "text": "<b>hi</b>"},
+            {"type": "topic", "title": "示例", "body": [{"type": "text", "text": "主题段落"}]}
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `root`：字符串表示已存在的文档或文档目录 qname；对象形式在不存在时创建，`kind` 为 `document`（默认）或 `directory`，`title` 默认取 qname 最后一段。
+- `sections`：递归子树；每层按 `title` 查找已有 Section，找不到才创建。
+- `body`：`text`、`list`、`block`、`mermaid`、`html`、`topic`；`topic` 内不能再嵌套 `topic`。
+- `document`：把列出的设计对象（如 `files/src/main.rs`、`namespaces/app`）关联到当前 Section。
+- `ds doc show <qname> --format json` 的输出就是同一种结构，可以直接回灌 `ds doc import`。完整规范见 [document-io.md](document-io.md)。
+
 ### 评论
 
 每个文档对象都有独立评论列表。评论 id 是对象内的 `comment1`、`comment2`，状态只有 `open` 和 `resolved`。
@@ -496,10 +545,13 @@ comment1 [resolved] 补充错误码
 ### 查看
 
 ```bash
-ds doc show documents/specs/auth
+ds doc show documents/specs/auth                 # 默认 text：缩进视图
+ds doc show documents/specs/auth --format json   # 可回灌 ds doc import
+ds doc show documents/specs/auth --format md     # Markdown 视图
 ```
 
 按顺序输出文档、章节、正文元素（text / list / topic）、topic 段落、列表和列表项。
+JSON 和 Markdown 的格式规范见 [document-io.md](document-io.md)。
 
 ### 给设计对象关联文档
 
@@ -633,6 +685,22 @@ ds rm <qname> [--force] [--recursive]
 - 文档片段的 containment 引用（父对象的 `body` / `sections` / `items`）自动移除，不需要 `--force`；
 - 只修改 worktree，不自动暂存。
 
+### 7.3.0 source fetch / checkout / worktree
+
+```bash
+ds source fetch
+ds source checkout <ref>
+ds source worktree
+```
+
+- `ds source fetch` 更新 `.ds/source` bare clone，并在工作区根目录创建或复用 Git worktree；
+- `ds source checkout <ref>` 更新 `source-head`，并把根目录 worktree checkout 到该 commit；
+- `ds source worktree` 显式创建/确认根目录 worktree，输出其路径；
+- 根目录 `.git` 是文件，指向 `.ds/source/worktrees/root`；
+- `.ds/` 通过 `.ds/source/info/exclude` 对源码 Git 隐藏；
+- 源码仓库如果包含 `.ds` 目录，拒绝使用根目录 worktree；
+- hooks 和 submodule 自动执行被禁用。
+
 ### 7.3.1 source sync
 
 ```bash
@@ -733,7 +801,7 @@ namespace 或本地名时，所有子孙对象的 qualified name、引用和依�
 ### 7.7 show / ls
 
 ```bash
-ds show <name> [--source] [--staged]
+ds show <name> [--source] [--staged] [--format text|json|md]
 ds ls [--files|--namespaces|--documents|--design] [--staged]
 ```
 
@@ -790,14 +858,23 @@ PUT  /<repo>/refs                 <- "<branch>\t<commit>\n" ...
 GET  /<repo>/files                -> "<relative-path>\n" ...
 GET  /<repo>/files/<relative>     -> file bytes
 PUT  /<repo>/files/<relative>     <- file bytes
+POST /<repo>/push                 <- PUSH1 bundle
 ```
 
+`POST /<repo>/push` 一次上传缺失记录和 ref 命令。服务端校验记录哈希、ref 的
+`expected-old`、fast-forward 和设计对象闭包，然后在短 ref 锁内原子更新 ref。
+bundle 失败不会改变任何可见分支；已验证但未引用的记录由 GC 回收。
+
+`PUT /<repo>/files/<relative>` 和 `PUT /<repo>/refs` 作为 legacy 逐文件协议保留。
+
 `POST /repos` 创建一个空设计空间仓库，并在 `<branch>`（默认 `main`）上
-创建初始 View/commit。已经存在时返回 409。
+创建初始 View/commit。请求体可以带 `source_url`，服务端据此写入仓库根的
+`repo.toml`。已经存在时返回 409。
 
 规则：
 
-- push 先上传所有缺失的不可变文件，最后更新 ref；
+- push 把所有缺失记录和 ref 命令打进一个 bundle；记录先在 `incoming/` quarantine 校验，再在 `flock` 保护的 ref 临界区内发布并原子更新 ref；非 force 时要求 fast-forward；`repo.toml` 不在 push 范围内；
+- `gc` 和 `repack` 使用同一把 `refs.lock`，执行期间会阻塞 ref 更新；
 - fetch 只下载本地缺失的文件，然后写入 `refs/remotes/origin/<branch>`；
 - pull 先 fetch，再 fast-forward；index 或 worktree 有修改时拒绝；
 - 服务端校验路径必须是 canonical 的 `<kind>/<aa>/<bb>/<hash>`，并校验上传内容与
@@ -806,8 +883,10 @@ PUT  /<repo>/files/<relative>     <- file bytes
 - HTTP 未配置 token 时不认证；配置后所有请求都必须带
   `Authorization: Bearer <token>`，否则返回 401；
 - token 文件只包含一个 token，首尾空白会被忽略，token 内不能有空白或控制字符；
-- 客户端用 `ds remote add <url> --token-file <path>` 配置 token 文件路径，
-  用 `ds remote set-token [<path>]` 更换或清除；
+- 客户端不接受 token 参数或环境变量，而是自动读取预配置 token：
+  `/run/foundry/ds_token`、`$XDG_CONFIG_HOME/ds/token`、`~/.config/ds/token`
+  （按顺序取第一个存在的文件）；
+- 客户端不能写 `repo.toml`；服务端对 `PUT repo.toml` 返回错误；
 - SSH 传输不单独校验 token，认证由 SSH 完成；`--stdio` 与 `--token-file` 不能同时使用；
 - SSH remote 使用 `ssh` 默认身份；`/run/foundry/ds_key` 存在时，`ds` 直接读取该文件和
   `/run/foundry/ds_known_hosts`，并对该 remote 使用 `IdentitiesOnly=yes` 和

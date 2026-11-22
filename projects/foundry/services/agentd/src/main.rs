@@ -13,13 +13,13 @@ use foundry_adapter_postgres::{
 };
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    DesignPoolBatchTool, DevelopmentPoolBatchTool, FoundryClient, IssueCommentTool,
+    DesignPoolBatchTool, DevelopmentPoolBatchTool, EditFileTool, FoundryClient, IssueCommentTool,
     IssueCreateTool, IssueGetTool, IssueListTool, IssueTransitionTool, IssueTriageBatchTool,
-    IssueTriageResultTool, MergeRequestTool, ProjectTool, Shell, ShellOutput, ShellTool,
-    TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool,
+    IssueTriageResultTool, MergeRequestTool, ProjectTool, ReadFileTool, Shell, ShellOutput,
+    ShellTool, TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool,
     TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool, TaskHistoryTool, TaskLinksListTool,
     TaskOperationTool, TaskRemoveLinkTool, TaskSpawnChildrenTool, TaskStartTool,
-    TasksReadyListTool, ToolError, ToolRegistry, TriggerCreateTool, TriggerListTool,
+    TasksReadyListTool, ToolError, ToolRegistry, TriggerCreateTool, TriggerListTool, WriteFileTool,
     compose_system_prompt,
 };
 use foundry_domain::AgentDefinition;
@@ -32,7 +32,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -147,8 +148,11 @@ async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
     Ok(Arc::new(CapsuleShell { capsule }))
 }
 
+const RUNTIME_DIR: &str = "/run/foundry";
 const DS_KEY_PATH: &str = "/run/foundry/ds_key";
 const DS_KNOWN_HOSTS_PATH: &str = "/run/foundry/ds_known_hosts";
+const DS_TOKEN_PATH: &str = "/run/foundry/ds_token";
+const GIT_CREDENTIALS_PATH: &str = "/run/foundry/git-credentials";
 
 /// Install the account's design-space key once, for the shell's lifetime.
 /// The key is the agent's, not the task's, so task cleanup leaves it alone.
@@ -179,21 +183,43 @@ async fn install_ds_credential(
 
     shell_ok(
         shell,
-        "mkdir -p /run/foundry && chmod 700 /run/foundry".to_string(),
+        format!(
+            "mkdir -p {RUNTIME_DIR} && chmod 700 {RUNTIME_DIR} && \
+             rm -f {}",
+            shell_quote(DS_TOKEN_PATH)
+        ),
     )
     .await?;
     upload_text(shell, DS_KEY_PATH, &format!("{}\n", private_key.trim_end())).await?;
     upload_text(shell, DS_KNOWN_HOSTS_PATH, known_hosts).await?;
-    shell_ok(
-        shell,
-        format!(
-            "chmod 600 {} {}",
-            shell_quote(DS_KEY_PATH),
-            shell_quote(DS_KNOWN_HOSTS_PATH)
-        ),
-    )
-    .await?;
+    let mut protected = format!(
+        "{} {}",
+        shell_quote(DS_KEY_PATH),
+        shell_quote(DS_KNOWN_HOSTS_PATH)
+    );
+    // Foundry normally uses the SSH design-space endpoint, so no HTTP token
+    // is returned. If a deployment does return one, install it here as well;
+    // `ds` reads this path automatically.
+    if let Some(token) = credential
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        upload_text(shell, DS_TOKEN_PATH, &format!("{}\n", token.trim())).await?;
+        protected.push(' ');
+        protected.push_str(&shell_quote(DS_TOKEN_PATH));
+    }
+    shell_ok(shell, format!("chmod 600 {protected}")).await?;
     Ok(())
+}
+
+const SHELL_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 struct CapsuleShell {
@@ -215,15 +241,50 @@ impl Shell for CapsuleShell {
             command = %truncate_log_line(&redact_credentials(command)),
             "shell command started"
         );
-        let output = self
-            .capsule
-            .exec_streaming(command, |_stream, line| {
-                if !line.is_empty() {
-                    tracing::info!(target: "foundry_agentd::shell", "{}", truncate_log_line(line));
+        let last_output = Arc::new(AtomicU64::new(now_millis()));
+        let activity = Arc::clone(&last_output);
+        let future = self.capsule.exec_streaming(command, move |_stream, line| {
+            activity.store(now_millis(), Ordering::Relaxed);
+            if !line.is_empty() {
+                tracing::info!(target: "foundry_agentd::shell", "{}", truncate_log_line(line));
+            }
+        });
+        tokio::pin!(future);
+        let output = loop {
+            let idle = now_millis().saturating_sub(last_output.load(Ordering::Relaxed));
+            let remaining = if idle >= SHELL_IDLE_TIMEOUT.as_millis() as u64 {
+                Duration::ZERO
+            } else {
+                SHELL_IDLE_TIMEOUT - Duration::from_millis(idle)
+            };
+            if remaining.is_zero() {
+                tracing::warn!(
+                    target: "foundry_agentd::shell",
+                    "shell command idle for 5 minutes; terminating"
+                );
+                return Err(ToolError::Failed(
+                    "shell command timed out after 5 minutes without stdout/stderr".to_owned(),
+                ));
+            }
+            match tokio::time::timeout(remaining, &mut future).await {
+                Ok(result) => {
+                    break result.map_err(|error| ToolError::Failed(error.to_string()))?;
                 }
-            })
-            .await
-            .map_err(|error| ToolError::Failed(error.to_string()))?;
+                Err(_) => {
+                    let idle = now_millis().saturating_sub(last_output.load(Ordering::Relaxed));
+                    if idle >= SHELL_IDLE_TIMEOUT.as_millis() as u64 {
+                        tracing::warn!(
+                            target: "foundry_agentd::shell",
+                            "shell command idle for 5 minutes; terminating"
+                        );
+                        return Err(ToolError::Failed(
+                            "shell command timed out after 5 minutes without stdout/stderr"
+                                .to_owned(),
+                        ));
+                    }
+                }
+            }
+        };
         tracing::info!(
             target: "foundry_agentd::shell",
             exit_code = ?output.status,
@@ -778,6 +839,7 @@ async fn execute_task(
     let tools = build_tools(definition, &client, shell.clone())?;
     let runtime = build_runtime(definition, model, tools, shell.clone())?;
 
+    let mut credential_refresh: Option<GitCredentialRefresher> = None;
     if definition.shell {
         let Some(shell) = shell.as_ref() else {
             if definition.role.ends_with(":summarizer") {
@@ -787,9 +849,8 @@ async fn execute_task(
         };
         match client.agent_credentials(task.task_id).await {
             Ok(credentials) => {
-                if let Err(error) =
-                    inject_task_credentials(shell, task.project_id, &credentials).await
-                {
+                let has_git = credentials.get("git").is_some_and(|value| !value.is_null());
+                if let Err(error) = inject_task_credentials(shell, &credentials).await {
                     tracing::warn!(
                         task_id = %task.task_id,
                         error = %error,
@@ -800,6 +861,12 @@ async fn execute_task(
                     }
                     return Err(error);
                 }
+                credential_refresh = start_git_credential_refresh(
+                    Arc::clone(&client),
+                    Arc::clone(shell),
+                    task.task_id,
+                    has_git,
+                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -855,8 +922,9 @@ async fn execute_task(
         }
     };
 
+    drop(credential_refresh);
     if definition.shell {
-        clear_task_credentials(shell.as_ref(), task.project_id).await;
+        clear_task_credentials(shell.as_ref()).await;
     }
     if definition.role.ends_with(":summarizer")
         && task.workflow.as_str() == "code_summary_group"
@@ -1040,62 +1108,118 @@ async fn upload_text(
 
 async fn inject_task_credentials(
     shell: &Arc<dyn Shell>,
-    project_id: Uuid,
     credentials: &Value,
 ) -> anyhow::Result<()> {
-    let root = format!("/work/{project_id}/.credentials");
-    let git_dir = format!("{root}/git");
-    shell_ok(shell, format!("mkdir -p {}", shell_quote(&git_dir))).await?;
-
-    if let Some(git) = credentials.get("git").filter(|value| !value.is_null()) {
-        let url = git.get("url").and_then(Value::as_str).unwrap_or_default();
-        let username = git
-            .get("username")
-            .and_then(Value::as_str)
-            .unwrap_or("x-access-token");
-        let token = git.get("token").and_then(Value::as_str).unwrap_or_default();
-        if url.is_empty() || token.is_empty() {
-            anyhow::bail!("git credential is missing url or token");
-        }
-        let host = url
-            .strip_prefix("https://")
-            .and_then(|rest| rest.split('/').next())
-            .filter(|host| !host.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("unsupported git URL: {url}"))?;
-        upload_text(
-            shell,
-            &format!("{git_dir}/.git-credentials"),
-            &format!("https://{username}:{token}@{host}\n"),
-        )
-        .await?;
-        upload_text(
-            shell,
-            &format!("{git_dir}/gitconfig"),
-            "[credential]\n\thelper = store\n",
-        )
-        .await?;
-        upload_text(shell, &format!("{git_dir}/url"), url).await?;
-    }
-
+    // A crashed task may have left the previous task's credential behind.
     shell_ok(
         shell,
         format!(
-            "chmod 700 {} && chmod 600 {}/* 2>/dev/null || true",
-            shell_quote(&root),
-            shell_quote(&git_dir)
+            "mkdir -p {RUNTIME_DIR} && chmod 700 {RUNTIME_DIR} && \
+             rm -f {}",
+            shell_quote(GIT_CREDENTIALS_PATH)
+        ),
+    )
+    .await?;
+
+    if let Some(git) = credentials.get("git").filter(|value| !value.is_null()) {
+        write_git_credential(shell, git).await?;
+    }
+    Ok(())
+}
+
+/// Git is preconfigured with `credential.helper = store --file=...` in the
+/// shell image; this is the only file the agent needs, and it is rewritten by
+/// the refresh loop before the installation token expires.
+async fn write_git_credential(shell: &Arc<dyn Shell>, git: &Value) -> anyhow::Result<()> {
+    let url = git.get("url").and_then(Value::as_str).unwrap_or_default();
+    let username = git
+        .get("username")
+        .and_then(Value::as_str)
+        .unwrap_or("x-access-token");
+    let token = git.get("token").and_then(Value::as_str).unwrap_or_default();
+    if url.is_empty() || token.is_empty() {
+        anyhow::bail!("git credential is missing url or token");
+    }
+    let host = url
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("unsupported git URL: {url}"))?;
+    upload_text(
+        shell,
+        GIT_CREDENTIALS_PATH,
+        &format!("https://{username}:{token}@{host}\n"),
+    )
+    .await?;
+    shell_ok(
+        shell,
+        format!(
+            "chmod 700 {RUNTIME_DIR} && chmod 600 {}",
+            shell_quote(GIT_CREDENTIALS_PATH)
         ),
     )
     .await?;
     Ok(())
 }
 
-async fn clear_task_credentials(shell: Option<&Arc<dyn Shell>>, project_id: Uuid) {
+struct GitCredentialRefresher {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for GitCredentialRefresher {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
+/// Refresh the GitHub App installation token before it expires. The agentd
+/// session is slid forward by the control plane, so the task can outlive the
+/// initial session TTL.
+fn start_git_credential_refresh(
+    client: Arc<FoundryClient>,
+    shell: Arc<dyn Shell>,
+    task_id: Uuid,
+    has_git: bool,
+) -> Option<GitCredentialRefresher> {
+    if !has_git {
+        return None;
+    }
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+            match client.agent_credentials(task_id).await {
+                Ok(credentials) => {
+                    if let Some(git) = credentials.get("git").filter(|value| !value.is_null()) {
+                        if let Err(error) = write_git_credential(&shell, git).await {
+                            tracing::warn!(
+                                task_id = %task_id,
+                                error = %error,
+                                "cannot refresh git credential"
+                            );
+                        }
+                    } else {
+                        let _ = shell
+                            .exec(&format!("rm -f {}", shell_quote(GIT_CREDENTIALS_PATH)))
+                            .await;
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    task_id = %task_id,
+                    error = %error,
+                    "cannot refresh git credential"
+                ),
+            }
+        }
+    });
+    Some(GitCredentialRefresher { handle })
+}
+
+/// Remove task-scoped credentials. The design-space key and known-hosts files
+/// belong to the agent account and stay for the shell's lifetime.
+async fn clear_task_credentials(shell: Option<&Arc<dyn Shell>>) {
     if let Some(shell) = shell {
         let _ = shell
-            .exec(&format!(
-                "rm -rf {}",
-                shell_quote(&format!("/work/{project_id}/.credentials"))
-            ))
+            .exec(&format!("rm -f {}", shell_quote(GIT_CREDENTIALS_PATH)))
             .await;
     }
 }
@@ -1260,7 +1384,10 @@ fn build_tools(
                 definition.name
             )
         })?;
-        tools.register(Arc::new(ShellTool::new(shell)));
+        tools.register(Arc::new(ShellTool::new(Arc::clone(&shell))));
+        tools.register(Arc::new(ReadFileTool::new(Arc::clone(&shell))));
+        tools.register(Arc::new(WriteFileTool::new(Arc::clone(&shell))));
+        tools.register(Arc::new(EditFileTool::new(shell)));
     }
     Ok(tools)
 }
