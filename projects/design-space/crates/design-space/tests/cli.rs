@@ -74,6 +74,45 @@ fn creates_structs_and_enums_including_nested_ones() {
     assert!(listed.contains("namespaces/app/Point/Kind"));
     assert!(ok(root, &["show", "namespaces/app/Point"]).contains("kind: Struct"));
     assert!(ok(root, &["show", "namespaces/app/Color"]).contains("kind: Enum"));
+
+    let enums = ok(root, &["search", "--kind", "enum,inner-enum"]);
+    assert!(enums.lines().any(|line| line == "namespaces/app/Color"));
+    assert!(
+        enums
+            .lines()
+            .any(|line| line == "namespaces/app/Point/Kind")
+    );
+    assert!(!enums.lines().any(|line| line == "namespaces/app/Point"));
+
+    let color = ok(root, &["search", "Color"]);
+    assert!(color.lines().any(|line| line == "namespaces/app/Color"));
+    assert!(!color.lines().any(|line| line == "namespaces/app/Point"));
+
+    let namespaced = ok(
+        root,
+        &[
+            "search",
+            "--namespace",
+            "namespaces/app",
+            "--kind",
+            "inner-enum",
+        ],
+    );
+    assert!(
+        namespaced
+            .lines()
+            .any(|line| line == "namespaces/app/Point/Kind")
+    );
+    assert!(
+        !namespaced
+            .lines()
+            .any(|line| line == "namespaces/app/Color")
+    );
+
+    let json = ok(root, &["search", "--kind", "enum", "--format", "json"]);
+    assert!(json.contains("\"qname\": \"namespaces/app/Color\""));
+    assert!(json.contains("\"kind\": \"enum\""));
+    assert!(!json.contains("namespaces/app/Point/Kind"));
 }
 
 #[test]

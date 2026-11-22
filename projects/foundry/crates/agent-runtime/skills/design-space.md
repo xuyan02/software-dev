@@ -27,11 +27,11 @@ qname 由 parent 的 qname 加 `/` 加本地名生成。源码锚点用于把对
 | Directory | 源码目录 | `files/<目录路径>` | 目录路径 | 子目录、File |
 | File | 源码文件 | `files/<文件路径>` | 文件路径 | 通常无；文件中的类型挂在 Namespace 下，通过 `--file` 关联 |
 | Namespace | 逻辑命名空间，不等于物理目录 | `namespaces/<...>`（父是 `namespaces` 或另一个 Namespace） | 可选的 `path:start-end` | Namespace、Class、Struct、Enum、Interface、Function、Mixin |
-| Class | 同时有数据和方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerClass、InnerStruct、InnerEnum、Method |
+| Class | 同时有数据和方法，或变体携带数据的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerClass、InnerStruct、InnerEnum、Method |
 | InnerClass | 嵌套在另一个类型里的 Class | `<parent type>/<name>` | `path:start-end` | InnerClass、InnerStruct、InnerEnum、Method |
-| Struct | 只有数据、没有方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerStruct、InnerEnum |
+| Struct | 只有数据、没有方法，且不是变体携带数据的 enum 的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerStruct、InnerEnum |
 | InnerStruct | 嵌套在另一个类型里的 Struct | `<parent type>/<name>` | `path:start-end` | InnerStruct、InnerEnum |
-| Enum | 只有枚举变体、没有方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerEnum |
+| Enum | 只有常量变体、没有附加数据和方法的顶层类型 | `<namespace>/<name>` | `path:start-end` | InnerEnum |
 | InnerEnum | 嵌套在另一个类型里的 Enum | `<parent type>/<name>` | `path:start-end` | 无 |
 | Interface | 顶层接口、协议、抽象契约 | `<namespace>/<name>` | `path:start-end` | InnerInterface、Method |
 | InnerInterface | 嵌套在类型里的接口/契约 | `<parent type>/<name>` | `path:start-end` | Method |
@@ -202,6 +202,7 @@ ds source changes [--base <ref>]
 ```bash
 ds show <qname> [--source] [--staged]
 ds ls [--files] [--namespaces] [--design] [--staged]
+ds search [QUERY] [--kind <kind>] [--namespace <qname>] [--file <qname>] [--module <qname>] [--document <qname>] [--has-design] [--format text|json]
 ds status --porcelain
 ds doc grep <pattern> [--format text|json]
 ds doc lint [--rules parameter,return] [--format text|json]
@@ -216,6 +217,7 @@ ds doc comment list [--open] [--format text|json]
 - `ds ls --files` 列 Directory/File 的 qname；
 - `ds ls --namespaces` 列非 File/Directory 的 qname；
 - `ds ls --design` 列已有 `document` 引用的对象，输出 qname 和 document qname；
+- `ds search` 按 kind、namespace、file、module、document 和 qname/源码路径查询，不要循环 `ds show` 再 grep kind；`--format json` 返回 qname、kind、source、document、file、module；
 - `ds doc grep` 在文档正文中搜索并返回 qname，不要导出 Markdown 后用 grep 找行号；
 - `ds doc lint` 检查参数/返回值等字段格式，返回 qname、规则和违规文本；
 - `ds doc comment list --open --format json` 返回评论、目标 qname 和当前正文。

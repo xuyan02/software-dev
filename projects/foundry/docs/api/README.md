@@ -550,7 +550,7 @@ MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
 |---|---|---|
 | `GET` | `/api/v1/projects/{project}/merge-requests` | 列出合并请求及其审核 Task |
 | `POST` | `/api/v1/projects/{project}/merge-requests` | 创建合并请求并创建审核 Task |
-| `GET` | `/api/v1/projects/{project}/merge-requests/{id}` | 合并请求详情、Task 和对象差异 |
+| `GET` | `/api/v1/projects/{project}/merge-requests/{id}` | 合并请求详情、Task、文档级 Markdown 差异和对象差异 |
 | `POST` | `/api/v1/projects/{project}/merge-requests/{id}/merge` | 审核通过后执行快进合并 |
 
 创建：

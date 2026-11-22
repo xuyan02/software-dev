@@ -8,8 +8,8 @@ use foundry_app::{
     ProjectService, TaskActorRow, TaskRepository, TaskService, TaskViewer, WorkflowCatalog,
 };
 use foundry_domain::{
-    AccountKind, AccountRole, MergeRequestChange, MergeRequestChangeStatus, MergeRequestStatus,
-    OperationName, ProjectRole, WorkflowId,
+    AccountKind, AccountRole, MergeRequestChange, MergeRequestChangeStatus, MergeRequestDiff,
+    MergeRequestStatus, OperationName, ProjectRole, WorkflowId,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -73,12 +73,16 @@ impl DesignSpaceGateway for FakeGateway {
         _project: &foundry_domain::Project,
         _from_commit: &str,
         _to_commit: &str,
-    ) -> Result<Vec<MergeRequestChange>, DesignSpaceGatewayError> {
-        Ok(vec![MergeRequestChange {
-            status: MergeRequestChangeStatus::Modified,
-            qname: "namespaces/app/Service".to_string(),
-            kind: "class".to_string(),
-        }])
+    ) -> Result<MergeRequestDiff, DesignSpaceGatewayError> {
+        Ok(MergeRequestDiff {
+            changes: vec![MergeRequestChange {
+                status: MergeRequestChangeStatus::Modified,
+                qname: "namespaces/app/Service".to_string(),
+                kind: "class".to_string(),
+                fields: Vec::new(),
+            }],
+            documents: Vec::new(),
+        })
     }
 
     async fn comment_count(

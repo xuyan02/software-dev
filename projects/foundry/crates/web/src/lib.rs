@@ -14,6 +14,7 @@ use foundry_domain::{
     Trigger, WorkflowDefinition, WorkflowOption, WorkflowOwner,
 };
 use serde::Serialize;
+use std::collections::BTreeSet;
 
 /// Vendored Mermaid bundle served at `/assets/mermaid.min.js`.
 pub const MERMAID_SCRIPT: &str = include_str!("../../../web/vendor/mermaid.min.js");
@@ -70,6 +71,15 @@ pub struct DesignSpaceDetail {
     pub comments: Vec<DesignSpaceComment>,
     /// Direct modules or code members of a system/module.
     pub members: Vec<DesignSpaceMember>,
+    /// Section outline for a document whose body is loaded on demand.
+    pub sections: Vec<DesignSpaceSection>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DesignSpaceSection {
+    pub qname: String,
+    pub title: String,
+    pub children: Vec<DesignSpaceSection>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -180,6 +190,35 @@ a { color: var(--accent); }
 .details dd.plain { font-family:inherit; }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:8px;
         padding:16px 18px; margin:12px 0; }
+.mr-changes { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+              margin:12px 0; padding:10px 14px; }
+.mr-changes > summary { cursor:pointer; font-weight:600; }
+.mr-changes-body { margin-top:12px; }
+.mr-doc { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+          margin:12px 0; padding:10px 14px; }
+.mr-doc > summary { cursor:pointer; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mr-doc > summary code { font-size:12px; color:var(--muted); }
+.mr-objects { margin:12px 0 0; }
+.mr-objects > summary { cursor:pointer; color:var(--muted); font-size:13px; margin-bottom:8px; }
+.mr-object { border-top:1px solid var(--line); padding:8px 0; }
+.mr-object > summary { cursor:pointer; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.mr-object code { font-size:12px; }
+.mr-object .muted, .mr-doc .muted { color:var(--muted); font-size:12px; }
+pre.diff { margin:10px 0 0; padding:10px 12px; overflow:auto; max-height:60vh;
+           background:var(--bg); border:1px solid var(--line); border-radius:6px;
+           font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
+           font-size:12px; line-height:1.45; white-space:pre; }
+.diff-line { display:block; min-height:1.45em; padding:0 4px; }
+.diff-add { background:rgba(46,160,67,.16); color:#1a7f37; }
+.diff-del { background:rgba(248,81,73,.16); color:#b42318; }
+.diff-context { color:var(--muted); }
+.diff-gap { color:var(--muted); font-style:italic; }
+table.field-diff { margin-top:10px; background:transparent; }
+table.field-diff th { width:120px; color:var(--muted); font-size:12px; vertical-align:top; }
+table.field-diff td { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px;
+                      white-space:pre-wrap; word-break:break-word; }
+table.field-diff td.diff-before { background:rgba(248,81,73,.08); }
+table.field-diff td.diff-after { background:rgba(46,160,67,.10); }
 .markdown > :first-child { margin-top:0; }
 .markdown > :last-child { margin-bottom:0; }
 .markdown p { margin:8px 0; }
@@ -192,7 +231,22 @@ a { color: var(--accent); }
 .markdown h4 { font-size:17px; }
 .markdown h5, .markdown h6 { font-size:16px; }
 .doc-view { display:flex; flex-direction:column; gap:12px; }
-.doc-toc-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.doc-heading-row { display:flex; align-items:baseline; gap:8px; margin:16px 0 8px; }
+.doc-heading-row h1, .doc-heading-row h2, .doc-heading-row h3,
+.doc-heading-row h4, .doc-heading-row h5, .doc-heading-row h6 { margin:0; }
+.doc-fold { flex:none; background:none; border:1px solid var(--line); border-radius:4px;
+            color:var(--muted); cursor:pointer; font-size:11px; line-height:1.4;
+            padding:1px 6px; }
+.doc-fold:hover { color:var(--fg); border-color:var(--muted); }
+.doc-section-body[hidden] { display:none; }
+.doc-section { margin:6px 0; border-left:1px solid var(--line); padding-left:10px; }
+.doc-section > summary { cursor:pointer; font-weight:600; padding:2px 0; }
+.doc-section-body { margin-left:4px; }
+.doc-section-content { margin:6px 0; }
+.doc-section-content > :first-child { margin-top:0; }
+.doc-section-children { margin-left:8px; }
+.lazy-doc-body { display:flex; flex-direction:column; gap:4px; }
+.doc-toc-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:6px; }
 .doc-toc-head strong { font-size:13px; }
 .doc-toc-head button { padding:3px 8px; font-size:12px; }
 .doc-toc { background:var(--panel); border:1px solid var(--line); border-radius:8px;
@@ -410,6 +464,9 @@ main.wide { max-width:1500px; padding:24px 28px 40px; }
            background:var(--bg); border:1px solid var(--line); color:var(--muted);
            letter-spacing:.03em; }
 .ds-chip.file { min-width:24px; }
+.ds-kind { flex:none; display:inline-flex; align-items:center; height:16px;
+           padding:0 4px; border-radius:4px; border:1px solid var(--line);
+           background:var(--bg); color:var(--accent); font-size:10px; line-height:1; }
 .ds-dot { width:5px; height:5px; border-radius:50%; flex:none; }
 .ds-dot.on { background:#2da44e; }
 .ds-dot.off { background:transparent; border:1px solid var(--line); }
@@ -582,11 +639,82 @@ fn document_view(input: &str) -> String {
         .collect::<String>();
     format!(
         r#"<div class="doc-view">
-<div class="doc-toc-head"><strong>目录</strong><button type="button" class="secondary" onclick="var n=document.getElementById('doc-toc'); n.hidden=!n.hidden; this.textContent=n.hidden?'显示目录':'隐藏目录';">隐藏目录</button></div>
+<div class="doc-toc-head"><strong>目录</strong><button type="button" class="secondary" data-doc-fold-all="open">展开全部</button><button type="button" class="secondary" data-doc-fold-all="close">折叠全部</button><button type="button" class="secondary" onclick="var n=document.getElementById('doc-toc'); n.hidden=!n.hidden; this.textContent=n.hidden?'显示目录':'隐藏目录';">隐藏目录</button></div>
 <nav class="doc-toc" id="doc-toc"><ul>{items}</ul></nav>
 <div class="markdown doc-body">{body}</div>
 </div>"#
     )
+}
+
+fn lazy_document_view(sections: &[DesignSpaceSection]) -> String {
+    let mut toc_index = 0usize;
+    let items = lazy_document_toc(sections, 0, &mut toc_index);
+    let mut body_index = 0usize;
+    let body = sections
+        .iter()
+        .map(|section| lazy_document_section(section, &mut body_index))
+        .collect::<String>();
+    format!(
+        r#"<div class="doc-view lazy-doc-view">
+<div class="doc-toc-head"><strong>目录</strong><button type="button" class="secondary" data-doc-open-all="open">展开全部</button><button type="button" class="secondary" data-doc-open-all="close">折叠全部</button><button type="button" class="secondary" onclick="var n=document.getElementById('doc-toc'); n.hidden=!n.hidden; this.textContent=n.hidden?'显示目录':'隐藏目录';">隐藏目录</button></div>
+<nav class="doc-toc" id="doc-toc"><ul>{items}</ul></nav>
+<div class="markdown doc-body lazy-doc-body">{body}</div>
+</div>"#
+    )
+}
+
+fn lazy_document_toc(sections: &[DesignSpaceSection], depth: usize, index: &mut usize) -> String {
+    let mut out = String::new();
+    for section in sections {
+        let id = *index;
+        *index += 1;
+        out.push_str(&format!(
+            r##"<li style="padding-left:{}px"><a href="#doc-section-{id}">{}</a></li>"##,
+            depth * 14,
+            inline_markdown(&toc_label(&section.title), 0)
+        ));
+        out.push_str(&lazy_document_toc(&section.children, depth + 1, index));
+    }
+    out
+}
+
+fn lazy_document_section(section: &DesignSpaceSection, index: &mut usize) -> String {
+    let id = *index;
+    *index += 1;
+    let children = if section.children.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="doc-section-children">{}</div>"#,
+            section
+                .children
+                .iter()
+                .map(|child| lazy_document_section(child, index))
+                .collect::<String>()
+        )
+    };
+    format!(
+        r#"<details class="doc-section" data-section-qname="{qname}">
+<summary id="doc-section-{id}">{title}</summary>
+<div class="doc-section-body">
+  <div class="doc-section-content markdown" data-section-content><p class="hint">展开后加载…</p></div>
+  {children}
+</div>
+</details>"#,
+        qname = escape(&section.qname),
+        id = id,
+        title = escape(&section.title),
+        children = children,
+    )
+}
+
+/// HTML fragment for one lazily loaded document section.
+pub fn design_space_section(markdown: &str) -> String {
+    markdown_to_html(markdown)
+}
+
+pub fn design_space_section_error(message: &str) -> String {
+    format!(r#"<div class="ds-source-error">{}</div>"#, escape(message))
 }
 
 /// Render document body with one indentation wrapper per heading level.
@@ -615,16 +743,14 @@ fn document_body_html(input: &str) -> String {
             }
             heading_index += 1;
             out.push_str(&format!(
-                r#"<h{level} id="md-h-{heading_index}">{}</h{level}>"#,
+                r#"<div class="doc-heading-row"><h{level} id="md-h-{heading_index}">{}</h{level}><button type="button" class="doc-fold" data-doc-fold aria-expanded="true" title="折叠此节">收起</button></div>"#,
                 inline_markdown(rest.trim_end(), 0)
             ));
-            if level > 1 {
-                out.push_str(&format!(
-                    r#"<div class="doc-level" style="margin-left:{}px">"#,
-                    (level - 1) * 18
-                ));
-                stack.push(level);
-            }
+            out.push_str(&format!(
+                r#"<div class="doc-level doc-section-body" style="margin-left:{}px">"#,
+                (level - 1) * 18
+            ));
+            stack.push(level);
             continue;
         }
         chunk.push_str(line);
@@ -4352,24 +4478,31 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
             .collect::<String>();
         format!(r#"<div id="doc-comment-store" hidden>{rows}</div>"#)
     };
-    let design = match &detail.design {
-        Some(text) if !text.trim().is_empty() && detail.kind == "document" => document_view(text),
-        Some(text) if !text.trim().is_empty() => format!(
-            r#"<div class="markdown">{}</div>"#,
-            markdown_to_html(text)
-        ),
-        Some(_) => r#"<div class="ds-empty">设计为空。</div>"#.to_string(),
-        None if detail.kind == "file" => {
-            r#"<div class="ds-empty">文件对象没有设计文本，可以查看源码。</div>"#.to_string()
+    let has_design = detail.design.is_some() || !detail.sections.is_empty();
+    let design = if detail.kind == "document" && !detail.sections.is_empty() {
+        lazy_document_view(&detail.sections)
+    } else {
+        match &detail.design {
+            Some(text) if !text.trim().is_empty() && detail.kind == "document" => document_view(text),
+            Some(text) if !text.trim().is_empty() => format!(
+                r#"<div class="markdown">{}</div>"#,
+                markdown_to_html(text)
+            ),
+            Some(_) => r#"<div class="ds-empty">设计为空。</div>"#.to_string(),
+            None if detail.kind == "file" => {
+                r#"<div class="ds-empty">文件对象没有设计文本，可以查看源码。</div>"#.to_string()
+            }
+            None if detail.kind == "layer" => {
+                r#"<div class="ds-empty">该层还没有关联设计文档。</div>"#.to_string()
+            }
+            None if matches!(detail.kind.as_str(), "system" | "module" | "design-structure") => {
+                r#"<div class="ds-empty">该系统或模块还没有关联设计文档。</div>"#.to_string()
+            }
+            None => {
+                r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>ds describe</code> 补充。</div>"#
+                    .to_string()
+            }
         }
-        None if detail.kind == "layer" => {
-            r#"<div class="ds-empty">该层还没有关联设计文档。</div>"#.to_string()
-        }
-        None if matches!(detail.kind.as_str(), "system" | "module" | "design-structure") => {
-            r#"<div class="ds-empty">该系统或模块还没有关联设计文档。</div>"#.to_string()
-        }
-        None => r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>ds describe</code> 补充。</div>"#
-            .to_string(),
     };
     format!(
         r#"<div class="ds-detail" data-hash="{hash}">
@@ -4392,8 +4525,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         hash = escape(&detail.hash),
         chip = chip,
         kind = escape(element_kind_label(&detail.kind)),
-        dot = if detail.design.is_some() { "on" } else { "off" },
-        dot_title = if detail.design.is_some() {
+        dot = if has_design { "on" } else { "off" },
+        dot_title = if has_design {
             "已有设计"
         } else {
             "尚无设计"
@@ -4405,11 +4538,7 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         source_tabs = source_tabs,
         source_panel = source_panel,
         short = escape(short_id(&detail.hash)),
-        design_state = if detail.design.is_some() {
-            "已编写"
-        } else {
-            "缺失"
-        },
+        design_state = if has_design { "已编写" } else { "缺失" },
         design = design,
         members = members,
         comments = comments,
@@ -4568,30 +4697,180 @@ pub fn merge_requests_page(
     layout(ctx, Section::MergeRequests, &project.name, &body)
 }
 
-pub fn merge_request_page(
-    ctx: &ConsoleContext,
-    project: &Project,
-    detail: &MergeRequestDetail,
-) -> String {
-    let request = &detail.merge_request;
-    let task = &detail.task;
-    let changes = if detail.changes.is_empty() {
-        r#"<tr><td colspan="3" class="empty">没有对象差异。</td></tr>"#.to_string()
+pub fn merge_request_changes(detail: &MergeRequestDetail) -> String {
+    let document_objects = detail
+        .documents
+        .iter()
+        .flat_map(|document| document.objects.iter().map(|object| object.qname.as_str()))
+        .collect::<BTreeSet<_>>();
+    let other_changes = detail
+        .changes
+        .iter()
+        .filter(|change| !document_objects.contains(change.qname.as_str()))
+        .collect::<Vec<_>>();
+    let other_changes = if other_changes.is_empty() {
+        r#"<p class="hint">没有文档以外的对象变更。</p>"#.to_string()
+    } else {
+        format!(
+            r#"<table>
+<thead><tr><th>状态</th><th>对象</th><th>类型</th></tr></thead>
+<tbody>{}</tbody>
+</table>"#,
+            other_changes
+                .iter()
+                .map(|change| {
+                    format!(
+                        r#"<tr><td>{status}</td><td><code>{qname}</code></td><td>{kind}</td></tr>"#,
+                        status = merge_request_change_label(change.status),
+                        qname = escape(&change.qname),
+                        kind = escape(&change.kind),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let documents = if detail.documents.is_empty() {
+        r#"<p class="hint">没有文档级差异。</p>"#.to_string()
     } else {
         detail
-            .changes
+            .documents
             .iter()
-            .map(|change| {
+            .map(|document| {
+                let status = merge_request_change_label(document.status);
+                let diff = merge_request_diff_html(
+                    document.before.as_deref(),
+                    document.after.as_deref(),
+                );
+                let objects = document
+                    .objects
+                    .iter()
+                    .map(|object| {
+                        let fields = if object.fields.is_empty() {
+                            r#"<p class="hint">仅正文内容变化，见上方文档 diff。</p>"#
+                                .to_string()
+                        } else {
+                            format!(
+                                r#"<table class="field-diff"><tbody>{}</tbody></table>"#,
+                                object
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        format!(
+                                            r#"<tr><th>{field}</th><td class="diff-before">{before}</td><td class="diff-after">{after}</td></tr>"#,
+                                            field = escape(&field.field),
+                                            before = field
+                                                .before
+                                                .as_deref()
+                                                .map(escape)
+                                                .unwrap_or_else(|| "—".to_string()),
+                                            after = field
+                                                .after
+                                                .as_deref()
+                                                .map(escape)
+                                                .unwrap_or_else(|| "—".to_string()),
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            )
+                        };
+                        format!(
+                            r#"<details class="mr-object"><summary><span class="badge">{status}</span> <code>{qname}</code> <span class="muted">{kind}</span></summary>{fields}</details>"#,
+                            status = merge_request_change_label(object.status),
+                            qname = escape(&object.qname),
+                            kind = escape(&object.kind),
+                            fields = fields,
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 format!(
-                    r#"<tr><td>{status}</td><td><code>{qname}</code></td><td>{kind}</td></tr>"#,
-                    status = merge_request_change_label(change.status),
-                    qname = escape(&change.qname),
-                    kind = escape(&change.kind),
+                    r#"<details class="mr-doc" open><summary><span class="badge">{status}</span> <strong>{title}</strong> <code>{qname}</code> <span class="muted">{count} 个对象</span></summary>
+<pre class="diff">{diff}</pre>
+<details class="mr-objects"><summary>对象变更（{count}）</summary>{objects}</details>
+</details>"#,
+                    status = status,
+                    title = escape(&document.title),
+                    qname = escape(&document.qname),
+                    count = document.objects.len(),
+                    diff = diff,
+                    objects = objects,
                 )
             })
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let added = detail
+        .changes
+        .iter()
+        .filter(|change| change.status == MergeRequestChangeStatus::Added)
+        .count();
+    let modified = detail
+        .changes
+        .iter()
+        .filter(|change| change.status == MergeRequestChangeStatus::Modified)
+        .count();
+    let removed = detail
+        .changes
+        .iter()
+        .filter(|change| change.status == MergeRequestChangeStatus::Removed)
+        .count();
+    format!(
+        r#"<p class="hint">新增 {added}，修改 {modified}，删除 {removed}；变更文档 {} 个。</p>
+{documents}
+<h3>其他对象</h3>
+{other_changes}"#,
+        detail.documents.len()
+    )
+}
+
+pub fn merge_request_page(
+    ctx: &ConsoleContext,
+    project: &Project,
+    review: &MergeRequestReview,
+) -> String {
+    let request = &review.merge_request;
+    let task = &review.task;
+    let changes_url = format!(
+        "/projects/{}/merge-requests/{}/changes",
+        project.id, request.id
+    );
+    let changes_lazy = format!(
+        r#"<details class="mr-changes" id="mr-changes" data-changes-url="{url}">
+<summary>展开变更</summary>
+<div class="mr-changes-body"><p class="hint">展开后加载文档和对象变更。</p></div>
+</details>
+<script>
+(() => {{
+  const details = document.getElementById('mr-changes');
+  if (!details) return;
+  const body = details.querySelector('.mr-changes-body');
+  let loaded = false;
+  let loading = false;
+  details.addEventListener('toggle', async () => {{
+    if (!details.open || loaded || loading) return;
+    loading = true;
+    body.innerHTML = '<p class="hint">正在加载变更…</p>';
+    try {{
+      const response = await fetch(details.dataset.changesUrl, {{ headers: {{ accept: 'text/html' }} }});
+      const html = await response.text();
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      body.innerHTML = html;
+      loaded = true;
+    }} catch (error) {{
+      const message = document.createElement('div');
+      message.className = 'error';
+      message.textContent = '无法加载变更：' + error.message;
+      body.replaceChildren(message);
+    }} finally {{
+      loading = false;
+    }}
+  }});
+}})();
+</script>"#,
+        url = escape(&changes_url)
+    );
     let actions = if task.allowed_operations.is_empty() {
         r#"<p class="hint">当前账号没有可执行的审核操作。审核由关联任务中绑定的真人审核人完成。</p>"#
             .to_string()
@@ -4674,10 +4953,7 @@ pub fn merge_request_page(
 <h2>审核</h2>
 <div class="approval-actions">{actions}</div>
 <h2>变更</h2>
-<table>
-<thead><tr><th>状态</th><th>对象</th><th>类型</th></tr></thead>
-<tbody>{changes}</tbody>
-</table>
+{changes_lazy}
 <h2>评论</h2>
 {comments}
 <form class="card" method="post" action="/projects/{project}/merge-requests/{id}/comments">
@@ -4687,7 +4963,7 @@ pub fn merge_request_page(
         project = project.id,
         id = request.id,
         title = escape(&request.title),
-        status = merge_request_status_label(detail.status),
+        status = merge_request_status_label(review.status),
         stage = task
             .stage
             .as_ref()
@@ -4707,7 +4983,7 @@ pub fn merge_request_page(
         created_by = request.created_by,
         description = description,
         actions = actions,
-        changes = changes,
+        changes_lazy = changes_lazy,
         comments = comments,
     );
     layout(ctx, Section::MergeRequests, &request.title, &body)
@@ -4729,6 +5005,103 @@ fn merge_request_change_label(status: MergeRequestChangeStatus) -> &'static str 
         MergeRequestChangeStatus::Modified => "修改",
         MergeRequestChangeStatus::Removed => "删除",
     }
+}
+
+fn merge_request_diff_html(before: Option<&str>, after: Option<&str>) -> String {
+    let before_lines = before
+        .map(|text| text.lines().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let after_lines = after
+        .map(|text| text.lines().collect::<Vec<_>>())
+        .unwrap_or_default();
+    if before.is_some() && before == after {
+        return r#"<span class="diff-line diff-gap">（渲染内容无变化）</span>"#.to_string();
+    }
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    match (before, after) {
+        (None, Some(_)) => {
+            rows.extend(
+                after_lines
+                    .iter()
+                    .map(|line| ("diff-add", format!("+ {line}"))),
+            );
+        }
+        (Some(_), None) => {
+            rows.extend(
+                before_lines
+                    .iter()
+                    .map(|line| ("diff-del", format!("- {line}"))),
+            );
+        }
+        (Some(_), Some(_)) => {
+            let prefix = before_lines
+                .iter()
+                .zip(after_lines.iter())
+                .take_while(|(left, right)| left == right)
+                .count();
+            let max_suffix = before_lines
+                .len()
+                .min(after_lines.len())
+                .saturating_sub(prefix);
+            let suffix = before_lines
+                .iter()
+                .rev()
+                .zip(after_lines.iter().rev())
+                .take(max_suffix)
+                .take_while(|(left, right)| left == right)
+                .count();
+            let context = 4usize;
+            if prefix > context {
+                rows.push(("diff-gap", "…".to_string()));
+            }
+            let prefix_start = prefix.saturating_sub(context);
+            rows.extend(
+                before_lines[prefix_start..prefix]
+                    .iter()
+                    .map(|line| ("diff-context", format!("  {line}"))),
+            );
+            let before_middle = &before_lines[prefix..before_lines.len() - suffix];
+            let after_middle = &after_lines[prefix..after_lines.len() - suffix];
+            rows.extend(
+                before_middle
+                    .iter()
+                    .map(|line| ("diff-del", format!("- {line}"))),
+            );
+            rows.extend(
+                after_middle
+                    .iter()
+                    .map(|line| ("diff-add", format!("+ {line}"))),
+            );
+            let suffix_end = suffix.min(context);
+            rows.extend(
+                before_lines[before_lines.len() - suffix..before_lines.len() - suffix + suffix_end]
+                    .iter()
+                    .map(|line| ("diff-context", format!("  {line}"))),
+            );
+            if suffix > context {
+                rows.push(("diff-gap", "…".to_string()));
+            }
+            if rows.is_empty() {
+                rows.push(("diff-gap", "（渲染内容无变化）".to_string()));
+            }
+        }
+        (None, None) => rows.push(("diff-gap", "（没有内容）".to_string())),
+    }
+    const MAX_LINES: usize = 3000;
+    if rows.len() > MAX_LINES {
+        rows.truncate(MAX_LINES);
+        rows.push(("diff-gap", "…（diff 过长，已截断）".to_string()));
+    }
+    rows.into_iter()
+        .map(|(class, line)| {
+            format!(
+                r#"<span class="diff-line {class}">{line}</span>"#,
+                class = class,
+                line = escape(&line)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 const DESIGN_SPACE_SCRIPT: &str = r##"<script>
@@ -4765,6 +5138,13 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     'document-list': 'LIST', 'document-text': 'TEXT', 'document-topic': 'TOPIC',
     'document-block': 'CODE', 'document-mermaid': 'MER', 'document-html': 'HTML'
   })[kind] || 'DOC';
+  const codeKindLabels = {
+    'class': '类', 'inner-class': '内部类',
+    struct: '结构', 'inner-struct': '内部结构',
+    enum: '枚举', 'inner-enum': '内部枚举',
+    interface: '接口', 'inner-interface': '内部接口',
+    method: '方法', function: '函数', mixin: '混入', part: '部件'
+  };
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
   const documentDisplayName = (item) => {
     const qname = String(item.qname || '');
@@ -5070,9 +5450,18 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     else if (isDocumentKind(item.kind)) label = documentChip(item.kind);
     else if (item.kind === 'concept') label = '概念';
     else if (item.kind === 'concept-directory') label = '概念目录';
+    else if (item.kind === 'namespace') label = 'NS';
     else label = langLabel(item.lang) || '—';
     const node = el('span', 'ds-chip' + (item.isFile ? ' file' : ''), label);
     node.title = (item.lang ? item.lang + ' · ' : '') + item.kind;
+    return node;
+  }
+
+  function kindBadge(item) {
+    const label = codeKindLabels[item.kind];
+    if (!label) return null;
+    const node = el('span', 'ds-kind', label);
+    node.title = item.kind;
     return node;
   }
 
@@ -5135,6 +5524,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       const name = el('span', 'ds-name', shortName(item.name));
       name.title = item.name;
       row.appendChild(name);
+      const kind = kindBadge(item);
+      if (kind) row.appendChild(kind);
       row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
       row.appendChild(el('span', 'ds-meta', item.startLine ? 'L' + item.startLine + '–' + item.endLine : ''));
     } else {
@@ -5294,6 +5685,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     const name = el('span', 'ds-name', shortName(item.name));
     name.title = item.qname || item.name;
     row.appendChild(name);
+    const kind = kindBadge(item);
+    if (kind) row.appendChild(kind);
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
     row.addEventListener('click', () => select(item));
     return row;
@@ -5346,6 +5739,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : (isDocumentKind(item.kind) ? documentDisplayName(item) : shortName(item.name)));
     name.title = item.isFile ? item.path : item.name;
     row.appendChild(name);
+    const kind = kindBadge(item);
+    if (kind) row.appendChild(kind);
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
     const meta = item.path + (item.startLine ? ':' + item.startLine : '');
     row.appendChild(el('span', 'ds-meta', meta));
@@ -5560,6 +5955,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       if (!response.ok) throw new Error('HTTP ' + response.status);
       detailEl.innerHTML = await response.text();
       bindTabs();
+      bindLazySections();
       renderMermaid(detailEl).catch(() => {});
       renderHtmlPreviews(detailEl);
     } catch (error) {
@@ -5578,6 +5974,62 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
         if (button.dataset.dsTab === 'source') loadSource();
       });
     });
+  }
+
+  function bindLazySections() {
+    const sections = [...detailEl.querySelectorAll('details.doc-section[data-section-qname]')];
+    for (const details of sections) {
+      if (details.dataset.bound === '1') continue;
+      details.dataset.bound = '1';
+      details.addEventListener('toggle', () => {
+        if (!details.open || details.dataset.loaded === '1' || details.dataset.loading === '1') return;
+        const body = details.querySelector('[data-section-content]');
+        if (!body) return;
+        const qname = details.dataset.sectionQname;
+        const base = withBranch(elementUrl + encodeURIComponent(selected) + '/section');
+        const url = base + (base.includes('?') ? '&' : '?') + 'qname=' + encodeURIComponent(qname);
+        details.dataset.loading = '1';
+        body.replaceChildren(el('p', 'hint', '加载章节…'));
+        fetch(url, { headers: { accept: 'text/html' } })
+          .then(async (response) => {
+            const html = await response.text();
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            if (html.trim()) {
+              body.innerHTML = html;
+              renderMermaid(body).catch(() => {});
+              renderHtmlPreviews(body);
+            } else {
+              body.replaceChildren(el('p', 'hint', '本节暂无正文。'));
+            }
+            details.dataset.loaded = '1';
+          })
+          .catch((error) => {
+            body.replaceChildren(el('div', 'ds-source-error', '无法加载章节：' + error.message));
+          })
+          .finally(() => { delete details.dataset.loading; });
+      });
+    }
+    for (const button of detailEl.querySelectorAll('[data-doc-open-all]')) {
+      if (button.dataset.bound === '1') continue;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const open = button.dataset.docOpenAll === 'open';
+        for (const details of sections) details.open = open;
+      });
+    }
+    for (const link of detailEl.querySelectorAll('.doc-toc a')) {
+      if (link.dataset.bound === '1') continue;
+      link.dataset.bound = '1';
+      link.addEventListener('click', () => {
+        const id = String(link.getAttribute('href') || '').replace(/^#/, '');
+        const target = id ? document.getElementById(id) : null;
+        let node = target ? target.parentElement : null;
+        while (node && node !== detailEl) {
+          if (node.matches && node.matches('details.doc-section')) node.open = true;
+          node = node.parentElement;
+        }
+      });
+    }
   }
 
   let commentPopover = null;
@@ -5636,6 +6088,50 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     popover.style.left = left + 'px';
     popover.style.top = top + 'px';
   }
+  function setDocFold(button, open) {
+    const row = button.closest('.doc-heading-row');
+    const body = row ? row.nextElementSibling : null;
+    if (!body || !body.classList.contains('doc-section-body')) return;
+    body.hidden = !open;
+    button.setAttribute('aria-expanded', String(open));
+    button.textContent = open ? '收起' : '展开';
+    button.title = open ? '折叠此节' : '展开此节';
+  }
+  function setAllDocFolds(open) {
+    detailEl.querySelectorAll('[data-doc-fold]').forEach((button) => setDocFold(button, open));
+  }
+  function revealDocHeading(heading) {
+    let node = heading.parentElement;
+    while (node && node !== detailEl) {
+      if (node.classList.contains('doc-section-body') && node.hidden) {
+        const row = node.previousElementSibling;
+        const button = row ? row.querySelector('[data-doc-fold]') : null;
+        if (button) setDocFold(button, true);
+        else node.hidden = false;
+      }
+      node = node.parentElement;
+    }
+  }
+  detailEl.addEventListener('click', (event) => {
+    const all = event.target.closest('[data-doc-fold-all]');
+    if (all) {
+      event.preventDefault();
+      setAllDocFolds(all.dataset.docFoldAll === 'open');
+      return;
+    }
+    const fold = event.target.closest('[data-doc-fold]');
+    if (fold) {
+      event.preventDefault();
+      setDocFold(fold, fold.getAttribute('aria-expanded') !== 'true');
+      return;
+    }
+    const link = event.target.closest('.doc-toc a');
+    if (link) {
+      const id = String(link.getAttribute('href') || '').replace(/^#/, '');
+      const heading = id ? document.getElementById(id) : null;
+      if (heading) revealDocHeading(heading);
+    }
+  });
   detailEl.addEventListener('click', (event) => {
     const chip = event.target.closest('.doc-comment-chip');
     if (!chip) return;
@@ -6769,6 +7265,7 @@ mod tests {
                 design: Some("<script>alert(1)</script>".to_string()),
                 comments: Vec::new(),
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -6815,6 +7312,7 @@ mod tests {
                 design: Some("登录流程".to_string()),
                 comments: Vec::new(),
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -6838,6 +7336,7 @@ mod tests {
                 design: Some("## 登录\n\n登录使用 OAuth。".to_string()),
                 comments: Vec::new(),
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -6863,6 +7362,40 @@ mod tests {
     }
 
     #[test]
+    fn document_detail_loads_sections_on_demand() {
+        let html = design_space_element(
+            &DesignSpaceDetail {
+                hash: "ef".repeat(32),
+                name: "技术设计".to_string(),
+                lang: String::new(),
+                kind: "document".to_string(),
+                path: "documents/design/technical".to_string(),
+                start_line: 0,
+                end_line: 0,
+                design: None,
+                comments: Vec::new(),
+                members: Vec::new(),
+                sections: vec![DesignSpaceSection {
+                    qname: "documents/design/technical/section1".to_string(),
+                    title: "登录".to_string(),
+                    children: vec![DesignSpaceSection {
+                        qname: "documents/design/technical/section1/section1".to_string(),
+                        title: "失败".to_string(),
+                        children: Vec::new(),
+                    }],
+                }],
+            },
+            "/projects/x/design-space/elements/y/source",
+        );
+        assert!(html.contains(r#"data-section-qname="documents/design/technical/section1""#));
+        assert!(html.contains("展开后加载…"));
+        assert!(html.contains(r#"id="doc-section-0""#));
+        assert!(html.contains(r##"href="#doc-section-1""##));
+        assert!(html.contains("已编写"));
+        assert!(!html.contains("登录使用 OAuth。"));
+    }
+
+    #[test]
     fn document_detail_has_toc_and_renders_topic_as_bold_text() {
         let html = design_space_element(
             &DesignSpaceDetail {
@@ -6881,6 +7414,7 @@ mod tests {
                     text: "需要补充失败语义".to_string(),
                 }],
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -6891,7 +7425,9 @@ mod tests {
         assert!(html.contains(r##"href="#md-h-1""##));
         assert!(html.contains(r##"href="#md-h-2""##));
         assert!(html.contains(r##"id="md-h-1""##));
-        assert!(html.contains(r#"class="doc-level" style="margin-left:18px""#));
+        assert!(html.contains(r#"class="doc-level doc-section-body" style="margin-left:18px""#));
+        assert!(html.contains("data-doc-fold"));
+        assert!(html.contains(r#"data-doc-fold-all="open""#));
         assert!(html.contains("<strong>职责</strong>"));
         assert!(!html.contains("TOPIC"));
         assert!(!html.contains("文档结构"));
@@ -6924,6 +7460,7 @@ mod tests {
                         kind: "module".to_string(),
                     },
                 ],
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -6975,6 +7512,7 @@ mod tests {
                     },
                 ],
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -7011,6 +7549,7 @@ mod tests {
                 design: None,
                 comments: Vec::new(),
                 members: Vec::new(),
+                sections: Vec::new(),
             },
             "/projects/x/design-space/elements/y/source",
         );
@@ -7091,6 +7630,19 @@ mod tests {
     }
 
     #[test]
+    fn merge_request_diff_marks_added_and_removed_lines() {
+        let html = merge_request_diff_html(
+            Some("# 标题\n\n旧正文。\n\n公共结尾。"),
+            Some("# 标题\n\n新正文。\n\n公共结尾。"),
+        );
+        assert!(html.contains("diff-del"));
+        assert!(html.contains("diff-add"));
+        assert!(html.contains("- 旧正文。"));
+        assert!(html.contains("+ 新正文。"));
+        assert!(html.contains("公共结尾。"));
+    }
+
+    #[test]
     fn merge_request_page_uses_task_operations_and_escapes_content() {
         use foundry_domain::{
             AllowedOperation, DesignSpaceMergeRequest, MergeRequestDetail, OperationName, StageKey,
@@ -7159,11 +7711,10 @@ mod tests {
         let html = merge_request_page(
             &ctx,
             &project,
-            &MergeRequestDetail {
+            &MergeRequestReview {
                 merge_request: request.clone(),
-                task,
+                task: task.clone(),
                 status: MergeRequestStatus::Approved,
-                changes: Vec::new(),
             },
         );
         assert!(html.contains("Land &lt;script&gt;"));
@@ -7174,5 +7725,37 @@ mod tests {
         )));
         assert!(html.contains(r#"value="merge:merge""#));
         assert!(html.contains("审核任务"));
+        assert!(html.contains("data-changes-url"));
+        assert!(html.contains("展开变更"));
+        assert!(!html.contains("技术设计"));
+        assert!(!html.contains("+ 新正文"));
+
+        let changes = merge_request_changes(&MergeRequestDetail {
+            merge_request: request,
+            task,
+            status: MergeRequestStatus::Approved,
+            changes: vec![foundry_domain::MergeRequestChange {
+                status: MergeRequestChangeStatus::Modified,
+                qname: "documents/design/technical/section1/body1".to_string(),
+                kind: "document-text".to_string(),
+                fields: vec![foundry_domain::MergeRequestFieldChange {
+                    field: "text".to_string(),
+                    before: Some("旧正文".to_string()),
+                    after: Some("新正文".to_string()),
+                }],
+            }],
+            documents: vec![foundry_domain::MergeRequestDocumentChange {
+                status: MergeRequestChangeStatus::Modified,
+                qname: "documents/design/technical".to_string(),
+                title: "技术设计".to_string(),
+                before: Some("# 技术设计\n\n旧正文".to_string()),
+                after: Some("# 技术设计\n\n新正文".to_string()),
+                objects: Vec::new(),
+            }],
+        });
+        assert!(changes.contains("mr-doc"));
+        assert!(changes.contains("diff-add"));
+        assert!(changes.contains("diff-del"));
+        assert!(changes.contains("+ 新正文"));
     }
 }

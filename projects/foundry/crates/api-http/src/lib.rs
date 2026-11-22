@@ -113,6 +113,10 @@ pub fn router(state: AppState) -> Router {
             get(routes::design_space_element),
         )
         .route(
+            "/projects/{id}/design-space/elements/{hash}/section",
+            get(routes::design_space_element_section),
+        )
+        .route(
             "/projects/{id}/design-space/elements/{hash}/source",
             get(routes::design_space_element_source),
         )
@@ -123,6 +127,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/projects/{id}/merge-requests/{merge_request_id}",
             get(routes::merge_request_page),
+        )
+        .route(
+            "/projects/{id}/merge-requests/{merge_request_id}/changes",
+            get(routes::merge_request_changes),
         )
         .route(
             "/projects/{id}/merge-requests/{merge_request_id}/approve",

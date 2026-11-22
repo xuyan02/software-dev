@@ -1160,6 +1160,13 @@ pub struct DesignSpaceQuery {
     pub branch: Option<String>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct DesignSpaceSectionQuery {
+    #[serde(default)]
+    pub branch: Option<String>,
+    pub qname: String,
+}
+
 fn requested_design_space_branch(project: &Project, query: &DesignSpaceQuery) -> String {
     query
         .branch
@@ -1259,6 +1266,47 @@ pub async fn design_space_element(
     match access.element(&project, &hash, &branch).await {
         Ok(detail) => Html(foundry_web::design_space_element(&detail, &source_url)).into_response(),
         Err(error) => Html(foundry_web::design_space_element_error(&error)).into_response(),
+    }
+}
+
+pub async fn design_space_element_section(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, hash)): Path<(Uuid, String)>,
+    Query(query): Query<DesignSpaceSectionQuery>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    let qname = query.qname.trim();
+    if qname.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Html(foundry_web::design_space_section_error("缺少章节 qname")),
+        )
+            .into_response();
+    }
+    let branch = requested_design_space_branch(
+        &project,
+        &DesignSpaceQuery {
+            branch: query.branch,
+        },
+    );
+    match state
+        .design_space
+        .section(&project, &hash, &branch, qname)
+        .await
+    {
+        Ok(markdown) => Html(foundry_web::design_space_section(&markdown)).into_response(),
+        Err(error) => Html(foundry_web::design_space_section_error(&error)).into_response(),
     }
 }
 
@@ -1418,6 +1466,46 @@ pub async fn merge_request_page(
     };
     match state
         .merge_requests
+        .review(
+            &project,
+            merge_request_id,
+            merge_request_viewer(&session.account),
+        )
+        .await
+    {
+        Ok(review) => Html(foundry_web::merge_request_page(
+            &session.context,
+            &project,
+            &review,
+        ))
+        .into_response(),
+        Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response(),
+        Err(error) => auth::web_error(error),
+    }
+}
+
+pub async fn merge_request_changes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, merge_request_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let session = match auth::web_account_session(&state, &headers).await {
+        Ok(session) => session,
+        Err(response) => return response,
+    };
+    let Some(project) = session_project(&session, id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Html(foundry_web::not_found_page(&session.context)),
+        )
+            .into_response();
+    };
+    match state
+        .merge_requests
         .get(
             &project,
             merge_request_id,
@@ -1425,12 +1513,7 @@ pub async fn merge_request_page(
         )
         .await
     {
-        Ok(detail) => Html(foundry_web::merge_request_page(
-            &session.context,
-            &project,
-            &detail,
-        ))
-        .into_response(),
+        Ok(detail) => Html(foundry_web::merge_request_changes(&detail)).into_response(),
         Err(ServiceError::NotFound { .. } | ServiceError::NotFoundNamed { .. }) => (
             StatusCode::NOT_FOUND,
             Html(foundry_web::not_found_page(&session.context)),

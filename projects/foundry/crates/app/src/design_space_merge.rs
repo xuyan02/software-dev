@@ -12,7 +12,7 @@ use crate::{
 use async_trait::async_trait;
 use foundry_domain::{
     AccountKind, Actor, DESIGN_SPACE_MERGE_OPERATION, DesignSpaceMergeRequestDAO, DomainEvent,
-    DomainEventKind, MergeRequestChange, MergeRequestDetail, MergeRequestReview, OperationName,
+    DomainEventKind, MergeRequestDetail, MergeRequestDiff, MergeRequestReview, OperationName,
     Project, RoleKey, TaskActorDAO, TaskDAO, TaskState, WorkflowId,
 };
 use serde_json::json;
@@ -87,7 +87,7 @@ pub trait DesignSpaceGateway: Send + Sync {
         project: &Project,
         from_commit: &str,
         to_commit: &str,
-    ) -> Result<Vec<MergeRequestChange>, DesignSpaceGatewayError>;
+    ) -> Result<MergeRequestDiff, DesignSpaceGatewayError>;
 
     /// Count design-document comments reachable from `commit`.
     async fn comment_count(
@@ -154,7 +154,7 @@ impl DesignSpaceGateway for UnavailableDesignSpaceGateway {
         _project: &Project,
         _from_commit: &str,
         _to_commit: &str,
-    ) -> Result<Vec<MergeRequestChange>, DesignSpaceGatewayError> {
+    ) -> Result<MergeRequestDiff, DesignSpaceGatewayError> {
         Err(unavailable())
     }
 
@@ -604,6 +604,28 @@ impl MergeRequestService {
         self.get(project, request.id, viewer).await.map(Some)
     }
 
+    /// MR metadata and review status without computing the design diff. The
+    /// diff is loaded separately when the page's changes section is expanded.
+    pub async fn review(
+        &self,
+        project: &Project,
+        id: Uuid,
+        viewer: TaskViewer,
+    ) -> Result<MergeRequestReview, ServiceError> {
+        let request = self.load(project.id, id).await?;
+        let task = self.tasks.get(project.id, request.task_id, viewer).await?;
+        let status = request.view().status_from(
+            task.state,
+            task.stage.as_ref().map(|stage| stage.as_str()),
+            task.result.as_ref().map(|result| result.as_str()),
+        );
+        Ok(MergeRequestReview {
+            merge_request: request.view(),
+            task,
+            status,
+        })
+    }
+
     pub async fn get(
         &self,
         project: &Project,
@@ -617,7 +639,7 @@ impl MergeRequestService {
             task.stage.as_ref().map(|stage| stage.as_str()),
             task.result.as_ref().map(|result| result.as_str()),
         );
-        let changes = self
+        let diff = self
             .design_space
             .diff(project, &request.target_commit, &request.source_commit)
             .await?;
@@ -625,7 +647,8 @@ impl MergeRequestService {
             merge_request: request.view(),
             task,
             status,
-            changes,
+            changes: diff.changes,
+            documents: diff.documents,
         })
     }
 

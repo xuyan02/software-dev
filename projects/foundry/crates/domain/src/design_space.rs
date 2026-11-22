@@ -159,12 +159,40 @@ pub enum MergeRequestChangeStatus {
     Removed,
 }
 
+/// One changed field on a design-space object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRequestFieldChange {
+    pub field: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
 /// One design-space object difference between the target and source commits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergeRequestChange {
     pub status: MergeRequestChangeStatus,
     pub qname: String,
     pub kind: String,
+    #[serde(default)]
+    pub fields: Vec<MergeRequestFieldChange>,
+}
+
+/// A changed design document, rendered to Markdown at both commits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRequestDocumentChange {
+    pub status: MergeRequestChangeStatus,
+    pub qname: String,
+    pub title: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub objects: Vec<MergeRequestChange>,
+}
+
+/// Object-level and document-level views of the same MR diff.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MergeRequestDiff {
+    pub changes: Vec<MergeRequestChange>,
+    pub documents: Vec<MergeRequestDocumentChange>,
 }
 
 /// Read model for merge-request lists and detail pages.
@@ -181,6 +209,8 @@ pub struct MergeRequestDetail {
     pub task: Task,
     pub status: MergeRequestStatus,
     pub changes: Vec<MergeRequestChange>,
+    #[serde(default)]
+    pub documents: Vec<MergeRequestDocumentChange>,
 }
 
 #[cfg(test)]

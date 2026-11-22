@@ -14,17 +14,20 @@ use design_space as ds;
 use ds::catalog::Catalog;
 use ds::model::{
     CommitHash, ConceptPayload, DesignObject, DocComment, GitOid, Hash32, Kind, ObjectPayload,
-    SymbolHash, ViewPayload,
+    ParentRef, SymbolHash, ViewPayload,
 };
 use ds::store::Store;
 use foundry_app::{DesignSpaceGateway, DesignSpaceGatewayError};
-use foundry_domain::{MergeRequestChange, MergeRequestChangeStatus, Project};
+use foundry_domain::{
+    MergeRequestChange, MergeRequestChangeStatus, MergeRequestDiff, MergeRequestDocumentChange,
+    MergeRequestFieldChange, Project,
+};
 use foundry_web::{
     DesignSpaceComment, DesignSpaceDetail, DesignSpaceElement, DesignSpaceLine, DesignSpaceMember,
-    DesignSpaceOverview, DesignSpaceSource,
+    DesignSpaceOverview, DesignSpaceSection, DesignSpaceSource,
 };
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const SOURCE_CONTEXT: u32 = 18;
 const SOURCE_MAX_LINES: u32 = 600;
@@ -82,6 +85,25 @@ impl DesignSpaceAccess {
         tokio::task::spawn_blocking(move || access.element_blocking(&project, &hash, &branch))
             .await
             .map_err(|error| error.to_string())?
+    }
+
+    pub async fn section(
+        &self,
+        project: &Project,
+        hash: &str,
+        branch: &str,
+        qname: &str,
+    ) -> Result<String, String> {
+        let access = self.clone();
+        let project = project.clone();
+        let hash = hash.to_owned();
+        let branch = branch.to_owned();
+        let qname = qname.to_owned();
+        tokio::task::spawn_blocking(move || {
+            access.section_blocking(&project, &hash, &branch, &qname)
+        })
+        .await
+        .map_err(|error| error.to_string())?
     }
 
     pub async fn source(
@@ -172,7 +194,7 @@ impl DesignSpaceAccess {
             .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
         let (qname, object) = find_object(&loaded.catalog, hash)?;
         let info = element_info(&loaded.store, qname, object)?;
-        let (design, comments) = match &object.payload {
+        let (design, comments, sections) = match &object.payload {
             ObjectPayload::Concept(p) => (
                 Some(render_concept(
                     &loaded.store,
@@ -183,6 +205,7 @@ impl DesignSpaceAccess {
                     branch,
                 )),
                 Vec::new(),
+                Vec::new(),
             ),
             ObjectPayload::ConceptDirectory(_) => (
                 Some(render_concept_directory(
@@ -191,7 +214,14 @@ impl DesignSpaceAccess {
                     qname,
                 )),
                 Vec::new(),
+                Vec::new(),
             ),
+            ObjectPayload::Document(_) => {
+                let sections = document_outline(&loaded.store, &loaded.catalog, qname)?;
+                let mut comments = Vec::new();
+                collect_document_comments(&loaded.store, &loaded.catalog, qname, &mut comments)?;
+                (None, comments, sections)
+            }
             _ => match document_target(object) {
                 Some(target) => {
                     let (design, comments) = render_document(
@@ -201,14 +231,14 @@ impl DesignSpaceAccess {
                         project.id,
                         branch,
                     )?;
-                    (Some(design), comments)
+                    (Some(design), comments, Vec::new())
                 }
                 None if is_document_kind(object.kind) => {
                     let (design, comments) =
                         render_document(&loaded.store, &loaded.catalog, qname, project.id, branch)?;
-                    (Some(design), comments)
+                    (Some(design), comments, Vec::new())
                 }
-                None => (None, Vec::new()),
+                None => (None, Vec::new(), Vec::new()),
             },
         };
         Ok(DesignSpaceDetail {
@@ -222,7 +252,75 @@ impl DesignSpaceAccess {
             design,
             comments,
             members: structure_member_infos(&loaded.store, &loaded.catalog, qname, object)?,
+            sections,
         })
+    }
+
+    fn section_blocking(
+        &self,
+        project: &Project,
+        hash: &str,
+        branch: &str,
+        qname: &str,
+    ) -> Result<String, String> {
+        let loaded = self
+            .load_branch(project, branch)?
+            .ok_or_else(|| "设计空间分支还没有提交".to_string())?;
+        let (document, _) = find_object(&loaded.catalog, hash)?;
+        let section = loaded
+            .store
+            .put_symbol(qname)
+            .map_err(|error| error.to_string())?;
+        let object = loaded
+            .catalog
+            .get(section)
+            .ok_or_else(|| format!("章节不存在: {qname}"))?;
+        if document_root(&loaded.catalog, section) != Some(document) {
+            return Err(format!("章节不属于该文档: {qname}"));
+        }
+        let refs = RenderRefs {
+            project_id: project.id,
+            branch,
+        };
+        let mut out = String::new();
+        let target = loaded
+            .store
+            .get_symbol(section)
+            .map_err(|error| error.to_string())?;
+        let marker = comment_marker(object, &target);
+        match &object.payload {
+            ObjectPayload::DocumentSection(payload) => {
+                if !marker.is_empty() {
+                    out.push_str(&marker);
+                    out.push_str("\n\n");
+                }
+                let mut comments = Vec::new();
+                for body in &payload.body {
+                    render_doc(
+                        &loaded.store,
+                        &loaded.catalog,
+                        *body,
+                        0,
+                        &refs,
+                        &mut out,
+                        &mut comments,
+                    )?;
+                }
+            }
+            _ => {
+                let mut comments = Vec::new();
+                render_doc(
+                    &loaded.store,
+                    &loaded.catalog,
+                    section,
+                    0,
+                    &refs,
+                    &mut out,
+                    &mut comments,
+                )?;
+            }
+        }
+        Ok(out)
     }
 
     fn source_blocking(
@@ -380,7 +478,7 @@ impl DesignSpaceAccess {
         project: &Project,
         from_commit: &str,
         to_commit: &str,
-    ) -> Result<Vec<MergeRequestChange>, String> {
+    ) -> Result<MergeRequestDiff, String> {
         let path = self.repo_path(project)?;
         let store = Store::open(&path).map_err(display)?;
         let from = load_commit_catalog(&store, from_commit)?;
@@ -388,32 +486,74 @@ impl DesignSpaceAccess {
         let mut names = BTreeSet::new();
         names.extend(from.catalog.iter().map(|(name, _)| name));
         names.extend(to.catalog.iter().map(|(name, _)| name));
+
         let mut changes = Vec::with_capacity(names.len());
+        let mut documents: BTreeMap<SymbolHash, Vec<MergeRequestChange>> = BTreeMap::new();
         for qname in names {
             let qname_text = store.get_symbol(qname).map_err(display)?;
-            match (from.catalog.get(qname), to.catalog.get(qname)) {
-                (None, Some(object)) => changes.push(MergeRequestChange {
-                    status: MergeRequestChangeStatus::Added,
-                    qname: qname_text,
-                    kind: kind_label(object.kind).to_string(),
-                }),
-                (Some(object), None) => changes.push(MergeRequestChange {
-                    status: MergeRequestChangeStatus::Removed,
-                    qname: qname_text,
-                    kind: kind_label(object.kind).to_string(),
-                }),
+            let before = from.catalog.get(qname);
+            let after = to.catalog.get(qname);
+            let (status, object) = match (before, after) {
+                (None, Some(object)) => (MergeRequestChangeStatus::Added, object),
+                (Some(object), None) => (MergeRequestChangeStatus::Removed, object),
                 (Some(before), Some(after)) if before != after => {
-                    changes.push(MergeRequestChange {
-                        status: MergeRequestChangeStatus::Modified,
-                        qname: qname_text,
-                        kind: kind_label(after.kind).to_string(),
-                    });
+                    (MergeRequestChangeStatus::Modified, after)
                 }
-                _ => {}
+                _ => continue,
+            };
+            let fields = document_field_changes(&store, before, after)?;
+            let change = MergeRequestChange {
+                status,
+                qname: qname_text,
+                kind: kind_label(object.kind).to_string(),
+                fields,
+            };
+            if let Some(document) =
+                document_root(&to.catalog, qname).or_else(|| document_root(&from.catalog, qname))
+            {
+                documents.entry(document).or_default().push(change.clone());
             }
+            changes.push(change);
         }
         changes.sort_by(|left, right| left.qname.cmp(&right.qname));
-        Ok(changes)
+
+        let mut document_changes = Vec::with_capacity(documents.len());
+        for (qname, objects) in documents {
+            let before_object = from.catalog.get(qname);
+            let after_object = to.catalog.get(qname);
+            let status = match (before_object, after_object) {
+                (None, Some(_)) => MergeRequestChangeStatus::Added,
+                (Some(_), None) => MergeRequestChangeStatus::Removed,
+                _ => MergeRequestChangeStatus::Modified,
+            };
+            let title = after_object
+                .or(before_object)
+                .and_then(|object| match &object.payload {
+                    ObjectPayload::Document(document) => Some(document.title.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| store.get_symbol(qname).unwrap_or_else(|_| qname.to_hex()));
+            let before = before_object
+                .map(|_| render_document_markdown(&store, &from.catalog, qname))
+                .transpose()?;
+            let after = after_object
+                .map(|_| render_document_markdown(&store, &to.catalog, qname))
+                .transpose()?;
+            document_changes.push(MergeRequestDocumentChange {
+                status,
+                qname: store.get_symbol(qname).map_err(display)?,
+                title,
+                before,
+                after,
+                objects,
+            });
+        }
+        document_changes.sort_by(|left, right| left.qname.cmp(&right.qname));
+
+        Ok(MergeRequestDiff {
+            changes,
+            documents: document_changes,
+        })
     }
 
     fn comment_count_blocking(&self, project: &Project, commit: &str) -> Result<usize, String> {
@@ -588,7 +728,7 @@ impl DesignSpaceGateway for DesignSpaceAccess {
         project: &Project,
         from_commit: &str,
         to_commit: &str,
-    ) -> Result<Vec<MergeRequestChange>, DesignSpaceGatewayError> {
+    ) -> Result<MergeRequestDiff, DesignSpaceGatewayError> {
         let access = self.clone();
         let project = project.clone();
         let from_commit = from_commit.to_owned();
@@ -676,6 +816,284 @@ fn load_commit_catalog(store: &Store, commit: &str) -> Result<CommitCatalog, Str
     Ok(CommitCatalog {
         catalog: Catalog::load(store, commit.view).map_err(display)?,
     })
+}
+
+fn document_root(catalog: &Catalog, qname: SymbolHash) -> Option<SymbolHash> {
+    let mut current = qname;
+    for _ in 0..256 {
+        let object = catalog.get(current)?;
+        match &object.payload {
+            ObjectPayload::Document(_) => return Some(current),
+            ObjectPayload::DocumentSection(payload) => current = payload.parent,
+            ObjectPayload::DocumentList(payload) => current = payload.parent,
+            ObjectPayload::DocumentText(payload) => current = payload.parent,
+            ObjectPayload::DocumentTopic(payload) => current = payload.parent,
+            ObjectPayload::Block(payload) => current = payload.parent,
+            ObjectPayload::MermaidBlock(payload) => current = payload.parent,
+            ObjectPayload::HtmlBlock(payload) => current = payload.parent,
+            _ => return None,
+        }
+        if current.is_zero() {
+            return None;
+        }
+    }
+    None
+}
+
+fn document_field_changes(
+    store: &Store,
+    before: Option<&DesignObject>,
+    after: Option<&DesignObject>,
+) -> Result<Vec<MergeRequestFieldChange>, String> {
+    let before_fields = before
+        .map(|object| document_object_fields(store, object))
+        .transpose()?
+        .unwrap_or_default();
+    let after_fields = after
+        .map(|object| document_object_fields(store, object))
+        .transpose()?
+        .unwrap_or_default();
+    let mut keys = BTreeSet::new();
+    keys.extend(before_fields.keys().copied());
+    keys.extend(after_fields.keys().copied());
+    let mut changes = Vec::new();
+    for key in keys {
+        let old = before_fields.get(key).cloned();
+        let new = after_fields.get(key).cloned();
+        if old != new {
+            changes.push(MergeRequestFieldChange {
+                field: key.to_string(),
+                before: old,
+                after: new,
+            });
+        }
+    }
+    Ok(changes)
+}
+
+/// Fields that make a design-document change understandable without dumping
+/// the full document body into the MR list. Text bodies are shown by the
+/// document-level Markdown diff instead.
+fn document_object_fields(
+    store: &Store,
+    object: &DesignObject,
+) -> Result<BTreeMap<&'static str, String>, String> {
+    let mut fields = BTreeMap::new();
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(payload) => {
+            fields.insert("parent", parent_ref_text(store, payload.parent));
+        }
+        ObjectPayload::Document(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+            fields.insert("title", payload.title.clone());
+            fields.insert("sections", symbol_list_text(store, &payload.sections));
+        }
+        ObjectPayload::DocumentSection(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+            fields.insert("title", payload.title.clone());
+            fields.insert("body", symbol_list_text(store, &payload.body));
+            fields.insert("sections", symbol_list_text(store, &payload.sections));
+        }
+        ObjectPayload::DocumentList(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+            fields.insert("items", symbol_list_text(store, &payload.items));
+        }
+        ObjectPayload::DocumentText(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+        }
+        ObjectPayload::DocumentTopic(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+            fields.insert("title", payload.title.clone());
+            fields.insert("paragraphs", symbol_list_text(store, &payload.paragraphs));
+        }
+        ObjectPayload::Block(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+            fields.insert("language", payload.language.clone());
+        }
+        ObjectPayload::MermaidBlock(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+        }
+        ObjectPayload::HtmlBlock(payload) => {
+            fields.insert("parent", symbol_text(store, payload.parent));
+        }
+        _ => {}
+    }
+    Ok(fields)
+}
+
+fn render_document_markdown(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+) -> Result<String, String> {
+    let object = catalog
+        .get(qname)
+        .ok_or_else(|| format!("missing document object: {}", qname.to_hex()))?;
+    let mut out = String::new();
+    render_document_object(store, catalog, object, 1, &mut out)?;
+    Ok(out)
+}
+
+fn render_document_object(
+    store: &Store,
+    catalog: &Catalog,
+    object: &DesignObject,
+    level: usize,
+    out: &mut String,
+) -> Result<(), String> {
+    match &object.payload {
+        ObjectPayload::Document(payload) => {
+            push_heading(out, level, &payload.title);
+            for section in &payload.sections {
+                if let Some(child) = catalog.get(*section) {
+                    render_document_object(store, catalog, child, level + 1, out)?;
+                }
+            }
+        }
+        ObjectPayload::DocumentSection(payload) => {
+            push_heading(out, level, &payload.title);
+            render_document_body(store, catalog, &payload.body, level + 1, out)?;
+            for section in &payload.sections {
+                if let Some(child) = catalog.get(*section) {
+                    render_document_object(store, catalog, child, level + 1, out)?;
+                }
+            }
+        }
+        ObjectPayload::DocumentTopic(payload) => {
+            push_heading(out, level, &payload.title);
+            render_document_body(store, catalog, &payload.paragraphs, level + 1, out)?;
+        }
+        ObjectPayload::DocumentList(payload) => {
+            for item in &payload.items {
+                if let Some(item) = catalog.get(*item)
+                    && let ObjectPayload::DocumentText(text) = &item.payload
+                {
+                    out.push_str("- ");
+                    out.push_str(&text.text);
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
+        ObjectPayload::DocumentText(payload) => {
+            out.push_str(&payload.text);
+            out.push_str("\n\n");
+        }
+        ObjectPayload::Block(payload) => {
+            push_fence(out, &payload.language, &payload.text);
+        }
+        ObjectPayload::MermaidBlock(payload) => {
+            push_fence(out, "mermaid", &payload.text);
+        }
+        ObjectPayload::HtmlBlock(payload) => {
+            push_fence(out, "html", &payload.text);
+        }
+        ObjectPayload::DocumentDirectory(_) => {
+            for child in catalog.children(qname_of(object)) {
+                if let Some(child_object) = catalog.get(child)
+                    && child_object.kind == Kind::Document
+                {
+                    render_document_object(store, catalog, child_object, level, out)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn qname_of(object: &DesignObject) -> SymbolHash {
+    match &object.payload {
+        ObjectPayload::DocumentDirectory(payload) => payload.qualified_name,
+        ObjectPayload::Document(payload) => payload.qualified_name,
+        ObjectPayload::DocumentSection(payload) => payload.qualified_name,
+        ObjectPayload::DocumentList(payload) => payload.qualified_name,
+        ObjectPayload::DocumentText(payload) => payload.qualified_name,
+        ObjectPayload::DocumentTopic(payload) => payload.qualified_name,
+        ObjectPayload::Block(payload) => payload.qualified_name,
+        ObjectPayload::MermaidBlock(payload) => payload.qualified_name,
+        ObjectPayload::HtmlBlock(payload) => payload.qualified_name,
+        _ => SymbolHash::ZERO,
+    }
+}
+
+fn render_document_body(
+    store: &Store,
+    catalog: &Catalog,
+    refs: &[SymbolHash],
+    level: usize,
+    out: &mut String,
+) -> Result<(), String> {
+    for reference in refs {
+        let Some(object) = catalog.get(*reference) else {
+            continue;
+        };
+        match &object.payload {
+            ObjectPayload::DocumentText(payload) => {
+                out.push_str(&payload.text);
+                out.push_str("\n\n");
+            }
+            ObjectPayload::DocumentList(_) => {
+                render_document_object(store, catalog, object, level, out)?;
+            }
+            ObjectPayload::DocumentTopic(payload) => {
+                push_heading(out, level, &payload.title);
+                render_document_body(store, catalog, &payload.paragraphs, level + 1, out)?;
+            }
+            ObjectPayload::Block(payload) => {
+                push_fence(out, &payload.language, &payload.text);
+            }
+            ObjectPayload::MermaidBlock(payload) => {
+                push_fence(out, "mermaid", &payload.text);
+            }
+            ObjectPayload::HtmlBlock(payload) => {
+                push_fence(out, "html", &payload.text);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn symbol_text(store: &Store, hash: SymbolHash) -> String {
+    if hash.is_zero() {
+        "<none>".to_owned()
+    } else {
+        store.get_symbol(hash).unwrap_or_else(|_| hash.to_hex())
+    }
+}
+
+fn symbol_list_text(store: &Store, hashes: &[SymbolHash]) -> String {
+    if hashes.is_empty() {
+        return "<none>".to_owned();
+    }
+    hashes
+        .iter()
+        .map(|hash| symbol_text(store, *hash))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn parent_ref_text(store: &Store, parent: ParentRef) -> String {
+    match parent {
+        ParentRef::View => "view".to_owned(),
+        ParentRef::Object(hash) => symbol_text(store, hash),
+    }
+}
+
+fn push_heading(out: &mut String, level: usize, title: &str) {
+    out.push_str(&"#".repeat(level.clamp(1, 6)));
+    out.push(' ');
+    out.push_str(title);
+    out.push_str("\n\n");
+}
+
+fn push_fence(out: &mut String, language: &str, text: &str) {
+    out.push_str("```");
+    out.push_str(language);
+    out.push('\n');
+    out.push_str(text.trim_end_matches('\n'));
+    out.push_str("\n```\n\n");
 }
 
 fn commit_hash(text: &str) -> Result<CommitHash, String> {
@@ -1167,6 +1585,97 @@ fn render_document(
     let refs = RenderRefs { project_id, branch };
     render_doc(store, catalog, qname, 0, &refs, &mut out, &mut comments)?;
     Ok((out, comments))
+}
+
+fn document_outline(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+) -> Result<Vec<DesignSpaceSection>, String> {
+    let object = catalog
+        .get(qname)
+        .ok_or_else(|| format!("document not found: {}", qname.to_hex()))?;
+    let ObjectPayload::Document(payload) = &object.payload else {
+        return Ok(Vec::new());
+    };
+    payload
+        .sections
+        .iter()
+        .map(|section| section_outline(store, catalog, *section))
+        .collect()
+}
+
+fn section_outline(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+) -> Result<DesignSpaceSection, String> {
+    let object = catalog
+        .get(qname)
+        .ok_or_else(|| format!("section not found: {}", qname.to_hex()))?;
+    let ObjectPayload::DocumentSection(payload) = &object.payload else {
+        return Err(format!(
+            "{} is not a document section",
+            store.get_symbol(qname).unwrap_or_else(|_| qname.to_hex())
+        ));
+    };
+    let children = payload
+        .sections
+        .iter()
+        .map(|section| section_outline(store, catalog, *section))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(DesignSpaceSection {
+        qname: store.get_symbol(qname).map_err(display)?,
+        title: payload.title.clone(),
+        children,
+    })
+}
+
+fn collect_document_comments(
+    store: &Store,
+    catalog: &Catalog,
+    qname: SymbolHash,
+    comments: &mut Vec<DesignSpaceComment>,
+) -> Result<(), String> {
+    let object = catalog
+        .get(qname)
+        .ok_or_else(|| format!("document fragment not found: {}", qname.to_hex()))?;
+    let target = store.get_symbol(qname).map_err(display)?;
+    for comment in document_comments(object) {
+        comments.push(DesignSpaceComment {
+            id: comment.id,
+            resolved: comment.resolved,
+            target: target.clone(),
+            text: comment.text.clone(),
+        });
+    }
+    match &object.payload {
+        ObjectPayload::Document(payload) => {
+            for section in &payload.sections {
+                collect_document_comments(store, catalog, *section, comments)?;
+            }
+        }
+        ObjectPayload::DocumentSection(payload) => {
+            for body in &payload.body {
+                collect_document_comments(store, catalog, *body, comments)?;
+            }
+            for section in &payload.sections {
+                collect_document_comments(store, catalog, *section, comments)?;
+            }
+        }
+        ObjectPayload::DocumentList(payload) => {
+            for item in &payload.items {
+                collect_document_comments(store, catalog, *item, comments)?;
+            }
+        }
+        ObjectPayload::DocumentTopic(payload) => {
+            for paragraph in &payload.paragraphs {
+                collect_document_comments(store, catalog, *paragraph, comments)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Reading order for the preset design documents: directory, namespace,
@@ -1769,6 +2278,78 @@ mod tests {
     }
 
     #[test]
+    fn renders_document_markdown_and_document_field_changes() {
+        let dir = tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let mut catalog = Catalog::new(GitOid::ZERO);
+        let documents = store.put_symbol("documents").unwrap();
+        let document = store.put_symbol("documents/design/technical").unwrap();
+        let section = store
+            .put_symbol("documents/design/technical/section1")
+            .unwrap();
+        let text = store
+            .put_symbol("documents/design/technical/section1/body1")
+            .unwrap();
+        let document_object = DesignObject::new(
+            Kind::Document,
+            ObjectPayload::Document(DocumentPayload {
+                qualified_name: document,
+                parent: documents,
+                title: "技术设计".to_owned(),
+                sections: vec![section],
+                children: vec![],
+                comments: vec![],
+            }),
+        );
+        let section_object = DesignObject::new(
+            Kind::DocumentSection,
+            ObjectPayload::DocumentSection(DocumentSectionPayload {
+                qualified_name: section,
+                parent: document,
+                title: "设计原则".to_owned(),
+                body: vec![text],
+                sections: vec![],
+                children: vec![],
+                comments: vec![],
+            }),
+        );
+        catalog.insert(document, document_object.clone()).unwrap();
+        catalog.insert(section, section_object.clone()).unwrap();
+        catalog
+            .insert(
+                text,
+                DesignObject::new(
+                    Kind::DocumentText,
+                    ObjectPayload::DocumentText(DocumentTextPayload {
+                        qualified_name: text,
+                        parent: section,
+                        text: "写入统一经 ds 协议。".to_owned(),
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+
+        let markdown = render_document_markdown(&store, &catalog, document).unwrap();
+        assert!(markdown.contains("# 技术设计"));
+        assert!(markdown.contains("## 设计原则"));
+        assert!(markdown.contains("写入统一经 ds 协议。"));
+        assert_eq!(document_root(&catalog, text), Some(document));
+
+        let mut renamed = section_object.clone();
+        if let ObjectPayload::DocumentSection(payload) = &mut renamed.payload {
+            payload.title = "设计规范".to_owned();
+        }
+        let fields = document_field_changes(&store, Some(&section_object), Some(&renamed)).unwrap();
+        let title = fields
+            .iter()
+            .find(|field| field.field == "title")
+            .expect("changed title field");
+        assert_eq!(title.before.as_deref(), Some("设计原则"));
+        assert_eq!(title.after.as_deref(), Some("设计规范"));
+    }
+
+    #[test]
     fn renders_html_blocks_as_sandboxed_preview_fences() {
         let dir = tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -2120,29 +2701,36 @@ mod tests {
             .element(&project, &document.hash, "source")
             .await
             .unwrap();
-        assert!(
-            detail
-                .design
-                .as_deref()
-                .unwrap()
-                .contains("登录使用 OAuth。")
-        );
-        assert!(
-            detail
-                .design
-                .as_deref()
-                .unwrap()
-                .contains("## 登录{{comments:documents/design/technical/section1#7}}")
+        assert!(detail.design.is_none());
+        assert_eq!(detail.sections.len(), 1);
+        assert_eq!(detail.sections[0].title, "登录");
+        assert_eq!(
+            detail.sections[0].qname,
+            "documents/design/technical/section1"
         );
         assert_eq!(detail.comments.len(), 1);
         assert_eq!(detail.comments[0].id, 7);
+        let section = access
+            .section(
+                &project,
+                &document.hash,
+                "source",
+                &detail.sections[0].qname,
+            )
+            .await
+            .unwrap();
+        assert!(section.contains("登录使用 OAuth。"));
+        assert!(section.contains("{{comments:documents/design/technical/section1#7}}"));
     }
 }
 
 #[cfg(test)]
 mod merge_gateway_tests {
     use super::*;
-    use design_space::model::{Commit, DirectoryPayload, ParentRef, SymbolHash};
+    use design_space::model::{
+        Commit, DirectoryPayload, DocumentSectionPayload, DocumentTextPayload, ParentRef,
+        SymbolHash,
+    };
     use design_space::server::RepoCollection;
     use design_space::{Catalog, DesignObject, ObjectPayload};
     use tempfile::tempdir;
@@ -2218,19 +2806,21 @@ mod merge_gateway_tests {
                 .await
                 .unwrap()
         );
-        let changes = access
+        let diff = access
             .diff(&project, &main_hex, &feature_hex)
             .await
             .unwrap();
-        let added = changes
+        let added = diff
+            .changes
             .iter()
             .find(|change| change.qname == "files/feature")
             .expect("added feature directory");
         assert_eq!(added.status, MergeRequestChangeStatus::Added);
         assert!(
-            changes.iter().any(|change| change.qname == "files"
+            diff.changes.iter().any(|change| change.qname == "files"
                 && change.status == MergeRequestChangeStatus::Modified)
         );
+        assert!(diff.documents.is_empty());
 
         access
             .fast_forward(&project, "main", &main_hex, &feature_hex)
@@ -2239,6 +2829,111 @@ mod merge_gateway_tests {
         assert_eq!(
             access.branch_head(&project, "main").await.unwrap(),
             Some(feature_hex)
+        );
+    }
+
+    #[tokio::test]
+    async fn diff_groups_a_changed_section_under_its_document() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("repos");
+        let collection = RepoCollection::open(&root).unwrap();
+        collection.create("alpha", "main").unwrap();
+        let repo = root.join("alpha");
+        let store = Store::open(&repo).unwrap();
+        let main = read_branch_commit(&repo, "main").unwrap().unwrap();
+        let commit = store.get_commit(main).unwrap();
+
+        let document = store.put_symbol("documents/design/technical").unwrap();
+        let section = store
+            .put_symbol("documents/design/technical/section1")
+            .unwrap();
+        let text = store
+            .put_symbol("documents/design/technical/section1/body1")
+            .unwrap();
+        let mut catalog = Catalog::load(&store, commit.view).unwrap();
+        let document_object = catalog.get_mut(document).unwrap();
+        let ObjectPayload::Document(payload) = &mut document_object.payload else {
+            unreachable!();
+        };
+        payload.sections = vec![section];
+        catalog
+            .insert(
+                section,
+                DesignObject::new(
+                    Kind::DocumentSection,
+                    ObjectPayload::DocumentSection(DocumentSectionPayload {
+                        qualified_name: section,
+                        parent: document,
+                        title: "登录".to_owned(),
+                        body: vec![text],
+                        sections: vec![],
+                        children: vec![],
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        catalog
+            .insert(
+                text,
+                DesignObject::new(
+                    Kind::DocumentText,
+                    ObjectPayload::DocumentText(DocumentTextPayload {
+                        qualified_name: text,
+                        parent: section,
+                        text: "旧正文。".to_owned(),
+                        comments: vec![],
+                    }),
+                ),
+            )
+            .unwrap();
+        let view = catalog.rebuild(&store).unwrap();
+        let base = store
+            .put_commit(&Commit {
+                view,
+                parent: main,
+                message: "document".to_string(),
+                author: "test".to_string(),
+                timestamp: 2,
+            })
+            .unwrap();
+
+        let mut catalog = Catalog::load(&store, view).unwrap();
+        let text_object = catalog.get_mut(text).unwrap();
+        let ObjectPayload::DocumentText(payload) = &mut text_object.payload else {
+            unreachable!();
+        };
+        payload.text = "新正文。".to_owned();
+        let view = catalog.rebuild(&store).unwrap();
+        let feature = store
+            .put_commit(&Commit {
+                view,
+                parent: base,
+                message: "document change".to_string(),
+                author: "test".to_string(),
+                timestamp: 3,
+            })
+            .unwrap();
+
+        let access = DesignSpaceAccess::new(&root);
+        let project = project(uuid::Uuid::now_v7());
+        let diff = access
+            .diff(&project, &base.to_hex(), &feature.to_hex())
+            .await
+            .unwrap();
+        let changed = diff
+            .documents
+            .iter()
+            .find(|document| document.qname == "documents/design/technical")
+            .expect("changed document");
+        assert_eq!(changed.status, MergeRequestChangeStatus::Modified);
+        assert!(changed.before.as_deref().unwrap().contains("旧正文。"));
+        assert!(changed.after.as_deref().unwrap().contains("新正文。"));
+        assert!(
+            changed
+                .objects
+                .iter()
+                .any(|object| object.qname.ends_with("/body1"))
         );
     }
 

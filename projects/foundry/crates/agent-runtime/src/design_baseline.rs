@@ -50,11 +50,11 @@ const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体�
 
 执行顺序：
 1. 读运行时代码生成的 inventory，先判断是否存在子树范围内的统一设计决定。有的话，在技术设计文档中创建顶层 Section“设计原则”（用 documents/design/technical/section 头锚点，插到最前），按 design-writing 3.12 写简短的设计规范；没有就不建，不写通用口号或实现策略。然后建立系统；只有复杂度需要时才建立模块。System 和 Module 的定义和文档块见 design-writing 技能。
-2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。判断是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。System/Module 如果存在只约束本容器子树内对象的设计原则，写“设计原则”块；只影响单个成员或部分子树的规则写进对应对象的块。
+2. 系统先在技术设计文档中创建 Section，再用 ds structure system create 关联。判断是否建模块：简单系统、单一职责系统不建模块；程序入口、启动、工具不是模块；只有一个函数的模块不成立。系统或模块复杂时，按复杂度分治把内聚程度高的部分拆成子模块；不要按文件数、目录或技术角色机械拆分。系统可以没有任何模块，顶层元素直接挂在系统下。每个模块同样先建 Section 再创建。System/Module 的文档不写“组成”“成员”正文块；成员和子模块各自建子 Section。System/Module 如果存在只约束本容器子树内对象的设计原则，写“设计原则”块；只影响单个成员或部分子树的规则写进对应对象的块。
 3. 建立 Namespace：按逻辑概念创建 namespaces/*，用 --file 关联源码文件；在命名空间设计文档中给每个 Namespace 建 Section，Section 标题用 Namespace 短名（qname 最后一段），不要用完整 qname；正文写“置放……”单句。
 4. 目录设计：按目录树给 files/ 下每个 Directory 建 Section，写“置放……”单句，覆盖整个子树，不枚举子项。
 5. 文件设计：对每个 File，先用 ds show 查文件内顶层元素所属的 Namespace/Module，再写文件设计目的单句：这个文件在系统/模块中承担什么角色、承载什么能力，不写具体行为或实现细节。例如 main.rs 写“置放命令行程序入口的代码”，不要写“置放实现命令行问候输出的代码”。
-6. 代码元素：逐文件读源码，创建 Class/Struct/Enum/Interface/Function/Mixin/Method/InnerClass/InnerStruct/InnerEnum/Part，写 source span、signature、file、关系和依赖；分类规则：同时有数据和方法→Class，只有数据→Struct，只有枚举变体→Enum，只有抽象方法→Interface，可复用行为片段→Mixin，类型内部的方法→Method，其他代码片段→Part；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 必须分别写“参数”和“返回值”两个块：参数写名字和含义（类型由函数原型表达），返回值写含义和失败语义；没有参数或返回值时写“无参数。”或“无返回值。”。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
+6. 代码元素：逐文件读源码，创建 Class/Struct/Enum/Interface/Function/Mixin/Method/InnerClass/InnerStruct/InnerEnum/Part，写 source span、signature、file、关系和依赖；分类规则：同时有数据和方法→Class；只有常量变体→Enum；变体携带数据的 enum→Class（优先于 Struct）；只有数据→Struct；只有抽象方法→Interface；可复用行为片段→Mixin；类型内部的方法→Method；其他代码片段→Part；按 design-writing 的块规则给每个非 Part 元素在技术设计文档中建 Section。Function/Method 必须分别写“参数”和“返回值”两个块：参数写名字和含义（类型由函数原型表达），返回值写含义和失败语义；没有参数或返回值时写“无参数。”或“无返回值。”。Function/Method 的定位默认写动词性短语的设计能力，不写函数体行为；入口函数等特殊作用函数写角色，例如 main 写“程序入口”，不要写“输出问候语”或“解析参数并调用 greet”。
 7. 归属：每个顶层元素用 ds structure assign 加入恰好一个系统或模块。简单系统直接加入系统；系统可以同时有模块和直属成员；不允许重复归属、未归属、空系统或空模块。程序入口不单独建模块。
 8. 自检：ds structure unassigned 为空，ds structure check 通过，ds verify 通过；缺什么继续补。
 9. 完成后返回 {"ok":true}。"#;

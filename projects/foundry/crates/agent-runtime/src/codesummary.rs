@@ -71,7 +71,7 @@ const SUMMARY_SYSTEM_PROMPT: &str = r#"你是 Foundry 的 CodeSummary 智能体�
    - 如果父对象的 document 为空，先按同样规则为父对象创建 Section 并关联，再处理当前对象；必要时逐级向上创建。
 3. 在父对象（Document 或 Section）下创建 Section：ds doc section add <父 qname>/section --title '<标题>'；同一父对象下已有 Section 时，用上一个 Section 的 qname 作为目标，追加在它后面。
 4. 用 ds edit <对象 qname> --document <新 Section qname> 关联。
-5. 代码元素分类：同时有数据和方法→Class，只有数据→Struct，只有枚举变体→Enum，只有抽象方法→Interface，可复用行为片段→Mixin；按 design-writing 技能中该对象类型的块序列创建块：设计原则直接建列表，其余块用 ds doc topic add <Section qname>/body --title '<块名>' 创建 topic；块内容用 ds doc text add <topic qname>/body --text '<一段文字>' 写，后续段落用上一段返回的 qname 作为目标。列表用 ds doc list add <section-or-topic qname>/body 创建，列表项用 <list qname>/item 定位。块规则见 design-writing 技能。
+5. 代码元素分类：同时有数据和方法→Class；只有常量变体→Enum；变体携带数据的 enum→Class（优先于 Struct）；只有数据→Struct；只有抽象方法→Interface；可复用行为片段→Mixin；按 design-writing 技能中该对象类型的块序列创建块：设计原则直接建列表，其余块用 ds doc topic add <Section qname>/body --title '<块名>' 创建 topic；块内容用 ds doc text add <topic qname>/body --text '<一段文字>' 写，后续段落用上一段返回的 qname 作为目标。列表用 ds doc list add <section-or-topic qname>/body 创建，列表项用 <list qname>/item 定位。块规则见 design-writing 技能。
 6. Directory/File/Namespace 的单句正文直接用 ds doc text add <Section qname>/body --text '<一句>' 写入，不建 topic。
 
 文件总结工作项：

@@ -36,6 +36,13 @@ enum OutputFormat {
     Md,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+enum SearchFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
@@ -182,6 +189,38 @@ enum Command {
         /// Read the index instead of the worktree.
         #[arg(long)]
         staged: bool,
+    },
+    /// Search design objects by qname/source and filters.
+    Search {
+        /// Substring matched against qname and source path.
+        query: Option<String>,
+        /// Match the query case-insensitively.
+        #[arg(long)]
+        ignore_case: bool,
+        /// Only list these kinds; repeat or separate with commas.
+        #[arg(long, value_delimiter = ',')]
+        kind: Vec<String>,
+        /// Only objects whose qname is this namespace or under it.
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Only objects associated with this File qname.
+        #[arg(long)]
+        file: Option<String>,
+        /// Only objects in this Module or its submodules.
+        #[arg(long)]
+        module: Option<String>,
+        /// Only objects linked to this document/section or its subtree.
+        #[arg(long)]
+        document: Option<String>,
+        /// Only objects that have a design document.
+        #[arg(long)]
+        has_design: bool,
+        /// Read the index instead of the worktree.
+        #[arg(long)]
+        staged: bool,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = SearchFormat::Text)]
+        format: SearchFormat,
     },
     /// Show HEAD, index, and worktree roots plus changed objects.
     Status {
@@ -958,6 +997,30 @@ pub fn run() -> Result<()> {
             design,
             staged,
         } => ls(cli.dir, files, namespaces, documents, design, staged),
+        Command::Search {
+            query,
+            ignore_case,
+            kind,
+            namespace,
+            file,
+            module,
+            document,
+            has_design,
+            staged,
+            format,
+        } => search(
+            cli.dir,
+            query.as_deref(),
+            ignore_case,
+            &kind,
+            namespace.as_deref(),
+            file.as_deref(),
+            module.as_deref(),
+            document.as_deref(),
+            has_design,
+            staged,
+            format,
+        ),
         Command::Status { porcelain, detail } => status(cli.dir, porcelain, detail),
         Command::Verify => verify(cli.dir),
         Command::Commit {
@@ -8317,6 +8380,273 @@ fn ls(
     Ok(())
 }
 
+fn search(
+    dir: Option<PathBuf>,
+    query: Option<&str>,
+    ignore_case: bool,
+    kinds: &[String],
+    namespace: Option<&str>,
+    file: Option<&str>,
+    module: Option<&str>,
+    document: Option<&str>,
+    has_design: bool,
+    staged: bool,
+    format: SearchFormat,
+) -> Result<()> {
+    const KNOWN_KINDS: &[&str] = &[
+        "view",
+        "directory",
+        "file",
+        "namespace",
+        "class",
+        "inner-class",
+        "struct",
+        "inner-struct",
+        "enum",
+        "inner-enum",
+        "interface",
+        "inner-interface",
+        "method",
+        "function",
+        "part",
+        "mixin",
+        "document-directory",
+        "document",
+        "document-section",
+        "document-list",
+        "document-text",
+        "document-topic",
+        "document-block",
+        "document-mermaid",
+        "document-html",
+        "design-structure",
+        "system",
+        "module",
+        "layer",
+        "concept-directory",
+        "concept",
+    ];
+    for kind in kinds {
+        if !KNOWN_KINDS.contains(&kind.as_str()) {
+            bail!(
+                "unknown kind: {kind}; possible values: {}",
+                KNOWN_KINDS.join(", ")
+            );
+        }
+    }
+    let namespace = namespace.map(|value| value.trim_matches('/'));
+    let file = file.map(str::trim);
+    let module = module.map(|value| value.trim_matches('/'));
+    let document = document.map(|value| value.trim_matches('/'));
+    let query = query
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if ignore_case {
+                value.to_lowercase()
+            } else {
+                value.to_string()
+            }
+        });
+
+    let ws = open_workspace(dir)?;
+    let state = if staged {
+        ws.read_index()?
+            .context("index is not initialized; run `ds init`")?
+    } else {
+        ws.read_worktree()?
+            .context("worktree is not initialized; run `ds init`")?
+    };
+    let catalog = Catalog::load(ws.store(), state.root_view)?;
+    let mut rows = Vec::new();
+    for (qname, object) in catalog.iter() {
+        if !kinds.is_empty() && !kinds.iter().any(|kind| kind == kind_name(object.kind)) {
+            continue;
+        }
+        let qname_text = symbol_text(&ws, qname);
+        if let Some(namespace) = namespace
+            && qname_text != namespace
+            && !qname_text.starts_with(&format!("{namespace}/"))
+        {
+            continue;
+        }
+        if let Some(file) = file {
+            let Some(actual) = file_of(&catalog, object) else {
+                continue;
+            };
+            if symbol_text(&ws, actual) != file {
+                continue;
+            }
+        }
+        if let Some(module) = module {
+            let Some(actual) = module_of(&catalog, object) else {
+                continue;
+            };
+            let actual = symbol_text(&ws, actual);
+            if actual != module && !actual.starts_with(&format!("{module}/")) {
+                continue;
+            }
+        }
+        if has_design && document_of(object).is_none() {
+            continue;
+        }
+        if let Some(document) = document {
+            let Some(actual) = document_of(object) else {
+                continue;
+            };
+            let actual = symbol_text(&ws, actual);
+            if actual != document && !actual.starts_with(&format!("{document}/")) {
+                continue;
+            }
+        }
+        if let Some(query) = &query {
+            let source = search_source_text(&ws, object).unwrap_or_default();
+            let haystack = format!("{qname_text}\n{source}");
+            let haystack = if ignore_case {
+                haystack.to_lowercase()
+            } else {
+                haystack
+            };
+            if !haystack.contains(query) {
+                continue;
+            }
+        }
+        rows.push((qname, object));
+    }
+    rows.sort_by(|(left, _), (right, _)| symbol_text(&ws, *left).cmp(&symbol_text(&ws, *right)));
+
+    match format {
+        SearchFormat::Text => {
+            for (qname, _) in rows {
+                println!("{}", symbol_text(&ws, qname));
+            }
+        }
+        SearchFormat::Json => {
+            let mut values = Vec::with_capacity(rows.len());
+            for (qname, object) in rows {
+                let full = object_json(&ws, &catalog, qname, object)?;
+                let mut value = serde_json::Map::new();
+                for key in ["qname", "kind", "source", "document"] {
+                    if let Some(field) = full.get(key) {
+                        value.insert(key.to_string(), field.clone());
+                    }
+                }
+                if let Some(file) = file_of(&catalog, object) {
+                    value.insert(
+                        "file".to_string(),
+                        serde_json::json!(symbol_text(&ws, file)),
+                    );
+                }
+                if let Some(module) = module_of(&catalog, object) {
+                    value.insert(
+                        "module".to_string(),
+                        serde_json::json!(symbol_text(&ws, module)),
+                    );
+                }
+                values.push(serde_json::Value::Object(value));
+            }
+            println!("{}", serde_json::to_string_pretty(&values)?);
+        }
+    }
+    Ok(())
+}
+
+fn search_source_text(ws: &Workspace, object: &DesignObject) -> Option<String> {
+    match &object.payload {
+        ObjectPayload::Directory(p) => p.source.map(|source| path_source_text(ws, &source)),
+        ObjectPayload::File(p) => p.source.map(|source| path_source_text(ws, &source)),
+        ObjectPayload::Namespace(p) => p.source.map(|source| span_source_text(ws, &source)),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            p.source.map(|source| span_source_text(ws, &source))
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            p.source.map(|source| span_source_text(ws, &source))
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            p.source.map(|source| span_source_text(ws, &source))
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            p.source.map(|source| span_source_text(ws, &source))
+        }
+        ObjectPayload::Method(p) => p.source.map(|source| span_source_text(ws, &source)),
+        ObjectPayload::Function(p) => p.source.map(|source| span_source_text(ws, &source)),
+        ObjectPayload::Part(p) => Some(span_source_text(ws, &p.source)),
+        ObjectPayload::Mixin(p) => p.source.map(|source| span_source_text(ws, &source)),
+        _ => None,
+    }
+}
+
+fn file_of(catalog: &Catalog, object: &DesignObject) -> Option<SymbolHash> {
+    match &object.payload {
+        ObjectPayload::File(p) => Some(p.qualified_name),
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            class_parent_file(catalog, &p.parent)
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            class_parent_file(catalog, &p.parent)
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            class_parent_file(catalog, &p.parent)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            class_parent_file(catalog, &p.parent)
+        }
+        ObjectPayload::Method(p) => nested_file(catalog, p.parent),
+        ObjectPayload::Function(p) => (!p.file.is_zero()).then_some(p.file),
+        ObjectPayload::Part(p) => nested_file(catalog, p.parent),
+        ObjectPayload::Mixin(p) => class_parent_file(catalog, &p.parent),
+        _ => None,
+    }
+}
+
+fn class_parent_file(catalog: &Catalog, parent: &ClassParent) -> Option<SymbolHash> {
+    match parent {
+        ClassParent::TopLevel { file, .. } => (!file.is_zero()).then_some(*file),
+        ClassParent::Nested { parent } => nested_file(catalog, *parent),
+    }
+}
+
+fn nested_file(catalog: &Catalog, parent: SymbolHash) -> Option<SymbolHash> {
+    catalog
+        .get(parent)
+        .and_then(|object| file_of(catalog, object))
+}
+
+fn module_of(catalog: &Catalog, object: &DesignObject) -> Option<SymbolHash> {
+    match &object.payload {
+        ObjectPayload::Class(p) | ObjectPayload::InnerClass(p) => {
+            class_parent_module(catalog, &p.parent)
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            class_parent_module(catalog, &p.parent)
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            class_parent_module(catalog, &p.parent)
+        }
+        ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {
+            class_parent_module(catalog, &p.parent)
+        }
+        ObjectPayload::Method(p) => nested_module(catalog, p.parent),
+        ObjectPayload::Function(p) => (!p.module.is_zero()).then_some(p.module),
+        ObjectPayload::Part(p) => nested_module(catalog, p.parent),
+        ObjectPayload::Mixin(p) => class_parent_module(catalog, &p.parent),
+        _ => None,
+    }
+}
+
+fn class_parent_module(catalog: &Catalog, parent: &ClassParent) -> Option<SymbolHash> {
+    match parent {
+        ClassParent::TopLevel { module, .. } => (!module.is_zero()).then_some(*module),
+        ClassParent::Nested { parent } => nested_module(catalog, *parent),
+    }
+}
+
+fn nested_module(catalog: &Catalog, parent: SymbolHash) -> Option<SymbolHash> {
+    catalog
+        .get(parent)
+        .and_then(|object| module_of(catalog, object))
+}
+
 fn is_document_kind(kind: Kind) -> bool {
     matches!(
         kind,
@@ -8469,6 +8799,24 @@ fn object_json(
             insert_symbol(&mut map, "superclass", ws, p.superclass);
             insert_symbols(&mut map, "interfaces", ws, &p.interfaces);
             insert_symbols(&mut map, "mixins", ws, &p.mixins);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Struct(p) | ObjectPayload::InnerStruct(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(class_parent_text(ws, &p.parent)),
+            );
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
+            insert_symbol(&mut map, "document", ws, p.document);
+        }
+        ObjectPayload::Enum(p) | ObjectPayload::InnerEnum(p) => {
+            map.insert(
+                "parent".into(),
+                serde_json::json!(class_parent_text(ws, &p.parent)),
+            );
+            insert_span_source(&mut map, "source", ws, p.source)?;
+            insert_hash(&mut map, "content_hash", p.content_hash);
             insert_symbol(&mut map, "document", ws, p.document);
         }
         ObjectPayload::Interface(p) | ObjectPayload::InnerInterface(p) => {

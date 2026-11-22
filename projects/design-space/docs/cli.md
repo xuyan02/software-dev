@@ -99,6 +99,7 @@ ds branch delete <branch>
 ds show <name> [--source] [--staged] [--format text|json|md]
 ds log [--limit N]
 ds ls [--files|--namespaces|--documents|--design] [--staged]
+ds search [QUERY] [--kind <kind>] [--namespace <qname>] [--file <qname>] [--module <qname>] [--document <qname>] [--has-design] [--format text|json] [--staged]
 ds doc mkdir <qname>
 ds doc create <qname> --title <text>
 ds doc section add <target> --title <text>
@@ -661,7 +662,7 @@ ds edit <qname> [options]
 - checkout 有未提交修改时拒绝，除非 `--force`；
 - 空提交用 `--allow-empty`。
 
-### 7.1 ls
+### 7.1 ls / search
 
 ```bash
 ds ls                    # 所有对象
@@ -670,6 +671,26 @@ ds ls --namespaces       # namespace / class / interface / method / function / p
 ds ls --documents        # document-directory / document / document-section / document-list / document-text / document-topic / document-block / document-mermaid / document-html
 ds ls --design           # 有 document 引用的对象，输出 qname<TAB>document qname
 ```
+
+`search` 按对象元数据查询，不读取文档正文；正文搜索仍用 `ds doc grep`：
+
+```bash
+ds search --kind enum,inner-enum
+ds search Store --kind class,struct
+ds search --namespace namespaces/design_space/cli --kind enum
+ds search --file files/projects/design-space/crates/design-space/src/cli.rs
+ds search --document documents/design/technical --kind class
+ds search --has-design --format json
+```
+
+- `QUERY` 匹配 qname 和源码路径；`--ignore-case` 忽略大小写；
+- `--kind` 可重复或逗号分隔，取值是 `class`、`inner-class`、`struct`、`enum`、`function` 等对象类型；
+- `--namespace` 匹配该命名空间及其子树；
+- `--file` 精确匹配 File qname；
+- `--module` 匹配该 Module 及其子 Module；
+- `--document` 匹配该文档/章节及其子树；
+- `--format json` 输出 `qname`、`kind`、`source`、`document`、`file`、`module`；
+- `--staged` 从 index 读取。
 
 ### 7.2 diff
 
@@ -818,16 +839,18 @@ ds checkout <branch> --force
 `ds edit <qname> --name <local>` 修改对象在父容器下的本地名。修改 parent、
 namespace 或本地名时，所有子孙对象的 qualified name、引用和依赖目标会一起迁移。
 
-### 7.7 show / ls
+### 7.7 show / ls / search
 
 ```bash
 ds show <name> [--source] [--staged] [--format text|json|md]
 ds ls [--files|--namespaces|--documents|--design] [--staged]
+ds search [QUERY] [--kind <kind>] [--namespace <qname>] [--file <qname>] [--module <qname>] [--document <qname>] [--has-design] [--format text|json] [--staged]
 ```
 
 - `show` 输出对象字段、`document:` 引用和 `children:` 列表；
 - `--staged` 从 index 读取，默认从 worktree 读取；
-- `ls --staged` 同理。
+- `ls --staged`、`search --staged` 同理；
+- `search` 只查对象元数据和 qname/源码路径，不查文档正文。
 
 ### 7.8 前向引用
 

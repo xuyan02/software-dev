@@ -347,6 +347,9 @@ mod tests {
         assert!(prompt.contains("### design-writing"));
         assert!(prompt.contains("设计文档撰写技能"));
         assert!(prompt.contains("置放"));
+        assert!(prompt.contains("只包含常量的枚举"));
+        assert!(prompt.contains("变体携带数据的"));
+        assert!(prompt.contains("复杂度分治"));
     }
 
     #[test]
@@ -384,5 +387,6 @@ mod tests {
         assert!(skill.prompt.contains("documents"));
         assert!(skill.prompt.contains("design-writing"));
         assert!(skill.prompt.contains("ds source sync"));
+        assert!(skill.prompt.contains("变体携带数据"));
     }
 }

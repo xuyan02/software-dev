@@ -91,8 +91,8 @@ impl DesignSpaceGateway for TestMergeGateway {
         _project: &foundry_domain::Project,
         _from_commit: &str,
         _to_commit: &str,
-    ) -> Result<Vec<foundry_domain::MergeRequestChange>, DesignSpaceGatewayError> {
-        Ok(Vec::new())
+    ) -> Result<foundry_domain::MergeRequestDiff, DesignSpaceGatewayError> {
+        Ok(foundry_domain::MergeRequestDiff::default())
     }
 
     async fn comment_count(
