@@ -25,6 +25,7 @@ members = [
     "projects/foundry/xtask",
     "projects/graph-agent",
     "projects/design-space/crates/design-space",
+    "projects/arche/crates/arche",
     # new projects: insert member below this line
 ]
 
@@ -50,6 +51,7 @@ foundry-cli = { path = "projects/foundry/crates/cli" }
 foundry-shared = { path = "projects/foundry/crates/shared" }
 linux-capsule = { path = "projects/foundry/capsules/linux-capsule" }
 design-space = { path = "projects/design-space/crates/design-space" }
+arche = { path = "projects/arche/crates/arche" }
 graph-agent = { path = "projects/graph-agent" }
 
 serde = { version = "1", features = ["derive"] }

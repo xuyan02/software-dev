@@ -1,0 +1,28 @@
+[package]
+name = "arche"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Arche: a versioned design repository"
+
+[lib]
+name = "arche"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arche"
+path = "src/main.rs"
+
+[[bin]]
+name = "arche-server"
+path = "src/bin/arche_server.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
