@@ -32,10 +32,12 @@ pub fn push(repo: &Repository, force: bool) -> Result<()> {
 pub fn fetch(repo: &Repository) -> Result<()> {
     let remote_url = repo.remote_url().context("no remote configured")?;
     if is_http(remote_url) {
-        return http_fetch(repo, remote_url);
+        http_fetch(repo, remote_url)?;
+        return Ok(());
     }
     if is_ssh(remote_url) {
-        return ssh_fetch(repo, remote_url);
+        ssh_fetch(repo, remote_url)?;
+        return Ok(());
     }
     let remote = Repository::open(remote_url)?;
     for name in ["objects", "symbols", "commits"] {
@@ -67,22 +69,33 @@ pub fn clone_from(
     if is_http(remote_path) || is_ssh(remote_path) {
         let repo = Repository::init(&path)?;
         repo.set_remote(remote_path)?;
-        if is_http(remote_path) {
-            http_fetch(&repo, remote_path)?;
+        let repo = Repository::open(&path)?;
+        let source = if is_http(remote_path) {
+            http_fetch(&repo, remote_path)?
         } else {
-            ssh_fetch(&repo, remote_path)?;
+            ssh_fetch(&repo, remote_path)?
+        };
+        if let Some(source) = source {
+            repo.set_source_url(&source)?;
         }
         let branches = repo.remote_branches()?;
         let (branch, hash) = match branch {
             Some(branch) => branches
-                .into_iter()
+                .iter()
                 .find(|(name, _)| name == branch)
+                .map(|(name, hash)| (name.clone(), *hash))
                 .with_context(|| format!("remote branch {branch} not found"))?,
             None => branches
-                .into_iter()
-                .next()
+                .first()
+                .map(|(name, hash)| (name.clone(), *hash))
                 .context("remote has no branches")?,
         };
+        // Repository::init creates a bootstrap main branch. Point every local
+        // branch at the remote commit so a subsequent push does not send a
+        // stale, non-fast-forward branch.
+        for (name, remote_hash) in &branches {
+            repo.set_ref(&format!("refs/heads/{name}"), *remote_hash)?;
+        }
         repo.set_ref(&format!("refs/heads/{branch}"), hash)?;
         repo.set_ref(&format!("refs/remotes/origin/{branch}"), hash)?;
         repo.set_head(&branch)?;
@@ -166,7 +179,7 @@ fn build_push_bundle(repo: &Repository, force: bool) -> Result<PushBundle> {
     Ok(PushBundle { records, refs })
 }
 
-fn http_fetch(repo: &Repository, url: &str) -> Result<()> {
+fn http_fetch(repo: &Repository, url: &str) -> Result<Option<String>> {
     let client = http_client();
     let base = url.trim_end_matches('/');
     let refs = remote_refs(url)?;
@@ -188,7 +201,20 @@ fn http_fetch(repo: &Repository, url: &str) -> Result<()> {
         let bytes = response.bytes()?;
         repo.write_record(relative, &bytes)?;
     }
-    Ok(())
+    http_source(url)
+}
+
+fn http_source(url: &str) -> Result<Option<String>> {
+    let base = url.trim_end_matches('/');
+    let response = http_client().get(format!("{base}/source")).send()?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        bail!("fetch source: HTTP {}", response.status());
+    }
+    let source = response.text()?.trim_end_matches(['\r', '\n']).to_owned();
+    Ok((!source.is_empty()).then_some(source))
 }
 
 fn remote_refs(url: &str) -> Result<Vec<(String, CommitHash)>> {
@@ -214,7 +240,9 @@ fn ssh_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
     stdin.write_all(&bundle)?;
     stdin.flush()?;
     let mut line = String::new();
-    stdout.read_line(&mut line)?;
+    if stdout.read_line(&mut line)? == 0 {
+        bail!("ssh push failed: connection closed before response");
+    }
     if line.trim() != "OK" {
         bail!("ssh push failed: {line}");
     }
@@ -223,13 +251,31 @@ fn ssh_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn ssh_fetch(repo: &Repository, url: &str) -> Result<()> {
+fn read_ssh_file_list(stdout: &mut impl BufRead) -> Result<Vec<String>> {
+    let mut files = Vec::new();
+    loop {
+        let mut line = String::new();
+        if stdout.read_line(&mut line)? == 0 {
+            bail!("ssh fetch: connection closed while reading file list");
+        }
+        let relative = line.trim_end();
+        if relative == "END" {
+            break;
+        }
+        files.push(relative.to_owned());
+    }
+    Ok(files)
+}
+
+fn ssh_fetch(repo: &Repository, url: &str) -> Result<Option<String>> {
     let (mut child, mut stdin, mut stdout) = ssh_connect(url)?;
     writeln!(stdin, "REFS")?;
     stdin.flush()?;
     loop {
         let mut line = String::new();
-        stdout.read_line(&mut line)?;
+        if stdout.read_line(&mut line)? == 0 {
+            bail!("ssh fetch: connection closed while reading refs");
+        }
         let line = line.trim_end();
         if line == "END" {
             break;
@@ -243,20 +289,17 @@ fn ssh_fetch(repo: &Repository, url: &str) -> Result<()> {
     }
     writeln!(stdin, "LIST")?;
     stdin.flush()?;
-    loop {
-        let mut line = String::new();
-        stdout.read_line(&mut line)?;
-        let relative = line.trim_end();
-        if relative == "END" {
-            break;
-        }
-        if repo.dir().join(relative).exists() {
+    let files = read_ssh_file_list(&mut stdout)?;
+    for relative in files {
+        if repo.dir().join(&relative).exists() {
             continue;
         }
         writeln!(stdin, "GET {relative}")?;
         stdin.flush()?;
         let mut header = String::new();
-        stdout.read_line(&mut header)?;
+        if stdout.read_line(&mut header)? == 0 {
+            bail!("ssh fetch {relative}: connection closed before response");
+        }
         let len = header
             .trim()
             .strip_prefix("OK ")
@@ -264,11 +307,29 @@ fn ssh_fetch(repo: &Repository, url: &str) -> Result<()> {
         let len: usize = len.parse()?;
         let mut bytes = vec![0u8; len];
         stdout.read_exact(&mut bytes)?;
-        repo.write_record(relative, &bytes)?;
+        repo.write_record(&relative, &bytes)?;
     }
+    writeln!(stdin, "SOURCE")?;
+    stdin.flush()?;
+    let mut header = String::new();
+    if stdout.read_line(&mut header)? == 0 {
+        bail!("ssh fetch: connection closed before source response");
+    }
+    let len = header
+        .trim()
+        .strip_prefix("OK ")
+        .with_context(|| format!("ssh fetch source: {header}"))?;
+    let len: usize = len.parse()?;
+    let mut bytes = vec![0u8; len];
+    stdout.read_exact(&mut bytes)?;
+    let source = if bytes.is_empty() {
+        None
+    } else {
+        Some(String::from_utf8(bytes).context("ssh source URL is not UTF-8")?)
+    };
     drop(stdin);
     let _ = child.wait();
-    Ok(())
+    Ok(source)
 }
 
 fn http_client() -> reqwest::blocking::Client {
@@ -366,4 +427,29 @@ fn copy_tree(from: &Path, to: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_ssh_file_list;
+    use std::io::Cursor;
+
+    #[test]
+    fn reads_the_whole_file_list_before_getting_files() {
+        let mut text = String::new();
+        for index in 0..500 {
+            text.push_str(&format!("objects/{index:04}/record\n"));
+        }
+        text.push_str("END\n");
+        let mut reader = Cursor::new(text.into_bytes());
+        let files = read_ssh_file_list(&mut reader).unwrap();
+        assert_eq!(files.len(), 500);
+        assert_eq!(files.last().unwrap(), "objects/0499/record");
+    }
+
+    #[test]
+    fn rejects_a_file_list_that_ends_without_end() {
+        let mut reader = Cursor::new(b"objects/0001/record\n".to_vec());
+        assert!(read_ssh_file_list(&mut reader).is_err());
+    }
 }

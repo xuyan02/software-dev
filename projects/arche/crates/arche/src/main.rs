@@ -54,7 +54,7 @@ enum Command {
         /// Branch to check out.
         #[arg(long)]
         branch: Option<String>,
-        /// Read-only source Git URL recorded in the clone.
+        /// Override the source Git URL inherited from the remote repository.
         #[arg(long)]
         source: Option<String>,
     },
@@ -1618,6 +1618,14 @@ fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object)
             println!("source: {}", optional_symbol(repo, value.source())?);
             println!("ty: {}", optional_symbol(repo, value.ty())?);
             print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::ProjectRoot(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("document: {}", optional_symbol(repo, value.document())?);
+        }
+        Object::ProjectDocument(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            print_design_fields(repo, &[("document", value.document())])?;
         }
         _ => {}
     }

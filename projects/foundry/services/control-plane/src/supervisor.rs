@@ -190,9 +190,10 @@ impl AgentSupervisor {
         if self.running.lock().await.contains(&id) {
             return Ok(());
         }
-        if self.api_key.is_empty() {
+        if self.api_key.is_empty() && !role_can_start_without_model(&definition.role) {
             tracing::warn!(
                 agent_id = %id,
+                role = %definition.role,
                 "agent start rejected: model API key is not configured"
             );
             return Err(
@@ -398,6 +399,33 @@ where
     });
 }
 
+/// Deterministic roles need a shell or Foundry tools, not a model. They must
+/// still start when the operator has not configured an API key yet, so a new
+/// project can reach assessment and create the human clarification Issue.
+fn role_can_start_without_model(role: &str) -> bool {
+    matches!(
+        role,
+        "dispatcher"
+            | "software_development:assessor"
+            | "code_change:tester"
+            | "code_change:merger"
+            | "code_summary_group:merger"
+            | "design_consistency_maintenance:scanner"
+            | "design_iteration:dispatcher"
+            | "design_iteration:verifier"
+            | "development_iteration:dispatcher"
+            | "development_iteration:verifier"
+            | "requirements_iteration:dispatcher"
+            | "requirements_iteration:verifier"
+            | "test_iteration:dispatcher"
+            | "test_iteration:verifier"
+            | "release:release_manager"
+            | "release:verifier"
+            | "release:deployer"
+            | "release:observer"
+    )
+}
+
 fn process_alive(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -447,5 +475,30 @@ fn cleanup_agent_containers() {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_roles_start_without_a_model_key() {
+        for role in [
+            "dispatcher",
+            "software_development:assessor",
+            "code_change:tester",
+            "release:observer",
+        ] {
+            assert!(role_can_start_without_model(role), "{role}");
+        }
+        for role in [
+            "goal_clarification:clarifier",
+            "goal_clarification:writer",
+            "code_change:developer",
+            "triage:triage",
+        ] {
+            assert!(!role_can_start_without_model(role), "{role}");
+        }
     }
 }

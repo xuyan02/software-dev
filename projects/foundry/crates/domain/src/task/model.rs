@@ -403,25 +403,13 @@ pub struct TaskIssueCreate {
     pub title: String,
     pub description: String,
     pub relation: String,
+    /// When present, the Issue starts in this work pool instead of Open.
+    pub pool: Option<String>,
     /// When present, the engine creates this child task and links the Issue to
     /// it; otherwise the Issue links to the task running the action.
     pub task: Option<TaskIssueTask>,
     /// Resolved by the workflow context before the mutation is persisted.
     pub link_task_id: Option<Uuid>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DocumentReviewLinkAction {
-    Bind,
-    Release,
-}
-
-/// A document review link effect requested by a workflow stage.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DocumentReviewLinkIntent {
-    pub kind: String,
-    pub action: DocumentReviewLinkAction,
 }
 
 /// The complete result of applying one trigger event to a Task aggregate.
@@ -433,8 +421,6 @@ pub struct TaskMutation {
     pub children: Vec<TaskChild>,
     /// Issues created by `create_issue` statements in this mutation.
     pub issues: Vec<TaskIssueCreate>,
-    /// Document review link changes requested by stage entry effects.
-    pub review_links: Vec<DocumentReviewLinkIntent>,
     pub events: Vec<crate::DomainEvent>,
 }
 

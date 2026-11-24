@@ -244,6 +244,12 @@ impl TaskRepository for InMemoryStore {
             })
             .filter(|task| {
                 filter
+                    .workflow
+                    .as_ref()
+                    .is_none_or(|workflow| task.workflow == *workflow)
+            })
+            .filter(|task| {
+                filter
                     .text
                     .as_deref()
                     .is_none_or(|text| task.title.to_lowercase().contains(&text.to_lowercase()))

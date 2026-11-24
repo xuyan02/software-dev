@@ -868,6 +868,36 @@ impl Root {
     }
 }
 
+impl ProjectRoot {
+    pub fn qname(&self) -> StringRef {
+        StringRef(self.qname)
+    }
+    pub fn name(&self) -> StringRef {
+        StringRef(self.name)
+    }
+    pub fn parent(&self) -> StringRef {
+        StringRef(self.parent)
+    }
+    pub fn document(&self) -> ObjectRef {
+        ObjectRef(self.document)
+    }
+}
+
+impl ProjectDocument {
+    pub fn qname(&self) -> StringRef {
+        StringRef(self.qname)
+    }
+    pub fn name(&self) -> StringRef {
+        StringRef(self.name)
+    }
+    pub fn parent(&self) -> StringRef {
+        StringRef(self.parent)
+    }
+    pub fn document(&self) -> ObjectRef {
+        ObjectRef(self.document)
+    }
+}
+
 impl ObjectList {
     pub fn qname(&self) -> StringRef {
         StringRef(self.qname)

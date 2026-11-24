@@ -34,10 +34,6 @@ pub enum DomainEventKind {
     WorkflowDefinitionCreated,
     WorkflowTitleChanged,
     WorkflowVersionPublished,
-    RequirementsDocumentCreated,
-    RequirementsDraftSaved,
-    RequirementsDraftRejected,
-    RequirementsVersionPublished,
     TaskLinkAdded,
     TaskLinkRemoved,
 }

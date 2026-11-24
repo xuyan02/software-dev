@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "dispatcher", "kind": "agent", "assignment": "test_iteration"},
+    {"name": "verifier", "kind": "agent", "assignment": "test_iteration"}
+  ],
+  "vars": {
+    "expected": {"type": "int", "display_name": "Expected test tasks", "initial": -1},
+    "done": {"type": "int", "display_name": "Completed test tasks"},
+    "failed": {"type": "int", "display_name": "Failed test tasks"},
+    "no_work": {"type": "bool", "display_name": "No work"},
+    "did_work": {"type": "bool", "display_name": "Did work"},
+    "outcome": {"type": "string", "display_name": "Outcome"}
+  },
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["dispatcher"],
+      "operations": [
+        {
+          "name": "dispatched",
+          "display_name": "测试任务已创建",
+          "description": "已从测试池选批，并创建测试执行任务。",
+          "roles": ["dispatcher"],
+          "action": "done = 0\nfailed = 0\nexpected = count_children('test_execution')"
+        },
+        {
+          "name": "nothing",
+          "display_name": "没有可测试的议题",
+          "description": "测试池为空，或当前没有可以立即验证的测试议题。",
+          "roles": ["dispatcher"],
+          "action": "no_work = true"
+        }
+      ],
+      "transitions": [
+        {"on": "no_work", "to": "waiting"},
+        {"on": "expected > 0", "action": "did_work = true", "to": "working"},
+        {"on": "expected == 0", "to": "waiting"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": ["dispatcher"],
+      "vars": {
+        "woken": {"type": "bool", "display_name": "Woken"}
+      },
+      "operations": [
+        {
+          "name": "work_arrived",
+          "display_name": "有新的可调度 Issue",
+          "description": "新的 Issue 已进入测试池，重新分派。",
+          "roles": ["dispatcher"],
+          "action": "woken = true"
+        }
+      ],
+      "transitions": [
+        {"on": "woken", "to": "dispatch"}
+      ]
+    },
+    {
+      "name": "working",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'test_execution' and event.child.state == 'completed' { done = done + 1 } if event.child.workflow == 'test_execution' and event.child.state == 'failed' { failed = failed + 1 }"
+        }
+      ],
+      "transitions": [
+        {"on": "done + failed == expected", "to": "verify"}
+      ]
+    },
+    {
+      "name": "verify",
+      "active_roles": ["verifier"],
+      "operations": [
+        {
+          "name": "ready",
+          "display_name": "本轮测试验收通过",
+          "description": "测试报告已更新、审批并合入。",
+          "roles": ["verifier"],
+          "action": "outcome = 'ready'"
+        },
+        {
+          "name": "blocked",
+          "display_name": "本轮存在无法完成项",
+          "description": "测试未能完成，相关议题退回测试池。",
+          "roles": ["verifier"],
+          "action": "outcome = 'blocked'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'ready'", "to": "dispatch"},
+        {"on": "outcome == 'blocked'", "to": "waiting"}
+      ]
+    }
+  ]
+}

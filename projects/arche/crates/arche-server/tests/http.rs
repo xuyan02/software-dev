@@ -9,7 +9,8 @@ use tempfile::TempDir;
 fn clones_pushes_and_fetches_over_http() {
     let root = TempDir::new().unwrap();
     let server_repo = root.path().join("project");
-    let repo = Repository::init(&server_repo).unwrap();
+    let repo =
+        Repository::init_with_source(&server_repo, Some("git@example.test:app.git")).unwrap();
     repo.create_technical_system("app").unwrap();
     repo.add_all().unwrap();
     repo.commit_index("init", true).unwrap();
@@ -25,6 +26,7 @@ fn clones_pushes_and_fetches_over_http() {
 
     let first = TempDir::new().unwrap();
     let clone = arche_client::clone_from(&url, first.path(), Some("main")).unwrap();
+    assert_eq!(clone.source_url(), Some("git@example.test:app.git"));
     assert!(clone.find_by_qname("technical/app").is_ok());
     clone.create_technical_system("second").unwrap();
     clone.add_all().unwrap();
@@ -37,5 +39,6 @@ fn clones_pushes_and_fetches_over_http() {
 
     let second = TempDir::new().unwrap();
     let fetched = arche_client::clone_from(&url, second.path(), Some("main")).unwrap();
+    assert_eq!(fetched.source_url(), Some("git@example.test:app.git"));
     assert!(fetched.find_by_qname("technical/second").is_ok());
 }

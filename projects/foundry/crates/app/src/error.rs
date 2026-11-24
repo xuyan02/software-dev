@@ -48,14 +48,6 @@ pub enum ServiceError {
     DraftNotFound(String),
     #[error("draft already exists: {0}")]
     DraftExists(String),
-    #[error("requirements document is invalid")]
-    RequirementsInvalid(Validation),
-    #[error("requirements document exceeds the size limit")]
-    RequirementsTooLarge,
-    #[error("anchor document is invalid")]
-    AnchorDocumentInvalid(Validation),
-    #[error("anchor document exceeds the size limit")]
-    AnchorDocumentTooLarge,
     #[error("draft revision conflict: expected {expected}, current is {current}")]
     DraftConflict {
         expected: u64,

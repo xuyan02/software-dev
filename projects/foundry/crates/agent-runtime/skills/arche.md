@@ -5,13 +5,16 @@
 ## 1. 基本模型
 
 - 工作区里有一个 `.arche/`。不要手改 `.arche/` 下的文件，只用 `arche` 命令。
+- `.arche/` 是设计空间，不是源码。提交源码前确保 `.arche/` 在 `.gitignore` 中或被 Git 忽略；绝不 `git add .arche`。
 - 设计空间不是 git 仓库。远程只接受 Arche 协议，不能用 `git clone` / `git push` 访问。
 - 设计对象是内容寻址的。对象有 `qname`、`kind` 和源码锚点。
 - 工作流：worktree → `arche add` → index → `arche commit` → `arche push`。
-- 三个根对象由 `arche init` 创建，不能自行创建或删除：
+- 固定根对象由 `arche init` 创建，不能自行创建或删除：
+  - `project`（项目空间）
   - `technical`
   - `requirement`
   - `concept`
+- 项目说明书固定在 `project/document`，字段 `document` 是 `DocumentParagraphList`；章节包括定位、背景、目标、非目标、分期计划、约束、风险。
 
 ## 2. qname
 
@@ -198,6 +201,7 @@ arche concept list
 ```bash
 arche remote add <url>
 arche clone <url> <dir> [--branch <branch>] [--source <git-url>]
+# clone 自动继承远程仓库记录的源码地址；--source 只用于覆盖。
 arche push
 arche push --force
 arche fetch

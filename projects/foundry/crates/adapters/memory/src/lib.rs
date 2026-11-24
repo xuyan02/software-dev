@@ -10,24 +10,21 @@ use foundry_app::{
 };
 use foundry_domain::{
     Account, Actor, AgentDefinition, AgentOverview, AgentTemplateView, AssignAgentToTask,
-    CreateAgentFromTemplate, DomainEvent, Issue, IssueKind, IssueSource, IssueSourceKind, Project,
-    ReadyTaskView, Session, TaskDAO, TaskIssueCreate, TaskLink, TaskLinkKind, TaskLinkRelation,
+    CreateAgentFromTemplate, DomainEvent, Issue, IssueKind, IssuePool, IssueSource,
+    IssueSourceKind, IssueStatus, Project, ReadyTaskView, Session, TaskDAO, TaskIssueCreate,
+    TaskLink, TaskLinkKind, TaskLinkRelation, TransitionEvidence,
 };
 use std::collections::HashMap;
 use std::sync::RwLock;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-mod anchor_document;
 mod merge_request;
-mod requirements_doc;
 mod task;
 mod task_link;
 mod trigger;
 mod workflow;
 
-use anchor_document::MemoryAnchorDocuments;
-use requirements_doc::MemoryRequirementDocs;
 pub use task::*;
 use task_link::MemoryTaskLinks;
 use workflow::MemoryWorkflows;
@@ -40,8 +37,6 @@ pub struct InMemoryStore {
     sessions: RwLock<HashMap<Uuid, Session>>,
     pub(crate) tasks: RwLock<MemoryTasks>,
     pub(crate) workflows: RwLock<MemoryWorkflows>,
-    pub(crate) anchor_documents: RwLock<MemoryAnchorDocuments>,
-    pub(crate) requirements_docs: RwLock<MemoryRequirementDocs>,
     pub(crate) task_links: RwLock<MemoryTaskLinks>,
     pub(crate) merge_requests: RwLock<HashMap<Uuid, foundry_domain::DesignSpaceMergeRequestDAO>>,
     pub(crate) triggers: RwLock<Vec<foundry_domain::Trigger>>,
@@ -78,7 +73,7 @@ impl InMemoryStore {
                 RepoError::Invalid(format!("unknown link relation {:?}", spec.relation))
             })?;
             let link_task_id = spec.link_task_id.unwrap_or(task_id);
-            let issue = Issue::new(
+            let mut issue = Issue::new(
                 project_id,
                 spec.title.clone(),
                 spec.description.clone(),
@@ -90,6 +85,21 @@ impl InMemoryStore {
                 Actor::System,
             )
             .map_err(|error| RepoError::Invalid(error.to_string()))?;
+            if let Some(pool) = &spec.pool {
+                let pool = IssuePool::parse(pool)
+                    .ok_or_else(|| RepoError::Invalid(format!("unknown issue pool {pool:?}")))?;
+                issue
+                    .transition_to(
+                        IssueStatus::Pooled,
+                        &Actor::System,
+                        TransitionEvidence {
+                            resolution: None,
+                            duplicate_of: None,
+                            pool: Some(pool),
+                        },
+                    )
+                    .map_err(|error| RepoError::Invalid(error.to_string()))?;
+            }
             self.issues
                 .write()
                 .expect("lock poisoned")
@@ -397,18 +407,10 @@ impl ProjectRepository for InMemoryStore {
             .write()
             .expect("lock poisoned")
             .delete_tasks(&task_ids);
-        self.anchor_documents
-            .write()
-            .expect("lock poisoned")
-            .delete_project(id);
         self.issues
             .write()
             .expect("lock poisoned")
             .retain(|_, issue| issue.project_id != id);
-        self.requirements_docs
-            .write()
-            .expect("lock poisoned")
-            .delete_project(id);
         self.merge_requests
             .write()
             .expect("lock poisoned")

@@ -746,11 +746,10 @@ async fn clone_workspace(
     let output = exec(
         shell,
         format!(
-            "arche clone {} {} --branch {} --source {}",
+            "arche clone {} {} --branch {}",
             q(&project.design_space_url),
             q(arche_workspace),
-            q(branch),
-            q(&project.git_repository)
+            q(branch)
         ),
     )
     .await?;

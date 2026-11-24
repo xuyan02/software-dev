@@ -4,10 +4,10 @@ use super::definition::{
 };
 use crate::task::script::VariableValue;
 use crate::{
-    ACCEPT_OPERATION, ChildState, DependencyState, DocumentReviewLinkAction, DomainEventKind,
-    OperationName, REJECT_OPERATION, RoleKey, START_OPERATION, StageKey, TaskActorDAO,
-    TaskAggregate, TaskDAO, TaskError, TaskEvent, TaskMutation, TaskResult, TaskState,
-    TaskWorkflow, WorkflowContext, WorkflowId, apply,
+    ACCEPT_OPERATION, ChildState, DependencyState, DomainEventKind, OperationName,
+    REJECT_OPERATION, RoleKey, START_OPERATION, StageKey, TaskActorDAO, TaskAggregate, TaskDAO,
+    TaskError, TaskEvent, TaskMutation, TaskResult, TaskState, TaskWorkflow, WorkflowContext,
+    WorkflowId, apply,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -163,10 +163,12 @@ fn iteration_workflows_wait_for_the_dispatcher_after_creation() {
 }
 
 #[test]
-fn iteration_keeps_dispatching_until_the_pool_is_empty() {
+fn iteration_waits_for_work_after_the_pool_is_empty() {
     for (workflow_id, child_workflow) in [
         ("design_iteration", "design"),
         ("development_iteration", "code_change"),
+        ("requirements_iteration", "requirements_analysis"),
+        ("test_iteration", "test_execution"),
     ] {
         let workflow = builtin(workflow_id);
         let iteration = task(workflow_id, TaskState::Pending, None);
@@ -196,7 +198,7 @@ fn iteration_keeps_dispatching_until_the_pool_is_empty() {
         let dispatched = operation(&workflow, state, "dispatch:dispatched", dispatcher);
         assert_eq!(
             dispatched.task.stage.as_deref(),
-            Some("waiting"),
+            Some("working"),
             "{workflow_id}"
         );
         state = absorb(before, dispatched);
@@ -216,10 +218,19 @@ fn iteration_keeps_dispatching_until_the_pool_is_empty() {
         state = absorb(before, verified);
 
         let empty = operation(&workflow, state, "dispatch:nothing", dispatcher);
-        assert_eq!(empty.task.state, TaskState::Completed, "{workflow_id}");
         assert_eq!(
-            empty.task.result.as_ref().map(TaskResult::as_str),
-            Some("completed"),
+            empty.task.stage.as_deref(),
+            Some("waiting"),
+            "{workflow_id}"
+        );
+        assert_eq!(empty.task.state, TaskState::InProgress, "{workflow_id}");
+        assert!(empty.task.result.is_none(), "{workflow_id}");
+
+        let before = aggregate_of(empty);
+        let woken = operation(&workflow, before, "waiting:work_arrived", dispatcher);
+        assert_eq!(
+            woken.task.stage.as_deref(),
+            Some("dispatch"),
             "{workflow_id}"
         );
     }
@@ -267,11 +278,13 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "requirements_analysis",
             "requirements_audit",
             "requirements_discovery",
+            "requirements_iteration",
             "roadmap",
             "software_development",
             "style_inspection",
             "test_audit",
             "test_execution",
+            "test_iteration",
             "test_planning",
             "triage",
             "ui_design",
@@ -417,9 +430,12 @@ fn leaf_workflow_moves_through_reviews_to_completed() {
             .any(|a| a.account_id == acceptor && a.active)
     );
 
-    let approved = operation(&workflow, state, "approved", acceptor);
+    let approved = operation(&workflow, state, "merge", acceptor);
     assert_eq!(approved.task.state, TaskState::Completed);
     assert_eq!(approved.task.result, Some(TaskResult::new("approved")));
+    assert_eq!(approved.issues.len(), 1);
+    assert_eq!(approved.issues[0].pool.as_deref(), Some("requirements"));
+    assert_eq!(approved.issues[0].kind, "task_request");
     assert!(approved.actors.iter().all(|a| !a.active));
     assert!(approved.events.iter().any(|event| {
         event.kind == DomainEventKind::ChildStateChanged && event.aggregate_id == parent
@@ -616,7 +632,7 @@ fn stage_qualified_operations_only_apply_to_that_stage() {
 }
 
 #[test]
-fn human_review_binds_and_writing_releases_the_document_link() {
+fn human_review_and_rejection_follow_the_writing_flow() {
     let workflow = builtin("goal_clarification");
     let leaf = task(
         "goal_clarification",
@@ -634,11 +650,6 @@ fn human_review_binds_and_writing_releases_the_document_link() {
 
     let approved = operation(&workflow, state, "approved", reviewer);
     assert_eq!(approved.task.stage.as_deref(), Some("human_review"));
-    assert!(
-        approved.review_links.iter().any(|link| {
-            link.kind == "project" && link.action == DocumentReviewLinkAction::Bind
-        })
-    );
 
     let rejected = operation(
         &workflow,
@@ -647,9 +658,6 @@ fn human_review_binds_and_writing_releases_the_document_link() {
         Uuid::now_v7(),
     );
     assert_eq!(rejected.task.stage.as_deref(), Some("writing"));
-    assert!(rejected.review_links.iter().any(|link| {
-        link.kind == "project" && link.action == DocumentReviewLinkAction::Release
-    }));
 }
 
 #[test]
@@ -712,7 +720,7 @@ fn parent_cannot_complete_above_an_active_child() {
         &workflow,
         state,
         TaskEvent::Operation {
-            operation: OperationName::new("approved"),
+            operation: OperationName::new("merge"),
             actor_id: acceptor,
         },
         now(),
@@ -987,9 +995,7 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
 
     let steps = [
         ("goal_clarification", "requirements_analysis"),
-        ("requirements_analysis", "interaction_design"),
-        ("interaction_design", "ui_design"),
-        ("ui_design", "architecture"),
+        ("requirements_analysis", "architecture"),
         ("architecture_design", "detailed_design"),
         ("detailed_design", "test_planning"),
         ("test_planning", "iteration"),
@@ -1101,7 +1107,6 @@ fn autonomous_root_starts_with_human_goal_clarification() {
         mutation.children[0].task.workflow.as_str(),
         "goal_clarification"
     );
-    assert!(crate::ENABLED_ROOT_WORKFLOWS.contains(&"autonomous_software_development"));
 }
 
 #[test]
@@ -1659,7 +1664,7 @@ fn create_issue_action_emits_issue_create() {
                 "name": "clarify",
                 "events": [{
                     "event": "task.created",
-                    "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = '项目文档撰写')"
+                    "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project.', relation = 'clarifies', pool = 'requirements', task_workflow = 'goal_clarification', task_title = '项目文档撰写')"
                 }]
             }]
         }"#,
@@ -1684,6 +1689,7 @@ fn create_issue_action_emits_issue_create() {
     assert_eq!(issue.title, "Project clarification: Task");
     assert_eq!(issue.description, "Discuss the project.");
     assert_eq!(issue.relation, "clarifies");
+    assert_eq!(issue.pool.as_deref(), Some("requirements"));
     assert_eq!(mutation.children.len(), 1);
     let child = &mutation.children[0].task;
     assert_eq!(child.workflow.as_str(), "goal_clarification");
@@ -1963,14 +1969,32 @@ fn maintenance_development_starts_in_running() {
 }
 
 #[test]
-fn software_development_starts_with_assessment() {
+fn software_development_creates_direct_children() {
     let workflow = builtin("software_development");
-    let task = task("software_development", TaskState::Pending, None);
-    let state = aggregate(task, vec![], vec![], vec![]);
+    let parent = task("software_development", TaskState::Pending, None);
+    let state = aggregate(parent, vec![], vec![], vec![]);
     let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
-    assert_eq!(created.task.stage.as_deref(), Some("assessment"));
-    assert_eq!(created.task.state, TaskState::Pending);
-    assert!(created.task.task_variables.contains_key("has_code"));
+    assert_eq!(created.task.stage.as_deref(), Some("running"));
+    assert_eq!(created.task.state, TaskState::InProgress);
+    assert_eq!(created.issues.len(), 1);
+    let children = created
+        .children
+        .iter()
+        .map(|child| child.task.workflow.as_str())
+        .collect::<Vec<_>>();
+    for workflow in [
+        "goal_clarification",
+        "requirements_iteration",
+        "design_iteration",
+        "development_iteration",
+        "test_iteration",
+        "triage",
+    ] {
+        assert!(
+            children.contains(&workflow),
+            "missing direct child {workflow}: {children:?}"
+        );
+    }
 }
 
 #[test]
@@ -1997,7 +2021,6 @@ fn daily_check_runs_every_audit_in_parallel_then_synthesizes() {
         vec![
             "code_audit",
             "design_audit",
-            "product_audit",
             "requirements_audit",
             "test_audit",
         ]

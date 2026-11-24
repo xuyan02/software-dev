@@ -14,7 +14,18 @@
 - Agent 不能做拒绝、重复、关闭等处置决定；只能写建议，由人类处置。
 - 需要把某类检查变成周期任务时，可以用 `trigger_create` 创建项目触发器。
 
-Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 由 `arche clone --source <git_repository>` 记录；已有工作区用 `arche source set-url <git_repository>` 刷新。
+Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 记录在设计空间，`arche clone` 自动继承；已有工作区需要切换时用 `arche source set-url <git_url>`。
+
+如果工作区根同时有 `.arche/` 和 `.git`（Arche source worktree），Git 提交前必须确保 `.arche/` 在 `.gitignore` 中并被忽略：
+
+```bash
+ROOT=$(git rev-parse --show-toplevel)
+grep -qxF '.arche/' "$ROOT/.gitignore" 2>/dev/null || printf '.arche/\n' >> "$ROOT/.gitignore"
+git check-ignore -q .arche || printf '\n.arche/\n' >> "$ROOT/.git/info/exclude"
+git diff --cached --name-only | grep -q '^\.arche/' && { echo 'refusing to commit .arche'; exit 1; }
+```
+
+绝不把 `.arche/` 提交进源码。代码修复在 `/work/<project-id>/repo` 提交，不在 Arche 工作区提交源码。
 
 代码仓库和设计空间路径：
 
@@ -34,7 +45,7 @@ Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 
 | 具体开发议题 | development_iteration 的 verifier，验收通过后 | closed |
 | 重复议题 | triage | duplicate（终态，不再关闭） |
 | 拒绝或非问题 | 人类 | rejected |
-| 无法完成的设计/开发议题 | 不关闭 | 退回 `pooled(pool=design\|development)`，等下一轮 |
+| 无法完成的需求/设计/开发/测试议题 | 不关闭 | 退回对应的 `pooled(pool=requirements\|design\|development\|tests)`，等下一轮 |
 | 需要返工的议题 | 不关闭 | 转交给同类型后续任务，原任务不再持有 |
 
 agent 可以关闭已经 resolved 的 Issue，但不能代替人类拒绝或重开终态 Issue。
@@ -74,9 +85,17 @@ agent 可以关闭已经 resolved 的 Issue，但不能代替人类拒绝或重�
    - **局部设计错误或不一致，答案已确定**：
      - 用 `task_create_follow_up` 创建 `design_correction` 任务；
      - 这是分诊唯一直接创建任务的场景。
+   - **需求缺陷或需求缺口**：
+     - `issue_transition` 置为 `pooled(pool=requirements)`；
+     - 用 `issue_comment` 写清需求问题、目标和证据；
+     - 不创建任务。
    - **代码缺陷、可直接实现的增强、task_request**：
      - `issue_transition` 置为 `pooled(pool=development)`；
      - 用 `issue_comment` 写清复现、期望行为、验收要求；
+     - 不创建任务。
+   - **测试缺陷、测试缺口、验收证据缺失**：
+     - `issue_transition` 置为 `pooled(pool=tests)`；
+     - 用 `issue_comment` 写清缺失的测试、环境和证据；
      - 不创建任务。
    - **咨询或其他非开发问题**：写评论说明，不创建任务。
 
@@ -195,9 +214,18 @@ git -C /work/<project-id>/repo checkout -B code/<issue-id> origin/<project.git_b
 ```
 2. 实现修复，补测试；只改本 Issue 范围。
 3. 本地运行构建/测试，记录命令和结果。
-4. 提交并推送：
+4. 提交并推送（提交前确保 `.arche/` 在 `.gitignore` 中且不在暂存区）：
 ```bash
+if [ -d /work/<project-id>/repo/.arche ]; then
+  grep -qxF '.arche/' /work/<project-id>/repo/.gitignore 2>/dev/null \
+    || printf '.arche/\n' >> /work/<project-id>/repo/.gitignore
+fi
+git -C /work/<project-id>/repo check-ignore -q .arche || printf '\n.arche/\n' >> /work/<project-id>/repo/.git/info/exclude
 git -C /work/<project-id>/repo add -A
+if git -C /work/<project-id>/repo diff --cached --name-only | grep -q '^\.arche/'; then
+  echo 'refusing to commit .arche' >&2
+  exit 1
+fi
 git -C /work/<project-id>/repo commit -m "Fix issue <issue-id>: <summary>"
 git -C /work/<project-id>/repo push -u origin code/<issue-id>
 ```

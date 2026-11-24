@@ -15,7 +15,7 @@
   - `design_inspection`：代码和设计空间都为空时正常；代码不为空而设计空间为空时是设计缺失，必须上报 Issue；
   - `consistency_inspection`：代码不为空而设计空间为空时，说明设计缺失，必须上报 Issue。
 
-Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 由 `arche clone --source <git_repository>` 记录；已有工作区用 `arche source set-url <git_repository>` 刷新。
+Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 记录在设计空间，`arche clone` 自动继承；已有工作区需要切换时用 `arche source set-url <git_url>`。
 
 设计空间工作区：
 
@@ -26,7 +26,7 @@ Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 
 缺失时创建：
 
 ```bash
-arche clone <design_space_url> /work/<project-id>/arche --branch <design_space_branch> --source <git_repository>
+arche clone <design_space_url> /work/<project-id>/arche --branch <design_space_branch>
 ```
 
 源码由设计空间管理，不需要另建 git checkout：

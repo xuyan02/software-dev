@@ -41,9 +41,6 @@
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
       },
-      "created": [
-        {"document_review_link": {"kind": "project", "action": "release"}}
-      ],
       "operations": [
         {
           "name": "started",
@@ -124,16 +121,13 @@
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
-      "created": [
-        {"document_review_link": {"kind": "project", "action": "bind"}}
-      ],
       "operations": [
         {
-          "name": "approved",
-          "display_name": "Approve",
-          "description": "Accept the project document and complete the task.",
+          "name": "merge",
+          "display_name": "批准并合并",
+          "description": "Approve the design-space merge request and complete the task.",
           "roles": ["acceptor"],
-          "action": "decision = 'approved'"
+          "action": "decision = 'approved'\ncreate_issue(kind = 'task_request', title = 'Requirements analysis: {task.title}', description = '根据项目说明书 project/document 和澄清记录进行需求分析。先读取设计空间 source 分支的 project/document；需求文档必须覆盖项目定位、背景、目标、非目标、分期计划、约束和风险，并把它们展开为可验证的需求。', relation = 'related', pool = 'requirements')"
         },
         {
           "name": "rejected",

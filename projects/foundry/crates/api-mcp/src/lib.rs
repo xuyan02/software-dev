@@ -12,18 +12,15 @@
 #![recursion_limit = "512"]
 
 use foundry_app::{
-    AddAnchorAnnotation, AddTaskLink, AnchorDocumentUseCases, AnchorRef, ApplyAnchorOperations,
-    CommentIssue, CreateIssue, DecideAnchorDocument, IssueFilter, IssueUseCases, RemoveTaskLink,
-    RequirementsDocumentUseCases, ResolveAnchorAnnotation, TaskLinkUseCases, TransitionIssue,
-    WorkflowUseCases,
+    AddTaskLink, CommentIssue, CreateIssue, IssueFilter, IssueUseCases, RemoveTaskLink,
+    TaskLinkUseCases, TransitionIssue, WorkflowUseCases,
 };
 use foundry_domain::{
-    Actor, AnchorOp, AnchorOperation, ApprovalDecision, IssueKind, IssueSeverity, IssueSource,
-    IssueSourceKind, IssueStatus, TaskLinkKind, TaskLinkRelation, WorkflowId,
+    Actor, IssueKind, IssuePool, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus,
+    TaskLinkKind, TaskLinkRelation, WorkflowId,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
@@ -39,8 +36,6 @@ pub struct Caller<'a> {
 pub struct Services<'a> {
     pub issues: &'a dyn IssueUseCases,
     pub workflows: &'a dyn WorkflowUseCases,
-    pub anchor_docs: &'a dyn AnchorDocumentUseCases,
-    pub requirements_doc: &'a dyn RequirementsDocumentUseCases,
     pub task_links: &'a dyn TaskLinkUseCases,
 }
 
@@ -84,27 +79,6 @@ pub async fn handle(services: &Services<'_>, caller: &Caller<'_>, request: Value
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
-            if name == "document" {
-                return match document_tool(services, caller, arguments).await {
-                    Ok(reply) => {
-                        let mut result = json!({
-                            "content": [{ "type": "text", "text": reply.text }],
-                            "isError": false
-                        });
-                        if let Some(structured) = reply.structured {
-                            result["structuredContent"] = structured;
-                        }
-                        success(id, result)
-                    }
-                    Err(message) => success(
-                        id,
-                        json!({
-                            "content": [{ "type": "text", "text": message }],
-                            "isError": true
-                        }),
-                    ),
-                };
-            }
             match call_tool(services, caller, name, arguments).await {
                 Ok(value) => success(
                     id,
@@ -125,246 +99,6 @@ pub async fn handle(services: &Services<'_>, caller: &Caller<'_>, request: Value
         }
         _ => error(id, -32601, format!("method not found: {method}")),
     }
-}
-
-async fn document_tool(
-    services: &Services<'_>,
-    caller: &Caller<'_>,
-    arguments: Value,
-) -> Result<DocumentReply, String> {
-    let args: DocumentArgs =
-        serde_json::from_value(arguments).map_err(|error| error.to_string())?;
-    let kind = args.kind.as_str();
-    match args.action.as_str() {
-        "toc" => {
-            let anchor = AnchorRef::parse(args.anchor.as_deref().unwrap_or("document"));
-            let view = services
-                .anchor_docs
-                .get(caller.actor.clone(), caller.project_id, kind, &anchor)
-                .await
-                .map_err(|error| error.to_string())?;
-            Ok(DocumentReply {
-                text: foundry_app::render_toc_markdown(&view),
-                structured: None,
-            })
-        }
-        "draft_open" => json_reply(
-            services
-                .anchor_docs
-                .open_draft(caller.actor.clone(), caller.project_id, kind)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        "draft_create" => {
-            require_contribute(caller)?;
-            json_reply(
-                services
-                    .anchor_docs
-                    .create_draft(caller.actor.clone(), caller.project_id, kind)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-        }
-        "content" => {
-            let anchor = AnchorRef::parse(args.anchor.as_deref().unwrap_or("document"));
-            json_reply(
-                services
-                    .anchor_docs
-                    .content(caller.actor.clone(), caller.project_id, kind, &anchor)
-                    .await
-                    .map_err(|error| error.to_string())?,
-            )
-        }
-        "add" => {
-            require_contribute(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let op = AnchorOp::Add {
-                parent: required(args.parent, "parent")?,
-                occurrence_key: args.occurrence_key,
-                text: args.text.unwrap_or_default(),
-                title: args.title,
-                after: args.after,
-            };
-            apply_document_op(services, caller, kind, expected_revision, op).await
-        }
-        "update_text" => {
-            require_contribute(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let op = AnchorOp::UpdateText {
-                anchor: required(args.anchor, "anchor")?,
-                text: required(args.text, "text")?,
-            };
-            apply_document_op(services, caller, kind, expected_revision, op).await
-        }
-        "update_title" => {
-            require_contribute(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let op = AnchorOp::UpdateTitle {
-                anchor: required(args.anchor, "anchor")?,
-                title: required(args.title, "title")?,
-            };
-            apply_document_op(services, caller, kind, expected_revision, op).await
-        }
-        "delete" => {
-            require_contribute(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let op = AnchorOp::Delete {
-                anchor: required(args.anchor, "anchor")?,
-                cascade: args.cascade,
-            };
-            apply_document_op(services, caller, kind, expected_revision, op).await
-        }
-        "move" => {
-            require_contribute(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let op = AnchorOp::Move {
-                anchor: required(args.anchor, "anchor")?,
-                after: args.after,
-            };
-            apply_document_op(services, caller, kind, expected_revision, op).await
-        }
-        "validate" => json_reply(
-            services
-                .anchor_docs
-                .validate(caller.actor.clone(), caller.project_id, kind)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        "annotations_list" => json_reply(
-            services
-                .anchor_docs
-                .annotations(
-                    caller.actor.clone(),
-                    caller.project_id,
-                    kind,
-                    args.include_resolved,
-                )
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        "annotate" => {
-            require_contribute(caller)?;
-            let annotation = services
-                .anchor_docs
-                .annotate(
-                    caller.actor.clone(),
-                    AddAnchorAnnotation {
-                        project_id: caller.project_id,
-                        kind: kind.to_string(),
-                        anchor: required(args.anchor, "anchor")?,
-                        quote: args.quote,
-                        body: required(args.body, "body")?,
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            json_reply(annotation)
-        }
-        "resolve_annotation" => {
-            require_contribute(caller)?;
-            let annotation = services
-                .anchor_docs
-                .resolve_annotation(
-                    caller.actor.clone(),
-                    ResolveAnchorAnnotation {
-                        project_id: caller.project_id,
-                        kind: kind.to_string(),
-                        annotation_id: required(args.annotation_id, "annotation_id")?
-                            .parse()
-                            .map_err(|_| "annotation_id must be a uuid".to_string())?,
-                        resolution: required(args.resolution, "resolution")?,
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            json_reply(annotation)
-        }
-        "approvals" => json_reply(
-            services
-                .anchor_docs
-                .approvals(caller.actor.clone(), caller.project_id, kind)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        "versions" => json_reply(
-            services
-                .anchor_docs
-                .versions(caller.actor.clone(), caller.project_id, kind)
-                .await
-                .map_err(|error| error.to_string())?,
-        ),
-        "decide" => {
-            require_dispose(caller)?;
-            let expected_revision = required_revision(&args)?;
-            let decision = ApprovalDecision::parse(&required(args.decision, "decision")?)
-                .ok_or_else(|| "decision must be approved or rejected".to_string())?;
-            let result = services
-                .anchor_docs
-                .decide(
-                    caller.actor.clone(),
-                    DecideAnchorDocument {
-                        project_id: caller.project_id,
-                        kind: kind.to_string(),
-                        expected_revision,
-                        decision,
-                        comment: args.comment,
-                    },
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-            json_reply(result)
-        }
-        other => Err(format!("unknown document action: {other}")),
-    }
-}
-
-struct DocumentReply {
-    text: String,
-    structured: Option<Value>,
-}
-
-fn json_reply(value: impl serde::Serialize) -> Result<DocumentReply, String> {
-    let value = serde_json::to_value(value).map_err(|error| error.to_string())?;
-    let text = value.to_string();
-    Ok(DocumentReply {
-        text,
-        structured: Some(value),
-    })
-}
-
-fn required(value: Option<String>, name: &str) -> Result<String, String> {
-    value.ok_or_else(|| format!("missing {name}"))
-}
-
-fn required_revision(args: &DocumentArgs) -> Result<u64, String> {
-    args.expected_revision
-        .ok_or_else(|| "missing expected_revision".to_string())
-}
-
-async fn apply_document_op(
-    services: &Services<'_>,
-    caller: &Caller<'_>,
-    kind: &str,
-    expected_revision: u64,
-    op: AnchorOp,
-) -> Result<DocumentReply, String> {
-    let result = services
-        .anchor_docs
-        .apply(
-            caller.actor.clone(),
-            ApplyAnchorOperations {
-                project_id: caller.project_id,
-                kind: kind.to_string(),
-                expected_revision,
-                operations: vec![AnchorOperation {
-                    op_id: Uuid::now_v7(),
-                    op,
-                }],
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    json_reply(result)
 }
 
 async fn call_tool(
@@ -398,6 +132,7 @@ async fn call_tool(
                         reproduction: args.reproduction,
                         expected: args.expected,
                         actual: args.actual,
+                        pool: args.pool,
                     },
                 )
                 .await
@@ -722,90 +457,7 @@ fn tool_definitions() -> Value {
                 }
             }
         },
-        {
-            "name": "document",
-            "description": "Read, edit, validate, annotate and query an anchor document. action selects the operation; kind is always required.",
-            "inputSchema": {
-                "type": "object",
-                "required": ["action", "kind"],
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": [
-                            "toc",
-                            "draft_open",
-                            "draft_create",
-                            "content",
-                            "add",
-                            "update_text",
-                            "update_title",
-                            "delete",
-                            "move",
-                            "validate",
-                            "annotations_list",
-                            "annotate",
-                            "resolve_annotation",
-                            "approvals",
-                            "versions",
-                            "decide"
-                        ]
-                    },
-                    "kind": { "type": "string" },
-                    "anchor": { "type": "string" },
-                    "expected_revision": { "type": "integer" },
-                    "parent": { "type": "string" },
-                    "occurrence_key": { "type": "string" },
-                    "text": { "type": "string" },
-                    "title": { "type": "string", "description": "Title for a multiple chapter. Required when action is add; used by update_title. Titles are not derived from text." },
-                    "after": { "type": "string" },
-                    "cascade": { "type": "boolean", "default": false },
-                    "include_resolved": { "type": "boolean", "default": false },
-                    "quote": { "type": "string" },
-                    "body": { "type": "string" },
-                    "annotation_id": { "type": "string" },
-                    "resolution": { "type": "string" },
-                    "decision": { "type": "string", "enum": ["approved", "rejected"] },
-                    "comment": { "type": "string" }
-                }
-            }
-        }
     ])
-}
-
-#[derive(Debug, Deserialize)]
-struct DocumentArgs {
-    action: String,
-    kind: String,
-    #[serde(default)]
-    anchor: Option<String>,
-    #[serde(default)]
-    expected_revision: Option<u64>,
-    #[serde(default)]
-    parent: Option<String>,
-    #[serde(default)]
-    occurrence_key: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    after: Option<String>,
-    #[serde(default)]
-    cascade: bool,
-    #[serde(default)]
-    include_resolved: bool,
-    #[serde(default)]
-    quote: Option<String>,
-    #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
-    annotation_id: Option<String>,
-    #[serde(default)]
-    resolution: Option<String>,
-    #[serde(default)]
-    decision: Option<String>,
-    #[serde(default)]
-    comment: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -871,6 +523,8 @@ struct CreateIssueArgs {
     expected: Option<String>,
     #[serde(default)]
     actual: Option<String>,
+    #[serde(default)]
+    pool: Option<IssuePool>,
 }
 
 #[derive(Debug, Deserialize)]

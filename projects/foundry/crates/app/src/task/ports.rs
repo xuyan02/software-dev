@@ -1,7 +1,7 @@
 use crate::RepoError;
 use foundry_domain::{
     AccountKind, DomainEvent, OperationName, RoleKey, StageKey, TaskCommentDAO, TaskDAO,
-    TaskDispatchState, TaskOperation, TaskResult, TaskState,
+    TaskDispatchState, TaskOperation, TaskResult, TaskState, WorkflowId,
 };
 use uuid::Uuid;
 
@@ -59,6 +59,7 @@ pub struct TaskFilter {
     /// Tasks where this account is an active actor.
     pub active_actor: Option<Uuid>,
     pub parent_id: Option<Uuid>,
+    pub workflow: Option<WorkflowId>,
     /// Case-insensitive substring match on the title.
     pub text: Option<String>,
     pub limit: Option<i64>,

@@ -2,130 +2,208 @@
 
 ## 目标
 
-根据澄清 Issue、项目信息和已确认的结论，撰写项目文档草稿并提交评审。
+根据澄清 Issue、用 `project` 工具读取的项目信息和当前项目说明书，撰写 Arche 对象 `project/document`（项目说明书），然后提交评审。
 
-你只负责撰写项目文档，不向创建者提问，不审批、不发布。
+你只负责撰写，不向创建者提问，不审批、不发布。
 
 ## 写作前必须读取
 
-每一轮开始写作前，重新确认以下信息，不能依赖上一轮的记忆：
+每一轮开始前重新确认以下信息，不能依赖上一轮的记忆：
 
 1. **澄清 Issue**
    - `task_links_list` 找到当前任务的 Issue。
    - `issue_get` 读取标题、正文和全部评论。
 
 2. **项目信息**
-   - `project` 读取项目名称和描述。
+   - 用 `project` 工具读取项目信息（git_repository、git_branch、design_space_url、design_space_branch）。
 
-3. **项目文档当前状态**
-   - `document`，`action = "content"`，`kind = "project"`，不传 `anchor`，读取全文。
-   - `document`，`action = "toc"`，`kind = "project"`，查看元数据和目录。
-   - 有草稿时用 `action = "draft_open"` 打开草稿，保留返回的 `revision`。
-   - 没有草稿时用 `action = "draft_create"` 创建。
+3. **Arche 工作区**
+   - 写作分支固定为 `project-document-<task-id>`，不要直接写 `<design_space_branch>`。
+   - 不存在时：
 
-4. **评审反馈**
-   - 如果任务从审查打回，用 `task_get` 读取任务详情。
-   - 用 `document`，`action = "annotations_list"`，`kind = "project"` 读取文档标注。
+     ```bash
+     mkdir -p /work/<project-id>
+     arche clone <design_space_url> /work/<project-id>/arche \
+       --branch <design_space_branch>
+     cd /work/<project-id>/arche
+     arche fetch
+     arche checkout project-document-<task-id> \
+       || arche checkout -b project-document-<task-id>
+     ```
 
-## 写作依据
+     源码地址由设计空间记录，clone 自动继承。
 
-- 章节内容怎么写，以《项目文档写作说明书》为准；它规定了每节写什么、不写什么，以及正例和反例。
-- 分期计划只写用户明确要求或说明过的分期；用户没有说明就留空，不自行推断首期或后续。
-- 只写 Issue、项目信息和项目文档中能够确认的事实。
-- 行业常识和一般业务实践可以用于描述通用背景；不要把它们写成该项目的特有事实，也不要编造具体数据。
-- 背景的现状可以先写行业通用做法，再写 Issue 中确认的项目特有情况；不要把通用做法冒充成项目现状。
-- 不把推断写成事实。
-- 没有来源的数字、比例、频率不写；能用定性描述就用定性描述。
-- 缺失的信息不编造。无法确认的内容留空，不要用猜测补全。
-- 不修改项目名称和描述。
+   - 已存在时：
 
-## 风险判断
+     ```bash
+     cd /work/<project-id>/arche
+     arche fetch
+     arche status
+     ```
 
-- 风险由你根据项目定位、背景、目标、非目标、约束、依赖和澄清记录自行判断，不要向创建者询问“有什么风险”。
-- 从已确认事实推导可能发生的不确定事件，例如能力上限、投入与范围、采用与信任、场景宽度、外部依赖、合规和交付。
-- 每条风险只写一句简单描述，写可能发生什么、可能影响什么；不写概率、影响、缓解措施、负责人等额外字段，也不写子项或多段说明。
-- 不编造概率、影响等级或其他没有来源的数字。
-- 如果根据现有事实判断没有值得记录的风险，不要为了填满章节编造风险，留空即可。
+     当前分支不是 `design_space_branch` 时先切回：
+     ```bash
+     arche checkout <design_space_branch>
+     arche pull
+     ```
+
+     然后进入写作分支（已存在则检出，不存在则创建）：
+     ```bash
+     arche checkout project-document-<task-id> \
+       || arche checkout -b project-document-<task-id>
+     ```
+
+     动笔前必须确认 `arche status` 显示：
+     ```text
+     branch: project-document-<task-id>
+     ```
+
+4. **当前项目说明书**
+   - 用 `arche show project/document --format md` 读取全文。
+
+5. **评审意见**
+   - 用 `arche comment list project/document --open` 读取未解决的意见；没有意见时输出为空。
+
+## 项目说明书的结构
+
+`project/document` 的文档字段是 `document`（`DocumentParagraphList`）。章节固定为：
+
+```text
+定位
+  是什么       文本
+  不是什么     列表
+背景
+  现状         文本
+  问题         列表（至少 1 项）
+目标           列表（至少 1 项）
+非目标         列表
+分期计划       列表
+约束           列表
+风险           列表
+```
+
+没有术语表。不要增加其他章节。
 
 ## 写作流程
 
-1. 先读目录和当前全文，确定哪些章节为空、哪些章节需要修改。
-2. 按文档结构从「定位」开始，依次处理「背景」「目标」「非目标」「分期计划」「约束」「风险」「术语表」。
-3. 单次章节已经由骨架预生成，用 `action = "update_text"` 填写。
-4. 多项章节和列表项用 `action = "add"` 添加；子类型由父锚点推断，不要传 `schema_key`。
-5. 调整顺序用 `action = "move"`；删除用 `action = "delete"`。单次章节不能删除。
-6. 每次操作都带 `kind = "project"`、`expected_revision` 和对应锚点；使用上一步返回的 `revision`。
-7. 按锚点增量修改，不要重写整篇文档。
+1. 按《项目文档写作说明书》准备每个章节的内容。
+2. 在 `/work/<project-id>/project-document.json` 写完整的导入文件，例如：
 
-## 校验
+   ```json
+   {
+     "fields": {
+       "document": {
+         "type": "DocumentParagraphList",
+         "items": [
+           {
+             "type": "topic",
+             "title": "定位",
+             "body": {
+               "items": [
+                 {
+                   "type": "topic",
+                   "title": "是什么",
+                   "body": {"items": [{"type": "text", "text": "..."}]}
+                 },
+                 {
+                   "type": "topic",
+                   "title": "不是什么",
+                   "body": {"items": [{"type": "list", "items": ["..."]}]}
+                 }
+               ]
+             }
+           },
+           {
+             "type": "topic",
+             "title": "背景",
+             "body": {
+               "items": [
+                 {
+                   "type": "topic",
+                   "title": "现状",
+                   "body": {"items": [{"type": "text", "text": "..."}]}
+                 },
+                 {
+                   "type": "topic",
+                   "title": "问题",
+                   "body": {"items": [{"type": "list", "items": ["..."]}]}
+                 }
+               ]
+             }
+           },
+           {"type": "topic", "title": "目标", "body": {"items": [{"type": "list", "items": ["..."]}]}},
+           {"type": "topic", "title": "非目标", "body": {"items": [{"type": "list", "items": ["..."]}]}},
+           {"type": "topic", "title": "分期计划", "body": {"items": [{"type": "list", "items": ["..."]}]}},
+           {"type": "topic", "title": "约束", "body": {"items": [{"type": "list", "items": ["..."]}]}},
+           {"type": "topic", "title": "风险", "body": {"items": [{"type": "list", "items": ["..."]}]}}
+         ]
+       }
+     }
+   }
+   ```
 
-- 每完成一批修改，用 `action = "validate"`，`kind = "project"` 校验。
-- 修复所有 error；warning 是评审提示，不阻塞提交。
-- 校验通过后再提交。
+3. 导入：
 
-## 提交
+   ```bash
+   cd /work/<project-id>/arche
+   arche doc import project/document /work/<project-id>/project-document.json
+   ```
 
-1. 调用 `task_allowed_operations`，确认当前任务允许 `completed`。
-2. 调用 `task_operation`，`operation` 使用 `task_allowed_operations` 返回的操作名，把项目文档提交给文风审查。
+4. 用 `arche show project/document --format md` 检查导入结果；章节缺失、重复或顺序错误时修正 JSON 后重新导入。
 
-## 被审查打回后：按标注修改
+## 写作依据
 
-### 1. 读取
+- 章节内容以《项目文档写作说明书》为准；它规定每节写什么、不写什么，以及正例和反例。
+- 只写 Issue、任务上下文和项目说明书中能够确认的事实；不把推断写成事实。
+- 分期计划只写用户明确要求或说明过的分期；用户没有说明就留空。
+- 行业常识和一般业务实践可以用于描述通用背景；不要把它们写成该项目的特有事实，也不要编造数据。
+- 没有来源的数字、比例、频率不写；能用定性描述就用定性描述。
+- 风险由你根据项目定位、背景、目标、非目标、约束和依赖自行判断；每条只写一句简单描述，不写概率、影响、缓解措施或负责人。
+- 不修改项目名称和描述。
 
-- 用 `task_get` 读取任务详情和打回原因。
-- 用 `document`，`action = "annotations_list"`，`kind = "project"` 读取全部标注。
-- 用 `document`，`action = "content"` 和 `action = "toc"`，`kind = "project"` 读取当前草稿全文和锚点。
-- 用 `action = "draft_open"` 打开草稿，保留最新 `revision`。
+## 校验与提交
 
-### 2. 建立标注清单
+```bash
+cd /work/<project-id>/arche
+arche status
+# 必须显示 branch: project-document-<task-id>
+arche doc check
+arche check
+arche add -A
+arche commit -m "Write the project specification"
+arche push
+```
 
-逐条记录：
+`arche push` 只推送当前写作分支，不要推送或强制推送 `source`/`main`。
 
-- 标注 id；
-- `anchor_key`；
-- 引用的原文；
-- 标注内容和建议；
-- 当前状态。
+然后调用 `task_allowed_operations`，再调用 `task_operation`，operation 使用 `task_allowed_operations` 返回的 `completed` 操作名，把项目说明书提交给文风审查。
 
-同一锚点上的多条标注也要逐条处理：每处理完一条立即 resolve，再处理下一条。
+## 被审查打回后
 
-### 3. 逐条判断和处理
+1. `task_get` 读取任务详情和打回原因。
+2. 确认仍在写作分支：
+   ```bash
+   cd /work/<project-id>/arche
+   arche fetch
+   arche checkout project-document-<task-id>
+   arche pull
+   arche status
+   ```
+3. `arche comment list project/document --open` 读取全部未解决意见。
+4. 逐条修改 JSON 并重新 `arche doc import`；不要漏掉意见。
+5. 重新校验、`arche add -A`、`arche commit`、`arche push`。
+6. 每条已处理的意见用：
 
-每处理完一条标注，立即 resolve 该标注，再处理下一条。不要先改完全部标注再统一 resolve。
+   ```bash
+   arche comment resolve --agent <你的 handle> --conclusion "已修改：<说明>" <comment-id>
+   ```
 
-对每条标注：
+7. 重新提交评审。
 
-1. 找到 `anchor_key` 对应的当前内容；如果锚点已失效，按引用原文和上下文定位。
-2. 对照《项目文档写作说明书》、澄清 Issue 和当前文档，判断标注是否成立。
-3. **成立**：按锚点增量修改草稿。
-   - 单次章节用 `update_text`。
-   - 列表项用 `add`、`move`、`delete` 调整。
-   - 列表章节只保留简单列表项；标注要求删除额外字段、子项或多段说明时，直接删掉，不要保留结构。
-4. **不成立或与说明书冲突**：不修改正文，在 `resolve_annotation` 的说明里写清理由。
-5. **当前草稿已经改好**：直接 `resolve_annotation`，说明已处理。
-6. **需要未确认的信息**：不要编造；不修改正文，在 `resolve_annotation` 里说明无法确认的原因，留给人工评审判断。
+## 不该做的事
 
-### 4. 标记已处理
-
-- 每处理完一条标注，立即用 `action = "resolve_annotation"` 标记，再处理下一条。
-- `resolution` 写一句具体说明，例如“已把原因移出非目标陈述，改为一句简单描述”。
-- 不要攒到最后批量 resolve，也不要在没有修改的情况下 resolve。
-- 不把标注当成不存在。
-
-### 5. 复查
-
-- 重新用 `action = "annotations_list"` 读取标注，确认没有未处理的 open 标注；仍有则继续处理。
-- 重新用 `action = "content"` 检查修改后的全文，确认没有引入新问题。
-- 用 `action = "validate"` 校验，修复所有 error。
-- 校验通过后调用 `completed`。
-
-## 不要做的事
-
-- 不向创建者提问；澄清由 Clarifier 负责。
-- 不调用 `issue_comment`。
-- 不写未经确认的事实。
-- 不跳过 `validate`。
-- 不修改已发布版本；所有修改都只作用于草稿。
+- 不读写锚点文档（不要使用 `document` 工具处理项目说明书）。
+- 用 `project` 工具读取项目信息。
+- 不直接修改 `.arche/` 下的文件。
+- 不修改需求、架构、详细设计或代码。
 - 不审批、不发布。
-- 不在未修改时 resolve 标注。
-- 不忽略标注；不成立也要写明理由并 resolve。

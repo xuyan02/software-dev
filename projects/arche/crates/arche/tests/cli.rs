@@ -1,4 +1,9 @@
-use std::process::Command;
+use std::fs;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -487,7 +492,7 @@ fn source_ls_and_cat_read_the_git_checkout() {
 }
 
 #[test]
-fn clone_records_the_source_url() {
+fn clone_inherits_the_source_url() {
     let source = TempDir::new().unwrap();
     let git = |args: &[&str]| {
         let output = Command::new("git")
@@ -505,15 +510,20 @@ fn clone_records_the_source_url() {
     git(&["commit", "-qm", "init"]);
 
     let design = TempDir::new().unwrap();
-    arche().arg("init").arg(design.path()).output().unwrap();
+    let output = arche()
+        .arg("init")
+        .arg(design.path())
+        .arg("--source")
+        .arg(source.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
     let clone = TempDir::new().unwrap();
     let destination = clone.path().join("repo");
     let output = arche()
         .arg("clone")
         .arg(design.path())
         .arg(&destination)
-        .arg("--source")
-        .arg(source.path())
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");
@@ -529,4 +539,74 @@ fn clone_records_the_source_url() {
     run(&["source", "fetch"]);
     assert_eq!(run(&["source", "ls"]).trim(), "main.rs");
     assert!(run(&["source", "cat", "main.rs"]).contains("fn main"));
+}
+
+#[test]
+fn clone_stops_when_ssh_closes_the_connection() {
+    let bin = TempDir::new().unwrap();
+    let ssh = bin.path().join("ssh");
+    fs::write(&ssh, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&ssh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&ssh, permissions).unwrap();
+
+    let destination = TempDir::new().unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut child = arche()
+        .arg("clone")
+        .arg("ssh://example.test/project")
+        .arg(destination.path().join("repo"))
+        .env("PATH", format!("{}:{path}", bin.path().display()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(!status.success(), "ssh closure must fail the clone");
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("arche clone looped after ssh closed the connection");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn stdio_serves_the_recorded_source_url() {
+    let design = TempDir::new().unwrap();
+    let source = "git@example.test:app.git";
+    let init = arche()
+        .arg("init")
+        .arg(design.path())
+        .arg("--source")
+        .arg(source)
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+
+    let mut child = arche()
+        .args(["serve", "--stdio", "--root"])
+        .arg(design.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    writeln!(stdin, "SOURCE").unwrap();
+    stdin.flush().unwrap();
+    let mut header = String::new();
+    stdout.read_line(&mut header).unwrap();
+    let len: usize = header.trim().strip_prefix("OK ").unwrap().parse().unwrap();
+    let mut body = vec![0u8; len];
+    stdout.read_exact(&mut body).unwrap();
+    assert_eq!(String::from_utf8(body).unwrap(), source);
+    drop(stdin);
+    let _ = child.wait();
 }

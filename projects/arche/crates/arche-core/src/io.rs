@@ -131,6 +131,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.load_into(input),
             Self::TechnicalArgument(value) => value.load_into(input),
             Self::TechnicalReturnValue(value) => value.load_into(input),
+            Self::ProjectRoot(value) => value.load_into(input),
+            Self::ProjectDocument(value) => value.load_into(input),
         }
     }
 
@@ -177,6 +179,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.save(output.as_mut())?,
             Self::TechnicalArgument(value) => value.save(output.as_mut())?,
             Self::TechnicalReturnValue(value) => value.save(output.as_mut())?,
+            Self::ProjectRoot(value) => value.save(output.as_mut())?,
+            Self::ProjectDocument(value) => value.save(output.as_mut())?,
         };
         let hash = ObjectHash(object_hash);
         output.commit(hash)?;
@@ -225,6 +229,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::TechnicalArgument(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::TechnicalReturnValue(value) => value.compute_object_hash(OBJECT_VERSION),
+            Self::ProjectRoot(value) => value.compute_object_hash(OBJECT_VERSION),
+            Self::ProjectDocument(value) => value.compute_object_hash(OBJECT_VERSION),
         }
     }
 }
@@ -555,6 +561,80 @@ impl Root {
         object.hash(self.technical);
         object.hash(self.requirement);
         object.hash(self.concept);
+        object.finish()
+    }
+}
+
+impl ObjectCodec for ProjectRoot {
+    fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        match input.version() {
+            1 => self.load_v1(input),
+            version => bail!("unsupported ProjectRoot version {version}"),
+        }
+    }
+
+    fn save(&mut self, output: &mut dyn OutputObject) -> Result<Hash32> {
+        let object_hash = self.compute_object_hash(output.version());
+        output.symbol(self.qname);
+        output.symbol(self.name);
+        output.symbol(self.parent);
+        output.object(self.document);
+        Ok(object_hash)
+    }
+}
+
+impl ProjectRoot {
+    fn load_v1(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.qname = input.symbol()?;
+        self.name = input.symbol()?;
+        self.parent = input.symbol()?;
+        self.document = input.object()?;
+        Ok(())
+    }
+
+    fn compute_object_hash(&self, version: u8) -> Hash32 {
+        let mut object = ObjectHasher::new(ObjectKind::ProjectRoot, version);
+        object.symbol(self.qname);
+        object.symbol(self.name);
+        object.symbol(self.parent);
+        object.hash(self.document);
+        object.finish()
+    }
+}
+
+impl ObjectCodec for ProjectDocument {
+    fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        match input.version() {
+            1 => self.load_v1(input),
+            version => bail!("unsupported ProjectDocument version {version}"),
+        }
+    }
+
+    fn save(&mut self, output: &mut dyn OutputObject) -> Result<Hash32> {
+        let object_hash = self.compute_object_hash(output.version());
+        output.symbol(self.qname);
+        output.symbol(self.name);
+        output.symbol(self.parent);
+        output.object(self.document);
+        Ok(object_hash)
+    }
+}
+
+impl ProjectDocument {
+    fn load_v1(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.qname = input.symbol()?;
+        self.name = input.symbol()?;
+        self.parent = input.symbol()?;
+        self.document = input.object()?;
+        Ok(())
+    }
+
+    fn compute_object_hash(&self, version: u8) -> Hash32 {
+        let mut object = ObjectHasher::new(ObjectKind::ProjectDocument, version);
+        object.symbol(self.qname);
+        object.symbol(self.name);
+        object.symbol(self.parent);
+        object.hash(self.document);
         object.finish()
     }
 }

@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "dispatcher", "kind": "agent", "assignment": "requirements_iteration"},
+    {"name": "verifier", "kind": "agent", "assignment": "requirements_iteration"}
+  ],
+  "vars": {
+    "expected": {"type": "int", "display_name": "Expected requirements tasks", "initial": -1},
+    "done": {"type": "int", "display_name": "Completed requirements tasks"},
+    "failed": {"type": "int", "display_name": "Failed requirements tasks"},
+    "no_work": {"type": "bool", "display_name": "No work"},
+    "did_work": {"type": "bool", "display_name": "Did work"},
+    "outcome": {"type": "string", "display_name": "Outcome"}
+  },
+  "initial_stage": "dispatch",
+  "stages": [
+    {
+      "name": "dispatch",
+      "active_roles": ["dispatcher"],
+      "operations": [
+        {
+          "name": "dispatched",
+          "display_name": "需求任务已创建",
+          "description": "已从需求池选批，并创建需求分析任务。",
+          "roles": ["dispatcher"],
+          "action": "done = 0\nfailed = 0\nexpected = count_children('requirements_analysis')"
+        },
+        {
+          "name": "nothing",
+          "display_name": "没有可处理的议题",
+          "description": "需求池为空，或当前没有可以立即处理的需求议题。",
+          "roles": ["dispatcher"],
+          "action": "no_work = true"
+        }
+      ],
+      "transitions": [
+        {"on": "no_work", "to": "waiting"},
+        {"on": "expected > 0", "action": "did_work = true", "to": "working"},
+        {"on": "expected == 0", "to": "waiting"}
+      ]
+    },
+    {
+      "name": "waiting",
+      "active_roles": ["dispatcher"],
+      "vars": {
+        "woken": {"type": "bool", "display_name": "Woken"}
+      },
+      "operations": [
+        {
+          "name": "work_arrived",
+          "display_name": "有新的可调度 Issue",
+          "description": "新的 Issue 已进入需求池，重新分派。",
+          "roles": ["dispatcher"],
+          "action": "woken = true"
+        }
+      ],
+      "transitions": [
+        {"on": "woken", "to": "dispatch"}
+      ]
+    },
+    {
+      "name": "working",
+      "active_roles": [],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'requirements_analysis' and event.child.state == 'completed' { done = done + 1 } if event.child.workflow == 'requirements_analysis' and event.child.state == 'failed' { failed = failed + 1 }"
+        }
+      ],
+      "transitions": [
+        {"on": "done + failed == expected", "to": "verify"}
+      ]
+    },
+    {
+      "name": "verify",
+      "active_roles": ["verifier"],
+      "operations": [
+        {
+          "name": "ready",
+          "display_name": "本轮验收通过",
+          "description": "需求文档已更新、审批并合入。",
+          "roles": ["verifier"],
+          "action": "outcome = 'ready'"
+        },
+        {
+          "name": "blocked",
+          "display_name": "本轮存在无法完成项",
+          "description": "需求变更未能完成，相关议题退回需求池。",
+          "roles": ["verifier"],
+          "action": "outcome = 'blocked'"
+        }
+      ],
+      "transitions": [
+        {"on": "outcome == 'ready'", "to": "dispatch"},
+        {"on": "outcome == 'blocked'", "to": "waiting"}
+      ]
+    }
+  ]
+}

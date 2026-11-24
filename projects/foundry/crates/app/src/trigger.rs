@@ -28,10 +28,7 @@ pub const SCHEDULABLE_WORKFLOWS: &[&str] = &[
     "cohesion_inspection",
     "consistency_inspection",
     "design_inspection",
-    "design_iteration",
-    "development_iteration",
     "design_consistency_maintenance",
-    "feedback_cycle",
     "daily_check",
 ];
 
@@ -125,6 +122,16 @@ pub trait TriggerUseCases: Send + Sync {
     /// Deterministically create the default continuous-feedback trigger for a
     /// project if it is missing. Safe to call repeatedly.
     async fn ensure_feedback_cycle(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError>;
+
+    async fn ensure_requirements_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError>;
+
+    async fn ensure_test_iteration(
         &self,
         project_id: Uuid,
     ) -> Result<Option<Trigger>, ServiceError>;
@@ -364,6 +371,7 @@ where
             let legacy_descriptions = [
                 "按计划运行代码-设计一致性检查和设计检查。",
                 "按计划运行设计检查。",
+                "按计划运行需求、技术设计、代码、测试和产品检查。",
             ];
             let legacy_templates = ["运行代码-设计一致性和设计检查。", "运行设计检查。"];
             if trigger.name == "日常检查"
@@ -378,7 +386,7 @@ where
                             id: trigger.id,
                             name: None,
                             description: Some(
-                                "按计划运行需求、技术设计、代码、测试和产品检查。".to_string(),
+                                "按计划运行需求设计、技术设计、代码和日常测试检查。".to_string(),
                             ),
                             input: None,
                             schedule: None,
@@ -395,7 +403,7 @@ where
         let trigger = Trigger::new(
             project_id,
             "日常检查",
-            "按计划运行需求、技术设计、代码、测试和产品检查。",
+            "按计划运行需求设计、技术设计、代码和日常测试检查。",
             "daily_check",
             json!({}),
             "daily@09:00",
@@ -589,6 +597,87 @@ where
             "continuous",
             "开发迭代",
             "从开发池选批并处理。",
+            owner.actor(),
+            owner.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.triggers.insert(&trigger).await?;
+        Ok(Some(trigger))
+    }
+
+    pub async fn ensure_requirements_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        self.ensure_continuous_iteration(
+            project_id,
+            "requirements_iteration",
+            "需求迭代",
+            "只要有需求议题就持续运行，空闲后定期检查。",
+            "需求迭代",
+            "从需求池选批并处理。",
+        )
+        .await
+    }
+
+    pub async fn ensure_test_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        self.ensure_continuous_iteration(
+            project_id,
+            "test_iteration",
+            "测试迭代",
+            "只要有测试议题就持续运行，空闲后定期检查。",
+            "测试迭代",
+            "从测试池选批并处理。",
+        )
+        .await
+    }
+
+    async fn ensure_continuous_iteration(
+        &self,
+        project_id: Uuid,
+        workflow_id: &str,
+        name: &str,
+        description: &str,
+        title_template: &str,
+        description_template: &str,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let owner_id = project
+            .members
+            .iter()
+            .find(|member| member.role == ProjectRole::Owner)
+            .map(|member| member.account_id)
+            .ok_or_else(|| {
+                ServiceError::Validation("project has no owner for default trigger".to_string())
+            })?;
+        let owner = self
+            .accounts
+            .get(owner_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("account", owner_id))?;
+        let existing = self.triggers.list(project_id).await?;
+        if let Some(trigger) = existing
+            .iter()
+            .find(|trigger| trigger.workflow_id == workflow_id)
+        {
+            return Ok(Some(trigger.clone()));
+        }
+        let trigger = Trigger::new(
+            project_id,
+            name,
+            description,
+            workflow_id,
+            json!({}),
+            "continuous",
+            title_template,
+            description_template,
             owner.actor(),
             owner.id,
         )
@@ -830,6 +919,20 @@ where
         project_id: Uuid,
     ) -> Result<Option<Trigger>, ServiceError> {
         TriggerService::ensure_feedback_cycle(self, project_id).await
+    }
+
+    async fn ensure_requirements_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_requirements_iteration(self, project_id).await
+    }
+
+    async fn ensure_test_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_test_iteration(self, project_id).await
     }
 }
 

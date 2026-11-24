@@ -58,13 +58,13 @@ design-consistency/<根任务 id>
 
 #### 命令参考
 
-项目工具返回 `id`、`git_repository`、`git_branch`、`design_space_url`。设计空间分支固定为 `source`，不是项目配置。Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 由 `arche clone --source <git_repository>` 记录；已有工作区用 `arche source set-url <git_repository>` 刷新。
+项目工具返回 `id`、`git_repository`、`git_branch`、`design_space_url`。设计空间分支固定为 `source`，不是项目配置。Git 凭据和配置已经由 agentd 预先配好，直接运行 `git` / `arche` 命令；不要自己设置 `HOME`、`GIT_CONFIG_GLOBAL` 或 `GIT_TERMINAL_PROMPT`。源码 URL 记录在设计空间，`arche clone` 自动继承；已有工作区需要切换时用 `arche source set-url <git_url>`。
 
 首次克隆：
 
 ```bash
 mkdir -p /work/<project-id>
-arche clone <design_space_url> /work/<project-id>/arche --branch <design_space_branch> --source <git_repository>
+arche clone <design_space_url> /work/<project-id>/arche --branch <design_space_branch>
 ```
 
 扫描：

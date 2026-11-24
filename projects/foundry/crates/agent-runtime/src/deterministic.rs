@@ -52,6 +52,10 @@ pub enum DeterministicMode {
     DesignVerifier,
     DevelopmentDispatcher,
     DevelopmentVerifier,
+    RequirementsDispatcher,
+    RequirementsVerifier,
+    TestDispatcher,
+    TestVerifier,
     ReleaseManager,
     ReleaseVerifier,
     ReleaseDeployer,
@@ -109,26 +113,38 @@ pub async fn run(
             design_cleanup(mode, tools, &context, task_id).await
         }
         DeterministicMode::DesignDispatcher => {
-            design_dispatcher(tools, shell, &context, task_id).await
+            design_dispatcher(tools, shell, &context, &request, task_id).await
         }
         DeterministicMode::DesignVerifier => {
             design_verifier(tools, shell, &context, &request, task_id).await
         }
         DeterministicMode::DevelopmentDispatcher => {
-            development_dispatcher(tools, &context, task_id).await
+            development_dispatcher(tools, &context, &request, task_id).await
         }
         DeterministicMode::DevelopmentVerifier => {
             development_verifier(tools, &context, &request, task_id).await
         }
-        DeterministicMode::ReleaseManager => release_manager(tools, shell, &context, task_id).await,
+        DeterministicMode::RequirementsDispatcher => {
+            requirements_dispatcher(tools, &context, &request, task_id).await
+        }
+        DeterministicMode::RequirementsVerifier => {
+            requirements_verifier(tools, &context, &request, task_id).await
+        }
+        DeterministicMode::TestDispatcher => {
+            test_dispatcher(tools, &context, &request, task_id).await
+        }
+        DeterministicMode::TestVerifier => test_verifier(tools, &context, &request, task_id).await,
+        DeterministicMode::ReleaseManager => {
+            release_manager(tools, shell, &context, &request, task_id).await
+        }
         DeterministicMode::ReleaseVerifier => {
-            release_verifier(tools, shell, &context, task_id).await
+            release_verifier(tools, shell, &context, &request, task_id).await
         }
         DeterministicMode::ReleaseDeployer => {
-            release_deployer(tools, shell, &context, task_id).await
+            release_deployer(tools, shell, &context, &request, task_id).await
         }
         DeterministicMode::ReleaseObserver => {
-            release_observer(tools, shell, &context, task_id).await
+            release_observer(tools, shell, &context, &request, task_id).await
         }
     };
     result.map(|message| RunResult {
@@ -160,12 +176,25 @@ async fn assessor(
         .get("git_branch")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let source = format!("/work/{project_id}/source");
-    let prepared = prepare_checkout(shell, &source, url, branch).await?;
+    let (arche, prepared) = ensure_arche(shell, &project, project_id).await?;
     if prepared.exit_code != Some(0) {
         let evidence = evidence(
             "项目评估",
-            &format!("无法读取源码仓库 {url}\n{}", shell_evidence(&prepared)),
+            &format!("无法准备 Arche 工作区\n{}", shell_evidence(&prepared)),
+        );
+        comment(tools, context, task_id, &evidence).await?;
+        send(tools, context, task_id, "assessment:failed").await?;
+        return Ok(evidence);
+    }
+    let mut fetch = format!("cd {} && arche source fetch", quote(&arche));
+    if !branch.is_empty() {
+        fetch.push_str(&format!(" && arche source checkout {}", quote(branch)));
+    }
+    let fetched = shell.exec(&fetch).await.map_err(shell_error)?;
+    if fetched.exit_code != Some(0) {
+        let evidence = evidence(
+            "项目评估",
+            &format!("无法读取源码仓库 {url}\n{}", shell_evidence(&fetched)),
         );
         comment(tools, context, task_id, &evidence).await?;
         send(tools, context, task_id, "assessment:failed").await?;
@@ -173,7 +202,7 @@ async fn assessor(
     }
 
     let listing = shell
-        .exec(&format!("git -C {} ls-files", quote(&source)))
+        .exec(&format!("cd {} && arche source ls", quote(&arche)))
         .await
         .map_err(shell_error)?;
     if listing.exit_code != Some(0) {
@@ -194,7 +223,7 @@ async fn assessor(
     let has_code = has_code_files(files.iter().copied());
     let languages = language_counts(files.iter().copied());
     let commit = shell
-        .exec(&format!("git -C {} rev-parse --short HEAD", quote(&source)))
+        .exec(&format!("git -C {} rev-parse --short HEAD", quote(&arche)))
         .await
         .ok()
         .filter(|output| output.exit_code == Some(0))
@@ -786,15 +815,30 @@ async fn design_dispatcher(
     tools: &ToolRegistry,
     shell: Option<&Arc<dyn Shell>>,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
     let shell = required_shell(shell)?;
+    let waiting = request.stage.as_deref() == Some("waiting");
     let pooled = tool_json(tools, context, "design_pool_batch", json!({})).await?;
     let selected = select_pool_issues(&pooled, DESIGN_BATCH_LIMIT);
     if selected.is_empty() {
         comment(tools, context, task_id, "设计池没有可立即开始的任务。").await?;
-        send(tools, context, task_id, "dispatch:nothing").await?;
+        if !waiting {
+            send(tools, context, task_id, "dispatch:nothing").await?;
+        }
         return Ok("设计池没有可立即开始的任务。".to_string());
+    }
+    if waiting {
+        comment(
+            tools,
+            context,
+            task_id,
+            "设计池有新的可开始任务，重新分派。",
+        )
+        .await?;
+        send(tools, context, task_id, "waiting:work_arrived").await?;
+        return Ok("设计池有新的可开始任务。".to_string());
     }
     let project = project_info(tools, context).await?;
     let project_id = context
@@ -980,6 +1024,15 @@ async fn design_verifier(
     let round_id = design_round_issue(tools, context, task_id).await?;
     if completed && checks_passed {
         for issue_id in &actionable {
+            handoff_issue(
+                tools,
+                context,
+                issue_id,
+                "development",
+                "Development",
+                "根据设计空间 source 分支中已合入的设计实现需求。读取来源 Issue、需求文档和设计空间，完成代码、测试和合入。",
+            )
+            .await?;
             transition_issue(
                 tools,
                 context,
@@ -1003,12 +1056,13 @@ async fn design_verifier(
         return Ok(evidence);
     }
     for issue_id in &actionable {
-        transition_issue(
+        transition_issue_pool(
             tools,
             context,
             issue_id,
             "pooled",
             Some("Design round did not complete or arche checks failed."),
+            Some("design"),
         )
         .await?;
     }
@@ -1048,17 +1102,12 @@ async fn ensure_arche(
         .and_then(Value::as_str)
         .filter(|branch| !branch.is_empty())
         .unwrap_or("source");
-    let git_url = project
-        .get("git_repository")
-        .and_then(Value::as_str)
-        .unwrap_or("");
     let arche = format!("/work/{project_id}/arche");
     let command = format!(
-        "mkdir -p $(dirname {dir}) && if [ -d {dir}/.arche ]; then cd {dir} && arche checkout {branch} && arche pull; else arche clone {url} {dir} --branch {branch} --source {git} ; fi",
+        "mkdir -p $(dirname {dir}) && if [ -d {dir}/.arche ]; then cd {dir} && arche checkout {branch} && arche pull; else arche clone {url} {dir} --branch {branch}; fi",
         dir = quote(&arche),
         branch = quote(branch),
         url = quote(url),
-        git = quote(git_url),
     );
     let output = shell.exec(&command).await.map_err(shell_error)?;
     Ok((arche, output))
@@ -1311,14 +1360,29 @@ async fn fail_merge(
 async fn development_dispatcher(
     tools: &ToolRegistry,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
+    let waiting = request.stage.as_deref() == Some("waiting");
     let pooled = tool_json(tools, context, "development_pool_batch", json!({})).await?;
     let selected = select_pool_issues(&pooled, DEVELOPMENT_BATCH_LIMIT);
     if selected.is_empty() {
         comment(tools, context, task_id, "开发池没有可立即开始的任务。").await?;
-        send(tools, context, task_id, "dispatch:nothing").await?;
+        if !waiting {
+            send(tools, context, task_id, "dispatch:nothing").await?;
+        }
         return Ok("开发池没有可立即开始的任务。".to_string());
+    }
+    if waiting {
+        comment(
+            tools,
+            context,
+            task_id,
+            "开发池有新的可开始任务，重新分派。",
+        )
+        .await?;
+        send(tools, context, task_id, "waiting:work_arrived").await?;
+        return Ok("开发池有新的可开始任务。".to_string());
     }
     let tasks = selected
         .iter()
@@ -1405,6 +1469,15 @@ async fn development_verifier(
     let issues = actionable;
     if verified {
         for issue_id in &issues {
+            handoff_issue(
+                tools,
+                context,
+                issue_id,
+                "tests",
+                "Test",
+                "对已合入的代码和构建产物执行最终产物验收测试。读取来源 Issue、设计空间、代码提交和验收条件，提交测试报告与证据。",
+            )
+            .await?;
             transition_issue(
                 tools,
                 context,
@@ -1425,18 +1498,282 @@ async fn development_verifier(
         return Ok(evidence);
     }
     for issue_id in &issues {
-        transition_issue(
+        transition_issue_pool(
             tools,
             context,
             issue_id,
             "pooled",
             Some("Development round did not finish with completed code changes."),
+            Some("development"),
         )
         .await?;
     }
     let evidence = format!(
         "本轮 {} 个 code_change 子任务中存在未完成或未通过项，相关 Issue 已退回开发池。",
         changes.len()
+    );
+    comment(tools, context, task_id, &evidence).await?;
+    send(tools, context, task_id, "verify:blocked").await?;
+    Ok(evidence)
+}
+
+async fn requirements_dispatcher(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    request: &AgentRunRequest,
+    task_id: Uuid,
+) -> Result<String, RunError> {
+    batch_dispatcher(
+        tools,
+        context,
+        task_id,
+        request.stage.as_deref() == Some("waiting"),
+        "requirements_pool_batch",
+        "requirements_analysis",
+        "需求分析",
+    )
+    .await
+}
+
+async fn test_dispatcher(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    request: &AgentRunRequest,
+    task_id: Uuid,
+) -> Result<String, RunError> {
+    batch_dispatcher(
+        tools,
+        context,
+        task_id,
+        request.stage.as_deref() == Some("waiting"),
+        "tests_pool_batch",
+        "test_execution",
+        "测试执行",
+    )
+    .await
+}
+
+async fn batch_dispatcher(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    task_id: Uuid,
+    waiting: bool,
+    pool_tool: &str,
+    child_workflow: &str,
+    label: &str,
+) -> Result<String, RunError> {
+    let pooled = tool_json(tools, context, pool_tool, json!({})).await?;
+    let selected = select_pool_issues(&pooled, 5);
+    if selected.is_empty() {
+        comment(
+            tools,
+            context,
+            task_id,
+            &format!("{label}池没有可立即开始的任务。"),
+        )
+        .await?;
+        if !waiting {
+            send(tools, context, task_id, "dispatch:nothing").await?;
+        }
+        return Ok(format!("{label}池没有可立即开始的任务。"));
+    }
+    if waiting {
+        comment(
+            tools,
+            context,
+            task_id,
+            &format!("{label}池有新的可开始任务，重新分派。"),
+        )
+        .await?;
+        send(tools, context, task_id, "waiting:work_arrived").await?;
+        return Ok(format!("{label}池有新的可开始任务。"));
+    }
+    let issue_ids = selected.iter().filter_map(issue_id).collect::<Vec<_>>();
+    let requirements = selected
+        .iter()
+        .map(|issue| format!("- {}: {}", issue_title(issue), issue_description(issue)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let task = tool_json(
+        tools,
+        context,
+        "task_spawn_children",
+        json!({
+            "task_id": task_id,
+            "sequential": false,
+            "tasks": [{
+                "workflow": child_workflow,
+                "title": format!("{label}: {}", selected.len()),
+                "description": requirements,
+                "input": {
+                    "issue_ids": issue_ids,
+                    "requirements": requirements,
+                }
+            }]
+        }),
+    )
+    .await?;
+    if task.as_array().map(Vec::len).unwrap_or(0) == 0 {
+        let evidence = format!("{label}任务创建失败：没有返回子任务。");
+        comment(tools, context, task_id, &evidence).await?;
+        send(tools, context, task_id, "failed").await?;
+        return Ok(evidence);
+    }
+    for issue in &selected {
+        if let Some(id) = issue_id(issue) {
+            transition_issue(tools, context, &id, "in_progress", None).await?;
+        }
+    }
+    let evidence = format!(
+        "已创建 1 个 {child_workflow} 子任务，处理 {} 个{label}议题。",
+        selected.len()
+    );
+    comment(tools, context, task_id, &evidence).await?;
+    send(tools, context, task_id, "dispatch:dispatched").await?;
+    Ok(evidence)
+}
+
+async fn requirements_verifier(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    request: &AgentRunRequest,
+    task_id: Uuid,
+) -> Result<String, RunError> {
+    batch_verifier(
+        tools,
+        context,
+        request,
+        task_id,
+        "requirements_analysis",
+        "requirements",
+        "需求",
+        Some("design"),
+        "Design",
+        "根据需求文档和来源 Issue 进行设计。读取设计空间 source 分支、需求文档和项目说明书，更新设计对象并提交设计 MR。",
+        false,
+    )
+    .await
+}
+
+async fn test_verifier(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    request: &AgentRunRequest,
+    task_id: Uuid,
+) -> Result<String, RunError> {
+    batch_verifier(
+        tools,
+        context,
+        request,
+        task_id,
+        "test_execution",
+        "tests",
+        "测试",
+        None,
+        "",
+        "",
+        true,
+    )
+    .await
+}
+
+async fn batch_verifier(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    request: &AgentRunRequest,
+    task_id: Uuid,
+    child_workflow: &str,
+    pool: &str,
+    label: &str,
+    next_pool: Option<&str>,
+    next_title_prefix: &str,
+    next_description: &str,
+    release: bool,
+) -> Result<String, RunError> {
+    let children = children(tools, context, task_id).await?;
+    let tasks = children
+        .iter()
+        .filter(|child| child.get("workflow").and_then(Value::as_str) == Some(child_workflow))
+        .collect::<Vec<_>>();
+    let verified = !tasks.is_empty()
+        && tasks.iter().all(|child| {
+            child.get("state").and_then(Value::as_str) == Some("completed")
+                && matches!(
+                    child.get("result").and_then(Value::as_str),
+                    Some("completed" | "approved")
+                )
+        });
+    let mut issues = issue_ids(request);
+    for child in &tasks {
+        if let Some(ids) = child
+            .get("input")
+            .and_then(|input| input.get("issue_ids"))
+            .and_then(Value::as_array)
+        {
+            for id in ids.iter().filter_map(Value::as_str) {
+                if !issues.contains(&id.to_string()) {
+                    issues.push(id.to_string());
+                }
+            }
+        }
+    }
+    let mut actionable = Vec::new();
+    for issue_id in issues {
+        if issue_is_actionable(tools, context, &issue_id).await? {
+            actionable.push(issue_id);
+        }
+    }
+    if verified {
+        if let Some(next_pool) = next_pool {
+            for issue_id in &actionable {
+                handoff_issue(
+                    tools,
+                    context,
+                    issue_id,
+                    next_pool,
+                    next_title_prefix,
+                    next_description,
+                )
+                .await?;
+            }
+        }
+        if release && !tasks.is_empty() {
+            handoff_release(tools, context, task_id, &actionable).await?;
+        }
+        for issue_id in &actionable {
+            transition_issue(
+                tools,
+                context,
+                issue_id,
+                "resolved",
+                Some(&format!("{label}迭代已完成并合入。")),
+            )
+            .await?;
+            transition_issue(tools, context, issue_id, "closed", None).await?;
+        }
+        let evidence = format!(
+            "本轮 {} 个{label}子任务全部完成，{} 个 Issue 已关闭。",
+            tasks.len(),
+            actionable.len()
+        );
+        comment(tools, context, task_id, &evidence).await?;
+        send(tools, context, task_id, "verify:ready").await?;
+        return Ok(evidence);
+    }
+    for issue_id in &actionable {
+        transition_issue_pool(
+            tools,
+            context,
+            issue_id,
+            "pooled",
+            Some(&format!("{label}迭代未完成。")),
+            Some(pool),
+        )
+        .await?;
+    }
+    let evidence = format!(
+        "本轮 {} 个{label}子任务存在未完成或未通过项，相关 Issue 已退回{label}池。",
+        tasks.len()
     );
     comment(tools, context, task_id, &evidence).await?;
     send(tools, context, task_id, "verify:blocked").await?;
@@ -1549,11 +1886,17 @@ async fn transition_issue(
     to: &str,
     resolution: Option<&str>,
 ) -> Result<(), RunError> {
-    let pool = if to == "pooled" {
-        Some("development")
-    } else {
-        None
-    };
+    transition_issue_pool(tools, context, issue_id, to, resolution, None).await
+}
+
+async fn transition_issue_pool(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    issue_id: &str,
+    to: &str,
+    resolution: Option<&str>,
+    pool: Option<&str>,
+) -> Result<(), RunError> {
     tool_json(
         tools,
         context,
@@ -1562,7 +1905,7 @@ async fn transition_issue(
             "issue_id": issue_id,
             "to": to,
             "resolution": resolution,
-            "pool": pool,
+            "pool": if to == "pooled" { pool } else { None },
         }),
     )
     .await
@@ -1581,14 +1924,116 @@ async fn issue_is_actionable(
     ))
 }
 
+async fn handoff_issue(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    source_issue_id: &str,
+    next_pool: &str,
+    title_prefix: &str,
+    description: &str,
+) -> Result<(), RunError> {
+    let label = format!("handoff:{next_pool}:{source_issue_id}");
+    let issues = tool_json(tools, context, "issue_list", json!({})).await?;
+    if has_active_handoff(&issues, &label) {
+        return Ok(());
+    }
+    let source = tool_json(
+        tools,
+        context,
+        "issue_get",
+        json!({ "issue_id": source_issue_id }),
+    )
+    .await?;
+    let title = issue_title(&source);
+    tool_json(
+        tools,
+        context,
+        "issue_create",
+        json!({
+            "kind": "task_request",
+            "title": format!("{title_prefix}: {title}"),
+            "description": format!("{description}\n\n来源 Issue: {source_issue_id}"),
+            "labels": ["handoff", label],
+            "pool": next_pool,
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
+fn has_active_handoff(issues: &Value, label: &str) -> bool {
+    issues.as_array().is_some_and(|issues| {
+        issues.iter().any(|issue| {
+            let labeled = issue
+                .get("labels")
+                .and_then(Value::as_array)
+                .is_some_and(|labels| {
+                    labels
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .any(|value| value == label)
+                });
+            let active = !matches!(
+                issue.get("status").and_then(Value::as_str),
+                Some("closed" | "rejected" | "duplicate")
+            );
+            labeled && active
+        })
+    })
+}
+
+async fn handoff_release(
+    tools: &ToolRegistry,
+    context: &ToolContext,
+    task_id: Uuid,
+    issue_ids: &[String],
+) -> Result<(), RunError> {
+    let existing = children(tools, context, task_id).await?;
+    if existing.iter().any(|child| {
+        child.get("workflow").and_then(Value::as_str) == Some("release")
+            && !matches!(
+                child.get("state").and_then(Value::as_str),
+                Some("completed" | "failed")
+            )
+    }) {
+        return Ok(());
+    }
+    let project = project_info(tools, context).await?;
+    let name = project
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("project");
+    tool_json(
+        tools,
+        context,
+        "task_spawn_children",
+        json!({
+            "task_id": task_id,
+            "sequential": false,
+            "tasks": [{
+                "workflow": "release",
+                "title": format!("Release: {name}"),
+                "description": format!(
+                    "测试验收已通过，准备发布。\n\n测试 Issue: {}",
+                    issue_ids.join(", ")
+                ),
+                "input": { "issue_ids": issue_ids },
+            }]
+        }),
+    )
+    .await?;
+    Ok(())
+}
+
 async fn release_manager(
     tools: &ToolRegistry,
     shell: Option<&Arc<dyn Shell>>,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
     let shell = required_shell(shell)?;
-    let repo = match prepare_release_repo(tools, shell, context).await {
+    let repo = match prepare_release_repo(tools, shell, context, request).await {
         Ok(repo) => repo,
         Err(error) => {
             let evidence = evidence("发布候选", &format!("无法准备代码仓库：{error}"));
@@ -1622,10 +2067,11 @@ async fn release_verifier(
     tools: &ToolRegistry,
     shell: Option<&Arc<dyn Shell>>,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
     let shell = required_shell(shell)?;
-    let repo = match prepare_release_repo(tools, shell, context).await {
+    let repo = match prepare_release_repo(tools, shell, context, request).await {
         Ok(repo) => repo,
         Err(error) => {
             let evidence = evidence("发布验证", &format!("无法准备代码仓库：{error}"));
@@ -1663,10 +2109,11 @@ async fn release_deployer(
     tools: &ToolRegistry,
     shell: Option<&Arc<dyn Shell>>,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
     let shell = required_shell(shell)?;
-    let repo = match prepare_release_repo(tools, shell, context).await {
+    let repo = match prepare_release_repo(tools, shell, context, request).await {
         Ok(repo) => repo,
         Err(error) => {
             let evidence = evidence("发布部署", &format!("无法准备代码仓库：{error}"));
@@ -1708,10 +2155,11 @@ async fn release_observer(
     tools: &ToolRegistry,
     shell: Option<&Arc<dyn Shell>>,
     context: &ToolContext,
+    request: &AgentRunRequest,
     task_id: Uuid,
 ) -> Result<String, RunError> {
     let shell = required_shell(shell)?;
-    let repo = match prepare_release_repo(tools, shell, context).await {
+    let repo = match prepare_release_repo(tools, shell, context, request).await {
         Ok(repo) => repo,
         Err(error) => {
             let evidence = evidence("发布观察", &format!("无法准备代码仓库：{error}"));
@@ -1753,6 +2201,7 @@ async fn prepare_release_repo(
     tools: &ToolRegistry,
     shell: &Arc<dyn Shell>,
     context: &ToolContext,
+    _request: &AgentRunRequest,
 ) -> Result<String, RunError> {
     let project = project_info(tools, context).await?;
     let project_id = context
@@ -2006,6 +2455,21 @@ fn manifest_names<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_an_active_handoff_and_allows_a_new_round_after_it_closes() {
+        let label = "handoff:design:issue-1";
+        let active = json!([{
+            "status": "pooled",
+            "labels": ["handoff", label]
+        }]);
+        assert!(has_active_handoff(&active, label));
+        let closed = json!([{
+            "status": "closed",
+            "labels": ["handoff", label]
+        }]);
+        assert!(!has_active_handoff(&closed, label));
+    }
 
     #[test]
     fn detects_source_files_and_ignores_documents() {

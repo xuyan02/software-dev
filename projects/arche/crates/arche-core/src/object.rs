@@ -58,6 +58,8 @@ pub enum ObjectKind {
     TechnicalEnumValue,
     TechnicalArgument,
     TechnicalReturnValue,
+    ProjectRoot,
+    ProjectDocument,
 }
 
 impl ObjectKind {
@@ -103,6 +105,8 @@ impl ObjectKind {
             Self::TechnicalEnumValue => 38,
             Self::TechnicalArgument => 39,
             Self::TechnicalReturnValue => 40,
+            Self::ProjectRoot => 41,
+            Self::ProjectDocument => 42,
         }
     }
 
@@ -148,6 +152,8 @@ impl ObjectKind {
             38 => Self::TechnicalEnumValue,
             39 => Self::TechnicalArgument,
             40 => Self::TechnicalReturnValue,
+            41 => Self::ProjectRoot,
+            42 => Self::ProjectDocument,
             _ => bail!("unknown object kind tag {tag}"),
         })
     }
@@ -194,6 +200,8 @@ impl ObjectKind {
             Self::TechnicalEnumValue => "TechnicalEnumValue",
             Self::TechnicalArgument => "TechnicalArgument",
             Self::TechnicalReturnValue => "TechnicalReturnValue",
+            Self::ProjectRoot => "ProjectRoot",
+            Self::ProjectDocument => "ProjectDocument",
         }
     }
 }
@@ -230,6 +238,22 @@ pub struct ConceptDirectory {
     parent: SymbolHash,      // ConceptDirectory or Root qname
     directories: ObjectHash, // ObjectList<ConceptDirectory>
     concepts: ObjectHash,    // ObjectList<Concept>
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectRoot {
+    qname: SymbolHash,
+    name: SymbolHash,
+    parent: SymbolHash,   // Root qname
+    document: ObjectHash, // ProjectDocument
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectDocument {
+    qname: SymbolHash,
+    name: SymbolHash,
+    parent: SymbolHash,   // ProjectRoot qname
+    document: ObjectHash, // DocumentParagraphList (the project document tree)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -758,6 +782,8 @@ pub enum Object {
     TechnicalEnumValue(TechnicalEnumValue),
     TechnicalArgument(TechnicalArgument),
     TechnicalReturnValue(TechnicalReturnValue),
+    ProjectRoot(ProjectRoot),
+    ProjectDocument(ProjectDocument),
 }
 
 impl Object {
@@ -803,6 +829,8 @@ impl Object {
             Self::TechnicalEnumValue(_) => ObjectKind::TechnicalEnumValue,
             Self::TechnicalArgument(_) => ObjectKind::TechnicalArgument,
             Self::TechnicalReturnValue(_) => ObjectKind::TechnicalReturnValue,
+            Self::ProjectRoot(_) => ObjectKind::ProjectRoot,
+            Self::ProjectDocument(_) => ObjectKind::ProjectDocument,
         }
     }
 
@@ -848,6 +876,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.qname,
             Self::TechnicalArgument(value) => value.qname,
             Self::TechnicalReturnValue(value) => value.qname,
+            Self::ProjectRoot(value) => value.qname,
+            Self::ProjectDocument(value) => value.qname,
         }
     }
 
@@ -1048,6 +1078,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => opt_ref(f, &mut value.position),
             Self::TechnicalArgument(value) => opt_ref(f, &mut value.position),
             Self::TechnicalReturnValue(value) => opt_ref(f, &mut value.position),
+            Self::ProjectRoot(value) => opt_ref(f, &mut value.document),
+            Self::ProjectDocument(value) => opt_ref(f, &mut value.document),
             Self::DocumentText(_)
             | Self::DocumentCode(_)
             | Self::DocumentMermaid(_)
@@ -1108,6 +1140,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.parent,
             Self::TechnicalArgument(value) => value.parent,
             Self::TechnicalReturnValue(value) => value.parent,
+            Self::ProjectRoot(value) => value.parent,
+            Self::ProjectDocument(value) => value.parent,
         }
     }
 
@@ -1160,6 +1194,8 @@ impl Object {
             Self::TechnicalEnumValue(value) => value.name,
             Self::TechnicalArgument(value) => value.name,
             Self::TechnicalReturnValue(value) => value.name,
+            Self::ProjectRoot(value) => value.name,
+            Self::ProjectDocument(value) => value.name,
         }
     }
 }

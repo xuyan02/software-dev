@@ -16,7 +16,7 @@
         {
           "create_child": {
             "workflow": "requirements_audit",
-            "title": "需求检查"
+            "title": "需求设计检查"
           }
         },
         {
@@ -34,25 +34,19 @@
         {
           "create_child": {
             "workflow": "test_audit",
-            "title": "测试检查"
-          }
-        },
-        {
-          "create_child": {
-            "workflow": "product_audit",
-            "title": "产品试用检查"
+            "title": "日常测试"
           }
         }
       ],
       "events": [
         {
           "event": "child.state_changed",
-          "action": "if event.child.state == 'completed' { if event.child.workflow == 'requirements_audit' or event.child.workflow == 'design_audit' or event.child.workflow == 'code_audit' or event.child.workflow == 'test_audit' or event.child.workflow == 'product_audit' { if event.child.result == 'completed' { done = done + 1 } else { failed = failed + 1 } } }"
+          "action": "if event.child.state == 'completed' { if event.child.workflow == 'requirements_audit' or event.child.workflow == 'design_audit' or event.child.workflow == 'code_audit' or event.child.workflow == 'test_audit' { if event.child.result == 'completed' { done = done + 1 } else { failed = failed + 1 } } }"
         }
       ],
       "transitions": [
         {
-          "on": "done + failed == count_children('requirements_audit') + count_children('design_audit') + count_children('code_audit') + count_children('test_audit') + count_children('product_audit')",
+          "on": "done + failed == count_children('requirements_audit') + count_children('design_audit') + count_children('code_audit') + count_children('test_audit')",
           "to": "synthesis"
         }
       ]

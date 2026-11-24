@@ -515,6 +515,7 @@ enum Statement {
         title: TitleTemplate,
         description: String,
         relation: String,
+        pool: Option<String>,
         task_workflow: Option<String>,
         task_title: Option<TitleTemplate>,
         line: usize,
@@ -735,6 +736,7 @@ impl Parser {
         let mut title: Option<String> = None;
         let mut description: Option<String> = None;
         let mut relation: Option<String> = None;
+        let mut pool: Option<String> = None;
         let mut task_workflow: Option<String> = None;
         let mut task_title: Option<String> = None;
         loop {
@@ -767,6 +769,7 @@ impl Parser {
                 "title" => &mut title,
                 "description" => &mut description,
                 "relation" => &mut relation,
+                "pool" => &mut pool,
                 "task_workflow" => &mut task_workflow,
                 "task_title" => &mut task_title,
                 other => {
@@ -824,6 +827,16 @@ impl Parser {
                 format!("unknown link relation {relation:?}"),
             ));
         }
+        if let Some(pool) = &pool
+            && crate::IssuePool::parse(pool).is_none()
+        {
+            return Err(ScriptIssue::new(
+                "script_invalid_issue_pool",
+                keyword.line,
+                keyword.column,
+                format!("unknown issue pool {pool:?}"),
+            ));
+        }
         let title = TitleTemplate::parse(title).map_err(|error| {
             ScriptIssue::new("script_invalid_title", keyword.line, keyword.column, error)
         })?;
@@ -857,6 +870,7 @@ impl Parser {
             title,
             description: description.unwrap_or_default(),
             relation,
+            pool,
             task_workflow,
             task_title,
             line: keyword.line,
@@ -1744,6 +1758,7 @@ fn run_statement(
             title,
             description,
             relation,
+            pool,
             task_workflow,
             task_title,
             ..
@@ -1769,6 +1784,7 @@ fn run_statement(
                 title,
                 description: description.clone(),
                 relation: relation.clone(),
+                pool: pool.clone(),
                 task,
                 link_task_id: None,
             });

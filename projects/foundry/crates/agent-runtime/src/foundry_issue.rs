@@ -184,6 +184,7 @@ impl Tool for IssueCreateTool {
                     "severity": { "type": "string", "enum": ["s1", "s2", "s3", "s4"] },
                     "area": { "type": "string" },
                     "labels": { "type": "array", "items": { "type": "string" } },
+                    "pool": { "type": "string", "enum": ["design", "development", "requirements", "tests"] },
                     "environment": { "type": "string" },
                     "affected_versions": { "type": "array", "items": { "type": "string" } },
                     "reproduction": { "type": "string" },
@@ -237,7 +238,7 @@ impl Tool for IssueTransitionTool {
                     "to": { "type": "string", "enum": ["pooled", "in_progress", "resolved", "rejected", "duplicate", "closed", "open"] },
                     "resolution": { "type": "string" },
                     "duplicate_of": { "type": "string", "format": "uuid" },
-                    "pool": { "type": "string", "enum": ["design", "development", "requirements"] }
+                    "pool": { "type": "string", "enum": ["design", "development", "requirements", "tests"] }
                 }
             }),
         }
@@ -400,6 +401,64 @@ impl Tool for DevelopmentPoolBatchTool {
         _context: &ToolContext,
     ) -> Result<ToolOutput, ToolError> {
         pooled_issues(&self.client, "development").await
+    }
+}
+
+pub struct RequirementsPoolBatchTool {
+    client: Arc<FoundryClient>,
+}
+
+impl RequirementsPoolBatchTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for RequirementsPoolBatchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "requirements_pool_batch".to_string(),
+            description: "Return every Issue waiting in the requirements pool.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        pooled_issues(&self.client, "requirements").await
+    }
+}
+
+pub struct TestsPoolBatchTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TestsPoolBatchTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TestsPoolBatchTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "tests_pool_batch".to_string(),
+            description: "Return every Issue waiting in the tests pool.".to_string(),
+            input_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn call(
+        &self,
+        _arguments: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutput, ToolError> {
+        pooled_issues(&self.client, "tests").await
     }
 }
 

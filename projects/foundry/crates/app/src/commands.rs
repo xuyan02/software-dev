@@ -137,6 +137,7 @@ pub struct CreateIssue {
     pub reproduction: Option<String>,
     pub expected: Option<String>,
     pub actual: Option<String>,
+    pub pool: Option<IssuePool>,
 }
 
 #[derive(Debug, Clone)]

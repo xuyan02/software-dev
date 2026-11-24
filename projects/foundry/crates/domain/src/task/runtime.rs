@@ -173,7 +173,6 @@ fn unchanged(
         dependencies,
         children: Vec::new(),
         issues: Vec::new(),
-        review_links: Vec::new(),
         events: Vec::new(),
     }
 }

@@ -9,21 +9,26 @@ foundry-arche-stdio             forced command，校验客户端请求的仓库
 foundry-arche-authorized-keys   AuthorizedKeysCommand，按公钥输出授权行
 sshd_config.example             sshd 配置示例
 install.sh                      安装脚本
+install-sshd.sh                 安装 sshd drop-in 并 reload
 ```
 
 ## 安装
 
+Foundry 默认把设计空间放在 `~/.foundry/design-spaces`，并自动生成
+`~/.foundry/arche-sshd/authorized_keys`。仓库根应指向同一目录：
+
 ```bash
 cargo build --release -p arche
-sudo ./install.sh target/release/arche /srv/arche
+sudo ./install.sh target/release/arche /home/xuyan/.foundry/design-spaces
+sudo ./install-sshd.sh /home/xuyan/.foundry/arche-sshd/authorized_keys "$USER"
 ```
 
 安装脚本会：
 
-- 创建 `foundry-arche` 服务账户；
+- 创建 `foundry-arche` 服务账户（shell 为 `/bin/sh`，forced command 仍受限）；
 - 安装 `arche` 和两个包装脚本到 `/usr/local/bin`；
-- 创建 `/srv/arche` 和 `/etc/arche/keys`；
-- 在可用时设置 POSIX ACL。
+- 创建仓库根和 `/etc/arche/keys`；
+- 在可用时设置 POSIX ACL，包括让服务账户穿过操作员主目录的 ACL。
 
 ## 授权公钥
 
@@ -46,18 +51,12 @@ command="/usr/local/bin/foundry-arche-stdio /srv/arche project-a",no-port-forwar
 
 ## sshd
 
-把 `sshd_config.example` 安装到：
+`install-sshd.sh` 会写入 `/etc/ssh/sshd_config.d/20-foundry-arche.conf`，
+校验配置并 reload。也可以手工参考 `sshd_config.example`。
 
-```text
-/etc/ssh/sshd_config.d/arche.conf
-```
-
-然后：
-
-```bash
-sshd -t
-systemctl reload sshd
-```
+`AuthorizedKeysCommandUser` 需要对控制面生成的文件有读权限；脚本默认使用
+sudo 调用者（通常是操作员账户）。不要把 `AuthorizedKeysCommandUser` 设为
+不能穿过操作员主目录的服务账户。
 
 ## 客户端
 
@@ -67,6 +66,8 @@ arche clone ssh://foundry-arche@host/project-a ./project-a
 arche push
 arche pull
 ```
+
+clone 会从远程仓库继承已记录的源码 Git URL，不需要再传 `--source`。
 
 客户端只执行：
 

@@ -108,6 +108,7 @@ pub enum IssuePool {
     Design,
     Development,
     Requirements,
+    Tests,
 }
 
 impl IssuePool {
@@ -116,6 +117,17 @@ impl IssuePool {
             Self::Design => "design",
             Self::Development => "development",
             Self::Requirements => "requirements",
+            Self::Tests => "tests",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "design" => Some(Self::Design),
+            "development" => Some(Self::Development),
+            "requirements" => Some(Self::Requirements),
+            "tests" => Some(Self::Tests),
+            _ => None,
         }
     }
 }

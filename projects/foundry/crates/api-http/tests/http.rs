@@ -9,13 +9,12 @@ use foundry_adapter_memory::{
 use foundry_adapter_policy::DemoPolicy;
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountFilter, AccountRepository, AccountService, AnchorDocumentService,
-    AnchorDocumentUseCases, AuthService, CreateProject, DesignSpaceGateway,
-    DesignSpaceGatewayError, IssueRepository, IssueService, MergeRequestRepository,
-    MergeRequestService, ProjectRepository, ProjectService, ProjectUseCases,
-    RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand, TaskDispatcher,
-    TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TriggerService,
-    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    AccountFilter, AccountRepository, AccountService, AuthService, CreateProject,
+    DesignSpaceGateway, DesignSpaceGatewayError, IssueRepository, IssueService,
+    MergeRequestRepository, MergeRequestService, ProjectRepository, ProjectService,
+    ProjectUseCases, TaskCommand, TaskDispatcher, TaskLinkService, TaskLinkUseCases,
+    TaskRepository, TaskService, TaskUseCases, TriggerService, TriggerUseCases, WorkflowCatalog,
+    WorkflowService, WorkflowUseCases,
 };
 use foundry_domain::{
     Account, AccountKind, AccountRole, ProjectRole, RoleKey, TaskState, WorkflowId,
@@ -190,18 +189,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
-    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-    ));
-    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
-        Arc::new(RequirementsDocumentService::new(
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&events),
-        ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -252,8 +239,6 @@ async fn harness_with_editor(editor_dir: std::path::PathBuf) -> Harness {
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
         )),
         workflows: workflows_admin,
-        anchor_docs,
-        requirements_doc,
         task_links,
         auth,
         setup: Arc::new(SetupState::new(
@@ -700,12 +685,6 @@ async fn body_json(router: &Router, request: Request<Body>) -> Value {
     serde_json::from_str(&body).unwrap()
 }
 
-async fn body_text(router: &Router, request: Request<Body>) -> String {
-    let (status, _, body) = send(router, request).await;
-    assert!(status.is_success(), "request failed {status}: {body}");
-    body
-}
-
 fn error_body(body: &str) -> Value {
     let value: Value = serde_json::from_str(body).unwrap();
     value["error"].clone()
@@ -1123,6 +1102,29 @@ async fn the_editor_serves_assets_and_falls_back_to_the_spa() {
 }
 
 #[tokio::test]
+async fn issue_can_be_created_in_a_work_pool() {
+    let harness = harness().await;
+    let issue = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "title": "Design the login page",
+                "description": "Create the design for the login page.",
+                "kind": "task_request",
+                "pool": "design"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(issue["status"], "pooled");
+    assert_eq!(issue["pool"], "design");
+}
+
+#[tokio::test]
 async fn issue_triage_result_is_structured() {
     let harness = harness().await;
     let issue = body_json(
@@ -1323,40 +1325,14 @@ async fn project_creation_creates_the_default_triggers() {
     )
     .await;
     let triggers = triggers.as_array().unwrap();
-    assert_eq!(triggers.len(), 4);
-    let daily = triggers
-        .iter()
-        .find(|trigger| trigger["workflow_id"] == "daily_check")
-        .expect("daily check trigger");
+    assert_eq!(triggers.len(), 1);
+    assert_eq!(triggers[0]["workflow_id"], "daily_check");
     assert_eq!(
-        daily["description"],
-        "按计划运行需求、技术设计、代码、测试和产品检查。"
+        triggers[0]["description"],
+        "按计划运行需求设计、技术设计、代码和日常测试检查。"
     );
-    assert_eq!(daily["description_template"], "运行全面日常检查。");
-    assert_eq!(daily["schedule"], "daily@09:00");
-    let design = triggers
-        .iter()
-        .find(|trigger| trigger["workflow_id"] == "design_iteration")
-        .expect("design iteration trigger");
-    assert_eq!(design["schedule"], "continuous");
-    assert_eq!(
-        design["description"],
-        "只要有设计任务就持续运行，空闲后定期检查。"
-    );
-    let development = triggers
-        .iter()
-        .find(|trigger| trigger["workflow_id"] == "development_iteration")
-        .expect("development iteration trigger");
-    assert_eq!(development["schedule"], "continuous");
-    assert_eq!(
-        development["description"],
-        "只要有开发任务就持续运行，空闲后定期检查。"
-    );
-    let feedback = triggers
-        .iter()
-        .find(|trigger| trigger["workflow_id"] == "feedback_cycle")
-        .expect("feedback trigger");
-    assert_eq!(feedback["schedule"], "every:10080");
+    assert_eq!(triggers[0]["description_template"], "运行全面日常检查。");
+    assert_eq!(triggers[0]["schedule"], "daily@09:00");
 }
 
 #[tokio::test]
@@ -1733,7 +1709,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        33
+        30
     );
 
     let created = body_json(
@@ -1790,18 +1766,6 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
-    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-    ));
-    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
-        Arc::new(RequirementsDocumentService::new(
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&events),
-        ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -1847,8 +1811,6 @@ async fn setup_creates_the_first_admin_and_is_unreachable_afterwards() {
             std::env::temp_dir().join(format!("foundry-agent-logs-{}", Uuid::now_v7())),
         )),
         workflows: workflows_admin,
-        anchor_docs,
-        requirements_doc,
         task_links,
         auth: auth.clone(),
         setup: Arc::clone(&setup),
@@ -2402,7 +2364,6 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         "writing:completed",
         "style_review:approved",
         "content_review:approved",
-        "human_review:approved",
     ]
     .iter()
     .enumerate()
@@ -2421,7 +2382,7 @@ async fn task_work_acceptance_flow_advances_the_parent() {
         assert_eq!(status, StatusCode::NO_CONTENT, "{operation}: {body}");
     }
 
-    // The same idempotency key is a successful no-op even after completion.
+    // A design-space submission cannot be approved without a merge request.
     let (status, _, _) = send(
         &harness.router,
         json_request(
@@ -2429,11 +2390,47 @@ async fn task_work_acceptance_flow_advances_the_parent() {
             &input_uri,
             Some(&harness.admin_token),
             Some(&harness.project_id),
-            json!({ "operation": "human_review:approved", "idempotency_key": format!("{child_id}:6:human_review:approved") }),
+            json!({ "operation": "human_review:merge", "idempotency_key": "no-mr" }),
         ),
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let merge_request = body_json(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!("/api/v1/tasks/{child_id}/merge-requests"),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({
+                "title": "Project document: Primary",
+                "description": "Project document ready for merge",
+                "source_branch": "feature",
+                "target_branch": "main"
+            }),
+        ),
+    )
+    .await;
+    let merge_request_id = merge_request["merge_request"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/merge-requests/{merge_request_id}/approve",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            None,
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let detail = body_json(
         &harness.router,
@@ -2453,6 +2450,30 @@ async fn task_work_acceptance_flow_advances_the_parent() {
     let actors = detail["actors"].as_array().unwrap();
     assert_eq!(actors.len(), 5);
     assert!(actors.iter().all(|actor| actor["active"] == false));
+
+    let issues = body_json(
+        &harness.router,
+        json_request(
+            "GET",
+            "/api/v1/issues",
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    let issue = issues
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| {
+            issue["title"]
+                .as_str()
+                .is_some_and(|title| title.starts_with("Requirements analysis:"))
+        })
+        .expect("requirements analysis issue");
+    assert_eq!(issue["status"], "pooled");
+    assert_eq!(issue["pool"], "requirements");
 
     let history = body_json(
         &harness.router,
@@ -2563,7 +2584,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 33);
+    assert_eq!(platform.len(), 30);
     assert!(
         platform
             .iter()
@@ -2731,7 +2752,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 34);
+    assert_eq!(own.as_array().unwrap().len(), 31);
 }
 
 #[tokio::test]
@@ -3298,862 +3319,6 @@ async fn an_account_workflow_goes_from_creation_to_a_project_root() {
     assert_eq!(root["workflow_version"], 1);
 }
 
-#[ignore = "legacy structured requirements API replaced by anchor documents"]
-#[tokio::test]
-async fn requirements_document_round_trips_over_http() {
-    let harness = harness().await;
-    let base = format!(
-        "/api/v1/projects/{}/requirements-document",
-        harness.project_id
-    );
-
-    let draft = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/draft"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(draft["revision"], 1);
-
-    let user_id = "persona-customer";
-    let function_id = "func-shopping";
-    let operation_id = "op-search";
-    let story_id = "story-search";
-    let operations = json!({
-        "operations": [
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "user_add",
-                "user": {
-                    "id": user_id,
-                    "name": "张先生",
-                    "goals": ["快速找到商品"],
-                    "pain_points": ["搜索结果不准确"]
-                }
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "function_add",
-                "function": { "id": function_id, "name": "购物" }
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "operation_add",
-                "function_id": function_id,
-                "operation": {
-                    "id": operation_id,
-                    "name": "搜索",
-                    "actor_user_ids": [user_id]
-                }
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "story_add",
-                "function_id": function_id,
-                "story": {
-                    "id": story_id,
-                    "title": "搜索商品",
-                    "user_ids": [user_id],
-                    "scenario": "客户想买某件商品",
-                    "goal": "找到商品",
-                    "operation_ids": [operation_id]
-                }
-            }
-        ]
-    });
-
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            operations.clone(),
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-    assert_eq!(saved["body"]["users"][0]["id"], user_id);
-    assert_eq!(saved["body"]["functions"][0]["stories"][0]["id"], story_id);
-
-    // Replaying the same operation ids is idempotent even with a stale revision.
-    let replay = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            operations,
-        ),
-    )
-    .await;
-    assert_eq!(replay["revision"], 2);
-
-    let validation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft/validate"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
-
-    let approved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("2"),
-            json!({ "decision": "approved", "comment": "looks good" }),
-        ),
-    )
-    .await;
-    assert_eq!(approved["decision"], "approved");
-    assert_eq!(approved["version"], 1);
-    assert_eq!(approved["revision"], 2);
-
-    let document = body_json(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert_eq!(document["current_version"], 1);
-    assert_eq!(document["body"]["functions"][0]["name"], "购物");
-
-    let version = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/versions/1"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(version["version"], 1);
-    assert_eq!(version["body"]["users"][0]["name"], "张先生");
-    assert_eq!(version["source_revision"], 2);
-
-    let approvals = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/draft/approvals"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(approvals[0]["revision"], 2);
-    assert_eq!(approvals[0]["decision"], "approved");
-
-    let stale_result = send(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            json!({
-                "operations": [{
-                    "op_id": Uuid::now_v7(),
-                    "type": "user_add",
-                    "user": { "id": "persona-second", "name": "李女士" }
-                }]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(stale_result.0, StatusCode::CONFLICT);
-    assert_eq!(error_body(&stale_result.2)["code"], "draft_conflict");
-}
-
-#[ignore = "legacy structured requirements API replaced by anchor documents"]
-#[tokio::test]
-async fn requirements_draft_requires_approval_after_each_change() {
-    let harness = harness().await;
-    let base = format!(
-        "/api/v1/projects/{}/requirements-document",
-        harness.project_id
-    );
-
-    let first_change = json!({
-        "operations": [
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "user_add",
-                "user": { "id": "persona-customer", "name": "张先生" }
-            }
-        ]
-    });
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            first_change,
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-
-    let rejected = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("2"),
-            json!({ "decision": "rejected", "comment": "补充用户" }),
-        ),
-    )
-    .await;
-    assert_eq!(rejected["decision"], "rejected");
-    assert!(rejected["version"].is_null());
-
-    let document = body_json(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert_eq!(document["current_version"], 0);
-
-    let edited = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("2"),
-            json!({
-                "operations": [{
-                    "op_id": Uuid::now_v7(),
-                    "type": "user_update",
-                    "user": { "id": "persona-customer", "name": "张先生（更新）" }
-                }]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(edited["revision"], 3);
-
-    let approved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("3"),
-            json!({ "decision": "approved" }),
-        ),
-    )
-    .await;
-    assert_eq!(approved["version"], 1);
-    assert_eq!(approved["revision"], 3);
-
-    // Approving the same revision again is idempotent and does not create a
-    // second version.
-    let again = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("3"),
-            json!({ "decision": "approved" }),
-        ),
-    )
-    .await;
-    assert_eq!(again["version"], 1);
-
-    let versions = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/versions"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(versions.as_array().unwrap().len(), 1);
-    assert_eq!(versions[0]["source_revision"], 3);
-}
-
-#[tokio::test]
-async fn requirements_anchor_document_round_trips_over_http() {
-    let harness = harness().await;
-    let base = format!(
-        "/api/v1/projects/{}/documents/requirements",
-        harness.project_id
-    );
-
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            json!({
-                "operations": [
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "domain_models",
-                        "occurrence_key": "order",
-                        "text": "实体：订单\n关键属性：订单号、状态、预计到达时间\n关系：订单属于用户",
-                        "title": "订单"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "users",
-                        "occurrence_key": "persona-customer",
-                        "text": "姓名：张先生\n年龄：35 岁\n爱好：钓鱼\n职业：买家\n诉求：随时知道订单什么时候到达\n主次：主要",
-                        "title": "张先生"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "stories",
-                        "occurrence_key": "track-order",
-                        "text": "名称：查看订单状态\n前置条件：张先生已下单\n发生频率：高\n故事描述：张先生打开订单查询，查看订单状态时间线并确认预计到达时间。",
-                        "title": "查看订单状态"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "subsystems",
-                        "occurrence_key": "orders",
-                        "text": "软件名称：订单系统移动端\n软件形态：移动应用\n覆盖用户：买家\n闭环目标：买家查看订单状态\n与其他子系统的关系：无\n边界：不含下单和支付",
-                        "title": "订单系统移动端"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "subsystems/subsystem/orders",
-                        "occurrence_key": "core",
-                        "text": "名称：订单核心功能集\n满足的用户需求：买家需要查看订单状态\n覆盖用户：买家\n协作关系：查询功能围绕同一订单\n闭环位置：支撑买家查看订单状态\n分界：不含下单和支付",
-                        "title": "订单核心功能集"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "subsystems/subsystem/orders/function_set/core",
-                        "occurrence_key": "track-order",
-                        "text": "名称：订单查询\n系统变化：订单状态从已下单变为已查询\n前置条件：订单存在\n反馈：返回订单状态和预计到达时间",
-                        "title": "订单查询"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "subsystems/subsystem/orders/function_set/core/function/track-order.function_description",
-                        "text": "按订单号查询当前状态和物流信息"
-                    }
-                ]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-    assert!(saved["root_id"].as_str().unwrap().starts_with("sha256:"));
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("# 需求文档"));
-    assert!(toc.contains("## 目录"));
-    assert!(toc.contains("- 领域模型"));
-    assert!(toc.contains("- 用户肖像"));
-    assert!(toc.contains("- 故事"));
-    assert!(toc.contains("查看订单状态"));
-    assert!(toc.contains("订单查询"));
-    assert!(toc.contains("k:"));
-
-    let content = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/content"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(content["format"], "md");
-    let markdown = content["markdown"].as_str().unwrap();
-    assert!(markdown.contains("# 领域模型"));
-    assert!(markdown.contains("# 用户肖像"));
-    assert!(markdown.contains("张先生"));
-    assert!(markdown.contains("# 故事"));
-    assert!(markdown.contains("软件名称：订单系统移动端"));
-
-    let validation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft/validate"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(
-        validation["errors"].as_array().unwrap().len(),
-        0,
-        "{validation}"
-    );
-
-    let approved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("2"),
-            json!({ "decision": "approved", "comment": "需求基线" }),
-        ),
-    )
-    .await;
-    assert_eq!(approved["version"], 1);
-    assert_eq!(approved["revision"], 2);
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("- current_version: 1"));
-
-    let versions = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/versions"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(versions[0]["version"], 1);
-}
-
-#[tokio::test]
-async fn architecture_anchor_document_round_trips_over_http() {
-    let harness = harness().await;
-    let base = format!(
-        "/api/v1/projects/{}/documents/architecture",
-        harness.project_id
-    );
-
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            json!({
-                "operations": [
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "overview",
-                        "text": "订单系统采用订单服务与查询服务分离的结构。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "context",
-                        "text": "买家通过移动端访问系统；系统依赖支付平台。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "components",
-                        "occurrence_key": "orders",
-                        "title": "订单服务"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "components/component/orders.responsibility",
-                        "text": "维护订单状态机和订单写入。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "components/component/orders.interfaces",
-                        "occurrence_key": "order-api",
-                        "text": "名称：订单接口\n提供方：订单服务\n消费方：移动端\n版本：v1"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "contracts",
-                        "occurrence_key": "order-contract",
-                        "text": "名称：订单契约\n提供方：订单服务\n消费方：查询服务\n兼容性：向后兼容"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "data_storage",
-                        "text": "订单服务拥有订单数据；查询服务只读副本。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": "deployment",
-                        "text": "两个服务独立部署，使用健康检查和结构化日志。"
-                    }
-                ]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("# 架构设计"));
-    assert!(toc.contains("订单服务"));
-    assert!(toc.contains("k:"));
-
-    let content = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/content"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    let markdown = content["markdown"].as_str().unwrap();
-    assert!(markdown.contains("# 架构概览"));
-    assert!(markdown.contains("订单系统采用订单服务与查询服务分离的结构。"));
-    assert!(markdown.contains("维护订单状态机和订单写入。"));
-    assert!(markdown.contains("名称：订单契约"));
-
-    let validation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft/validate"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(
-        validation["errors"].as_array().unwrap().len(),
-        0,
-        "{validation}"
-    );
-
-    let approved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("2"),
-            json!({ "decision": "approved", "comment": "架构基线" }),
-        ),
-    )
-    .await;
-    assert_eq!(approved["version"], 1);
-}
-
-#[tokio::test]
-async fn interaction_and_ui_design_round_trip_over_http() {
-    let harness = harness().await;
-    let base = format!(
-        "/api/v1/projects/{}/documents/requirements",
-        harness.project_id
-    );
-    let interaction = "interaction_design.interaction_subsystems";
-    let subsystem = "interaction_design.interaction_subsystems/interaction_subsystem/orders";
-    let function_set = "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query";
-    let function = "interaction_design.interaction_subsystems/interaction_subsystem/orders.interaction_function_sets/interaction_function_set/query.interaction_functions/interaction_function/track-order";
-    let ui_subsystem = "ui_design.ui_subsystems/ui_subsystem/orders";
-    let ui_page = "ui_design.ui_subsystems/ui_subsystem/orders.ui_pages/ui_page/order-list";
-
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            json!({
-                "operations": [
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": interaction,
-                        "occurrence_key": "orders",
-                        "title": "订单系统移动端",
-                        "text": "交互概述：使用底部导航。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{subsystem}.information_architecture"),
-                        "text": "底部导航分首页、订单、我的三个区域。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{subsystem}.interaction_pages"),
-                        "occurrence_key": "order-list",
-                        "text": "页面：订单列表\n区域：订单\n入口：首页\n主要跳转：订单详情\n支撑功能：订单查询"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{subsystem}.interaction_function_sets"),
-                        "occurrence_key": "query",
-                        "title": "订单查询功能集",
-                        "text": "共享页面：订单列表、订单详情\n共同状态：加载中、空列表"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{function_set}.interaction_functions"),
-                        "occurrence_key": "track-order",
-                        "title": "查看订单状态",
-                        "text": "发起方：用户\n触发：点击订单卡片\n入口：订单列表\n观察点：订单详情页显示状态"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{function}.page_structure"),
-                        "text": "订单列表 → 订单详情。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{function}.operations"),
-                        "occurrence_key": "open-detail",
-                        "text": "操作：点击订单卡片\n控件：列表项\n结果：进入订单详情"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{function}.interaction_feedback"),
-                        "text": "加载中显示骨架屏；失败显示重试提示。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{function}.interaction_copy"),
-                        "text": "重试"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{function}.interaction_accessibility"),
-                        "text": "列表项支持键盘和读屏。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": "ui_design.ui_subsystems",
-                        "occurrence_key": "orders",
-                        "title": "订单系统移动端",
-                        "text": ""
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{ui_subsystem}.ui_pages"),
-                        "occurrence_key": "order-list",
-                        "title": "订单列表",
-                        "text": ""
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{ui_page}.ui_layout"),
-                        "text": "顶部标题栏，下方订单列表。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "update_text",
-                        "anchor": format!("{ui_page}.information_hierarchy"),
-                        "text": "状态和预计到达时间优先展示。"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{ui_page}.related_functions"),
-                        "occurrence_key": "track-order",
-                        "text": "查看订单状态"
-                    },
-                    {
-                        "op_id": Uuid::now_v7(),
-                        "type": "add",
-                        "parent": format!("{ui_page}.designs"),
-                        "occurrence_key": "default",
-                        "text": "状态：默认\n图片：![订单列表-默认](/api/v1/projects/p/assets/a)\n说明：列表项展示订单摘要"
-                    }
-                ]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-
-    let validation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft/validate"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(
-        validation["errors"].as_array().unwrap().len(),
-        0,
-        "{validation}"
-    );
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("交互设计"));
-    assert!(toc.contains("订单系统移动端"));
-    assert!(toc.contains("订单列表"));
-    assert!(toc.contains("UI设计"));
-}
-
-#[tokio::test]
-async fn design_development_and_test_documents_round_trip_over_http() {
-    let harness = harness().await;
-    let project = harness.project_id.as_str();
-
-    for (kind, operations) in [
-        (
-            "design",
-            json!([
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "overview", "text": "订单系统按服务拆分。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "subsystems", "occurrence_key": "orders", "title": "订单系统移动端", "text": ""},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.design_constraints", "text": "移动端，复用现有认证。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "subsystems/subsystem/orders.modules", "occurrence_key": "order-service", "title": "订单服务", "text": ""},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.responsibility", "text": "维护订单状态。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.interface", "text": "OrderApi：create/cancel/status。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.data", "text": "订单服务拥有订单状态。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "subsystems/subsystem/orders.modules/module/order-service.errors", "text": "版本冲突返回 409。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "tasks", "occurrence_key": "impl-order", "title": "实现订单服务", "text": ""},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.module_ref", "text": "订单服务"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.deliverable", "text": "订单 API 和迁移"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "tasks/task/impl-order.acceptance", "text": "创建、取消和查询状态通过测试计划用例。"}
-            ]),
-        ),
-        (
-            "test_plan",
-            json!([
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "strategy", "text": "单元测试覆盖状态机，集成测试覆盖 API。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "scope", "text": "订单创建、取消和状态查询。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "environments", "text": "CI 环境，Postgres 16。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "cases", "occurrence_key": "track-order", "title": "查看订单状态", "text": "验证订单状态查询。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "cases/test_case/track-order.requirement", "text": "查看订单状态"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "cases/test_case/track-order.expected", "text": "返回当前状态和预计到达时间。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "cases/test_case/track-order.steps", "occurrence_key": "step-1", "text": "以买家身份查询已下单的订单。"}
-            ]),
-        ),
-        (
-            "test_report",
-            json!([
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "overview", "text": "commit abc123，CI 运行 42。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "conclusion", "text": "全部用例通过。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "runs", "occurrence_key": "run-1", "title": "abc123", "text": "CI 运行 42。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.commit", "text": "repo=orders branch=main commit=abc123"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.environment", "text": "CI / Postgres 16"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "runs/test_run/run-1.summary", "text": "1 passed, 0 failed"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "runs/test_run/run-1.case_results", "occurrence_key": "track-order", "text": "查看订单状态：通过，日志 run-42#track-order"}
-            ]),
-        ),
-        (
-            "development",
-            json!([
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations", "occurrence_key": "iter-1", "title": "迭代 1", "text": "实现订单服务。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.implementation_notes", "text": "新增订单 API 和状态机。"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations/iteration/iter-1.change_sets", "occurrence_key": "pr-1", "title": "PR #1", "text": "订单服务实现。"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.code_ref", "text": "repo=orders branch=feat/orders base=abc head=def pr=https://example.com/pr/1"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.build", "text": "cargo build / cargo clippy：通过，CI run 41"},
-                {"op_id": Uuid::now_v7(), "type": "update_text", "anchor": "iterations/iteration/iter-1.change_sets/change_set/pr-1.tests", "text": "cargo test：通过，CI run 42"},
-                {"op_id": Uuid::now_v7(), "type": "add", "parent": "iterations/iteration/iter-1.change_sets/change_set/pr-1.requirements", "occurrence_key": "track-order", "text": "查看订单状态"}
-            ]),
-        ),
-    ] {
-        let base = format!("/api/v1/projects/{project}/documents/{kind}");
-        let saved = body_json(
-            &harness.router,
-            workflow_request(
-                "POST",
-                &format!("{base}/draft/operations"),
-                &harness.admin_token,
-                Some("1"),
-                json!({ "operations": operations }),
-            ),
-        )
-        .await;
-        assert_eq!(saved["revision"], 2, "{kind}");
-
-        let validation = body_json(
-            &harness.router,
-            json_request(
-                "POST",
-                &format!("{base}/draft/validate"),
-                Some(&harness.admin_token),
-                None,
-                json!({}),
-            ),
-        )
-        .await;
-        assert_eq!(
-            validation["errors"].as_array().unwrap().len(),
-            0,
-            "{kind}: {validation}"
-        );
-    }
-}
-
 #[tokio::test]
 async fn task_links_round_trip_over_http() {
     let harness = harness().await;
@@ -4235,341 +3400,6 @@ async fn task_links_round_trip_over_http() {
     )
     .await;
     assert!(list.as_array().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn anchor_draft_create_and_open_are_distinct() {
-    let harness = harness().await;
-    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
-
-    let (status, _, body) = send(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/draft"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(error_body(&body)["code"], "draft_not_found");
-
-    let created = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(created["revision"], 1);
-
-    let (status, _, body) = send(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(error_body(&body)["code"], "draft_exists");
-
-    let opened = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/draft"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(opened["revision"], 1);
-}
-
-#[tokio::test]
-async fn anchor_document_round_trips_over_http() {
-    let harness = harness().await;
-    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
-
-    let operations = json!({
-        "operations": [
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "positioning.what_is",
-                "text": "企业费用报销系统"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "positioning.what_is_not",
-                "occurrence_key": "e1",
-                "text": "财务总账系统"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "background.context",
-                "text": "报销目前由员工填写纸质单，主管签字后交财务录入。"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "background.problems",
-                "occurrence_key": "p1",
-                "text": "员工无法查询报销进度，平均催问两次"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "goals",
-                "occurrence_key": "g1",
-                "text": "员工可自助查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "non_goals",
-                "occurrence_key": "n1",
-                "text": "不做移动端应用"
-            }
-        ]
-    });
-
-    let saved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            operations,
-        ),
-    )
-    .await;
-    assert_eq!(saved["revision"], 2);
-    assert!(saved["root_id"].as_str().unwrap().starts_with("sha256:"));
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("# 项目文档"));
-    assert!(toc.contains("## 目录"));
-    assert!(toc.contains("- 定位"));
-    assert!(toc.contains("k:"));
-
-    let content = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/content"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(content["format"], "md");
-    assert!(content["markdown"].as_str().unwrap().contains("# 定位"));
-
-    let validation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/draft/validate"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(validation["errors"].as_array().unwrap().len(), 0);
-
-    let approved = body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/approvals"),
-            &harness.admin_token,
-            Some("2"),
-            json!({ "decision": "approved", "comment": "项目基线" }),
-        ),
-    )
-    .await;
-    assert_eq!(approved["version"], 1);
-    assert_eq!(approved["revision"], 2);
-
-    let toc = body_text(
-        &harness.router,
-        json_request("GET", &base, Some(&harness.admin_token), None, json!({})),
-    )
-    .await;
-    assert!(toc.contains("- current_version: 1"));
-
-    let versions = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/versions"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(versions[0]["version"], 1);
-}
-
-#[tokio::test]
-async fn anchor_annotations_are_anchored_and_become_stale() {
-    let harness = harness().await;
-    let base = format!("/api/v1/projects/{}/documents/project", harness.project_id);
-
-    let operations = json!({
-        "operations": [
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "positioning.what_is",
-                "text": "企业费用报销系统"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "positioning.what_is_not",
-                "occurrence_key": "e1",
-                "text": "财务总账系统"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "update_text",
-                "anchor": "background.context",
-                "text": "报销目前由员工填写纸质单，主管签字后交财务录入。"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "background.problems",
-                "occurrence_key": "p1",
-                "text": "员工无法查询报销进度，平均催问两次"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "goals",
-                "occurrence_key": "g1",
-                "text": "员工可自助查询报销进度"
-            },
-            {
-                "op_id": Uuid::now_v7(),
-                "type": "add",
-                "parent": "non_goals",
-                "occurrence_key": "n1",
-                "text": "不做移动端应用"
-            }
-        ]
-    });
-    body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("1"),
-            operations,
-        ),
-    )
-    .await;
-
-    let annotation = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/annotations"),
-            Some(&harness.admin_token),
-            None,
-            json!({
-                "anchor": "goals/g1",
-                "quote": "员工可自助查询报销进度",
-                "body": "这里应该说明查询范围。"
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(annotation["status"], "open");
-    let annotation_id = annotation["id"].as_str().unwrap().to_string();
-
-    let listed = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/annotations"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
-
-    let resolved = body_json(
-        &harness.router,
-        json_request(
-            "POST",
-            &format!("{base}/annotations/{annotation_id}/resolve"),
-            Some(&harness.admin_token),
-            None,
-            json!({ "resolution": "已补充。" }),
-        ),
-    )
-    .await;
-    assert_eq!(resolved["status"], "resolved");
-
-    let update = json!({
-        "operations": [{
-            "op_id": Uuid::now_v7(),
-            "type": "update_text",
-            "anchor": "goals/g1",
-            "text": "员工可自助提交并查询报销进度"
-        }]
-    });
-    body_json(
-        &harness.router,
-        workflow_request(
-            "POST",
-            &format!("{base}/draft/operations"),
-            &harness.admin_token,
-            Some("2"),
-            update,
-        ),
-    )
-    .await;
-
-    let stale = body_json(
-        &harness.router,
-        json_request(
-            "GET",
-            &format!("{base}/annotations?include_resolved=true"),
-            Some(&harness.admin_token),
-            None,
-            json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(stale[0]["status"], "stale");
 }
 
 #[tokio::test]

@@ -13,9 +13,6 @@
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
       },
-      "created": [
-        {"document_review_link": {"kind": "development", "action": "release"}}
-      ],
       "events": [
         {
           "event": "task.created",
@@ -75,9 +72,6 @@
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
-      "created": [
-        {"document_review_link": {"kind": "development", "action": "bind"}}
-      ],
       "operations": [
         {
           "name": "approved",

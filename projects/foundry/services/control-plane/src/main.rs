@@ -16,18 +16,18 @@
 use foundry_adapter_policy::DemoPolicy;
 use foundry_adapter_postgres::{
     PostgresEventSink, PostgresStore, PostgresTaskDispatcher, PostgresWorkflowCatalog,
+    listen_issue_changes,
 };
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
-    AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
-    DecideAnchorDocument, DesignSpaceGateway, IssueService, MergeRequestRepository,
+    AccountService, AgentAdminUseCases, AuthService, CreateDesignSpaceMergeRequest,
+    DesignSpaceGateway, IssueFilter, IssueService, IssueUseCases, MergeRequestRepository,
     MergeRequestService, NewTask, ProjectFilter, ProjectRepository, ProjectService,
-    ProjectUseCases, RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand,
-    TaskDispatcher, TaskFilter, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
-    TaskUseCases, TaskViewer, TriggerService, TriggerUseCases, WorkflowCatalog, WorkflowService,
-    WorkflowUseCases,
+    ProjectUseCases, TaskCommand, TaskDispatcher, TaskFilter, TaskLinkService, TaskLinkUseCases,
+    TaskRepository, TaskService, TaskUseCases, TaskViewer, TriggerService, TriggerUseCases,
+    WorkflowCatalog, WorkflowService, WorkflowUseCases,
 };
-use foundry_domain::{Actor, ApprovalDecision, OperationName, TaskState};
+use foundry_domain::{OperationName, StageKey, TaskState, WorkflowId};
 use foundry_shared::{AgentLogFiles, Config};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -70,7 +70,11 @@ async fn main() -> anyhow::Result<()> {
     ));
     reevaluate_transitions(store.as_ref(), task_dispatcher.as_ref()).await;
 
-    let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
+    let issues = Arc::new(IssueService::new(
+        Arc::clone(&store),
+        Arc::clone(&events),
+        Arc::clone(&policy),
+    ));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
     let arche_ssh_base = config
         .arche_ssh_url
@@ -118,18 +122,6 @@ async fn main() -> anyhow::Result<()> {
         Arc::clone(&store),
         Arc::clone(&events),
     ));
-    let anchor_docs: Arc<dyn AnchorDocumentUseCases> = Arc::new(AnchorDocumentService::new(
-        Arc::clone(&store),
-        Arc::clone(&store),
-        Arc::clone(&store),
-    ));
-    let requirements_doc: Arc<dyn RequirementsDocumentUseCases> =
-        Arc::new(RequirementsDocumentService::new(
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&store),
-            Arc::clone(&events),
-        ));
     let task_links: Arc<dyn TaskLinkUseCases> = Arc::new(TaskLinkService::new(
         Arc::clone(&store),
         Arc::clone(&store),
@@ -247,27 +239,6 @@ async fn main() -> anyhow::Result<()> {
                         "cannot ensure default daily-check trigger"
                     );
                 }
-                if let Err(error) = triggers.ensure_design_iteration(project.id).await {
-                    tracing::warn!(
-                        project_id = %project.id,
-                        %error,
-                        "cannot ensure default design-iteration trigger"
-                    );
-                }
-                if let Err(error) = triggers.ensure_development_iteration(project.id).await {
-                    tracing::warn!(
-                        project_id = %project.id,
-                        %error,
-                        "cannot ensure default development-iteration trigger"
-                    );
-                }
-                if let Err(error) = triggers.ensure_feedback_cycle(project.id).await {
-                    tracing::warn!(
-                        project_id = %project.id,
-                        %error,
-                        "cannot ensure default feedback trigger"
-                    );
-                }
                 if let Some(root_id) = project.root_task_id {
                     match task_use_cases
                         .list(project.id, TaskFilter::default(), TaskViewer::system())
@@ -331,6 +302,46 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+    let wake_store = Arc::clone(&store);
+    let wake_tasks = Arc::clone(&task_use_cases);
+    let wake_issues = Arc::clone(&issues);
+    let wake_database_url = config.database_url.clone();
+    tokio::spawn(async move {
+        loop {
+            let mut notifications = match listen_issue_changes(&wake_database_url).await {
+                Ok(receiver) => receiver,
+                Err(error) => {
+                    tracing::warn!(%error, "cannot listen for issue changes");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            reconcile_iterations(
+                wake_store.as_ref(),
+                wake_tasks.as_ref(),
+                wake_issues.as_ref(),
+            )
+            .await;
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {}
+                    notification = notifications.recv() => {
+                        if notification.is_none() {
+                            break;
+                        }
+                    }
+                }
+                reconcile_iterations(
+                    wake_store.as_ref(),
+                    wake_tasks.as_ref(),
+                    wake_issues.as_ref(),
+                )
+                .await;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    });
     let project_purger: Arc<dyn foundry_api_http::ProjectPurger> =
         Arc::new(project_purge::ProjectPurger::new(
             Arc::clone(&projects) as Arc<dyn ProjectUseCases>,
@@ -341,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::clone(&arche_ssh),
         ));
     let state = AppState {
-        issues: Arc::new(issues),
+        issues,
         accounts,
         projects,
         tasks,
@@ -349,8 +360,6 @@ async fn main() -> anyhow::Result<()> {
         agents,
         agent_logs,
         workflows: workflows_admin,
-        anchor_docs: Arc::clone(&anchor_docs),
-        requirements_doc,
         task_links,
         auth,
         setup,
@@ -371,7 +380,6 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(run_task_dispatcher(
         task_dispatcher,
         Arc::clone(&store),
-        Arc::clone(&anchor_docs),
         Arc::clone(&merge_requests),
     ));
 
@@ -446,10 +454,134 @@ async fn shutdown_signal() {
     tracing::info!("shutdown signal received; waiting for requests and agents to stop");
 }
 
-/// Re-evaluate transitions for tasks that were already in progress when the
-/// process stopped. Transitions normally run only on a new task event; this
-/// startup pass recovers tasks whose persisted stage variables already satisfy
-/// a transition.
+/// Ensure exactly one long-lived iteration task exists for each non-empty
+/// Issue pool, and wake it when it is waiting for work.
+async fn reconcile_iterations(
+    store: &PostgresStore,
+    tasks: &dyn TaskUseCases,
+    issues: &dyn IssueUseCases,
+) {
+    let iterations = [
+        (
+            "requirements_iteration",
+            "requirements",
+            "需求迭代",
+            "处理需求池中的 Issue。",
+        ),
+        (
+            "design_iteration",
+            "design",
+            "设计迭代",
+            "处理设计池中的 Issue。",
+        ),
+        (
+            "development_iteration",
+            "development",
+            "开发迭代",
+            "处理开发池中的 Issue。",
+        ),
+        (
+            "test_iteration",
+            "tests",
+            "测试迭代",
+            "处理测试池中的 Issue。",
+        ),
+    ];
+    let projects = match ProjectRepository::list(store, ProjectFilter::default()).await {
+        Ok(projects) => projects,
+        Err(error) => {
+            tracing::warn!(%error, "cannot list projects to reconcile iterations");
+            return;
+        }
+    };
+    for project in projects {
+        let Some(root_id) = project.root_task_id else {
+            continue;
+        };
+        let Some(owner) = project
+            .members
+            .iter()
+            .find(|member| member.role == foundry_domain::ProjectRole::Owner)
+        else {
+            continue;
+        };
+        let pooled = match issues.list(project.id, IssueFilter::default()).await {
+            Ok(issues) => issues
+                .into_iter()
+                .filter_map(|issue| {
+                    (issue.status.as_str() == "pooled")
+                        .then(|| issue.pool.map(|pool| pool.as_str()))
+                        .flatten()
+                })
+                .collect::<std::collections::BTreeSet<_>>(),
+            Err(error) => {
+                tracing::warn!(project_id = %project.id, %error, "cannot list pooled Issues");
+                continue;
+            }
+        };
+        for (workflow, pool, title, description) in iterations {
+            if !pooled.contains(pool) {
+                continue;
+            }
+            let filter = TaskFilter {
+                workflow: Some(WorkflowId::new(workflow)),
+                ..TaskFilter::default()
+            };
+            let active = match tasks.list(project.id, filter, TaskViewer::system()).await {
+                Ok(tasks) => tasks
+                    .into_iter()
+                    .find(|task| task.state != TaskState::Completed),
+                Err(error) => {
+                    tracing::warn!(project_id = %project.id, %error, "cannot list iteration tasks");
+                    continue;
+                }
+            };
+            let Some(task) = active else {
+                if let Err(error) = tasks
+                    .create_task(
+                        project.id,
+                        NewTask {
+                            parent_id: root_id,
+                            workflow: workflow.to_string(),
+                            title: title.to_string(),
+                            description: description.to_string(),
+                            input: serde_json::json!({}),
+                        },
+                        owner.account_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(project_id = %project.id, workflow, %error, "cannot create iteration task");
+                }
+                continue;
+            };
+            if task.stage.as_ref().map(StageKey::as_str) != Some("waiting") {
+                continue;
+            }
+            let Some(actor) = task
+                .actors
+                .iter()
+                .find(|actor| actor.role_key.as_str() == "dispatcher" && actor.active)
+            else {
+                tracing::warn!(task_id = %task.id, "waiting iteration has no active dispatcher");
+                continue;
+            };
+            if let Err(error) = tasks
+                .send_operation(
+                    project.id,
+                    task.id,
+                    actor.account_id,
+                    OperationName::new("waiting:work_arrived"),
+                    format!("wake:{}", uuid::Uuid::now_v7()),
+                )
+                .await
+            {
+                tracing::warn!(task_id = %task.id, %error, "cannot wake waiting iteration");
+            }
+        }
+    }
+}
+
 async fn reevaluate_transitions(store: &PostgresStore, dispatcher: &dyn TaskDispatcher) {
     let ids = match store.in_progress_task_ids().await {
         Ok(ids) => ids,
@@ -470,41 +602,88 @@ async fn reevaluate_transitions(store: &PostgresStore, dispatcher: &dyn TaskDisp
     tracing::info!(tasks = checked, "startup transition recheck finished");
 }
 
+fn design_space_branch(workflow: &str, task_id: uuid::Uuid) -> Option<String> {
+    match workflow {
+        "goal_clarification" => Some(format!("project-document-{task_id}")),
+        "requirements_analysis" => Some(format!("requirements/{task_id}")),
+        "design" => Some(format!("design/{task_id}")),
+        "design_change" => Some(format!("design-change/{task_id}")),
+        "design_correction" => Some(format!("design-correction/{task_id}")),
+        "design_baseline" => Some(format!("design-baseline/{task_id}")),
+        _ => None,
+    }
+}
+
+/// Every task that changes the design space must have a merge request before
+/// a human can approve it. Reviewers normally create it; this reconciliation
+/// closes the gap when an LLM reviewer forgets.
+async fn ensure_design_space_merge_requests(
+    store: &PostgresStore,
+    merge_requests: &MergeRequestService,
+) {
+    let rows = match store.design_space_human_review_tasks().await {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::warn!(%error, "cannot list design-space human review tasks");
+            return;
+        }
+    };
+    for (task_id, project_id, workflow, acceptor_id) in rows {
+        let Ok(Some(project)) = ProjectRepository::get(store, project_id).await else {
+            continue;
+        };
+        match merge_requests
+            .for_task_review(&project, task_id, TaskViewer::system())
+            .await
+        {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, %task_id, "cannot read task merge request");
+                continue;
+            }
+        }
+        let Some(source_branch) = design_space_branch(&workflow, task_id) else {
+            continue;
+        };
+        let title = format!("Design space change: {}", project.name);
+        let description = format!("{workflow} 任务的设计空间修改，等待人类审批合入。");
+        if let Err(error) = merge_requests
+            .create_for_task(
+                &project,
+                task_id,
+                acceptor_id,
+                CreateDesignSpaceMergeRequest {
+                    title,
+                    description,
+                    source_branch,
+                    target_branch: project.design_space_branch.clone(),
+                },
+            )
+            .await
+        {
+            tracing::warn!(
+                %error,
+                %task_id,
+                workflow,
+                "cannot create missing design-space merge request"
+            );
+        }
+    }
+}
+
 /// Advances task workflows and reconciles durable state into agent
 /// activations. Notifications are not persisted; this loop rebuilds missed
 /// ones from task state, assignments and Issue comments.
 async fn run_task_dispatcher(
     dispatcher: Arc<dyn TaskDispatcher>,
     store: Arc<PostgresStore>,
-    anchor_docs: Arc<dyn AnchorDocumentUseCases>,
     merge_requests: Arc<MergeRequestService>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
-        match store.pending_auto_document_approvals().await {
-            Ok(rows) => {
-                for (task_id, project_id, kind, revision, handle) in rows {
-                    let command = DecideAnchorDocument {
-                        project_id,
-                        kind,
-                        expected_revision: revision as u64,
-                        decision: ApprovalDecision::Approved,
-                        comment: Some(
-                            "auto-approved by project skip-approvals setting".to_string(),
-                        ),
-                    };
-                    if let Err(error) = anchor_docs.decide(Actor::human(handle), command).await {
-                        tracing::debug!(
-                            %error,
-                            task_id = %task_id,
-                            "auto document approval deferred"
-                        );
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(%error, "auto document approval scan failed"),
-        }
+        ensure_design_space_merge_requests(store.as_ref(), merge_requests.as_ref()).await;
         match store.pending_auto_design_merges().await {
             Ok(rows) => {
                 for (project_id, merge_request_id, owner_id) in rows {
@@ -546,136 +725,6 @@ async fn run_task_dispatcher(
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "processed task trigger partitions"),
             Err(error) => tracing::warn!(%error, "task dispatcher failed"),
-        }
-        match store.approved_goal_clarifications().await {
-            Ok(tasks) => {
-                for (task_id, _project_id, approved_by, revision) in tasks {
-                    let command = TaskCommand::SendOperation {
-                        actor_id: approved_by,
-                        operation: OperationName::new(format!(
-                            "human_review:{}",
-                            foundry_domain::ACCEPT_OPERATION
-                        )),
-                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
-                    };
-                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
-                        tracing::warn!(
-                            %error,
-                            task_id = %task_id,
-                            "approved project layer task completion failed"
-                        );
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(%error, "approved project layer scan failed"),
-        }
-        match store.approved_requirement_document_tasks().await {
-            Ok(tasks) => {
-                for (task_id, _project_id, published_by, revision) in tasks {
-                    let command = TaskCommand::SendOperation {
-                        actor_id: published_by,
-                        operation: OperationName::new(format!(
-                            "human_review:{}",
-                            foundry_domain::ACCEPT_OPERATION
-                        )),
-                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
-                    };
-                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
-                        tracing::warn!(
-                            %error,
-                            task_id = %task_id,
-                            "published requirements task completion failed"
-                        );
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(%error, "published requirements scan failed"),
-        }
-        match store.approved_architecture_design_tasks().await {
-            Ok(tasks) => {
-                for (task_id, _project_id, published_by, revision) in tasks {
-                    let command = TaskCommand::SendOperation {
-                        actor_id: published_by,
-                        operation: OperationName::new(format!(
-                            "human_review:{}",
-                            foundry_domain::ACCEPT_OPERATION
-                        )),
-                        idempotency_key: format!("anchor-document-approved:{task_id}:{revision}"),
-                    };
-                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
-                        tracing::warn!(
-                            %error,
-                            task_id = %task_id,
-                            "published architecture task completion failed"
-                        );
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(%error, "published architecture scan failed"),
-        }
-        for (kind, workflows, stage) in [
-            ("design", &["detailed_design"][..], "human_review"),
-            ("development", &["iteration"][..], "acceptance"),
-            ("test_plan", &["test_planning"][..], "human_review"),
-            ("test_report", &["test_execution"][..], "human_review"),
-        ] {
-            match store.approved_document_tasks(kind, workflows, stage).await {
-                Ok(tasks) => {
-                    for (task_id, _project_id, approved_by, revision) in tasks {
-                        let command = TaskCommand::SendOperation {
-                            actor_id: approved_by,
-                            operation: OperationName::new(format!(
-                                "{stage}:{}",
-                                foundry_domain::ACCEPT_OPERATION
-                            )),
-                            idempotency_key: format!(
-                                "anchor-document-approved:{task_id}:{revision}"
-                            ),
-                        };
-                        if let Err(error) = dispatcher.process(task_id, Some(command)).await {
-                            tracing::warn!(
-                                %error,
-                                task_id = %task_id,
-                                kind,
-                                "approved document task completion failed"
-                            );
-                        }
-                    }
-                }
-                Err(error) => tracing::warn!(%error, kind, "approved document scan failed"),
-            }
-        }
-        match store.rejected_document_tasks().await {
-            Ok(tasks) => {
-                for (task_id, _project_id, rejected_by, revision, stage) in tasks {
-                    let command = TaskCommand::SendOperation {
-                        actor_id: rejected_by,
-                        operation: OperationName::new(format!(
-                            "{stage}:{}",
-                            foundry_domain::REJECT_OPERATION
-                        )),
-                        idempotency_key: format!("anchor-document-rejected:{task_id}:{revision}"),
-                    };
-                    if let Err(error) = dispatcher.process(task_id, Some(command)).await {
-                        tracing::warn!(
-                            %error,
-                            task_id = %task_id,
-                            "document rejection task rollback failed"
-                        );
-                    }
-                }
-            }
-            Err(error) => tracing::warn!(%error, "document rejection scan failed"),
-        }
-        match store.bind_human_review_document_links().await {
-            Ok(0) => {}
-            Ok(count) => tracing::debug!(count, "bound document review links"),
-            Err(error) => tracing::warn!(%error, "document review link bind scan failed"),
-        }
-        match store.release_stale_document_review_links().await {
-            Ok(0) => {}
-            Ok(count) => tracing::debug!(count, "released stale document review links"),
-            Err(error) => tracing::warn!(%error, "document review link release scan failed"),
         }
     }
 }

@@ -4,7 +4,8 @@ use crate::ports::{
     Action, ActionContext, EventSink, IssueFilter, IssueRepository, PolicyEngine, Resource,
 };
 use foundry_domain::{
-    Actor, DomainEvent, DomainEventKind, Issue, IssueKind, IssueTriage, TransitionEvidence,
+    Actor, DomainEvent, DomainEventKind, Issue, IssueKind, IssueStatus, IssueTriage,
+    TransitionEvidence,
 };
 use std::sync::Arc;
 use uuid::Uuid;
@@ -66,6 +67,19 @@ where
         issue
             .validate()
             .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        if let Some(pool) = command.pool {
+            issue
+                .transition_to(
+                    IssueStatus::Pooled,
+                    &actor,
+                    TransitionEvidence {
+                        resolution: None,
+                        duplicate_of: None,
+                        pool: Some(pool),
+                    },
+                )
+                .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        }
 
         self.repository.insert(&issue).await?;
         self.emit(DomainEventKind::IssueCreated, &issue, actor)

@@ -15,9 +15,6 @@
       "vars": {
         "completed": {"type": "bool", "display_name": "Completed"}
       },
-      "created": [
-        {"document_review_link": {"kind": "requirements", "action": "release"}}
-      ],
       "operations": [
         {
           "name": "started",
@@ -29,7 +26,7 @@
         {
           "name": "completed",
           "display_name": "Submit for review",
-          "description": "Submit the requirements draft for review.",
+          "description": "Submit the structured requirements for style review.",
           "roles": ["analyst"],
           "action": "completed = true"
         }
@@ -48,7 +45,7 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "The document is clear; move to requirements review.",
+          "description": "The requirements are clear; move to requirements review.",
           "roles": ["style_reviewer"],
           "action": "decision = 'approved'"
         },
@@ -102,7 +99,7 @@
         {
           "name": "approved",
           "display_name": "Approve",
-          "description": "The requirements are technically feasible; move to human review.",
+          "description": "The requirements are technically feasible; open the merge request for human approval.",
           "roles": ["feasibility_reviewer"],
           "action": "decision = 'approved'"
         },
@@ -125,21 +122,18 @@
       "vars": {
         "decision": {"type": "string", "display_name": "Decision"}
       },
-      "created": [
-        {"document_review_link": {"kind": "requirements", "action": "bind"}}
-      ],
       "operations": [
         {
-          "name": "approved",
-          "display_name": "Approve and publish",
-          "description": "The human accepts the requirements document.",
+          "name": "merge",
+          "display_name": "批准并合并",
+          "description": "Approve the requirements merge request and complete the task.",
           "roles": ["acceptor"],
           "action": "decision = 'approved'"
         },
         {
           "name": "rejected",
           "display_name": "Reject",
-          "description": "The human rejects the document; return to the analyst.",
+          "description": "Reject the requirements change and return to the analyst.",
           "roles": ["acceptor"],
           "action": "decision = 'rejected'"
         }

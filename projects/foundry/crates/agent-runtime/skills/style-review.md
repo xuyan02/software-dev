@@ -10,8 +10,28 @@
 
 1. 用 `task_get` 读取任务详情，确认当前任务要审查的设计字段或锚点文档，以及任务所属的 workflow 和角色。
 2. 读取内容：
-   - 项目文档、需求文档等锚点文档：用 `document` 的 `action = "content"` 读取全文，用
-     `action = "toc"` 读取章节和锚点 key，用 `action = "annotations_list"` 读取已有标注。
+   - 项目说明书：检出写作分支 `project-document-<task-id>`，不要读 `<design_space_branch>`：
+     ```bash
+     cd /work/<project-id>/arche
+     arche fetch
+     arche checkout project-document-<task-id>
+     arche pull
+     arche status
+     ```
+     确认 `branch: project-document-<task-id>` 后，用
+     `arche show project/document --format md` 读取全文，用
+     `arche comment list --open project/document` 读取已有意见。
+   - 需求空间（`requirements_analysis`）：检出 `requirements/<task-id>`，用 Arche 读取：
+     ```bash
+     cd /work/<project-id>/arche
+     arche fetch
+     arche checkout requirements/<task-id>
+     arche pull
+     arche ls
+     arche show <qname> --format json
+     arche comment list --open <qname>
+     ```
+     不读锚点文档，不使用 `document` 工具。
    - 设计空间设计字段：使用 `arche` 命令。先确定分支：
      - `code_summary_group`：`design-consistency-groups/<task-id>`；
      - `design_consistency_maintenance`：任务 `input.target_branch`，或当前集成分支；
@@ -56,7 +76,16 @@
 - 只写会导致拒绝的问题；不值得拒绝的语言问题不写标注。
 - 每个必须修改的问题写一条标注。
 - 反馈只指出问题：哪里看不懂、哪里有歧义、哪里不清晰、哪里矛盾，以及为什么；不要给具体改写文本或修改方案。
-- 项目文档、需求文档等锚点文档：用 `document` 的 `action = "annotate"`；
+- 项目说明书：用 Arche 评论，不修改正文：
+
+  ```bash
+  arche comment add project/document '章节：...。原文：...。问题：...。为什么：...。通过条件：...。'
+  arche add -A
+  arche commit -m "Project document style review comments" --author style-review
+  arche push
+  ```
+
+- 需求文档等锚点文档：用 `document` 的 `action = "annotate"`；
   `anchor` 传问题所在章节的 key，从 `toc` 获取；无法定位到具体锚点时，标注最近的父章节；
   `quote` 引用原文中的问题短语；`body` 写原文、问题类型、为什么不清晰或矛盾，以及通过条件。
 - 设计空间设计字段：用 arche 评论，不修改正文：

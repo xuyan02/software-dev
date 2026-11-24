@@ -3,13 +3,13 @@ use std::fmt;
 use crate::hash::{GitCommit, ObjectHash, SymbolHash};
 use crate::object::{
     Concept, ConceptDirectory, DocumentCode, DocumentHtml, DocumentList, DocumentMermaid,
-    DocumentParagraphList, DocumentText, DocumentTopic, Object, ObjectList, RequirementFunction,
-    RequirementInteraction, RequirementModule, RequirementRoot, RequirementStory,
-    RequirementSystem, RequirementUser, Root, TechnicalArgument, TechnicalClass, TechnicalConstant,
-    TechnicalDirectory, TechnicalEnum, TechnicalEnumValue, TechnicalFile, TechnicalFunction,
-    TechnicalInterface, TechnicalLayer, TechnicalMember, TechnicalMethod, TechnicalMixin,
-    TechnicalModule, TechnicalNamespace, TechnicalPart, TechnicalProperty, TechnicalReturnValue,
-    TechnicalRoot, TechnicalStruct, TechnicalSystem, TechnicalVariable,
+    DocumentParagraphList, DocumentText, DocumentTopic, Object, ObjectList, ProjectDocument,
+    ProjectRoot, RequirementFunction, RequirementInteraction, RequirementModule, RequirementRoot,
+    RequirementStory, RequirementSystem, RequirementUser, Root, TechnicalArgument, TechnicalClass,
+    TechnicalConstant, TechnicalDirectory, TechnicalEnum, TechnicalEnumValue, TechnicalFile,
+    TechnicalFunction, TechnicalInterface, TechnicalLayer, TechnicalMember, TechnicalMethod,
+    TechnicalMixin, TechnicalModule, TechnicalNamespace, TechnicalPart, TechnicalProperty,
+    TechnicalReturnValue, TechnicalRoot, TechnicalStruct, TechnicalSystem, TechnicalVariable,
 };
 use crate::refs::StringRefList;
 use crate::source::{SourcePath, SourceSpan};
@@ -412,6 +412,16 @@ impl_properties!(Root {
     "concept" => concept : ObjectRef,
 });
 
+impl_properties!(ProjectRoot {
+    "parent" => parent : StringRef,
+    "document" => document : ObjectRef,
+});
+
+impl_properties!(ProjectDocument {
+    "parent" => parent : StringRef,
+    "document" => document : ObjectRef,
+});
+
 impl_properties!(ObjectList {
     "parent" => parent : StringRef,
 });
@@ -757,6 +767,8 @@ impl PropertyAccess for Object {
             Self::TechnicalEnumValue(value) => value.properties(),
             Self::TechnicalArgument(value) => value.properties(),
             Self::TechnicalReturnValue(value) => value.properties(),
+            Self::ProjectRoot(value) => value.properties(),
+            Self::ProjectDocument(value) => value.properties(),
         }
     }
 
@@ -802,6 +814,8 @@ impl PropertyAccess for Object {
             Self::TechnicalEnumValue(value) => value.get_property(name),
             Self::TechnicalArgument(value) => value.get_property(name),
             Self::TechnicalReturnValue(value) => value.get_property(name),
+            Self::ProjectRoot(value) => value.get_property(name),
+            Self::ProjectDocument(value) => value.get_property(name),
         }
     }
 
@@ -847,6 +861,8 @@ impl PropertyAccess for Object {
             Self::TechnicalEnumValue(object) => object.set_property(name, value),
             Self::TechnicalArgument(object) => object.set_property(name, value),
             Self::TechnicalReturnValue(object) => object.set_property(name, value),
+            Self::ProjectRoot(object) => object.set_property(name, value),
+            Self::ProjectDocument(object) => object.set_property(name, value),
         }
     }
 }

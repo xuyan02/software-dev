@@ -6,13 +6,11 @@
 
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
-    AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, CapsuleProfile, Confidence,
-    EntityStatus, Issue, IssueClassification, IssueConfidence, IssueKind, IssueSeverity,
+    CapsuleProfile, Issue, IssueClassification, IssueConfidence, IssueKind, IssueSeverity,
     IssueSourceKind, IssueStatus, MergeRequestChangeStatus, MergeRequestDetail, MergeRequestReview,
-    MergeRequestStatus, Project, ProjectRole, ProjectStatus, RequirementsAnnotation,
-    RequirementsDocumentBody, RoleKind, StoryPriority, Task, TaskDispatchState, TaskLink,
-    TaskLinkKind, TaskLinkRelation, TaskState, Trigger, WorkflowDefinition, WorkflowOption,
-    WorkflowOwner,
+    MergeRequestStatus, Project, ProjectRole, ProjectStatus, RoleKind, Task, TaskDispatchState,
+    TaskLink, TaskLinkKind, TaskLinkRelation, TaskState, Trigger, WorkflowDefinition,
+    WorkflowOption, WorkflowOwner,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -1419,13 +1417,6 @@ impl ConsoleContext {
 enum Section {
     Workbench,
     Issues,
-    ProjectDocument,
-    Requirements,
-    Architecture,
-    Design,
-    Development,
-    TestPlan,
-    TestReport,
     Tasks,
     Projects,
     DesignSpace,
@@ -1531,97 +1522,6 @@ fn layout_page(
         })
         .unwrap_or_default();
 
-    let project_document_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::ProjectDocument,
-                &format!("/projects/{}/documents/project", project.id),
-                "项目文档",
-            )
-        })
-        .unwrap_or_default();
-
-    let requirements_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::Requirements,
-                &format!("/projects/{}/documents/requirements", project.id),
-                "需求文档",
-            )
-        })
-        .unwrap_or_default();
-
-    let architecture_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::Architecture,
-                &format!("/projects/{}/documents/architecture", project.id),
-                "架构设计",
-            )
-        })
-        .unwrap_or_default();
-
-    let design_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::Design,
-                &format!("/projects/{}/documents/design", project.id),
-                "详细设计",
-            )
-        })
-        .unwrap_or_default();
-
-    let development_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::Development,
-                &format!("/projects/{}/documents/development", project.id),
-                "开发记录",
-            )
-        })
-        .unwrap_or_default();
-
-    let test_plan_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::TestPlan,
-                &format!("/projects/{}/documents/test_plan", project.id),
-                "测试计划",
-            )
-        })
-        .unwrap_or_default();
-
-    let test_report_nav = ctx
-        .current
-        .as_ref()
-        .map(|project| {
-            nav_item(
-                active,
-                Section::TestReport,
-                &format!("/projects/{}/documents/test_report", project.id),
-                "测试报告",
-            )
-        })
-        .unwrap_or_default();
-
     let nav = format!(
         r#"<a class="brand" href="/">Foundry</a>
 <p class="brand-sub">AI 原生软件工程控制平面</p>
@@ -1638,13 +1538,6 @@ fn layout_page(
     <p class="nav-heading">承诺空间</p>
     {design_space_nav}
     {merge_requests_nav}
-    {project_document_nav}
-    {requirements_nav}
-    {architecture_nav}
-    {design_nav}
-    {development_nav}
-    {test_plan_nav}
-    {test_report_nav}
   </div>
   <div class="nav-group">
     <p class="nav-heading">执行</p>
@@ -1697,8 +1590,6 @@ fn layout_page(
         },
         design_space_nav = design_space_nav,
         merge_requests_nav = merge_requests_nav,
-        project_document_nav = project_document_nav,
-        requirements_nav = requirements_nav,
         display_name = escape(&ctx.viewer.display_name),
         handle = escape(&ctx.viewer.handle),
         kind = if ctx.viewer.kind == AccountKind::Human {
@@ -2387,865 +2278,6 @@ pub fn task_page(ctx: &ConsoleContext, task: &Task, links: &[TaskLink]) -> Strin
     layout(ctx, Section::Tasks, &task.title, &body)
 }
 
-#[derive(Debug, Clone)]
-pub struct RequirementsApprovalData {
-    pub revision: u64,
-    pub decision: ApprovalDecision,
-    pub actor_id: uuid::Uuid,
-    pub comment: Option<String>,
-    pub created_at: time::OffsetDateTime,
-}
-
-pub fn anchor_document_signature(
-    current_version: u32,
-    latest_version: Option<u32>,
-    draft_revision: Option<u64>,
-    draft_version: Option<u32>,
-    annotations: &[AnchorAnnotation],
-) -> String {
-    let mut parts = vec![format!(
-        "{current_version}:{latest_version:?}:{draft_revision:?}:{draft_version:?}"
-    )];
-    let mut annotation_parts: Vec<String> = annotations
-        .iter()
-        .map(|annotation| {
-            format!(
-                "{}:{}:{}:{:?}",
-                annotation.id,
-                annotation_status_key(annotation.status),
-                annotation.resolution.as_deref().unwrap_or(""),
-                annotation.resolved_at
-            )
-        })
-        .collect();
-    annotation_parts.sort();
-    parts.extend(annotation_parts);
-    parts.join("|")
-}
-
-fn annotation_status_key(status: AnchorAnnotationStatus) -> &'static str {
-    match status {
-        AnchorAnnotationStatus::Open => "open",
-        AnchorAnnotationStatus::Resolved => "resolved",
-        AnchorAnnotationStatus::Stale => "stale",
-        AnchorAnnotationStatus::Orphaned => "orphaned",
-    }
-}
-
-pub struct AnchorDocumentPageData<'a> {
-    pub kind: &'a str,
-    pub current_version: u32,
-    pub latest_version: Option<u32>,
-    pub draft_revision: Option<u64>,
-    pub draft_version: Option<u32>,
-    pub root_id: &'a str,
-    pub root_key: &'a str,
-    pub review_task_id: Option<&'a str>,
-    pub review_task_stage: Option<&'a str>,
-    pub markdown: &'a str,
-    pub annotations: &'a [AnchorAnnotation],
-    pub approvals: &'a [RequirementsApprovalData],
-    pub can_approve: bool,
-    pub error: Option<&'a str>,
-}
-
-pub fn anchor_document_page(
-    ctx: &ConsoleContext,
-    project: &Project,
-    data: AnchorDocumentPageData<'_>,
-) -> String {
-    let error_html = data
-        .error
-        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
-        .unwrap_or_default();
-    let draft_already_approved = data
-        .draft_version
-        .map(|version| {
-            format!(
-                r#"<p class="hint">当前草案已批准为版本 <strong>{version}</strong>；修改后需要再次审批。</p>"#
-            )
-        })
-        .unwrap_or_default();
-    let review_ready = data.can_approve
-        && data.draft_version.is_none()
-        && data.review_task_id.is_some()
-        && (data.review_task_stage == Some("human_review")
-            || (data.kind == "development" && data.review_task_stage == Some("acceptance")));
-    let approve = if review_ready {
-        data.draft_revision
-            .map(|revision| {
-                format!(
-                    r#"<form class="inline-form" method="post" action="/projects/{id}/documents/{kind}/approve">
-  <input type="hidden" name="revision" value="{revision}">
-  <input type="hidden" name="task_id" value="{task_id}">
-  <button type="submit">批准</button>
-</form>"#,
-                    id = project.id,
-                    kind = escape(data.kind),
-                    revision = revision,
-                    task_id = escape(data.review_task_id.unwrap_or_default()),
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let reject = if review_ready {
-        data.draft_revision
-            .map(|revision| {
-                format!(
-                    r#"<form class="inline-form" method="post" action="/projects/{id}/documents/{kind}/reject">
-  <input type="hidden" name="revision" value="{revision}">
-  <input type="hidden" name="task_id" value="{task_id}">
-  <button class="danger" type="submit">拒绝</button>
-</form>"#,
-                    id = project.id,
-                    kind = escape(data.kind),
-                    revision = revision,
-                    task_id = escape(data.review_task_id.unwrap_or_default()),
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let visible_annotations: Vec<_> = data
-        .annotations
-        .iter()
-        .filter(|annotation| {
-            !matches!(
-                annotation.status,
-                AnchorAnnotationStatus::Stale | AnchorAnnotationStatus::Orphaned
-            )
-        })
-        .collect();
-    let mut annotation_cards = String::new();
-    for annotation in visible_annotations.iter().copied() {
-        let (status, status_label) = match annotation.status {
-            AnchorAnnotationStatus::Open => ("open", "待处理"),
-            AnchorAnnotationStatus::Resolved => ("resolved", "已解决"),
-            AnchorAnnotationStatus::Stale => ("stale", "已过期"),
-            AnchorAnnotationStatus::Orphaned => ("orphaned", "已失联"),
-        };
-        let is_resolved = annotation.status == AnchorAnnotationStatus::Resolved
-            || annotation
-                .resolution
-                .as_deref()
-                .is_some_and(|resolution| !resolution.trim().is_empty());
-        let resolve = if is_resolved {
-            String::new()
-        } else {
-            format!(
-                r#"<form class="inline-form annotation-resolve-form" method="post" action="/projects/{id}/documents/{kind}/annotations/{annotation_id}/resolve">
-  <div class="field"><label for="resolution-{annotation_id}">解决意见</label>
-    <textarea id="resolution-{annotation_id}" name="resolution" rows="2" required placeholder="说明已做的修改或拒绝理由"></textarea></div>
-  <button class="link" type="submit">标记已解决</button>
-</form>"#,
-                id = project.id,
-                kind = escape(data.kind),
-                annotation_id = annotation.id,
-            )
-        };
-        let quote = annotation
-            .quote
-            .as_deref()
-            .filter(|quote| !quote.trim().is_empty())
-            .map(|quote| {
-                format!(
-                    r#"<blockquote class="annotation-quote">{}</blockquote>"#,
-                    inline_markdown(quote, 0)
-                )
-            })
-            .unwrap_or_default();
-        let resolution = annotation
-            .resolution
-            .as_deref()
-            .filter(|resolution| !resolution.trim().is_empty())
-            .map(|resolution| {
-                let resolved_at = annotation
-                    .resolved_at
-                    .map(|resolved_at| resolved_at.date().to_string())
-                    .unwrap_or_default();
-                format!(
-                    r#"<div class="annotation-resolution"><span class="annotation-label">解决意见</span><p>{}</p><p class="annotation-meta">{resolved_at}</p></div>"#,
-                    inline_markdown(resolution, 0)
-                )
-            })
-            .unwrap_or_default();
-        annotation_cards.push_str(&format!(
-            r#"<div class="annotation-card" data-anchor="{key}" data-status="{status}" data-resolved="{resolved}">
-<div class="annotation-card-head"><span class="annotation-label">批注</span><span class="badge">{status_label}</span><span class="annotation-meta">@{handle} · {created}</span></div>
-{quote}
-<div class="annotation-card-body">{body}</div>
-{resolution}
-{resolve}
-</div>"#,
-            key = escape(&annotation.anchor_key),
-            status = status,
-            status_label = status_label,
-            resolved = is_resolved,
-            handle = escape(&annotation.author_handle),
-            created = annotation.created_at.date(),
-            quote = quote,
-            body = inline_markdown(&annotation.body, 0),
-            resolution = resolution,
-            resolve = resolve,
-        ));
-    }
-    let annotation_count = visible_annotations.len();
-    let unresolved_count = visible_annotations
-        .iter()
-        .filter(|annotation| {
-            annotation.status != AnchorAnnotationStatus::Resolved
-                && annotation
-                    .resolution
-                    .as_deref()
-                    .is_none_or(|resolution| resolution.trim().is_empty())
-        })
-        .count();
-    let annotation_toggle = if annotation_count == 0 {
-        r#"<span class="hint">暂无标注；点击文档内容可添加标注。</span>"#.to_string()
-    } else {
-        let filter = if unresolved_count == 0 {
-            String::new()
-        } else {
-            format!(
-                r#"<button type="button" class="secondary" id="annotation-filter" aria-pressed="false" data-unresolved-count="{unresolved_count}">只看未解决（{unresolved_count}）</button>"#
-            )
-        };
-        format!(
-            r#"<button type="button" id="annotation-toggle" aria-pressed="true">隐藏标注（{annotation_count}）</button>
-{filter}
-<span class="hint">点击文档内容可添加标注。</span>"#
-        )
-    };
-    let annotation_source = if annotation_cards.is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"<section class="annotation-source" id="anchor-annotation-source"><h2>标注</h2>{annotation_cards}</section>"#
-        )
-    };
-    let annotation_orphans = r#"<section class="annotation-orphans" id="anchor-annotation-orphans" hidden><h2>未定位标注</h2></section>"#.to_string();
-    let annotation_dialog = format!(
-        r#"<dialog id="annotation-dialog" class="annotation-dialog">
-<form id="anchor-annotation-form" method="post" action="/projects/{id}/documents/{kind}/annotations">
-  <input type="hidden" name="anchor" id="annotation-anchor" value="{root_key}" required>
-  <p class="annotation-dialog-target">标注：<strong id="annotation-target-label">文档</strong></p>
-  <div class="field"><label for="anchor-quote">引用原文（可选）</label><input id="anchor-quote" name="quote"></div>
-  <div class="field"><label for="anchor-body">评审批注</label><textarea id="anchor-body" name="body" required placeholder="指出不清楚或需要修改的地方"></textarea></div>
-  <div class="actions"><button type="submit">添加标注</button> <button type="button" class="secondary" id="annotation-cancel">取消</button></div>
-</form>
-</dialog>"#,
-        id = project.id,
-        kind = escape(data.kind),
-        root_key = escape(data.root_key),
-    );
-    let annotation_script = r#"<script>
-(() => {
-  const documentEl = document.getElementById('anchor-document');
-  const source = document.getElementById('anchor-annotation-source');
-  const orphans = document.getElementById('anchor-annotation-orphans');
-  const toggle = document.getElementById('annotation-toggle');
-  const filter = document.getElementById('annotation-filter');
-  const dialog = document.getElementById('annotation-dialog');
-  const form = document.getElementById('anchor-annotation-form');
-  const targetLabel = document.getElementById('annotation-target-label');
-  const cancel = document.getElementById('annotation-cancel');
-  if (!documentEl || !dialog || !form) return;
-
-  const anchors = [documentEl].concat(Array.from(documentEl.querySelectorAll('[data-anchor]')));
-  const cards = source ? Array.from(source.querySelectorAll('.annotation-card')) : [];
-  const count = cards.length;
-  cards.forEach((card) => {
-    const key = card.getAttribute('data-anchor');
-    const target = anchors.find((element) => element.getAttribute('data-anchor') === key);
-    card.addEventListener('click', (event) => event.stopPropagation());
-    if (target) {
-      target.appendChild(card);
-    } else if (orphans) {
-      orphans.hidden = false;
-      orphans.appendChild(card);
-    }
-  });
-  if (source) source.hidden = true;
-
-  let visible = true;
-  const updateToggle = () => {
-    documentEl.classList.toggle('annotations-hidden', !visible);
-    if (orphans) orphans.style.display = visible ? '' : 'none';
-    if (toggle) {
-      toggle.setAttribute('aria-pressed', String(visible));
-      toggle.textContent = (visible ? '隐藏标注（' : '显示标注（') + count + '）';
-    }
-  };
-  if (toggle) toggle.addEventListener('click', () => { visible = !visible; updateToggle(); });
-
-  let onlyUnresolved = false;
-  const updateFilter = () => {
-    documentEl.classList.toggle('only-unresolved', onlyUnresolved);
-    if (orphans) orphans.classList.toggle('only-unresolved', onlyUnresolved);
-    if (filter) {
-      filter.setAttribute('aria-pressed', String(onlyUnresolved));
-      const unresolved = filter.getAttribute('data-unresolved-count') || '0';
-      filter.textContent = onlyUnresolved ? '显示全部标注' : '只看未解决（' + unresolved + '）';
-    }
-  };
-  if (filter) filter.addEventListener('click', () => { onlyUnresolved = !onlyUnresolved; updateFilter(); });
-
-  const pageRefresh = document.getElementById('page-refresh');
-  if (pageRefresh) pageRefresh.addEventListener('click', () => window.location.reload());
-
-  const initialSignature = documentEl.getAttribute('data-signature') || '';
-  let checking = false;
-  const checkForChanges = async () => {
-    if (checking || document.hidden || dialog.open) return;
-    const active = document.activeElement;
-    if (active && active.matches('input, textarea, select')) return;
-    checking = true;
-    try {
-      const response = await fetch(window.location.pathname + '/refresh', {
-        cache: 'no-store',
-        credentials: 'same-origin'
-      });
-      if (response.ok) {
-        const payload = await response.json();
-        if (payload.signature && payload.signature !== initialSignature) {
-          window.location.reload();
-          return;
-        }
-      }
-    } catch (_) {
-      // Ignore transient errors; the next poll retries.
-    }
-    checking = false;
-  };
-  window.setInterval(checkForChanges, 5000);
-
-  documentEl.addEventListener('click', (event) => {
-    if (event.target.closest('a, button, input, textarea, select, form, summary, .annotation-card')) return;
-    const anchor = event.target.closest('[data-anchor]');
-    if (!anchor) return;
-    const key = anchor.getAttribute('data-anchor');
-    if (!key) return;
-    form.querySelector('[name="anchor"]').value = key;
-    const heading = anchor.querySelector('h1,h2,h3,h4,h5,h6');
-    const label = (heading ? heading.textContent : anchor.textContent || '').trim().slice(0, 120);
-    if (targetLabel) targetLabel.textContent = label || key;
-    const quoteInput = form.querySelector('[name="quote"]');
-    if (quoteInput) {
-      const selection = window.getSelection();
-      quoteInput.value = selection ? selection.toString().trim().slice(0, 500) : '';
-    }
-    if (typeof dialog.showModal === 'function') dialog.showModal();
-    else dialog.setAttribute('open', '');
-    const body = form.querySelector('[name="body"]');
-    if (body) body.focus();
-  });
-
-  if (cancel) cancel.addEventListener('click', () => dialog.close());
-  dialog.addEventListener('click', (event) => { if (event.target === dialog) dialog.close(); });
-})();
-</script>"#.to_string();
-    let label = match data.kind {
-        "project" => "项目文档",
-        "requirements" => "需求文档",
-        "architecture" => "架构设计",
-        "design" => "详细设计",
-        "development" => "开发记录",
-        "test_plan" => "测试计划",
-        "test_report" => "测试报告",
-        _ => "文档",
-    };
-    let section = match data.kind {
-        "project" => Section::ProjectDocument,
-        "requirements" => Section::Requirements,
-        "architecture" => Section::Architecture,
-        "design" => Section::Design,
-        "development" => Section::Development,
-        "test_plan" => Section::TestPlan,
-        "test_report" => Section::TestReport,
-        _ => Section::None,
-    };
-    let signature = anchor_document_signature(
-        data.current_version,
-        data.latest_version,
-        data.draft_revision,
-        data.draft_version,
-        data.annotations,
-    );
-    let page = format!(
-        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/documents/{kind}">{label}</a></p>
-<h1>{name} · {label}</h1>
-<p class="sub">描述文件驱动的文档；每个锚点有稳定键和内容哈希。</p>
-<div class="meta">
-  <span>类型 <strong>{kind}</strong></span>
-  <span>已批准版本 <strong>{current_version}</strong></span>
-  <span>最新版本 <strong>{latest_version}</strong></span>
-  <span>草稿 revision <strong>{draft_revision}</strong></span>
-  <span>根锚点 <code>{root_id}</code></span>
-</div>
-{error_html}
-{draft_already_approved}
-{approval_history}
-<div class="annotation-toolbar">{annotation_toggle}<button type="button" class="secondary" id="page-refresh">刷新</button></div>
-<div class="markdown anchor-document" id="anchor-document" data-anchor="{root_key}" data-signature="{signature}">{markdown}</div>
-{approval_actions}
-{annotation_source}
-{annotation_orphans}
-{annotation_dialog}
-{annotation_script}"#,
-        id = project.id,
-        name = escape(&project.name),
-        kind = escape(data.kind),
-        label = label,
-        current_version = data.current_version,
-        latest_version = data
-            .latest_version
-            .map(|version| version.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        draft_revision = data
-            .draft_revision
-            .map(|revision| revision.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        root_id = escape(data.root_id),
-        root_key = escape(data.root_key),
-        signature = escape(&signature),
-        error_html = error_html,
-        draft_already_approved = draft_already_approved,
-        approval_actions = if approve.is_empty() && reject.is_empty() {
-            String::new()
-        } else {
-            format!(r#"<div class="approval-actions">{approve}{reject}</div>"#)
-        },
-        approval_history = requirements_approvals_html(data.approvals),
-        markdown = markdown_to_html(data.markdown),
-        annotation_toggle = annotation_toggle,
-        annotation_source = annotation_source,
-        annotation_orphans = annotation_orphans,
-        annotation_dialog = annotation_dialog,
-        annotation_script = annotation_script,
-    );
-    layout(
-        ctx,
-        section,
-        &format!("{} · {}", project.name, label),
-        &page,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn requirements_document_page(
-    ctx: &ConsoleContext,
-    project: &Project,
-    body: &RequirementsDocumentBody,
-    current_version: u32,
-    latest_version: Option<u32>,
-    draft_revision: Option<u64>,
-    draft_version: Option<u32>,
-    editable: bool,
-    can_approve: bool,
-    annotations: &[RequirementsAnnotation],
-    approvals: &[RequirementsApprovalData],
-    error: Option<&str>,
-) -> String {
-    let error_html = error
-        .map(|message| format!(r#"<div class="error">{}</div>"#, escape(message)))
-        .unwrap_or_default();
-    let draft_already_approved = draft_version
-        .map(|version| format!(r#"<p class="hint">当前草案已批准为版本 <strong>{version}</strong>；修改后需要再次审批。</p>"#))
-        .unwrap_or_default();
-    let approve = if can_approve && draft_version.is_none() {
-        draft_revision
-            .map(|revision| {
-                format!(
-                    r#"<form method="post" action="/projects/{id}/requirements/approve">
-  <input type="hidden" name="revision" value="{revision}">
-  <div class="field"><label for="approve-comment">审批意见（可选）</label>
-    <textarea id="approve-comment" name="comment" placeholder="记录本次批准的依据"></textarea></div>
-  <div class="actions"><button type="submit">批准当前草案</button></div>
-</form>"#,
-                    id = project.id,
-                    revision = revision,
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let reject = if can_approve && draft_version.is_none() {
-        draft_revision
-            .map(|revision| {
-                format!(
-                    r#"<form method="post" action="/projects/{id}/requirements/reject">
-  <input type="hidden" name="revision" value="{revision}">
-  <div class="field"><label for="reject-reason">打回原因</label>
-    <textarea id="reject-reason" name="reason" required placeholder="说明需要修改的地方"></textarea></div>
-  <div class="actions"><button class="danger" type="submit">打回当前草案</button></div>
-</form>"#,
-                    id = project.id,
-                    revision = revision,
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let page = format!(
-        r#"<p><a href="/projects/{id}">← 返回项目</a> · <a href="/projects/{id}/documents/project">项目文档</a></p>
-<h1>{name} · 需求文档</h1>
-<p class="sub">项目问题、目标、用户、功能、故事和操作的结构化真相。Agent 编辑草稿，人类批准版本。</p>
-<div class="meta">
-  <span>已批准版本 <strong>{current_version}</strong></span>
-  <span>最新版本 <strong>{latest_version}</strong></span>
-  <span>草稿 revision <strong>{draft_revision}</strong></span>
-</div>
-{error_html}
-{draft_already_approved}
-{approval_actions}
-{approval_history}
-{annotations}
-{document}"#,
-        id = project.id,
-        name = escape(&project.name),
-        current_version = current_version,
-        latest_version = latest_version
-            .map(|version| version.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        draft_revision = draft_revision
-            .map(|revision| revision.to_string())
-            .unwrap_or_else(|| "—".to_string()),
-        error_html = error_html,
-        draft_already_approved = draft_already_approved,
-        approval_actions = if approve.is_empty() && reject.is_empty() {
-            String::new()
-        } else {
-            format!("<h2>审批当前草案</h2>{approve}{reject}")
-        },
-        approval_history = requirements_approvals_html(approvals),
-        annotations = requirements_annotations_html(project, annotations, editable),
-        document = requirements_document_html(body, editable),
-    );
-    layout(
-        ctx,
-        Section::Requirements,
-        &format!("{} · 需求文档", project.name),
-        &page,
-    )
-}
-
-fn requirements_approvals_html(approvals: &[RequirementsApprovalData]) -> String {
-    if approvals.is_empty() {
-        return String::new();
-    }
-    let rows = approvals
-        .iter()
-        .rev()
-        .map(|approval| {
-            format!(
-                "<tr><td>{revision}</td><td>{decision}</td><td><code>{actor}</code></td><td>{at}</td><td>{comment}</td></tr>",
-                revision = approval.revision,
-                decision = approval_decision_label(approval.decision),
-                actor = escape(&approval.actor_id.to_string()),
-                at = approval
-                    .created_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-                comment = approval
-                    .comment
-                    .as_deref()
-                    .map(escape)
-                    .unwrap_or_default(),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        r#"<h2>审批历史</h2>
-<table>
-<thead><tr><th>Revision</th><th>决定</th><th>审批人</th><th>时间</th><th>意见</th></tr></thead>
-<tbody>{rows}</tbody>
-</table>"#
-    )
-}
-
-fn approval_decision_label(decision: ApprovalDecision) -> &'static str {
-    match decision {
-        ApprovalDecision::Approved => "批准",
-        ApprovalDecision::Rejected => "打回",
-    }
-}
-
-fn requirements_document_html(body: &RequirementsDocumentBody, editable: bool) -> String {
-    let mut out = String::from(r#"<div class="brief">"#);
-    out.push_str("<h2>用户</h2>");
-    if body.users.is_empty() {
-        out.push_str(r#"<p class="empty">尚未填写</p>"#);
-    } else {
-        out.push_str(
-            r#"<div class="table-wrap"><table><thead><tr><th>ID</th><th>名称</th><th>目标</th><th>痛点</th><th>证据</th><th>置信度</th><th>状态</th></tr></thead><tbody>"#,
-        );
-        for user in &body.users {
-            let annotate = if editable {
-                format!(
-                    r##"<br><a href="#annotation-form" data-annotate-type="user" data-annotate-id="{}">注释</a>"##,
-                    escape(&user.id)
-                )
-            } else {
-                String::new()
-            };
-            out.push_str(&format!(
-                "<tr><td><code>{}</code>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                escape(&user.id),
-                annotate,
-                inline_markdown(&user.name, 0),
-                escape(&join_markdown(&user.goals)),
-                escape(&join_markdown(&user.pain_points)),
-                escape(&join_markdown(&user.evidence)),
-                confidence_label(user.confidence),
-                entity_status_label(user.status),
-            ));
-        }
-        out.push_str("</tbody></table></div>");
-    }
-
-    out.push_str("<h2>功能</h2>");
-    if body.functions.is_empty() {
-        out.push_str(r#"<p class="empty">尚未填写</p>"#);
-        out.push_str("</div>");
-        return out;
-    }
-    for function in &body.functions {
-        let annotate = if editable {
-            format!(
-                r##"<p><a href="#annotation-form" data-annotate-type="function" data-annotate-id="{}" data-annotate-field="description">注释</a></p>"##,
-                escape(&function.id)
-            )
-        } else {
-            String::new()
-        };
-        out.push_str(&format!(
-            r#"<div class="card"><h3><code>{}</code> · {}</h3>{}"#,
-            escape(&function.id),
-            inline_markdown(&function.name, 0),
-            annotate,
-        ));
-        if let Some(description) = function.description.as_deref() {
-            out.push_str(&format!(
-                r#"<div class="markdown">{}</div>"#,
-                markdown_to_html(description)
-            ));
-        }
-        out.push_str(&format!(
-            r#"<p class="hint">状态：{}</p>"#,
-            entity_status_label(function.status)
-        ));
-
-        if function.stories.is_empty() {
-            out.push_str(r#"<p class="empty">没有故事</p>"#);
-        } else {
-            out.push_str("<h4>故事</h4>");
-            out.push_str(
-                r#"<div class="table-wrap"><table><thead><tr><th>故事</th><th>用户</th><th>场景 / 目标</th><th>操作</th><th>优先级</th><th>状态</th></tr></thead><tbody>"#,
-            );
-            for story in &function.stories {
-                let annotate = if editable {
-                    format!(
-                        r##" <a href="#annotation-form" data-annotate-type="story" data-annotate-id="{}" data-annotate-field="goal">注释</a>"##,
-                        escape(&story.id)
-                    )
-                } else {
-                    String::new()
-                };
-                out.push_str(&format!(
-                    "<tr><td><code>{}</code><br>{}{}</td><td>{}</td><td>{}<br>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                    escape(&story.id),
-                    inline_markdown(&story.title, 0),
-                    annotate,
-                    escape(&join_markdown(&story.user_ids)),
-                    escape(&story.scenario),
-                    escape(&story.goal),
-                    escape(&join_markdown(&story.operation_ids)),
-                    story_priority_label(story.priority),
-                    entity_status_label(story.status),
-                ));
-            }
-            out.push_str("</tbody></table></div>");
-        }
-
-        if function.operations.is_empty() {
-            out.push_str(r#"<p class="empty">没有操作</p>"#);
-        } else {
-            out.push_str("<h4>操作</h4>");
-            out.push_str(
-                r#"<div class="table-wrap"><table><thead><tr><th>操作</th><th>参与者</th><th>触发</th><th>输入</th><th>输出</th><th>状态</th></tr></thead><tbody>"#,
-            );
-            for operation in &function.operations {
-                let annotate = if editable {
-                    format!(
-                        r##" <a href="#annotation-form" data-annotate-type="operation" data-annotate-id="{}" data-annotate-field="trigger">注释</a>"##,
-                        escape(&operation.id)
-                    )
-                } else {
-                    String::new()
-                };
-                out.push_str(&format!(
-                    "<tr><td><code>{}</code><br>{}{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                    escape(&operation.id),
-                    inline_markdown(&operation.name, 0),
-                    annotate,
-                    escape(&join_markdown(&operation.actor_user_ids)),
-                    escape(operation.trigger.as_deref().unwrap_or("—")),
-                    escape(&join_markdown(&operation.inputs)),
-                    escape(&join_markdown(&operation.outputs)),
-                    entity_status_label(operation.status),
-                ));
-            }
-            out.push_str("</tbody></table></div>");
-        }
-        out.push_str("</div>");
-    }
-    out.push_str("</div>");
-    out
-}
-
-fn requirements_annotations_html(
-    project: &Project,
-    annotations: &[RequirementsAnnotation],
-    editable: bool,
-) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("<h2>待处理注释（{}）</h2>", annotations.len()));
-    if annotations.is_empty() {
-        out.push_str(r#"<p class="empty">没有待处理注释。</p>"#);
-    } else {
-        for annotation in annotations {
-            let target = match &annotation.target_id {
-                Some(target_id) => {
-                    let mut label =
-                        format!("{} {}", annotation.target_type.as_str(), escape(target_id));
-                    if let Some(field) = &annotation.field {
-                        label.push_str(&format!(" · {}", escape(field)));
-                    }
-                    label
-                }
-                None => match &annotation.field {
-                    Some(field) => format!("整个文档 · {}", escape(field)),
-                    None => "整个文档".to_string(),
-                },
-            };
-            let resolve = if editable {
-                format!(
-                    r#"<form class="inline-form" method="post" action="/projects/{project_id}/requirements/annotations/{annotation_id}/resolve">
-  <input name="resolution" placeholder="解决说明" required>
-  <button class="secondary" type="submit">标记已解决</button>
-</form>"#,
-                    project_id = project.id,
-                    annotation_id = annotation.id,
-                )
-            } else {
-                String::new()
-            };
-            let author = format!(
-                "{} (@{})",
-                escape(&annotation.author_name),
-                escape(&annotation.author_handle)
-            );
-            out.push_str(&format!(
-                r#"<div class="card annotation">
-<div class="meta"><strong>{author}</strong> · {at} · <span class="annotation-target">{target}</span></div>
-<div class="markdown">{body}</div>
-{resolve}
-</div>"#,
-                author = author,
-                at = annotation
-                    .created_at
-                    .format(&time::format_description::well_known::Rfc3339)
-                    .unwrap_or_default(),
-                target = target,
-                body = markdown_to_html(&annotation.body),
-                resolve = resolve,
-            ));
-        }
-    }
-    if editable {
-        out.push_str(&format!(
-            r#"<h2>添加注释</h2>
-<form id="annotation-form" method="post" action="/projects/{project_id}/requirements/annotations">
-  <div class="grid">
-    <div class="field"><label for="target_type">目标类型</label>
-      <select id="target_type" name="target_type">
-        <option value="document">整个文档</option>
-        <option value="user">用户</option>
-        <option value="function">功能</option>
-        <option value="story">故事</option>
-        <option value="operation">操作</option>
-      </select>
-    </div>
-    <div class="field"><label for="target_id">目标 ID</label>
-      <input id="target_id" name="target_id" placeholder="例如 F1 / S1 / O1"></div>
-  </div>
-  <div class="field"><label for="annotation-field">字段（可选）</label>
-    <input id="annotation-field" name="field" placeholder="例如 goal / inputs / description"></div>
-  <div class="field"><label for="annotation-body">注释</label>
-    <textarea id="annotation-body" name="body" required placeholder="指出不清楚或需要修改的地方"></textarea></div>
-  <div class="actions"><button type="submit">添加注释</button></div>
-</form>"#,
-            project_id = project.id,
-        ));
-        out.push_str(
-            r#"<script>
-(() => {
-  const form = document.getElementById('annotation-form');
-  if (!form) return;
-  document.querySelectorAll('[data-annotate-type]').forEach((link) => {
-    link.addEventListener('click', () => {
-      form.querySelector('[name="target_type"]').value = link.dataset.annotateType;
-      form.querySelector('[name="target_id"]').value = link.dataset.annotateId || '';
-      form.querySelector('[name="field"]').value = link.dataset.annotateField || '';
-      form.querySelector('[name="body"]').focus();
-    });
-  });
-})();
-</script>"#,
-        );
-    }
-    out
-}
-
-fn join_markdown(items: &[String]) -> String {
-    if items.is_empty() {
-        "—".to_string()
-    } else {
-        items.join("、")
-    }
-}
-
-fn confidence_label(confidence: Confidence) -> &'static str {
-    match confidence {
-        Confidence::Low => "低",
-        Confidence::Medium => "中",
-        Confidence::High => "高",
-    }
-}
-
-fn story_priority_label(priority: StoryPriority) -> &'static str {
-    match priority {
-        StoryPriority::Must => "必须",
-        StoryPriority::Should => "应该",
-        StoryPriority::Could => "可以",
-    }
-}
-
-fn entity_status_label(status: EntityStatus) -> &'static str {
-    match status {
-        EntityStatus::Draft => "草稿",
-        EntityStatus::Active => "生效",
-        EntityStatus::Deprecated => "弃用",
-        EntityStatus::Retired => "退役",
-    }
-}
-
 pub fn issue_dashboard(ctx: &ConsoleContext, issues: &[Issue]) -> String {
     let fresh = issues
         .iter()
@@ -3853,10 +2885,20 @@ pub fn projects_page(
             .join("\n")
     };
 
+    // The platform has exactly one intended root workflow: the one that
+    // directly creates the project clarification and the four continuous
+    // iterations. Do not fall back to the alphabetically first workflow.
     let default_root = root_workflows
         .iter()
         .find(|workflow| {
-            matches!(workflow.owner, WorkflowOwner::Platform) && workflow.id.as_str() == "project"
+            matches!(workflow.owner, WorkflowOwner::Platform)
+                && workflow.id.as_str() == "software_development"
+        })
+        .or_else(|| {
+            root_workflows.iter().find(|workflow| {
+                matches!(workflow.owner, WorkflowOwner::Platform)
+                    && workflow.id.as_str() == "project"
+            })
         })
         .or_else(|| root_workflows.first())
         .map(|workflow| workflow.id.as_str().to_string())
@@ -4187,7 +3229,7 @@ pub fn project_page(
   <dt>版本</dt><dd class="plain">{version}</dd>
 </dl>
 <h2>描述</h2><div class="card">{description}</div>
-<p><a class="button secondary" href="/projects/{id}/design-space">设计空间</a> <a class="button secondary" href="/projects/{id}/documents/project">项目文档</a> <a class="button secondary" href="/projects/{id}/documents/requirements">需求文档</a> <a class="button secondary" href="/projects/{id}/documents/architecture">架构设计</a> <a class="button secondary" href="/projects/{id}/documents/design">详细设计</a> <a class="button secondary" href="/projects/{id}/documents/development">开发记录</a> <a class="button secondary" href="/projects/{id}/documents/test_plan">测试计划</a> <a class="button secondary" href="/projects/{id}/documents/test_report">测试报告</a></p>
+<p><a class="button secondary" href="/projects/{id}/design-space">设计空间</a> <a class="button secondary" href="/projects/{id}/merge-requests">合并请求</a></p>
 {triggers_section}
 <h2>成员</h2>
 <table>
@@ -5203,7 +4245,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   };
   const treeUrl = withBranch(shell.dataset.treeUrl);
   const elementUrl = shell.dataset.elementUrl;
-  const storeKey = 'foundry.ds.tree.v2.' + shell.dataset.projectId;
+  const storeKey = 'foundry.ds.tree.v3.' + shell.dataset.projectId;
   const glyphs = {
     rust: 'RS', cpp: 'C++', c: 'C', python: 'PY', typescript: 'TS',
     javascript: 'JS', jsx: 'JSX', tsx: 'TSX', go: 'GO', java: 'JAVA',
@@ -5221,7 +4263,22 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     method: '方法', function: '函数', mixin: '混入', part: '部件'
   };
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
-  let expanded = new Set(['root', 'view:namespaces', 'view:concepts', 'view:structure', 'view:documents']);
+  const skeletonQnames = new Set([
+    'project',
+    'technical', 'technical/directory', 'technical/file', 'technical/namespace', 'technical/system',
+    'requirement', 'requirement/user', 'requirement/story', 'requirement/system',
+    'concept', 'concept/concepts', 'concept/directories',
+    'concept/domain', 'concept/domain/concepts', 'concept/domain/directories',
+    'concept/requirement', 'concept/requirement/concepts', 'concept/requirement/directories',
+    'concept/technical', 'concept/technical/concepts', 'concept/technical/directories',
+  ]);
+  const isSkeleton = (item) => skeletonQnames.has(String(item.qname));
+  let expanded = new Set([
+    'root', 'view:namespaces', 'view:concepts', 'view:structure', 'view:documents',
+    'arche:project', 'arche:technical', 'arche:requirement', 'arche:concept',
+    'ar:project', 'ar:technical', 'ar:requirement', 'ar:concept',
+    'ar:concept/domain', 'ar:concept/requirement', 'ar:concept/technical',
+  ]);
   try {
     const saved = localStorage.getItem(storeKey);
     if (saved) expanded = new Set(JSON.parse(saved));
@@ -5240,8 +4297,12 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   };
   function chip(item) {
     let label;
-    if (item.isFile) label = 'FILE';
+    if (isSkeleton(item)) {
+      label = item.kind === 'list' ? '列表' : item.kind === 'concept-directory' ? '概念目录' : '空间';
+    }
+    else if (item.isFile) label = 'FILE';
     else if (item.isStructure) label = item.kind === 'system' ? 'SYS' : item.kind === 'module' ? 'MOD' : item.kind === 'layer' ? 'LAY' : '结构';
+    else if (item.kind === 'project-document') label = '说明书';
     else if (item.kind === 'concept') label = '概念';
     else if (item.kind === 'concept-directory') label = '概念目录';
     else if (item.kind === 'namespace') label = 'NS';
@@ -5316,7 +4377,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
     const meta = item.path + (item.startLine ? ':' + item.startLine : '');
     row.appendChild(el('span', 'ds-meta', meta));
-    row.addEventListener('click', () => select(item));
+    if (isSkeleton(item)) row.classList.add('ds-skeleton');
+    else row.addEventListener('click', () => select(item));
     return row;
   }
 
@@ -5376,7 +4438,12 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     if (badge) row.appendChild(badge);
     row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
     row.appendChild(el('span', 'ds-meta', item.startLine ? 'L' + item.startLine + '–' + item.endLine : ''));
-    row.addEventListener('click', () => select(item));
+    if (isSkeleton(item)) {
+      row.classList.add('ds-skeleton');
+      row.addEventListener('click', () => toggle(key));
+    } else {
+      row.addEventListener('click', () => select(item));
+    }
     wrap.appendChild(row);
     if (open && kids.length) {
       const list = el('div', 'ds-children');
@@ -5386,9 +4453,15 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return wrap;
   }
 
+  function treeCount(items, children) {
+    return items.reduce((count, item) =>
+      count + 1 + treeCount(children.get(String(item.qname)) || [], children), 0);
+  }
+
   function renderArcheTree(elements) {
     const { children, roots } = archeTree(elements);
     const groups = [
+      { key: 'arche:project', label: '项目空间', prefix: 'project' },
       { key: 'arche:technical', label: '技术空间', prefix: 'technical' },
       { key: 'arche:requirement', label: '需求空间', prefix: 'requirement' },
       { key: 'arche:concept', label: '概念空间', prefix: 'concept' },
@@ -5403,7 +4476,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       list.appendChild(virtualRow(
         group.key,
         group.label,
-        countLabel(items.length, '项'),
+        countLabel(treeCount(items, children), '项'),
         folderIcon,
         () => {
           const kids = el('div', 'ds-list');
@@ -5754,6 +4827,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   expandBtn.addEventListener('click', () => {
     if (!data) return;
     for (const item of data.elements) expanded.add('ar:' + item.qname);
+    expanded.add('arche:project');
     expanded.add('arche:technical');
     expanded.add('arche:requirement');
     expanded.add('arche:concept');
@@ -6583,148 +5657,6 @@ mod tests {
         assert!(html.contains(r#"name="git_repository""#));
         assert!(html.contains(r#"name="git_branch""#));
         assert!(html.contains("Git 仓库"));
-    }
-
-    #[test]
-    fn anchor_document_page_renders_annotation_controls() {
-        let owner = Account::new(
-            "owner".to_string(),
-            "Owner".to_string(),
-            AccountKind::Human,
-            AccountRole::Member,
-            None,
-            Some("hash".to_string()),
-        )
-        .unwrap();
-        let project =
-            Project::new("Project", None, "git@example.com:test/repo.git", owner.id).unwrap();
-        let ctx = ConsoleContext::new(&owner, std::slice::from_ref(&project), Some(&project));
-        let annotations = vec![
-            AnchorAnnotation {
-                id: Uuid::now_v7(),
-                project_id: project.id,
-                kind: "requirements".to_string(),
-                anchor_key: "k:section".to_string(),
-                anchor_id: "sha256:section".to_string(),
-                quote: Some("正文".to_string()),
-                body: "需要补充".to_string(),
-                author_id: owner.id,
-                author_handle: "owner".to_string(),
-                author_name: "Owner".to_string(),
-                status: AnchorAnnotationStatus::Open,
-                resolution: None,
-                created_at: OffsetDateTime::now_utc(),
-                resolved_at: None,
-                resolved_by: None,
-            },
-            AnchorAnnotation {
-                id: Uuid::now_v7(),
-                project_id: project.id,
-                kind: "requirements".to_string(),
-                anchor_key: "k:section".to_string(),
-                anchor_id: "sha256:section".to_string(),
-                quote: None,
-                body: "已解决示例".to_string(),
-                author_id: owner.id,
-                author_handle: "owner".to_string(),
-                author_name: "Owner".to_string(),
-                status: AnchorAnnotationStatus::Resolved,
-                resolution: Some("已补充说明".to_string()),
-                created_at: OffsetDateTime::now_utc(),
-                resolved_at: Some(OffsetDateTime::now_utc()),
-                resolved_by: Some(owner.id),
-            },
-            AnchorAnnotation {
-                id: Uuid::now_v7(),
-                project_id: project.id,
-                kind: "requirements".to_string(),
-                anchor_key: "k:section".to_string(),
-                anchor_id: "sha256:old".to_string(),
-                quote: None,
-                body: "过期标注不应显示".to_string(),
-                author_id: owner.id,
-                author_handle: "owner".to_string(),
-                author_name: "Owner".to_string(),
-                status: AnchorAnnotationStatus::Stale,
-                resolution: None,
-                created_at: OffsetDateTime::now_utc(),
-                resolved_at: None,
-                resolved_by: None,
-            },
-            AnchorAnnotation {
-                id: Uuid::now_v7(),
-                project_id: project.id,
-                kind: "requirements".to_string(),
-                anchor_key: "k:missing".to_string(),
-                anchor_id: "sha256:missing".to_string(),
-                quote: None,
-                body: "丢失标注不应显示".to_string(),
-                author_id: owner.id,
-                author_handle: "owner".to_string(),
-                author_name: "Owner".to_string(),
-                status: AnchorAnnotationStatus::Orphaned,
-                resolution: None,
-                created_at: OffsetDateTime::now_utc(),
-                resolved_at: None,
-                resolved_by: None,
-            },
-        ];
-        let html = anchor_document_page(
-            &ctx,
-            &project,
-            AnchorDocumentPageData {
-                kind: "requirements",
-                current_version: 0,
-                latest_version: None,
-                draft_revision: Some(2),
-                draft_version: None,
-                root_id: "sha256:root",
-                root_key: "k:root",
-                review_task_id: Some("task-1"),
-                review_task_stage: Some("human_review"),
-                markdown: "<!--anchor:k:section-->\n# 标题\n\n正文\n",
-                annotations: &annotations,
-                approvals: &[],
-                can_approve: true,
-                error: None,
-            },
-        );
-        assert!(html.contains(r#"id="anchor-document""#));
-        assert!(html.contains(r#"data-anchor="k:root""#));
-        assert!(html.contains(r#"data-anchor="k:section""#));
-        assert!(html.contains(r#"id="annotation-toggle""#));
-        assert!(html.contains(r#"id="annotation-dialog""#));
-        assert!(html.contains(r#"class="annotation-card" data-anchor="k:section""#));
-        assert!(html.contains("点击文档内容可添加标注"));
-        assert!(html.contains("已解决"));
-        assert!(html.contains("解决意见"));
-        assert!(html.contains("已补充说明"));
-        assert!(html.contains("隐藏标注（2）"));
-        assert_eq!(html.matches("标记已解决").count(), 1);
-        assert!(html.contains(r#"name="resolution""#));
-        assert!(html.contains(r#"<textarea id="resolution-"#));
-        assert!(!html.contains(r#"name="resolution" value="已处理""#));
-        assert!(html.contains(r#"data-resolved="true""#));
-        assert!(html.contains(r#"data-resolved="false""#));
-        assert!(html.contains(r#"id="annotation-filter""#));
-        assert!(html.contains("只看未解决（1）"));
-        assert!(html.contains("only-unresolved"));
-        assert!(!html.contains("过期标注不应显示"));
-        assert!(!html.contains(r#"data-status="stale""#));
-        assert!(!html.contains("丢失标注不应显示"));
-        assert!(!html.contains(r#"data-status="orphaned""#));
-        assert!(html.contains("data-signature="));
-        assert!(html.contains(r#"id="page-refresh""#));
-        assert!(html.contains(">批准</button>"));
-        assert!(html.contains(">拒绝</button>"));
-        assert!(html.contains(r#"name="task_id" value="task-1""#));
-        assert!(!html.contains("anchor-approve-comment"));
-        assert!(!html.contains("anchor-reject-reason"));
-        let document_at = html.find("id=\"anchor-document\"").expect("document");
-        let actions_at = html
-            .find(r#"class="approval-actions""#)
-            .expect("approval actions");
-        assert!(actions_at > document_at);
     }
 
     #[test]

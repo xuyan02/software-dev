@@ -94,7 +94,10 @@ fn span(repo: &Repository, value: arche_core::SourceSpan) -> (String, u32, u32) 
 fn is_root(object: &Object) -> bool {
     matches!(
         object,
-        Object::Root(_) | Object::TechnicalRoot(_) | Object::RequirementRoot(_)
+        Object::Root(_)
+            | Object::TechnicalRoot(_)
+            | Object::RequirementRoot(_)
+            | Object::ProjectRoot(_)
     )
 }
 
@@ -117,11 +120,50 @@ fn is_element(object: &Object) -> bool {
     !(matches!(object, Object::ConceptDirectory(_)) && object.parent().is_zero())
 }
 
+/// The fixed objects created by `arche init`. Skeleton membership is by qname,
+/// not by object kind: user-created roots, lists and concept directories are
+/// regular elements. `root` itself is the commit root and stays hidden.
+const SKELETON_QNAMES: &[&str] = &[
+    "project",
+    "technical",
+    "technical/directory",
+    "technical/file",
+    "technical/namespace",
+    "technical/system",
+    "requirement",
+    "requirement/user",
+    "requirement/story",
+    "requirement/system",
+    "concept",
+    "concept/concepts",
+    "concept/directories",
+    "concept/domain",
+    "concept/domain/concepts",
+    "concept/domain/directories",
+    "concept/requirement",
+    "concept/requirement/concepts",
+    "concept/requirement/directories",
+    "concept/technical",
+    "concept/technical/concepts",
+    "concept/technical/directories",
+];
+
+fn is_skeleton_qname(qname: &str) -> bool {
+    SKELETON_QNAMES.contains(&qname)
+}
+
+fn is_tree_object(qname: &str, object: &Object) -> bool {
+    is_skeleton_qname(qname) || is_element(object)
+}
+
 fn kind_label(object: &Object) -> &'static str {
     match object {
-        Object::Root(_) | Object::TechnicalRoot(_) | Object::RequirementRoot(_) => {
-            "design-structure"
-        }
+        Object::Root(_)
+        | Object::TechnicalRoot(_)
+        | Object::RequirementRoot(_)
+        | Object::ProjectRoot(_) => "design-structure",
+        Object::ProjectDocument(_) => "project-document",
+        Object::ObjectList(_) => "list",
         Object::ConceptDirectory(_) => "concept-directory",
         Object::TechnicalSystem(_) => "system",
         Object::TechnicalModule(_) => "module",
@@ -185,10 +227,10 @@ fn collect_elements(repo: &Repository, commit: &Commit) -> Result<Vec<Element>, 
     let mut elements = Vec::new();
     for (qname, hash) in &commit.objects {
         let object = repo.read(*hash).map_err(|error| error.to_string())?;
-        if !is_element(&object) {
+        let qname = symbol(repo, *qname);
+        if is_skeleton_qname(&qname) || !is_element(&object) {
             continue;
         }
-        let qname = symbol(repo, *qname);
         let (path, start_line, end_line) = source_info(repo, &object);
         elements.push(Element {
             hash: *hash,
@@ -206,13 +248,43 @@ fn collect_elements(repo: &Repository, commit: &Commit) -> Result<Vec<Element>, 
     Ok(elements)
 }
 
+/// Skeleton nodes are not design elements, but the console still renders them
+/// so an initialized repository shows its full shape instead of only the
+/// concept space.
+fn collect_skeleton(repo: &Repository, commit: &Commit) -> Result<Vec<DesignSpaceElement>, String> {
+    let mut elements = Vec::new();
+    for (qname, hash) in &commit.objects {
+        let object = repo.read(*hash).map_err(|error| error.to_string())?;
+        let qname = symbol(repo, *qname);
+        if !is_skeleton_qname(&qname) {
+            continue;
+        }
+        elements.push(DesignSpaceElement {
+            hash: hash.to_hex(),
+            qname: qname.clone(),
+            name: name_of(repo, &object, &qname),
+            path: String::new(),
+            lang: String::new(),
+            kind: kind_label(&object).to_owned(),
+            start_line: 0,
+            end_line: 0,
+            has_design: false,
+            is_file: false,
+            is_structure: false,
+            members: Vec::new(),
+        });
+    }
+    Ok(elements)
+}
+
 type ChildIndex = BTreeMap<String, Vec<(ObjectHash, String, String, &'static str)>>;
 
 fn children(repo: &Repository, commit: &Commit) -> Result<ChildIndex, String> {
     let mut index: ChildIndex = BTreeMap::new();
     for (qname, hash) in &commit.objects {
         let object = repo.read(*hash).map_err(|error| error.to_string())?;
-        if !is_element(&object) {
+        let qname = symbol(repo, *qname);
+        if !is_tree_object(&qname, &object) {
             continue;
         }
         let parent = object.parent();
@@ -220,7 +292,6 @@ fn children(repo: &Repository, commit: &Commit) -> Result<ChildIndex, String> {
             continue;
         }
         let parent = symbol(repo, parent);
-        let qname = symbol(repo, *qname);
         index.entry(parent).or_default().push((
             *hash,
             qname.clone(),
@@ -284,6 +355,7 @@ pub(super) fn overview(path: &Path, branch: &str) -> Result<DesignSpaceOverview,
             members: Vec::new(),
         });
     }
+    overview.elements.extend(collect_skeleton(&repo, &commit)?);
     let index = children(&repo, &commit)?;
     for element in &mut overview.elements {
         element.members = index
@@ -739,5 +811,67 @@ mod tests {
         assert!(branches(temp.path()).unwrap().contains(&branch));
         assert_eq!(content_digest(temp.path(), &head).unwrap().len(), 64);
         assert_eq!(comment_count(temp.path(), &head).unwrap(), 0);
+    }
+
+    #[test]
+    fn init_skeleton_is_visible_in_the_tree() {
+        let temp = TempDir::new().unwrap();
+        Repository::init(temp.path()).unwrap();
+        let overview = overview(temp.path(), "main").unwrap();
+        let by_qname: std::collections::HashMap<_, _> = overview
+            .elements
+            .iter()
+            .map(|element| (element.qname.as_str(), element))
+            .collect();
+
+        for (qname, kind) in [
+            ("project", "design-structure"),
+            ("project/document", "project-document"),
+            ("technical", "design-structure"),
+            ("technical/directory", "list"),
+            ("technical/file", "list"),
+            ("technical/namespace", "list"),
+            ("technical/system", "list"),
+            ("requirement", "design-structure"),
+            ("requirement/user", "list"),
+            ("requirement/story", "list"),
+            ("requirement/system", "list"),
+            ("concept", "concept-directory"),
+            ("concept/directories", "list"),
+            ("concept/concepts", "list"),
+            ("concept/domain", "concept-directory"),
+            ("concept/domain/directories", "list"),
+            ("concept/domain/concepts", "list"),
+            ("concept/requirement", "concept-directory"),
+            ("concept/requirement/directories", "list"),
+            ("concept/requirement/concepts", "list"),
+            ("concept/technical", "concept-directory"),
+            ("concept/technical/directories", "list"),
+            ("concept/technical/concepts", "list"),
+        ] {
+            let element = by_qname
+                .get(qname)
+                .unwrap_or_else(|| panic!("missing skeleton element {qname}"));
+            assert_eq!(element.kind, kind, "{qname} kind");
+        }
+        assert!(!by_qname.contains_key("root"), "commit root stays hidden");
+        assert!(is_skeleton_qname("project"));
+        assert!(!is_skeleton_qname("project/document"));
+        assert!(by_qname["project/document"].has_design);
+        assert!(
+            by_qname["project"]
+                .members
+                .contains(&"project/document".to_string())
+        );
+        assert!(
+            by_qname["technical"]
+                .members
+                .contains(&"technical/system".to_string())
+        );
+        assert!(
+            by_qname["concept"]
+                .members
+                .contains(&"concept/domain".to_string())
+        );
     }
 }

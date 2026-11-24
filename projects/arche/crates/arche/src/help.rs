@@ -67,6 +67,12 @@ hash8 由参数类型和修饰符计算；参数只取类型，不含参数名�
   <type>/<name>#<hash8>            TechnicalMethod
   <class>/<random>                 TechnicalPart
 
+项目对象：
+
+  project                                 ProjectRoot
+  project/document                        ProjectDocument
+    document                              DocumentParagraphList
+
 需求对象：
 
   requirement
@@ -124,6 +130,12 @@ DocumentParagraphList 的元素可以是：
   DocumentHtml
 
 常用技术对象字段：
+
+ProjectRoot
+  document      ProjectDocument
+
+ProjectDocument
+  document      DocumentParagraphList（定位、背景、目标、非目标、分期计划、约束、风险）
 
 TechnicalRoot
   file          ObjectList<TechnicalFile>
@@ -1599,7 +1611,8 @@ const REMOTE: &str = r#"远程：
   arche remote show
   arche clone <url> <dir>
   arche clone <url> <dir> --branch <name>
-  arche clone <url> <dir> --source <git-url>
+  arche clone <url> <dir> --source <git-url>   # 覆盖远程记录的源码地址
+  clone 自动继承远程仓库记录的 source 地址；一般不需要 --source。
   arche push
   arche push --force
   arche fetch

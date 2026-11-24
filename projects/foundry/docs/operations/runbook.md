@@ -51,7 +51,7 @@ git://<host-ip>:9418/software-dev.git
 git -C /home/xuyan/work/software-dev push /home/xuyan/git/software-dev.git --all
 ```
 
-切换 source URL 后，在工作区执行 `arche source set-url <url>`，再执行 `arche source fetch`。新工作区用 `arche clone --source <url>` 记录源码地址。这个 daemon 没有认证，只应在受信网络使用；它只提供 fetch，不接受 push。
+切换 source URL 后，在工作区执行 `arche source set-url <url>`，再执行 `arche source fetch`。新工作区直接 `arche clone`，源码地址从设计空间自动继承。这个 daemon 没有认证，只应在受信网络使用；它只提供 fetch，不接受 push。
 
 ## 胶囊凭据布局
 
@@ -257,9 +257,11 @@ cargo xtask check
 5. 重复 Issue 直接转 `Duplicate`，写入 `duplicate_of`，不创建任务；
 6. 分诊完成后发送 `triage:done` 回到 `waiting`。
 
-设计迭代由 `design_iteration` 任务驱动：设计分派智能体读取设计池，判断 `design` / `design_baseline`，创建子设计任务；Task Dispatcher 按空闲智能体分配，一个智能体同时只做一个任务。一轮验收通过后任务回到 `dispatch` 继续取下一批，直到设计池为空；默认 `continuous` 触发器会在任务结束后立即重新武装，空闲时按退避间隔轮询。开发迭代 `development_iteration` 使用同样的持续处理方式。旧 `triage_check` 和两级分诊已移除。
+设计迭代由 `design_iteration` 任务驱动：设计分派智能体读取设计池，判断 `design` / `design_baseline`，创建子设计任务；Task Dispatcher 按空闲智能体分配，一个智能体同时只做一个任务。一轮验收通过后任务回到 `dispatch` 继续取下一批；设计池为空时进入 `waiting` 保持等待。需求、开发、测试迭代使用相同模型。
 
-触发器不会重叠：上一轮任务未 `Completed` 时，定时和手动触发都会被拒绝或跳过。`daily_check` 每天并行运行需求、技术设计、代码、测试和产品试用五个审计子任务，结束后统一汇总并分流 Issue。
+迭代不使用触发器。控制平面监听 Issue 变化：对应池首次出现 pooled Issue 时创建迭代任务；已有任务在 `waiting` 时发送 `waiting:work_arrived` 唤醒。另有 30 秒对账兜底通知丢失。旧 `triage_check` 和两级分诊已移除。
+
+触发器只用于日常检查等显式计划任务；上一轮任务未 `Completed` 时不会重叠创建。`daily_check` 每天并行运行需求设计检查、技术设计检查、代码检查、日常测试四个子任务，结束后统一汇总并分流到四个 Issue 池。
 
 当前自动处理范围是设计基线和设计缺陷：`design_baseline`、`design_correction`、`design`。旧 `issue_triage` 任务已停用。
 
@@ -277,60 +279,17 @@ AgentRun 队列、lease、checkpoint 和运行历史已移除；Agent 执行只�
    分配或创建 **Clarifier** 和 **Project Document Writer**；
 2. Clarifier 在澄清 Issue 中与创建者对话，只负责提问；澄清完毕后发送总结评论并调用
    `task_operation(operation = "clarification:completed")` 进入项目文档撰写；
-3. Writer 读取澄清 Issue、项目信息和确认过的结论，用 `document` 工具维护项目文档
-   （定位、背景、目标、非目标、分期计划、约束、风险、术语表），再用 `validate` 校验；
-   写完后调用 `task_operation(operation = "writing:completed")` 进入文风审查；
+3. Writer 读取澄清 Issue、项目信息和确认过的结论，在 `project-document-<task-id>`
+   分支用 `arche` 维护设计空间中的 `project/document` 对象（定位、背景、目标、非目标、
+   分期计划、约束、风险、术语表）；写完后调用
+   `task_operation(operation = "writing:completed")` 进入文风审查；
 4. 项目文档依次经过 **Project Layer Style Reviewer** 和 **Project Layer Content Reviewer**
-   （都是 Agent）；两个 Reviewer 不修改文档，用 `document` 工具 `action = "content"`
-   阅读，用 `action = "annotate"` 写锚点标注，打回时任务回到 `writing`；
-5. Writer 读取文档标注，逐条处理后修改草稿，再次发送 `completed`；
-6. 两位 Reviewer 通过后，人类在 `/projects/{id}/documents/project` 批准当前草案。
-   **批准即发布不可变版本**；control-plane 只在任务处于 `human_review` 时发送保留操作
-   `accept`。第一个批准版本就是项目基线。
+   （都是 Agent）；两个 Reviewer 不修改文档，在写作分支上读取对象并用 `arche comment add`
+   写意见，打回时任务回到 `writing`；
+5. Writer 读取评论，逐条处理后修改并推送，再次发送 `completed`；
+6. 两位 Reviewer 通过后，Content Reviewer 创建到 `design_space_branch` 的合并请求，
+   人类在合并请求页批准并合并。项目文档的提交必须经过合并请求。
 
-### 需求分析
-
-项目文档通过文风评审、内容评审并由人类批准后，项目直接进入 `requirements_analysis`：
-
-1. Task Dispatcher 按 `requirements_analysis:analyst` 分配或创建 **Requirements Analyst**；
-2. Analyst 用 `document` 工具 `action = "content"` 读取项目文档，用 `action = "content"` / `"toc"` / `"draft_open"` / `"draft_create"` / `"add"` / `"update_text"` / `"update_title"` / `"delete"` / `"move"` / `"validate"`，`kind = "requirements"` 维护需求锚点文档（领域模型 / 用户肖像 / 故事 / 子系统 / 功能集 / 功能；交互设计和 UI 设计是后续阶段维护的子系统树，交互设计按子系统 → 功能集 → 功能组织并包含信息架构和页面清单，UI 设计按子系统 → 页面组织并包含设计稿图片）；
-   人类和 Reviewer 可以在需求文档页写锚点标注，Analyst 用 `action = "annotations_list"` 读取，用 `action = "resolve_annotation"` 在修改后标记解决；
-3. Analyst 提交后依次经过 Style review、Requirements review、Feasibility review（都是 Agent）；每个 Reviewer 用标注写具体意见，打回时任务回到 `work`，Analyst 读取标注修改后重新提交；
-4. 人类在 `/projects/{id}/documents/requirements` 做最终 review：**批准当前草案**会生成新的不可变版本，或填写打回原因退回 Analyst。项目文档和需求文档分别审批，每个草案 revision 都需要审批；
-5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `interaction_design`；交互设计和 UI 设计分别完成并批准后进入 `architecture`。
-
-### 架构设计流程
-
-项目进入 `architecture` 后创建 `architecture_design` 子 Task：
-
-1. Task Dispatcher 按 `architecture_design:architect` 分配或创建 **Architect**；
-2. Architect 读取项目文档、需求文档和当前架构设计，用 `document`，`kind = "architecture"` 维护架构锚点文档（架构概览 / 系统上下文 / 组件 / 接口与契约 / 数据与存储 / 部署与运行 / 质量属性 / 关键决策 / 技术债 / 风险）；
-3. Architect 提交后进入 Architecture review（`architecture_design:reviewer`）；Reviewer 用锚点标注写具体意见，打回时任务回到 `work`；
-4. 人类在 `/projects/{id}/documents/architecture` 做最终 review：**批准当前草案**生成新的不可变版本，或填写打回原因退回 Architect；
-5. 发布后 control-plane 发送保留操作 `accept`，任务以 `result = approved` 完成，项目进入 `detailed_design`。
-
-### 详细设计流程
-
-项目进入 `detailed_design` 后创建 `detailed_design` 子 Task：
-
-1. Task Dispatcher 按 `detailed_design:designer` 分配或创建 **Detailed Designer**；
-2. Designer 读取项目文档、需求文档和架构设计，用 `document`，`kind = "design"` 维护详细设计（设计概览 / 子系统 / 模块 / 任务分解 / 质量门禁）；
-3. 提交后进入 Design review（`detailed_design:reviewer`）；Reviewer 用锚点标注写意见，打回时回到 `work`；
-4. 人类在 `/projects/{id}/documents/design` 批准当前草案，control-plane 发送 `accept`，项目进入 `test_planning`。
-
-### 测试计划流程
-
-1. Task Dispatcher 按 `test_planning:test_planner` 分配或创建 **Test Planner**；
-2. Test Planner 读取需求、架构和详细设计，用 `document`，`kind = "test_plan"` 写测试策略、范围、环境、测试用例和质量门禁；
-3. 提交后进入 Test Plan review（`test_planning:reviewer`），打回回到 `work`；
-4. 人类在 `/projects/{id}/documents/test_plan` 批准，项目进入 `iteration`。
-
-### 开发与测试执行
-
-1. 项目进入 `iteration`；Implementer 在项目工作区中实现代码，运行构建和测试，并把迭代、变更集、代码引用、命令结果和证据写入 `kind = "development"` 的开发记录；
-2. Development Reviewer 独立审查开发记录；人类在 `acceptance` 阶段批准当前开发记录，iteration 完成任务；
-3. iteration 批准后项目进入 `test_execution`；Test Executor 根据测试计划和开发记录，用 `kind = "test_report"` 记录 commit、环境、用例结果、覆盖率、失败和质量门禁结论；
-4. Test Report Reviewer 审查证据；人类批准测试报告后，control-plane 发送 `accept`，项目以 `result = approved` 完成。
 
 ### 项目工作区
 
@@ -442,8 +401,10 @@ export DATABASE_URL=postgres://foundry:foundry@localhost:5432/foundry
 - `0030_requirements_background.sql`：需求文档项目层字段（后续被 `0035` 移除）。
 - `0034_project_documents.sql`：旧项目文档表；`0036` 之后接口不再读取，历史数据保留。
 - `0035_remove_requirements_project_layer.sql`：从需求文档版本和草案中移除项目层字段；项目级内容由项目文档承载。
-- `0036_anchor_documents.sql`：通用锚点文档、草案、版本、操作日志和审批记录。
-- `0037_anchor_document_annotations.sql`：按锚点键和内容哈希记录的标注。
+- `0036_anchor_documents.sql`：通用锚点文档、草案、版本、操作日志和审批记录（已被 `0067` 删除）。
+- `0037_anchor_document_annotations.sql`：按锚点键和内容哈希记录的标注（已被 `0067` 删除）。
+- `0067_drop_anchor_documents.sql`：删除锚点文档、旧需求文档和旧项目文档表；需求与技术设计改由设计空间 Arche 对象承载。
+- `0068_strip_document_review_links.sql`：从已存储的流程版本和草稿中移除 `document_review_link` 阶段效果，保证旧数据库可以启动。
 - `0038_agent_skills.sql`：智能体定义的技能 ID 列表。
 
 存储布局：

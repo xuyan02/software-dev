@@ -4,9 +4,8 @@ use super::definition::{
 };
 use crate::script::VariableValue;
 use crate::{
-    ChildState, DependencyState, DocumentReviewLinkIntent, DomainEvent, DomainEventKind,
-    OperationName, RoleKey, StageKey, TaskActorDAO, TaskChild, TaskDAO, TaskError, TaskMutation,
-    TaskResult, TaskState, WorkflowId,
+    ChildState, DependencyState, DomainEvent, DomainEventKind, OperationName, RoleKey, StageKey,
+    TaskActorDAO, TaskChild, TaskDAO, TaskError, TaskMutation, TaskResult, TaskState, WorkflowId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -154,7 +153,6 @@ pub struct WorkflowContext<'a> {
     children: Vec<ChildState>,
     created_children: Vec<TaskChild>,
     created_issues: Vec<crate::TaskIssueCreate>,
-    review_links: Vec<DocumentReviewLinkIntent>,
     events: Vec<DomainEvent>,
     now: OffsetDateTime,
 }
@@ -176,7 +174,6 @@ impl<'a> WorkflowContext<'a> {
             children,
             created_children: Vec::new(),
             created_issues: Vec::new(),
-            review_links: Vec::new(),
             events: Vec::new(),
             now,
         }
@@ -351,12 +348,6 @@ impl<'a> WorkflowContext<'a> {
                         children: &self.children,
                     })?;
                     self.create_child(spec.workflow.as_str(), title);
-                }
-                CreatedEffect::DocumentReviewLink(spec) => {
-                    self.review_links.push(DocumentReviewLinkIntent {
-                        kind: spec.kind.clone(),
-                        action: spec.action,
-                    });
                 }
             }
         }
@@ -557,7 +548,6 @@ impl<'a> WorkflowContext<'a> {
             dependencies: self.dependencies,
             children: self.created_children,
             issues: self.created_issues,
-            review_links: self.review_links,
             events: self.events,
         }
     }

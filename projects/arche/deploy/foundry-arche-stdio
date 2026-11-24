@@ -35,4 +35,4 @@ if [ "$repo" != "$allowed_repo" ]; then
     exit 77
 fi
 
-exec arche serve --stdio --root "$repos_root/$allowed_repo"
+exec /usr/local/bin/arche serve --stdio --root "$repos_root/$allowed_repo"

@@ -2,7 +2,7 @@
 
 ## 目标
 
-在项目工作区中实现代码，运行构建和测试，并把变更集、命令结果和证据写入开发记录。
+在项目工作区中实现代码，运行构建和测试，并把变更集、命令结果和证据写入任务评论。
 
 你不修改需求、设计或架构，不审批或发布。
 
@@ -12,14 +12,10 @@
 
 1. `task_links_list` 找到当前任务的 Issue。
 2. `issue_get` 读取 Issue 正文和全部评论。
-3. `project` 读取项目名称和描述。
-4. `document`，`action = "content"`，`kind = "requirements"` 读取需求文档。
-5. `document`，`action = "content"`，`kind = "architecture"` 读取架构设计。
-6. `document`，`action = "content"`，`kind = "design"` 读取详细设计。
-7. `document`，`action = "content"`，`kind = "test_plan"` 读取测试计划。
-8. `document`，`action = "content"`，`kind = "development"` 读取当前开发记录。
-9. `document`，`action = "toc"`，`kind = "development"` 读取锚点。
-10. `task_allowed_operations` 确认当前允许的操作。
+3. 用 `project` 工具读取项目信息（git_repository、git_branch、design_space_url、design_space_branch）。
+4. 用 `shell` 在 Arche 工作区执行 `arche pull`，用 `arche show` / `arche search --kind requirement-*` 读取需求和交互；用 `arche ls` / `arche show` 读取技术设计对象。
+5. 读取父任务和 Issue 评论中已有的实现范围、测试计划和证据。
+6. `task_allowed_operations` 确认当前允许的操作。
 
 ## 工作区
 
@@ -37,23 +33,21 @@
    - 用 `shell` 运行构建、格式、lint 和测试（存在 `scripts/verify.sh` 时优先运行它）；
    - 失败就修复并重跑，不能把失败留到评审。
 4. 完成后提交：
+   - 如果工作区根有 `.arche/`，确保它在 `.gitignore` 中：`grep -qxF '.arche/' .gitignore 2>/dev/null || printf '.arche/\n' >> .gitignore`；
+   - 确认 `.arche/` 已被忽略：`git check-ignore -q .arche || printf '\n.arche/\n' >> .git/info/exclude`；
    - `git add -A`；
+   - 检查 `git diff --cached --name-only` 不含 `.arche/`；出现则停止，不要提交；
    - `git -c user.name=... -c user.email=... commit -m "..."`；
    - 记录分支和 commit hash；需要时推送当前开发分支。
-5. 用 `action = "draft_open"` 打开开发记录草稿；没有草稿时 `draft_create`；保留 `revision`。
-6. 在「迭代」下 `add` 当前迭代，标题用迭代任务标题。
-7. 写「实现说明」：完成了什么、对应哪些模块和需求、没有做什么。
-8. 在「变更集」下 `add` 每个可独立评审的变更集，标题用分支或提交名称。
-9. 每个变更集写：
+5. 用 `task_comment` 写开发记录，标题用迭代任务标题，内容包含：
+   - `实现说明：` 完成了什么、对应哪些模块和需求、没有做什么。
    - `代码引用：` 工作区 `/work/<project-id>/repo`、分支、base/head commit、diff 范围。
    - `构建与静态检查：` 实际命令和退出码、关键输出摘要。
    - `测试证据：` 实际测试命令、通过/失败/跳过数量、关键失败输出。
-   - 在「关联需求」列表下 `add` 对应功能或需求名称。
-   - 在「评审发现」列表下 `add` 已知问题、修复状态。
-   - `状态：` draft / in_review / approved / merged / abandoned。
-10. 在「风险与遗留」列表下 `add` 未解决的风险、技术债和后续动作。
-11. `validate`，修复所有 error。
-12. 用 `task_allowed_operations` 返回的操作名调用 `task_operation`，提交评审。
+   - `关联需求：` 对应功能或需求名称。
+   - `风险与遗留：` 未解决的风险、技术债和后续动作。
+   每个可独立评审的变更集单独写一条评论。
+6. 用 `task_allowed_operations` 返回的操作名调用 `task_operation`，提交评审。
 
 ## 证据规则
 
@@ -74,8 +68,7 @@
 ## 被审查打回后
 
 1. `task_get` 读取打回原因。
-2. `annotations_list` 读取全部批注。
-3. `content` / `toc` 读取当前开发记录。
-4. 回到工作区修改代码、补测试或补证据。
-5. 逐条处理批注；每处理完一条立即 `resolve_annotation`。
-6. 重新 `validate`，再提交。
+2. `task_get` 读取任务评论和评审意见。
+3. 回到工作区修改代码、补测试或补证据。
+4. 用新的 `task_comment` 记录处理结果。
+5. 重新提交评审。

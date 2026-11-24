@@ -91,7 +91,37 @@ impl Object {
             ObjectKind::TechnicalReturnValue => {
                 Self::TechnicalReturnValue(TechnicalReturnValue::default())
             }
+            ObjectKind::ProjectRoot => Self::ProjectRoot(ProjectRoot::default()),
+            ObjectKind::ProjectDocument => Self::ProjectDocument(ProjectDocument::default()),
         }
+    }
+
+    pub fn new_project_root(
+        qname: SymbolHash,
+        name: SymbolHash,
+        parent: SymbolHash,
+        document: ObjectHash,
+    ) -> Self {
+        Self::ProjectRoot(ProjectRoot {
+            qname,
+            name,
+            parent,
+            document,
+        })
+    }
+
+    pub fn new_project_document(
+        qname: SymbolHash,
+        name: SymbolHash,
+        parent: SymbolHash,
+        document: ObjectHash,
+    ) -> Self {
+        Self::ProjectDocument(ProjectDocument {
+            qname,
+            name,
+            parent,
+            document,
+        })
     }
 
     pub fn new_technical_root(

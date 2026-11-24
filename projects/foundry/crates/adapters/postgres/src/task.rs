@@ -8,11 +8,11 @@ use foundry_app::{
     TaskDispatcher, TaskFilter, TaskListRow, TaskRepository, WorkflowCatalog,
 };
 use foundry_domain::{
-    AccountKind, Actor, ChildState, DependencyState, DocumentReviewLinkAction, DomainEvent,
-    DomainEventKind, Issue, IssueKind, IssueSource, IssueSourceKind, RoleKind, TaskActorDAO,
+    AccountKind, Actor, ChildState, DependencyState, DomainEvent, DomainEventKind, Issue,
+    IssueKind, IssuePool, IssueSource, IssueSourceKind, IssueStatus, RoleKind, TaskActorDAO,
     TaskAggregate, TaskCommentDAO, TaskDAO, TaskError, TaskEvent, TaskIssueCreate, TaskLink,
     TaskLinkKind, TaskLinkRelation, TaskMutation, TaskOperation, TaskResult, TaskState,
-    TaskWorkflow, WorkflowId,
+    TaskWorkflow, TransitionEvidence, WorkflowId,
 };
 use serde_json::{Value, json};
 use sqlx::postgres::PgPool;
@@ -149,6 +149,7 @@ impl TaskRepository for PostgresStore {
                        select 1 from task_actors a \
                        where a.task_id = t.id and a.account_id = $7 and a.active \
                    )) \
+                   and ($9::text is null or t.workflow = $9) \
              ) t \
              where $8::text is null \
                 or ($8 = 'closed' and t.state = 'completed') \
@@ -156,7 +157,7 @@ impl TaskRepository for PostgresStore {
                 or ($8 = 'ready' and t.state = 'pending' and t.dependencies_ready) \
                 or ($8 = 'blocked' and t.state = 'pending' and not t.dependencies_ready) \
              order by t.created_at \
-             limit $9",
+             limit $10",
         )
         .bind(project_id)
         .bind(state)
@@ -166,6 +167,7 @@ impl TaskRepository for PostgresStore {
         .bind(filter.role.as_ref().map(foundry_domain::RoleKey::as_str))
         .bind(filter.active_actor)
         .bind(dispatch_state)
+        .bind(filter.workflow.as_ref().map(foundry_domain::WorkflowId::as_str))
         .bind(filter.limit.unwrap_or(100))
         .fetch_all(&self.pool)
         .await
@@ -1042,46 +1044,6 @@ async fn persist_mutation(
     .await
     .map_err(map_write_error)?;
 
-    for link in &mutation.review_links {
-        match link.action {
-            DocumentReviewLinkAction::Bind => {
-                sqlx::query(
-                    "insert into anchor_document_review_links \
-                     (id, project_id, kind, draft_revision, task_id, bound_at) \
-                     select gen_random_uuid(), $1, $2, d.revision, $3, $4 \
-                     from anchor_documents doc \
-                     join anchor_document_drafts d on d.document_id = doc.id \
-                     where doc.project_id = $1 and doc.kind = $2 \
-                     on conflict (project_id, kind) where released_at is null \
-                     do update set task_id = excluded.task_id, \
-                                   draft_revision = excluded.draft_revision, \
-                                   bound_at = excluded.bound_at, \
-                                   released_at = null",
-                )
-                .bind(mutation.task.project_id)
-                .bind(&link.kind)
-                .bind(mutation.task.id)
-                .bind(mutation.task.updated_at)
-                .execute(&mut **tx)
-                .await
-                .map_err(map_write_error)?;
-            }
-            DocumentReviewLinkAction::Release => {
-                sqlx::query(
-                    "update anchor_document_review_links set released_at = $4 \
-                     where project_id = $1 and kind = $2 and task_id = $3 and released_at is null",
-                )
-                .bind(mutation.task.project_id)
-                .bind(&link.kind)
-                .bind(mutation.task.id)
-                .bind(mutation.task.updated_at)
-                .execute(&mut **tx)
-                .await
-                .map_err(map_write_error)?;
-            }
-        }
-    }
-
     for actor in &mutation.actors {
         sqlx::query(
             "update task_actors set active = $4, work = $5 \
@@ -1123,7 +1085,7 @@ async fn persist_created_issues(
         let relation = TaskLinkRelation::parse(&spec.relation).ok_or_else(|| {
             RepoError::Invalid(format!("unknown link relation {:?}", spec.relation))
         })?;
-        let issue = Issue::new(
+        let mut issue = Issue::new(
             task.project_id,
             spec.title.clone(),
             spec.description.clone(),
@@ -1135,6 +1097,21 @@ async fn persist_created_issues(
             Actor::System,
         )
         .map_err(|error| RepoError::Invalid(error.to_string()))?;
+        if let Some(pool) = &spec.pool {
+            let pool = IssuePool::parse(pool)
+                .ok_or_else(|| RepoError::Invalid(format!("unknown issue pool {pool:?}")))?;
+            issue
+                .transition_to(
+                    IssueStatus::Pooled,
+                    &Actor::System,
+                    TransitionEvidence {
+                        resolution: None,
+                        duplicate_of: None,
+                        pool: Some(pool),
+                    },
+                )
+                .map_err(|error| RepoError::Invalid(error.to_string()))?;
+        }
         insert_issue_row(tx, &issue).await?;
         let link = TaskLink {
             id: Uuid::now_v7(),

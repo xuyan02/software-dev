@@ -17,12 +17,12 @@ use foundry_agent_runtime::{
     DesignPoolBatchTool, DesktopInputTool, DesktopScreenshotTool, DeterministicMode,
     DevelopmentPoolBatchTool, EditFileTool, FoundryClient, IssueCommentTool, IssueCreateTool,
     IssueGetTool, IssueListTool, IssueTransitionTool, IssueTriageBatchTool, IssueTriageResultTool,
-    MergeRequestTool, ProjectTool, ReadFileTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
-    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskChildrenTool,
-    TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool, TaskHistoryTool, TaskLinksListTool,
-    TaskOperationTool, TaskRemoveLinkTool, TaskSpawnChildrenTool, TaskStartTool,
-    TasksReadyListTool, ToolError, ToolRegistry, TriggerCreateTool, TriggerListTool, WriteFileTool,
-    compose_system_prompt,
+    MergeRequestTool, ProjectTool, ReadFileTool, RequirementsPoolBatchTool, Shell, ShellOutput,
+    ShellTool, TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool,
+    TaskChildrenTool, TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool, TaskHistoryTool,
+    TaskLinksListTool, TaskOperationTool, TaskRemoveLinkTool, TaskSpawnChildrenTool, TaskStartTool,
+    TasksReadyListTool, TestsPoolBatchTool, ToolError, ToolRegistry, TriggerCreateTool,
+    TriggerListTool, WriteFileTool, compose_system_prompt,
 };
 use foundry_domain::{AgentDefinition, CapsuleProfile};
 use graph_agent::{
@@ -1467,6 +1467,10 @@ fn deterministic_mode(role: &str) -> Option<DeterministicMode> {
         "design_iteration:verifier" => Some(DeterministicMode::DesignVerifier),
         "development_iteration:dispatcher" => Some(DeterministicMode::DevelopmentDispatcher),
         "development_iteration:verifier" => Some(DeterministicMode::DevelopmentVerifier),
+        "requirements_iteration:dispatcher" => Some(DeterministicMode::RequirementsDispatcher),
+        "requirements_iteration:verifier" => Some(DeterministicMode::RequirementsVerifier),
+        "test_iteration:dispatcher" => Some(DeterministicMode::TestDispatcher),
+        "test_iteration:verifier" => Some(DeterministicMode::TestVerifier),
         "release:release_manager" => Some(DeterministicMode::ReleaseManager),
         "release:verifier" => Some(DeterministicMode::ReleaseVerifier),
         "release:deployer" => Some(DeterministicMode::ReleaseDeployer),
@@ -1563,6 +1567,12 @@ fn build_tools(
             }
             "development_pool_batch" => {
                 tools.register(Arc::new(DevelopmentPoolBatchTool::new(Arc::clone(client))));
+            }
+            "requirements_pool_batch" => {
+                tools.register(Arc::new(RequirementsPoolBatchTool::new(Arc::clone(client))));
+            }
+            "tests_pool_batch" => {
+                tools.register(Arc::new(TestsPoolBatchTool::new(Arc::clone(client))));
             }
             "issue_transition" => {
                 tools.register(Arc::new(IssueTransitionTool::new(Arc::clone(client))));
@@ -1667,6 +1677,10 @@ mod tests {
             "design_iteration:verifier",
             "development_iteration:dispatcher",
             "development_iteration:verifier",
+            "requirements_iteration:dispatcher",
+            "requirements_iteration:verifier",
+            "test_iteration:dispatcher",
+            "test_iteration:verifier",
             "release:release_manager",
             "release:verifier",
             "release:deployer",

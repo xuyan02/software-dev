@@ -2,13 +2,11 @@
 
 use clap::{Args, Parser, Subcommand};
 use foundry_agent_runtime::{
-    AgentRunRequest, AgentRuntime, CLARIFY_SYSTEM_PROMPT, ContextBundle, DocumentTool, EchoTool,
-    FoundryClient, FoundryRequirementsApplyTool, FoundryRequirementsDraftTool,
-    FoundryRequirementsGetTool, FoundryRequirementsValidateTool, IssueCommentTool, IssueGetTool,
-    LocalSandbox, RequirementsGetTool, TaskAllowedOperationsTool, TaskCommentTool,
+    AgentRunRequest, AgentRuntime, CLARIFY_SYSTEM_PROMPT, ContextBundle, EchoTool, FoundryClient,
+    IssueCommentTool, IssueGetTool, LocalSandbox, TaskAllowedOperationsTool, TaskCommentTool,
     TaskLinksListTool, TaskOperationTool, ToolRegistry,
 };
-use graph_agent::{LlmResponse, OpenAiCompatibleConfig, OpenAiCompatibleModel, ScriptedModel};
+use graph_agent::{OpenAiCompatibleConfig, OpenAiCompatibleModel, ScriptedModel};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -94,19 +92,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(EchoTool));
-    tools.register(Arc::new(RequirementsGetTool::new(json!({
-        "users": [],
-        "functions": []
-    }))));
 
     let model = Arc::new(ScriptedModel::new(vec![
-        LlmResponse::tool_call("requirements_get", json!({})),
-        LlmResponse::final_answer(
-            serde_json::json!({
-                "message": "The requirements document is currently empty; start with a user model."
-            })
-            .to_string(),
-        ),
+        graph_agent::LlmResponse::tool_call("echo", json!({ "text": "hello" })),
+        graph_agent::LlmResponse::final_answer("demo complete".to_string()),
     ]));
     let runtime = AgentRuntime::new(model, Arc::new(tools));
 
@@ -136,13 +125,8 @@ async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
         tools.register(Arc::new(LocalSandbox::new(root)?));
     }
 
-    let mut context = ContextBundle::default();
     match (&args.foundry_url, &args.foundry_token, &args.project_id) {
-        (Some(url), Some(token), Some(project_id)) => {
-            let client = Arc::new(FoundryClient::new(url, token, project_id));
-            register_foundry_tools(&mut tools, &client);
-            context = client.requirements_context().await?;
-        }
+        (Some(_), Some(_), Some(_)) => {}
         (None, None, None) => {}
         _ => {
             return Err(
@@ -154,7 +138,7 @@ async fn run(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = AgentRuntime::new(model, Arc::new(tools));
 
     let mut request = AgentRunRequest::new("agent-cli", "task-cli", args.system, args.message);
-    request.context = context;
+    request.context = ContextBundle::default();
 
     let result = runtime.run(request).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
@@ -183,22 +167,11 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     tools.register(Arc::new(TaskLinksListTool::new(Arc::clone(&client))));
     tools.register(Arc::new(IssueGetTool::new(Arc::clone(&client))));
     tools.register(Arc::new(IssueCommentTool::new(Arc::clone(&client))));
-    register_foundry_tools(&mut tools, &client);
     if let Some(root) = &args.sandbox_root {
         tools.register(Arc::new(LocalSandbox::new(root)?));
     }
 
     let mut context = ContextBundle::default();
-    if let Ok(document) = client.get_anchor_document_toc("project", None).await {
-        context.push("project_document", args.project_id.clone(), document);
-    }
-    if let Ok(document) = client.get_document().await {
-        context.push(
-            "requirements_document",
-            args.project_id.clone(),
-            serde_json::to_string_pretty(&document)?,
-        );
-    }
     context.push(
         "current_task",
         args.task_id.clone(),
@@ -218,20 +191,4 @@ async fn clarify(args: ClarifyArgs) -> Result<(), Box<dyn std::error::Error>> {
     let result = runtime.run(request).await?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
-}
-
-fn register_foundry_tools(tools: &mut ToolRegistry, client: &Arc<FoundryClient>) {
-    tools.register(Arc::new(DocumentTool::new(Arc::clone(client))));
-    tools.register(Arc::new(FoundryRequirementsGetTool::new(Arc::clone(
-        client,
-    ))));
-    tools.register(Arc::new(FoundryRequirementsDraftTool::new(Arc::clone(
-        client,
-    ))));
-    tools.register(Arc::new(FoundryRequirementsApplyTool::new(Arc::clone(
-        client,
-    ))));
-    tools.register(Arc::new(FoundryRequirementsValidateTool::new(Arc::clone(
-        client,
-    ))));
 }

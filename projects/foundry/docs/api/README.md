@@ -391,122 +391,24 @@ curl -s http://127.0.0.1:8080/mcp \
 
 控制台是服务端渲染，不需要 JavaScript 构建。页面按钮按项目角色隐藏或禁用；服务端仍会独立校验，不能靠隐藏按钮绕过权限。
 
-## 文档（锚点模型）
+## 需求与技术设计
 
-通用锚点文档把文档表示为“文档根 + 章节锚点 + 列表项锚点”的树。结构由 `DocumentSchema` 描述；每个锚点有稳定键 `key` 和内容哈希 `id`。当前注册了 `project`、`requirements`、`architecture`、`design`、`development`、`test_plan` 和 `test_report` 七种类型。
+需求和技术的唯一权威载体是设计空间中的 Arche 对象，不再提供数据库文档接口或 `document`
+工具。需求使用 `requirement` 空间中的 `RequirementUser`、`RequirementStory`、
+`RequirementSystem`、`RequirementModule`、`RequirementFunction` 和
+`RequirementInteraction`，领域概念使用 `concept/requirement`。技术设计使用现有的技术对象
+（系统、模块、命名空间、目录、文件、类型和函数等）。
 
-```text
-GET  /api/v1/projects/{project}/documents/{kind}?anchor={key|id}
-GET  /api/v1/projects/{project}/documents/{kind}/draft      # open
-POST /api/v1/projects/{project}/documents/{kind}/draft      # create
-GET  /api/v1/projects/{project}/documents/{kind}/content?anchor={key|id}
-POST /api/v1/projects/{project}/documents/{kind}/draft/operations
-POST /api/v1/projects/{project}/documents/{kind}/draft/validate
-GET  /api/v1/projects/{project}/documents/{kind}/draft/approvals
-POST /api/v1/projects/{project}/documents/{kind}/draft/approvals
-GET  /api/v1/projects/{project}/documents/{kind}/annotations
-POST /api/v1/projects/{project}/documents/{kind}/annotations
-POST /api/v1/projects/{project}/documents/{kind}/annotations/{id}/resolve
-GET  /api/v1/projects/{project}/documents/{kind}/versions
-GET  /api/v1/projects/{project}/documents/{kind}/versions/{version}
-```
-
-旧的 `/api/v1/projects/{project}/project-document` 接口已移除；控制台的 `/projects/{id}/project-document` 会重定向到 `/projects/{id}/documents/project`。
-
-`anchor` 省略时返回根锚点。`GET /documents/{kind}` 返回 `text/markdown`：标题、元数据和 Markdown 目录；目录中每个条目带稳定位置键（`k:...`）。`content` 返回该锚点子树的 Markdown。单次章节由系统按描述文件预生成，`add` 只用于新增多项章节实例和列表项；新增多项章节时必须传 `title`，标题不从正文推导。已有锚点使用 `update_text`、`update_title`、`delete`、`move`，其中 `parent`/`anchor` 使用目录中的 `key`。`update_title` 只能修改多项章节的标题，单次章节和分组章节的标题固定。单次章节是结构骨架，不能删除；`delete` 只用于多项章节实例和列表项。一个多项章节必须是父节点的唯一子章节。`add` 的子类型由父锚点推断。操作使用 `If-Match: "<revision>"`。标注绑定锚点键和写入时的内容哈希；内容变化后状态为 `stale`，锚点消失后为 `orphaned`。
-
-MCP 工具：`document`。通过 `action` 选择操作：`toc`、`draft_open`、`draft_create`、`content`、`add`、`update_text`、`update_title`、`delete`、`move`、`validate`、`annotations_list`、`annotate`、`resolve_annotation`、`approvals`、`versions`、`decide`。
-
-Agent 工具：`document`，使用与 MCP 完全相同的 `action` 和参数。
-
-控制台页面：`/projects/{id}/documents/{kind}`。
-
-设计见 [锚点文档模型](../design/anchor-document-model.md)。
-
-## 需求文档
-
-每个项目一份需求文档，使用 `kind = "requirements"` 的锚点文档。章节按需求文档写作说明书分为：领域模型、用户肖像、故事、子系统（含功能集和功能）、交互设计、UI设计。交互设计按子系统 → 功能集 → 功能组织，并在子系统层包含信息架构和页面清单；UI 设计按子系统 → 页面组织，页面包含布局、组件、状态和设计稿图片。项目层内容属于项目文档，不在这里重复。
-
-需求文档使用与项目文档完全相同的锚点文档接口：
+需求分析和设计任务在独立分支工作，通过设计空间合并请求提交人类审批：
 
 ```text
-GET  /api/v1/projects/{project}/documents/requirements
-GET  /api/v1/projects/{project}/documents/requirements/content
-GET  /api/v1/projects/{project}/documents/requirements/draft
-POST /api/v1/projects/{project}/documents/requirements/draft/operations
-POST /api/v1/projects/{project}/documents/requirements/draft/validate
-POST /api/v1/projects/{project}/documents/requirements/draft/approvals
-GET  /api/v1/projects/{project}/documents/requirements/draft/approvals
-GET  /api/v1/projects/{project}/documents/requirements/versions
-GET  /api/v1/projects/{project}/documents/requirements/versions/{version}
+GET  /api/v1/projects/{project}/merge-requests
+POST /api/v1/projects/{project}/merge-requests
+POST /api/v1/projects/{project}/merge-requests/{id}/approve
+POST /api/v1/projects/{project}/merge-requests/{id}/merge
 ```
 
-草案操作、审批、标注和版本规则与项目文档相同。示例：向「用户」章节添加一个用户项，再修改其标题：
-
-```json
-{
-  "operations": [
-    {
-      "op_id": "uuid-1",
-      "type": "add",
-      "parent": "users",
-      "occurrence_key": "persona-1",
-      "title": "张先生",
-      "text": "姓名：张先生\n年龄：35 岁\n职业：买家\n诉求：随时查看订单状态\n主次：主要"
-    },
-    {
-      "op_id": "uuid-2",
-      "type": "update_title",
-      "anchor": "users/user/persona-1",
-      "title": "张先生（买家）"
-    }
-  ]
-}
-```
-
-MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "requirements"`。
-
-## 架构设计
-
-每个项目一份架构设计，使用 `kind = "architecture"` 的锚点文档。章节按架构设计说明书分为：架构概览、系统上下文、组件、接口与契约、数据与存储、部署与运行、质量属性、关键决策、技术债、风险；组件包含职责、接口、依赖和数据。
-
-架构设计使用与项目文档完全相同的锚点文档接口：
-
-```text
-GET  /api/v1/projects/{project}/documents/architecture
-GET  /api/v1/projects/{project}/documents/architecture/content
-GET  /api/v1/projects/{project}/documents/architecture/draft
-POST /api/v1/projects/{project}/documents/architecture/draft/operations
-POST /api/v1/projects/{project}/documents/architecture/draft/validate
-POST /api/v1/projects/{project}/documents/architecture/draft/approvals
-GET  /api/v1/projects/{project}/documents/architecture/draft/approvals
-GET  /api/v1/projects/{project}/documents/architecture/versions
-GET  /api/v1/projects/{project}/documents/architecture/versions/{version}
-```
-
-草案操作、审批、标注和版本规则与项目文档相同。MCP 和 Agent 都使用统一的 `document` 工具，传入 `kind = "architecture"`。
-
-## 详细设计、开发记录与测试文档
-
-以下文档与项目文档使用完全相同的锚点文档接口，只是 `kind` 不同：
-
-| kind | 内容 | 流程 |
-|---|---|---|
-| `design` | 详细设计：子系统 → 模块，职责、接口、数据、错误处理、测试要点和任务分解 | `detailed_design` |
-| `development` | 开发记录：迭代 → 变更集，代码引用、构建/测试证据、关联需求和评审发现 | `iteration` |
-| `test_plan` | 测试计划：策略、范围、环境、测试用例和质量门禁 | `test_planning` |
-| `test_report` | 测试报告：按 commit/环境记录运行结果、覆盖率、失败和门禁结论 | `test_execution` |
-
-例如：
-
-```text
-GET  /api/v1/projects/{project}/documents/design
-GET  /api/v1/projects/{project}/documents/development
-POST /api/v1/projects/{project}/documents/test_plan/draft/operations
-GET  /api/v1/projects/{project}/documents/test_report/content
-```
-
-MCP 和 Agent 都使用统一的 `document` 工具，传入对应的 `kind`。
+开发记录、测试计划和测试报告的锚点文档已删除；证据写入任务评论。
 
 ## 技术设计一致性任务
 

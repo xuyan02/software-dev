@@ -372,6 +372,10 @@ fn doc_field_kind(object: &Object, field: &str) -> Result<DocFieldKind> {
             "explanation" => DocFieldKind::ParagraphList,
             _ => bail!("Concept has no field {field}"),
         },
+        Object::ProjectDocument(_) => match field {
+            "document" => DocFieldKind::ParagraphList,
+            _ => bail!("ProjectDocument has no field {field}"),
+        },
         _ => bail!("{} has no document fields", object.kind().name()),
     };
     Ok(kind)
@@ -524,6 +528,10 @@ fn set_doc_field(object: &mut Object, field: &str, value: ObjectHash) -> Result<
             "explanation" => object.explanation = value,
             _ => bail!("Concept has no field {field}"),
         },
+        Object::ProjectDocument(object) => match field {
+            "document" => object.document = value,
+            _ => bail!("ProjectDocument has no field {field}"),
+        },
         other => bail!("{} has no document fields", other.kind().name()),
     }
     Ok(())
@@ -642,6 +650,7 @@ pub fn doc_fields(object: &Object) -> Vec<(&'static str, ObjectHash)> {
             vec![("description", value.description), ("ui", value.ui)]
         }
         Object::Concept(value) => vec![("explanation", value.explanation)],
+        Object::ProjectDocument(value) => vec![("document", value.document)],
         _ => Vec::new(),
     }
 }
@@ -1241,7 +1250,11 @@ impl Repository {
             return Ok(());
         }
         if !path.exists() {
-            bail!("branch {branch} does not exist");
+            let remote = self.ref_hash(&format!("refs/remotes/origin/{branch}"))?;
+            let Some(remote) = remote else {
+                bail!("branch {branch} does not exist");
+            };
+            write_ref_file(&self.dir, &format!("refs/heads/{branch}"), remote)?;
         }
         let head = self.head_snapshot()?;
         if self.index_snapshot()? != head || self.worktree_snapshot()? != head {
@@ -1277,7 +1290,7 @@ impl Repository {
             .as_deref()
             .context("repository has no source URL")?;
         let cache = self.source_cache();
-        if !cache.join("HEAD").is_file() {
+        if !source_cache_ready(&cache) {
             if cache.exists() {
                 fs::remove_dir_all(&cache)?;
             }
@@ -1288,6 +1301,10 @@ impl Repository {
             command.args(["clone", "--bare", "--quiet", url]);
             command.arg(&cache);
             run_git(command, "clone source")?;
+            if !source_cache_ready(&cache) {
+                let _ = fs::remove_dir_all(&cache);
+                bail!("source clone did not produce a valid HEAD");
+            }
         } else {
             let mut command = Command::new("git");
             command.arg("-C").arg(&cache).args([
@@ -1924,6 +1941,27 @@ impl Repository {
             text.push_str(".arche/\n");
         }
         fs::write(path, text)?;
+        // `.git/info/exclude` is the local, non-tracked way to ignore
+        // `.arche/`. Also install a hook so even `git add -f .arche` cannot
+        // commit design-space data into the source repository.
+        let hooks = self.source_cache().join("hooks");
+        fs::create_dir_all(&hooks)?;
+        let hook = hooks.join("pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\n\
+             if git diff --cached --name-only | grep -q '^\\.arche/'; then\n\
+             \tprintf '%s\\n' 'refusing to commit .arche/: Arche data is not source' >&2\n\
+             \texit 1\n\
+             fi\n",
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&hook)?.permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&hook, permissions)?;
+        }
         Ok(())
     }
 
@@ -3987,6 +4025,8 @@ impl Repository {
         });
         let concepts_hash = self.save_object(&concept)?;
 
+        self.bootstrap_project(root_name)?;
+
         let root = Object::Root(Root {
             qname: root_name,
             name: root_name,
@@ -4001,6 +4041,174 @@ impl Repository {
         self.write_snapshot("index", &snapshot)?;
         self.write_snapshot("worktree", &snapshot)?;
         Ok(())
+    }
+
+    fn bootstrap_project(&self, root_name: SymbolHash) -> Result<()> {
+        let project_name = self.intern("project")?;
+        let project_document_qname = self.intern("project/document")?;
+        let document_qname = "project/document/document";
+
+        let positioning = self.bootstrap_doc_topic(
+            document_qname,
+            "positioning",
+            "定位",
+            vec![
+                self.bootstrap_doc_topic(
+                    "project/document/document/positioning/body",
+                    "what_is",
+                    "是什么",
+                    vec![self.bootstrap_doc_text(
+                        "project/document/document/positioning/body/what_is/body",
+                        "text",
+                        "",
+                    )?],
+                )?,
+                self.bootstrap_doc_topic(
+                    "project/document/document/positioning/body",
+                    "what_is_not",
+                    "不是什么",
+                    vec![self.bootstrap_doc_list(
+                        "project/document/document/positioning/body/what_is_not/body",
+                        "list",
+                    )?],
+                )?,
+            ],
+        )?;
+        let background = self.bootstrap_doc_topic(
+            document_qname,
+            "background",
+            "背景",
+            vec![
+                self.bootstrap_doc_topic(
+                    "project/document/document/background/body",
+                    "context",
+                    "现状",
+                    vec![self.bootstrap_doc_text(
+                        "project/document/document/background/body/context/body",
+                        "text",
+                        "",
+                    )?],
+                )?,
+                self.bootstrap_doc_topic(
+                    "project/document/document/background/body",
+                    "problems",
+                    "问题",
+                    vec![self.bootstrap_doc_list(
+                        "project/document/document/background/body/problems/body",
+                        "list",
+                    )?],
+                )?,
+            ],
+        )?;
+        let goals = self.bootstrap_doc_topic(
+            document_qname,
+            "goals",
+            "目标",
+            vec![self.bootstrap_doc_list("project/document/document/goals/body", "list")?],
+        )?;
+        let non_goals = self.bootstrap_doc_topic(
+            document_qname,
+            "non_goals",
+            "非目标",
+            vec![self.bootstrap_doc_list("project/document/document/non_goals/body", "list")?],
+        )?;
+        let phasing_plan = self.bootstrap_doc_topic(
+            document_qname,
+            "phasing_plan",
+            "分期计划",
+            vec![self.bootstrap_doc_list("project/document/document/phasing_plan/body", "list")?],
+        )?;
+        let constraints = self.bootstrap_doc_topic(
+            document_qname,
+            "constraints",
+            "约束",
+            vec![self.bootstrap_doc_list("project/document/document/constraints/body", "list")?],
+        )?;
+        let risks = self.bootstrap_doc_topic(
+            document_qname,
+            "risks",
+            "风险",
+            vec![self.bootstrap_doc_list("project/document/document/risks/body", "list")?],
+        )?;
+
+        let document = Object::new_document_paragraph_list(
+            self.intern(document_qname)?,
+            self.intern("document")?,
+            project_document_qname,
+            vec![
+                positioning,
+                background,
+                goals,
+                non_goals,
+                phasing_plan,
+                constraints,
+                risks,
+            ],
+        );
+        let document_hash = self.save_object(&document)?;
+        let project_document = Object::new_project_document(
+            project_document_qname,
+            self.intern("项目说明书")?,
+            project_name,
+            document_hash,
+        );
+        let project_document_hash = self.save_object(&project_document)?;
+        let project = Object::new_project_root(
+            project_name,
+            self.intern("项目空间")?,
+            root_name,
+            project_document_hash,
+        );
+        self.save_object(&project)?;
+        Ok(())
+    }
+
+    fn bootstrap_doc_topic(
+        &self,
+        parent_qname: &str,
+        name: &str,
+        title: &str,
+        body_items: Vec<ObjectHash>,
+    ) -> Result<ObjectHash> {
+        let topic_qname_text = format!("{parent_qname}/{name}");
+        let topic_qname = self.intern(&topic_qname_text)?;
+        let body_qname = self.intern(&format!("{topic_qname_text}/body"))?;
+        let body = Object::new_document_paragraph_list(
+            body_qname,
+            self.intern("body")?,
+            topic_qname,
+            body_items,
+        );
+        let body_hash = self.save_object(&body)?;
+        let topic = Object::new_document_topic(
+            self,
+            parent_qname,
+            Some(name),
+            title.to_owned(),
+            body_hash,
+        )?;
+        self.save_object(&topic)
+    }
+
+    fn bootstrap_doc_text(
+        &self,
+        parent_qname: &str,
+        name: &str,
+        content: &str,
+    ) -> Result<ObjectHash> {
+        let text = Object::new_document_text(self, parent_qname, Some(name), content.to_owned())?;
+        self.save_object(&text)
+    }
+
+    fn bootstrap_doc_list(&self, parent_qname: &str, name: &str) -> Result<ObjectHash> {
+        let qname = self.intern(&format!("{parent_qname}/{name}"))?;
+        let list = Object::new_document_list(
+            qname,
+            self.intern(name)?,
+            self.intern(parent_qname)?,
+            Vec::new(),
+        );
+        self.save_object(&list)
     }
 
     fn snapshot_from_store(&self) -> Result<Snapshot> {
@@ -4276,6 +4484,18 @@ impl Repository {
     }
 }
 
+fn source_cache_ready(cache: &Path) -> bool {
+    if !cache.join("HEAD").is_file() {
+        return false;
+    }
+    Command::new("git")
+        .arg("--git-dir")
+        .arg(cache)
+        .args(["rev-parse", "--verify", "HEAD"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
 fn run_git(mut command: Command, label: &str) -> Result<()> {
     let output = command.output().with_context(|| format!("run {label}"))?;
     if !output.status.success() {
@@ -4482,6 +4702,24 @@ mod tests {
         assert!(repo.find_by_qname("technical").is_ok());
         assert!(repo.find_by_qname("requirement").is_ok());
         assert!(repo.find_by_qname("concept").is_ok());
+    }
+
+    #[test]
+    fn checkout_tracks_a_fetched_remote_branch() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let head = repo.head_commit().unwrap();
+        crate::protocol::write_ref_file(
+            repo.dir(),
+            "refs/remotes/origin/project-document-test",
+            head,
+        )
+        .unwrap();
+        repo.checkout("project-document-test", false).unwrap();
+        assert_eq!(
+            repo.current_branch().unwrap(),
+            "project-document-test".to_string()
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 ## 目标
 
-在胶囊中启动最终产物，像用户一样操作它，观察日志和截图，并把真实证据与验收结论写入测试报告。
+在胶囊中启动最终产物，像用户一样操作它，观察日志和截图，并把真实证据与验收结论写入任务评论。
 
 你不运行单元测试（单测、lint、构建由实现者和代码验证任务负责），不修改代码、需求或设计，不审批或发布。
 
@@ -12,21 +12,16 @@
 
 1. `task_links_list` 找到当前任务的 Issue。
 2. `issue_get` 读取 Issue 正文和全部评论。
-3. `project` 读取项目名称和描述。
-4. `document`，`action = "content"`，`kind = "requirements"` 读取需求文档。
-5. `document`，`action = "content"`，`kind = "architecture"` 读取架构设计。
-6. `document`，`action = "content"`，`kind = "design"` 读取详细设计。
-7. `document`，`action = "content"`，`kind = "test_plan"` 读取测试计划。
-8. `document`，`action = "content"`，`kind = "development"` 读取开发记录。
-9. `document`，`action = "content"`，`kind = "test_report"` 读取当前测试报告。
-10. `document`，`action = "toc"`，`kind = "test_report"` 读取锚点。
-11. `task_allowed_operations` 确认当前允许的操作。
+3. 用 `project` 工具读取项目信息（git_repository、git_branch、design_space_url、design_space_branch、test_capsule）。
+4. 用 `shell` 在 Arche 工作区执行 `arche pull`，用 `arche show` / `arche search --kind requirement-*` 读取需求；用 `arche ls` / `arche show` 读取技术设计对象。
+5. 读取 Issue 和任务评论中的测试计划、开发记录和已有证据。
+6. `task_allowed_operations` 确认当前允许的操作。
 
 ## 最终产物测试
 
 工作区固定为 `/work/<project-id>/repo`。Git 凭据已经由 agentd 配好。
 
-先用 `project` 读取 `test_capsule`。不同产物使用不同客户端胶囊；有服务端时，服务端必须运行在独立服务胶囊：
+用 `project` 读取 `test_capsule`。不同产物使用不同客户端胶囊；有服务端时，服务端必须运行在独立服务胶囊：
 
 - `cli`：headless shell；用 `artifact_start` 启动本地进程，shell 执行真实命令。
 - `api`：headless shell 作为客户端；用 `service_start` 启动服务端胶囊，绑定 0.0.0.0，拿到 url，再用 shell 发真实 HTTP 请求。
@@ -60,19 +55,16 @@
 6. 查看返回的截图：检查布局、文案、状态、错误提示、空状态和交互反馈；不要只看 DOM 文本。
 7. 检查服务端和客户端日志；需要时停止并重启。
 8. 用 `service_stop` / `artifact_stop` 停止所有进程和胶囊。
-9. 用 `action = "draft_open"` 打开测试报告草稿；没有草稿时 `draft_create`；保留 `revision`。
-10. 写「执行概览」：commit、测试计划版本、服务端/客户端启动方式、环境和端口。
-11. 在「测试运行」下 `add` 每次运行，标题用 commit 或运行名称。
-12. 每次运行写：
+9. 用 `task_comment` 写测试报告，内容包含：
+   - `执行概览：` commit、测试计划来源、服务端/客户端启动方式、环境和端口。
    - `提交：` 分支、commit、diff 范围。
    - `环境：` 服务端胶囊、客户端胶囊、端口和工具版本。
    - `结果汇总：` 通过/失败场景。
-   - 在「用例结果」列表下 `add` 每条结果：操作、截图名称、命令或日志摘要。
+   - `用例结果：` 每条结果的操作、截图名称、命令或日志摘要。
    - `覆盖率：` 行/分支/需求覆盖率和报告位置。
-   - 在「失败与缺陷」列表下 `add` 失败原因、缺陷编号和影响。
-13. 写「质量门禁」和「结论」：是否达到门禁，哪些失败阻塞，哪些已豁免。
-14. `validate`，修复所有 error。
-15. 用 `task_allowed_operations` 返回的操作名调用 `task_operation`，提交评审。
+   - `失败与缺陷：` 失败原因、缺陷编号和影响。
+   - `质量门禁与结论：` 是否达到门禁，哪些失败阻塞，哪些已豁免。
+10. 用 `task_allowed_operations` 返回的操作名调用 `task_operation`，提交评审。
 
 ## 证据规则
 

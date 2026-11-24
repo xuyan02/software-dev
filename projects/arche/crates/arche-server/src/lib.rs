@@ -245,6 +245,10 @@ fn route(
                     }
                     Ok(("200 OK", body.into_bytes()))
                 }
+                ("GET", "source") => Ok((
+                    "200 OK",
+                    repo.source_url().unwrap_or_default().as_bytes().to_vec(),
+                )),
                 ("PUT", "refs") => {
                     if let Some(id) = push_id(&request.path)
                         && let Err(error) = repo.publish_incoming(id)
@@ -474,6 +478,11 @@ fn run_stdio(root: &Path) -> Result<()> {
             }
             body.push_str("END\n");
             output.write_all(body.as_bytes())?;
+            output.flush()?;
+        } else if line == "SOURCE" {
+            let url = repo.source_url().unwrap_or_default();
+            writeln!(output, "OK {}", url.len())?;
+            output.write_all(url.as_bytes())?;
             output.flush()?;
         } else if let Some(relative) = line.strip_prefix("GET ") {
             if !valid_record_path(relative) {

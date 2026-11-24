@@ -35,36 +35,3 @@ impl Tool for EchoTool {
         Ok(ToolOutput::success(text))
     }
 }
-
-/// Phase 0 read-only requirements tool. Phase 1 replaces the static document
-/// with a Foundry MCP/HTTP call.
-pub struct RequirementsGetTool {
-    document: Value,
-}
-
-impl RequirementsGetTool {
-    pub fn new(document: Value) -> Self {
-        Self { document }
-    }
-}
-
-#[async_trait]
-impl Tool for RequirementsGetTool {
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: "requirements_get".to_string(),
-            description: "Read the project's structured requirements document.".to_string(),
-            input_schema: json!({ "type": "object", "properties": {} }),
-        }
-    }
-
-    async fn call(
-        &self,
-        _arguments: Value,
-        _context: &ToolContext,
-    ) -> Result<ToolOutput, ToolError> {
-        let content = serde_json::to_string_pretty(&self.document)
-            .map_err(|error| ToolError::Failed(error.to_string()))?;
-        Ok(ToolOutput::success(content))
-    }
-}

@@ -4,13 +4,12 @@ use foundry_app::{
     TaskFilter, TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
 };
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, CapsuleProfile,
-    IssueClassification, IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind,
+    AccountKind, AccountRole, AccountStatus, Actor, CapsuleProfile, IssueClassification,
+    IssueConfidence, IssueKind, IssuePool, IssueSeverity, IssueSource, IssueSourceKind,
     IssueStatus, IssueTriage, ProjectRole, ProjectStatus, RoleKey, StageKey, TaskDispatchState,
     TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Authentication
@@ -517,6 +516,8 @@ pub struct CreateIssueRequest {
     pub expected: Option<String>,
     #[serde(default)]
     pub actual: Option<String>,
+    #[serde(default)]
+    pub pool: Option<IssuePool>,
 }
 
 impl CreateIssueRequest {
@@ -535,6 +536,7 @@ impl CreateIssueRequest {
             reproduction: self.reproduction,
             expected: self.expected,
             actual: self.actual,
+            pool: self.pool,
         }
     }
 }
@@ -683,6 +685,7 @@ impl NewIssueForm {
             reproduction: optional_text(&self.reproduction),
             expected: optional_text(&self.expected),
             actual: optional_text(&self.actual),
+            pool: None,
         }
     }
 }
@@ -880,6 +883,7 @@ impl TaskListQuery {
             role: self.role.map(RoleKey::new),
             active_actor: self.active_actor,
             parent_id: self.parent_id,
+            workflow: None,
             text: self.text,
             limit: self.limit,
         })
@@ -1025,145 +1029,6 @@ impl SaveDraftRequest {
             client_save_id: self.client_save_id,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Project document
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-pub struct ApplyAnchorOperationsRequest {
-    #[serde(default)]
-    pub operations: Vec<foundry_domain::AnchorOperation>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DecideAnchorDocumentRequest {
-    pub decision: ApprovalDecision,
-    #[serde(default)]
-    pub comment: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct AnchorQuery {
-    #[serde(default)]
-    pub anchor: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Default)]
-pub struct AnchorAnnotationQuery {
-    #[serde(default)]
-    pub include_resolved: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddAnchorAnnotationRequest {
-    pub anchor: String,
-    #[serde(default)]
-    pub quote: Option<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ResolveAnchorAnnotationRequest {
-    pub resolution: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApproveDocumentForm {
-    #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
-    pub comment: Option<String>,
-    #[serde(default)]
-    pub task_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RejectDocumentForm {
-    #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
-    pub reason: String,
-    #[serde(default)]
-    pub task_id: Option<Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnchorAnnotationForm {
-    pub anchor: String,
-    #[serde(default)]
-    pub quote: Option<String>,
-    pub body: String,
-}
-
-// ---------------------------------------------------------------------------
-// Requirements document
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Default)]
-pub struct ApplyRequirementsOperationsRequest {
-    #[serde(default)]
-    pub operations: Vec<foundry_domain::RequirementsOperation>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RequirementsRevisionForm {
-    #[serde(default)]
-    pub revision: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnnotateRequirementsRequest {
-    pub target_type: foundry_domain::AnnotationTarget,
-    #[serde(default)]
-    pub target_id: Option<String>,
-    #[serde(default)]
-    pub field: Option<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AnnotateRequirementsForm {
-    pub target_type: String,
-    #[serde(default)]
-    pub target_id: Option<String>,
-    #[serde(default)]
-    pub field: Option<String>,
-    pub body: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ResolveRequirementsAnnotationRequest {
-    pub resolution: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RequirementsAnnotationQuery {
-    #[serde(default)]
-    pub include_resolved: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DecideRequirementsRequest {
-    pub decision: ApprovalDecision,
-    #[serde(default)]
-    pub comment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ApproveRequirementsForm {
-    #[serde(default)]
-    pub revision: u64,
-    #[serde(default)]
-    pub comment: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RejectRequirementsForm {
-    #[serde(default)]
-    pub revision: u64,
-    pub reason: String,
 }
 
 // ---------------------------------------------------------------------------

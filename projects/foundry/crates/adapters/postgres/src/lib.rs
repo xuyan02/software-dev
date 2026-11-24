@@ -34,9 +34,7 @@ use uuid::Uuid;
 
 mod agent_runs;
 mod agents;
-mod anchor_document;
 mod merge_request;
-mod requirements_doc;
 mod task;
 mod task_link;
 mod trigger;
@@ -664,128 +662,6 @@ impl ProjectRepository for PostgresStore {
         .await
         .map_err(backend)?;
         sqlx::query("delete from tasks where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-
-        sqlx::query(
-            "delete from anchor_document_operations \
-             where draft_id in ( \
-                 select drafts.id from anchor_document_drafts drafts \
-                 join anchor_documents documents on documents.id = drafts.document_id \
-                 where documents.project_id = $1 \
-             )",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from anchor_document_drafts \
-             where document_id in (select id from anchor_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from anchor_document_versions \
-             where document_id in (select id from anchor_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query("delete from anchor_document_annotations where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from anchor_document_approvals where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from anchor_documents where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        // Legacy project-document tables are no longer read, but their rows
-        // still reference projects; remove them so project deletion works.
-        sqlx::query(
-            "delete from project_document_operations \
-             where draft_id in ( \
-                 select drafts.id from project_document_drafts drafts \
-                 join project_documents documents on documents.id = drafts.document_id \
-                 where documents.project_id = $1 \
-             )",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from project_document_drafts \
-             where document_id in (select id from project_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from project_document_versions \
-             where document_id in (select id from project_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query("delete from project_documents where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from project_document_approvals where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query(
-            "delete from requirements_operations \
-             where draft_id in ( \
-                 select drafts.id from requirements_document_drafts drafts \
-                 join requirements_documents documents on documents.id = drafts.document_id \
-                 where documents.project_id = $1 \
-             )",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from requirements_document_drafts \
-             where document_id in (select id from requirements_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query(
-            "delete from requirements_document_versions \
-             where document_id in (select id from requirements_documents where project_id = $1)",
-        )
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(backend)?;
-        sqlx::query("delete from requirements_documents where project_id = $1")
-            .bind(id)
-            .execute(&mut *tx)
-            .await
-            .map_err(backend)?;
-        sqlx::query("delete from requirements_draft_annotations where project_id = $1")
             .bind(id)
             .execute(&mut *tx)
             .await

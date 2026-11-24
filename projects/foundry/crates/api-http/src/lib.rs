@@ -2,8 +2,6 @@ pub mod auth;
 pub mod design_space;
 pub mod dto;
 pub mod error;
-// Legacy requirements-document handlers remain while those routes are retired;
-// requirements documents now use the generic anchor-document routes.
 #[allow(dead_code)]
 mod routes;
 
@@ -68,38 +66,6 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/projects/select", post(routes::select_project_form))
         .route("/projects/{id}", get(routes::project_page))
-        .route(
-            "/projects/{id}/requirements",
-            get(routes::requirements_document_page),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}",
-            get(routes::anchor_document_page),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}/refresh",
-            get(routes::anchor_document_refresh),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}/approve",
-            post(routes::approve_anchor_document_form),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}/reject",
-            post(routes::reject_anchor_document_form),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}/annotations",
-            post(routes::annotate_anchor_document_form),
-        )
-        .route(
-            "/projects/{id}/documents/{kind}/annotations/{annotation_id}/resolve",
-            post(routes::resolve_anchor_annotation_form),
-        )
-        .route(
-            "/projects/{id}/project-document",
-            get(routes::project_document_redirect),
-        )
         .route(
             "/projects/{id}/design-space",
             get(routes::design_space_page),
@@ -262,46 +228,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/workflows/{id}/layout",
             get(routes::get_workflow_layout).put(routes::save_workflow_layout),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}",
-            get(routes::get_anchor_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/draft",
-            get(routes::open_anchor_draft).post(routes::create_anchor_draft),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/content",
-            get(routes::get_anchor_content),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/draft/operations",
-            post(routes::apply_anchor_operations),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/draft/validate",
-            post(routes::validate_anchor_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/draft/approvals",
-            get(routes::list_anchor_approvals).post(routes::decide_anchor_document),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/annotations",
-            get(routes::list_anchor_annotations).post(routes::annotate_anchor),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/annotations/{annotation_id}/resolve",
-            post(routes::resolve_anchor_annotation),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/versions",
-            get(routes::list_anchor_versions),
-        )
-        .route(
-            "/api/v1/projects/{project}/documents/{kind}/versions/{version}",
-            get(routes::get_anchor_version),
         )
         .route(
             "/api/v1/projects/{project}/merge-requests",

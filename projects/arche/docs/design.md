@@ -1417,7 +1417,7 @@ v2 保留 v1 的命令组，替换文档命令的内部模型。
 
 ```bash
 arche init
-arche clone
+arche clone     # 从远程继承已记录的源码 Git URL，--source 仅用于覆盖
 arche push
 arche fetch
 arche pull

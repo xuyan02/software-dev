@@ -13,5 +13,6 @@ data/
 dist/
 node_modules/
 
-# Shell image build artifact (rebuild from target/debug/ds)
+# Shell image build artifacts (rebuild from target/{debug,release}/arche or ds)
 projects/foundry/deploy/shell/ds
+projects/foundry/deploy/shell/arche
