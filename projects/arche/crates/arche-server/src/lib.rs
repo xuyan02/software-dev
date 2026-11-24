@@ -315,6 +315,8 @@ fn route(
                     }
                     Ok(("200 OK", Vec::new()))
                 }
+                ("GET", "comments") => Ok(("200 OK", repo.export_comments()?)),
+                ("PUT", "comments") => Ok(("200 OK", repo.import_comments(&request.body, false)?)),
                 ("GET", "files") => {
                     let mut body = String::new();
                     for relative in record_files(repo.dir())? {
@@ -460,6 +462,19 @@ fn run_stdio(root: &Path) -> Result<()> {
             output.flush()?;
         } else if let Some(id) = line.strip_prefix("PUSH ") {
             push = Some(id.to_owned());
+        } else if line == "COMMENTS" {
+            let bytes = repo.export_comments()?;
+            writeln!(output, "OK {}", bytes.len())?;
+            output.write_all(&bytes)?;
+            output.flush()?;
+        } else if let Some(len) = line.strip_prefix("COMMENTS ") {
+            let len: usize = len.parse()?;
+            let mut bytes = vec![0u8; len];
+            input.read_exact(&mut bytes)?;
+            let merged = repo.import_comments(&bytes, false)?;
+            writeln!(output, "OK {}", merged.len())?;
+            output.write_all(&merged)?;
+            output.flush()?;
         } else if line == "REFS" {
             let mut body = String::new();
             for branch in repo.branch_list()? {

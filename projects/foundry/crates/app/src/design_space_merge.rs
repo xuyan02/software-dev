@@ -89,10 +89,11 @@ pub trait DesignSpaceGateway: Send + Sync {
         to_commit: &str,
     ) -> Result<MergeRequestDiff, DesignSpaceGatewayError>;
 
-    /// Count design-document comments reachable from `commit`.
+    /// Count design-document comments on `branch` reachable from `commit`.
     async fn comment_count(
         &self,
         project: &Project,
+        branch: &str,
         commit: &str,
     ) -> Result<usize, DesignSpaceGatewayError>;
 
@@ -161,6 +162,7 @@ impl DesignSpaceGateway for UnavailableDesignSpaceGateway {
     async fn comment_count(
         &self,
         _project: &Project,
+        _branch: &str,
         _commit: &str,
     ) -> Result<usize, DesignSpaceGatewayError> {
         Err(unavailable())
@@ -863,7 +865,7 @@ impl MergeRequestService {
                 if !project.skip_human_review {
                     let comments = self
                         .design_space
-                        .comment_count(project, &request.source_commit)
+                        .comment_count(project, &request.source_branch, &request.source_commit)
                         .await?;
                     if comments > 0 {
                         return Err(ServiceError::Validation(format!(

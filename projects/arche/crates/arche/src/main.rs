@@ -470,8 +470,11 @@ enum CommentCommand {
     },
     /// List comments.
     List {
-        /// Only list comments for this target.
+        /// Target qname. With --subtree, include every qname below it.
         target: Option<String>,
+        /// Include the target's descendants, fields and anchored positions.
+        #[arg(long)]
+        subtree: bool,
         /// Only open comments.
         #[arg(long)]
         open: bool,
@@ -911,8 +914,17 @@ fn main() -> Result<()> {
                     let comment = repo.comment_add(&target, &text)?;
                     println!("comment {}", comment.id);
                 }
-                CommentCommand::List { target, open } => {
-                    for comment in repo.comment_list(target.as_deref(), open)? {
+                CommentCommand::List {
+                    target,
+                    subtree,
+                    open,
+                } => {
+                    let comments = match (subtree, target.as_deref()) {
+                        (true, Some(target)) => repo.comment_list_subtree(target, open)?,
+                        (true, None) => repo.comment_list(None, open)?,
+                        (false, target) => repo.comment_list(target, open)?,
+                    };
+                    for comment in comments {
                         let state = if comment.resolved { "resolved" } else { "open" };
                         println!(
                             "{}\t{}\t{}\t{}",

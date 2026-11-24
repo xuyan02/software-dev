@@ -97,6 +97,7 @@ impl DesignSpaceGateway for TestMergeGateway {
     async fn comment_count(
         &self,
         _project: &foundry_domain::Project,
+        _branch: &str,
         _commit: &str,
     ) -> Result<usize, DesignSpaceGatewayError> {
         Ok(0)

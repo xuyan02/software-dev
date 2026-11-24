@@ -248,8 +248,13 @@ impl DesignSpaceAccess {
         arche::diff(&self.repo_path(project)?, from_commit, to_commit)
     }
 
-    fn comment_count_blocking(&self, project: &Project, commit: &str) -> Result<usize, String> {
-        arche::comment_count(&self.repo_path(project)?, commit)
+    fn comment_count_blocking(
+        &self,
+        project: &Project,
+        branch: &str,
+        commit: &str,
+    ) -> Result<usize, String> {
+        arche::comment_count(&self.repo_path(project)?, branch, commit)
     }
 
     fn content_digest_blocking(&self, project: &Project, commit: &str) -> Result<String, String> {
@@ -363,15 +368,19 @@ impl DesignSpaceGateway for DesignSpaceAccess {
     async fn comment_count(
         &self,
         project: &Project,
+        branch: &str,
         commit: &str,
     ) -> Result<usize, DesignSpaceGatewayError> {
         let access = self.clone();
         let project = project.clone();
+        let branch = branch.to_owned();
         let commit = commit.to_owned();
-        tokio::task::spawn_blocking(move || access.comment_count_blocking(&project, &commit))
-            .await
-            .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
-            .map_err(DesignSpaceGatewayError::Backend)
+        tokio::task::spawn_blocking(move || {
+            access.comment_count_blocking(&project, &branch, &commit)
+        })
+        .await
+        .map_err(|error| DesignSpaceGatewayError::Backend(error.to_string()))?
+        .map_err(DesignSpaceGatewayError::Backend)
     }
 
     async fn fast_forward(

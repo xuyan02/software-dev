@@ -88,6 +88,7 @@ impl DesignSpaceGateway for FakeGateway {
     async fn comment_count(
         &self,
         _project: &foundry_domain::Project,
+        _branch: &str,
         _commit: &str,
     ) -> Result<usize, DesignSpaceGatewayError> {
         Ok(self.comments.load(Ordering::SeqCst))

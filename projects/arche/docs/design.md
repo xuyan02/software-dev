@@ -1086,10 +1086,11 @@ concept/requirement/agent/relations#a1b2c3d4
 
 ```text
 CMT1
-version: u8 = 3
+version: u8 = 5
 count: u32
 record:
   id: u64
+  branch: text          // 评论所在分支
   target: text          // 被评论对象的 qname
   body: text            // 纯文本
   conclusion: text      // 解决时填写，未解决为空
@@ -1098,17 +1099,19 @@ record:
   created_by: text
   created_at: i64
   updated_at: i64
+  deleted: u8           // clear 后保留的删除标记
 ```
 
-- `id` 单调递增，是评论的唯一标识；
+- `id` 在一个评论存储内唯一，push/fetch 时由服务端解决跨工作区冲突；
 - resolve 时必须提供非空的 `conclusion` 和 `resolved_by`；
 - 每次新增或修改都原子重写整个文件；
-- 评论文件不随 push/pull 同步，不属于任何分支或提交。
+- 评论按分支记录；push 上传整个评论存储，服务端合并后返回权威 id，fetch/clone 拉取并合并远端评论；评论仍不属于提交或对象图；
+- `clear` 把评论标记为 deleted 而不是物理删除，删除标记随 push/fetch 同步，合并请求门禁看到的是未删除评论数。
 
 ### 11.2 规则
 
 - 评论不是目标对象的子对象，目标对象也不存评论字段；
-- 评论通过 `target` 的 qname 挂在任意设计对象上；
+- 评论通过 `target` 的 qname 挂在任意设计对象上；`comment list <target> --subtree` 返回目标本身、其所有子孙对象以及目标字段/锚点上的评论；
 - 修改评论不改变目标对象，也不产生新的对象版本；
 - 评论不参与 `check` 的对象图校验，孤儿评论由评论自己的检查处理；
 - 设计 diff 默认不比较评论；评论使用独立命令查看和更新。
@@ -1143,7 +1146,7 @@ RequirementInteraction/ui#9021abcd
   symbols/<aa>/<bb>/<symbol-hash>
   commits/<aa>/<bb>/<commit-hash>
   packs/<pack-sha256>.pack
-  comments                  # 独立评论存储，不参与版本控制
+  comments                  # 独立评论存储，按分支记录并随 push/fetch 同步
   incoming/                 # 服务端 quarantine
   tmp/
 ```
@@ -1527,7 +1530,7 @@ arche concept check
 ```bash
 arche comment add <target> <text>
 arche comment resolve <id> --conclusion <text> --agent <agent>
-arche comment list [<target>] [--open] [--format text|json]
+arche comment list [<target>] [--subtree] [--open] [--format text|json]
 arche comment clear
 arche comment check
 ```

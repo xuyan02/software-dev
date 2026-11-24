@@ -2447,24 +2447,58 @@ impl Repository {
     }
 
     pub fn comment_add(&self, target_qname: &str, text: &str) -> Result<Comment> {
+        let branch = self.current_branch()?;
         let target = self.intern(target_qname)?;
         let snapshot = self.worktree_snapshot()?;
         snapshot
             .get(target)
             .with_context(|| format!("{target_qname} not found"))?;
-        self.comments.add(target_qname, text, "arche")
+        self.comments.add(&branch, target_qname, text, "arche")
     }
 
     pub fn comment_list(&self, target: Option<&str>, open_only: bool) -> Result<Vec<Comment>> {
-        self.comments.list(target, open_only)
+        let branch = self.current_branch()?;
+        self.comments.list(&branch, target, open_only)
+    }
+
+    pub fn comment_list_on(
+        &self,
+        branch: &str,
+        target: Option<&str>,
+        open_only: bool,
+    ) -> Result<Vec<Comment>> {
+        self.comments.list(branch, target, open_only)
+    }
+
+    /// List comments for the current branch on `target` and every qname below
+    /// it, including field and anchored-position comments.
+    pub fn comment_list_subtree(&self, target: &str, open_only: bool) -> Result<Vec<Comment>> {
+        let branch = self.current_branch()?;
+        self.comments.list_subtree(&branch, target, open_only)
     }
 
     pub fn comment_clear(&self, target: Option<&str>) -> Result<usize> {
-        self.comments.clear(target)
+        let branch = self.current_branch()?;
+        self.comments.clear(&branch, target)
     }
 
     pub fn comment_resolve(&self, id: u64, conclusion: &str, agent: &str) -> Result<Comment> {
         self.comments.resolve(id, conclusion, agent)
+    }
+
+    /// Export every branch's comments for push.
+    pub fn export_comments(&self) -> Result<Vec<u8>> {
+        self.comments.export()
+    }
+
+    /// Import a remote comment snapshot. Returns the merged store.
+    pub fn import_comments(&self, bytes: &[u8], remote_authoritative: bool) -> Result<Vec<u8>> {
+        self.comments.merge(bytes, remote_authoritative)
+    }
+
+    /// Replace the comment store with an authoritative server snapshot.
+    pub fn replace_comments(&self, bytes: &[u8]) -> Result<Vec<Comment>> {
+        self.comments.replace(bytes)
     }
 
     pub fn concept_mkdir(&self, qname_text: &str) -> Result<(SymbolHash, ObjectHash)> {
@@ -4759,6 +4793,86 @@ mod tests {
         assert!(comments[0].resolved);
         assert_eq!(comments[0].conclusion, "已补充错误码");
         assert_eq!(comments[0].resolved_by, "reviewer-agent");
+    }
+
+    #[test]
+    fn comments_can_be_listed_for_a_subtree() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        repo.create_technical_namespace("technical", "ns").unwrap();
+        repo.create_technical_class(None, Some("technical/namespace/ns"), "Foo")
+            .unwrap();
+        repo.add_all().unwrap();
+        repo.commit_index("add ns", false).unwrap();
+        repo.comment_add("technical/namespace/ns", "命名空间评论")
+            .unwrap();
+        let class = repo
+            .comment_add("technical/namespace/ns/Foo", "类型评论")
+            .unwrap();
+
+        assert_eq!(
+            repo.comment_list(Some("technical/namespace/ns"), false)
+                .unwrap()
+                .len(),
+            1
+        );
+        let subtree = repo
+            .comment_list_subtree("technical/namespace/ns", false)
+            .unwrap();
+        assert_eq!(subtree.len(), 2);
+        assert!(
+            subtree
+                .iter()
+                .any(|comment| comment.target == "technical/namespace/ns/Foo")
+        );
+
+        repo.comment_resolve(class.id, "已处理", "reviewer")
+            .unwrap();
+        assert_eq!(
+            repo.comment_list_subtree("technical/namespace/ns", true)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn comments_are_branch_scoped_and_merge_across_workspaces() {
+        let source_temp = TempDir::new().unwrap();
+        let source = Repository::init(source_temp.path()).unwrap();
+        source.create_technical_system("app").unwrap();
+        source.add_all().unwrap();
+        source.commit_index("add app", false).unwrap();
+        source.comment_add("technical/app", "主分支评论").unwrap();
+        source.branch_create("feature").unwrap();
+        source.checkout("feature", false).unwrap();
+        source.comment_add("technical/app", "功能分支评论").unwrap();
+        assert_eq!(
+            source.comment_list(None, false).unwrap().len(),
+            1,
+            "comment list must be scoped to the current branch"
+        );
+        assert_eq!(
+            source.comment_list_on("main", None, false).unwrap().len(),
+            1
+        );
+        let exported = source.export_comments().unwrap();
+
+        let target_temp = TempDir::new().unwrap();
+        let target = Repository::init(target_temp.path()).unwrap();
+        target.create_technical_system("app").unwrap();
+        target.add_all().unwrap();
+        target.commit_index("add app", false).unwrap();
+        target.comment_add("technical/app", "本地评论").unwrap();
+        target.import_comments(&exported, false).unwrap();
+
+        let main = target.comment_list_on("main", None, false).unwrap();
+        assert_eq!(main.len(), 2);
+        assert_ne!(main[0].id, main[1].id);
+        assert_eq!(
+            target.comment_list_on("feature", None, false).unwrap()[0].body,
+            "功能分支评论"
+        );
     }
 
     #[test]

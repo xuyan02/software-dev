@@ -398,7 +398,7 @@ pub(super) fn detail(path: &Path, hash: &str, branch: &str) -> Result<DesignSpac
     let object = repo.read(found.hash).map_err(|error| error.to_string())?;
     let design = design_markdown(&repo, &object)?;
     let comments = repo
-        .comment_list(Some(&found.qname), false)
+        .comment_list_on(branch, Some(&found.qname), false)
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|comment| DesignSpaceComment {
@@ -548,7 +548,7 @@ pub(super) fn fast_forward(
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn comment_count(path: &Path, commit: &str) -> Result<usize, String> {
+pub(super) fn comment_count(path: &Path, branch: &str, commit: &str) -> Result<usize, String> {
     let repo = open(path)?;
     let hash = CommitHash::from_hex(commit).map_err(|error| error.to_string())?;
     let commit = repo.read_commit(hash).map_err(|error| error.to_string())?;
@@ -558,7 +558,7 @@ pub(super) fn comment_count(path: &Path, commit: &str) -> Result<usize, String> 
         .map(|(qname, _)| symbol(&repo, *qname))
         .collect::<BTreeSet<_>>();
     let comments = repo
-        .comment_list(None, false)
+        .comment_list_on(branch, None, false)
         .map_err(|error| error.to_string())?;
     Ok(comments
         .into_iter()
@@ -810,7 +810,7 @@ mod tests {
         let head = branch_head(temp.path(), &branch).unwrap().unwrap();
         assert!(branches(temp.path()).unwrap().contains(&branch));
         assert_eq!(content_digest(temp.path(), &head).unwrap().len(), 64);
-        assert_eq!(comment_count(temp.path(), &head).unwrap(), 0);
+        assert_eq!(comment_count(temp.path(), &branch, &head).unwrap(), 0);
     }
 
     #[test]

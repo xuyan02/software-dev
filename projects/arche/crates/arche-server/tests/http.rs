@@ -31,14 +31,30 @@ fn clones_pushes_and_fetches_over_http() {
     clone.create_technical_system("second").unwrap();
     clone.add_all().unwrap();
     clone.commit_index("add second", true).unwrap();
+    let comment = clone.comment_add("technical/app", "补充错误码").unwrap();
     arche_client::push(&clone, false).unwrap();
 
     let pushed = Repository::open(&server_repo).unwrap();
     let server_head = pushed.ref_hash("refs/heads/main").unwrap().unwrap();
     assert_eq!(server_head, clone.head_commit().unwrap());
+    assert_eq!(
+        pushed.comment_list_on("main", None, false).unwrap()[0].body,
+        "补充错误码"
+    );
 
     let second = TempDir::new().unwrap();
     let fetched = arche_client::clone_from(&url, second.path(), Some("main")).unwrap();
     assert_eq!(fetched.source_url(), Some("git@example.test:app.git"));
     assert!(fetched.find_by_qname("technical/second").is_ok());
+    fetched
+        .comment_resolve(comment.id, "已补充", "reviewer-agent")
+        .unwrap();
+    arche_client::push(&fetched, false).unwrap();
+
+    let refreshed = TempDir::new().unwrap();
+    let fetched_again = arche_client::clone_from(&url, refreshed.path(), Some("main")).unwrap();
+    let comments = fetched_again.comment_list(None, false).unwrap();
+    assert_eq!(comments.len(), 1);
+    assert!(comments[0].resolved);
+    assert_eq!(comments[0].conclusion, "已补充");
 }

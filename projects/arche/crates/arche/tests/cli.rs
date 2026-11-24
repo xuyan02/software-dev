@@ -279,6 +279,18 @@ fn init_create_show() {
     assert!(stdout.contains("1\topen\ttechnical/app\t补充错误码"));
     assert!(stdout.contains("补充错误码"));
 
+    let subtree = arche()
+        .current_dir(temp.path())
+        .args(["comment", "list", "technical/app", "--subtree"])
+        .output()
+        .expect("run arche comment list --subtree");
+    assert!(subtree.status.success(), "{:?}", subtree);
+    assert!(
+        String::from_utf8(subtree.stdout)
+            .unwrap()
+            .contains("补充错误码")
+    );
+
     let resolved = arche()
         .current_dir(temp.path())
         .arg("comment")
@@ -489,6 +501,111 @@ fn source_ls_and_cat_read_the_git_checkout() {
     run(&["source", "fetch"]);
     assert_eq!(run(&["source", "ls"]).trim(), "src/lib.rs");
     assert!(run(&["source", "cat", "src/lib.rs"]).contains("greet"));
+}
+
+#[test]
+fn ssh_pushes_and_fetches_comments() {
+    let server = TempDir::new().unwrap();
+    let server_repo = server.path().join("project");
+    let init = arche().arg("init").arg(&server_repo).output().unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let server_run = |args: &[&str]| {
+        let output = arche()
+            .current_dir(&server_repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    server_run(&["create", "technical-system", "app"]);
+    server_run(&["add", "-A"]);
+    server_run(&["commit", "-m", "init"]);
+
+    let bin = TempDir::new().unwrap();
+    let ssh = bin.path().join("ssh");
+    fs::write(
+        &ssh,
+        format!(
+            "#!/bin/sh\nexec '{}' serve --stdio --root '{}'\n",
+            env!("CARGO_BIN_EXE_arche"),
+            server_repo.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&ssh).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&ssh, permissions).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let remote = "ssh://example.test/project";
+    let run = |dir: &std::path::Path, args: &[&str]| {
+        let output = arche()
+            .current_dir(dir)
+            .args(args)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let first = TempDir::new().unwrap();
+    let first_repo = first.path().join("repo");
+    run(
+        first.path(),
+        &["clone", remote, first_repo.to_str().unwrap()],
+    );
+    let added = run(
+        &first_repo,
+        &["comment", "add", "technical/app", "需要补充"],
+    );
+    assert!(added.starts_with("comment "));
+    run(&first_repo, &["push"]);
+
+    let second = TempDir::new().unwrap();
+    let second_repo = second.path().join("repo");
+    run(
+        second.path(),
+        &["clone", remote, second_repo.to_str().unwrap()],
+    );
+    assert!(run(&second_repo, &["comment", "list", "--open"]).contains("需要补充"));
+
+    run(
+        &second_repo,
+        &[
+            "comment",
+            "resolve",
+            "1",
+            "--conclusion",
+            "已补充",
+            "--agent",
+            "reviewer",
+        ],
+    );
+    run(&second_repo, &["push"]);
+
+    let third = TempDir::new().unwrap();
+    let third_repo = third.path().join("repo");
+    run(
+        third.path(),
+        &["clone", remote, third_repo.to_str().unwrap()],
+    );
+    let listed = run(&third_repo, &["comment", "list"]);
+    assert!(listed.contains("resolved"));
+    assert!(listed.contains("已补充"));
+
+    run(&third_repo, &["comment", "clear"]);
+    run(&third_repo, &["push"]);
+    let fourth = TempDir::new().unwrap();
+    let fourth_repo = fourth.path().join("repo");
+    run(
+        fourth.path(),
+        &["clone", remote, fourth_repo.to_str().unwrap()],
+    );
+    assert!(run(&fourth_repo, &["comment", "list"]).trim().is_empty());
 }
 
 #[test]

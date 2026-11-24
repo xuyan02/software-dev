@@ -26,7 +26,10 @@ pub fn push(repo: &Repository, force: bool) -> Result<()> {
     let name = format!("refs/heads/{branch}");
     let head = repo.head_commit()?;
     let expected = remote.ref_hash(&name)?;
-    remote.update_ref_checked(&name, expected, head, force)
+    remote.update_ref_checked(&name, expected, head, force)?;
+    let merged = remote.import_comments(&repo.export_comments()?, false)?;
+    repo.replace_comments(&merged)?;
+    Ok(())
 }
 
 pub fn fetch(repo: &Repository) -> Result<()> {
@@ -45,7 +48,9 @@ pub fn fetch(repo: &Repository) -> Result<()> {
     }
     let branch = repo.current_branch()?;
     let remote_head = read_ref_file(remote.dir(), &format!("refs/heads/{branch}"))?;
-    repo.set_ref(&format!("refs/remotes/origin/{branch}"), remote_head)
+    repo.set_ref(&format!("refs/remotes/origin/{branch}"), remote_head)?;
+    repo.import_comments(&remote.export_comments()?, true)?;
+    Ok(())
 }
 
 pub fn pull(repo: &Repository) -> Result<()> {
@@ -112,6 +117,7 @@ pub fn clone_from(
     let remote_head = read_ref_file(remote.dir(), &format!("refs/heads/{branch}"))?;
     repo.set_ref(&format!("refs/heads/{branch}"), remote_head)?;
     repo.set_ref(&format!("refs/remotes/origin/{branch}"), remote_head)?;
+    repo.import_comments(&remote.export_comments()?, true)?;
     if branch != "main" {
         repo.set_head(&branch)?;
     }
@@ -130,6 +136,14 @@ fn http_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
     if !response.status().is_success() {
         bail!("push: HTTP {}", response.status());
     }
+    let comments = http_client()
+        .put(format!("{base}/comments"))
+        .body(repo.export_comments()?)
+        .send()?;
+    if !comments.status().is_success() {
+        bail!("push comments: HTTP {}", comments.status());
+    }
+    repo.replace_comments(&comments.bytes()?)?;
     Ok(())
 }
 
@@ -201,6 +215,12 @@ fn http_fetch(repo: &Repository, url: &str) -> Result<Option<String>> {
         let bytes = response.bytes()?;
         repo.write_record(relative, &bytes)?;
     }
+    let comments = client.get(format!("{base}/comments")).send()?;
+    if comments.status().is_success() {
+        repo.import_comments(&comments.bytes()?, true)?;
+    } else if comments.status() != reqwest::StatusCode::NOT_FOUND {
+        bail!("fetch comments: HTTP {}", comments.status());
+    }
     http_source(url)
 }
 
@@ -246,6 +266,22 @@ fn ssh_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
     if line.trim() != "OK" {
         bail!("ssh push failed: {line}");
     }
+    let comments = repo.export_comments()?;
+    writeln!(stdin, "COMMENTS {}", comments.len())?;
+    stdin.write_all(&comments)?;
+    stdin.flush()?;
+    let mut header = String::new();
+    if stdout.read_line(&mut header)? == 0 {
+        bail!("ssh push comments: connection closed before response");
+    }
+    let len = header
+        .trim()
+        .strip_prefix("OK ")
+        .with_context(|| format!("ssh push comments: {header}"))?;
+    let len: usize = len.parse()?;
+    let mut bytes = vec![0u8; len];
+    stdout.read_exact(&mut bytes)?;
+    repo.replace_comments(&bytes)?;
     drop(stdin);
     let _ = child.wait();
     Ok(())
@@ -327,6 +363,20 @@ fn ssh_fetch(repo: &Repository, url: &str) -> Result<Option<String>> {
     } else {
         Some(String::from_utf8(bytes).context("ssh source URL is not UTF-8")?)
     };
+    writeln!(stdin, "COMMENTS")?;
+    stdin.flush()?;
+    let mut header = String::new();
+    if stdout.read_line(&mut header)? == 0 {
+        bail!("ssh fetch comments: connection closed before response");
+    }
+    let len = header
+        .trim()
+        .strip_prefix("OK ")
+        .with_context(|| format!("ssh fetch comments: {header}"))?;
+    let len: usize = len.parse()?;
+    let mut bytes = vec![0u8; len];
+    stdout.read_exact(&mut bytes)?;
+    repo.import_comments(&bytes, true)?;
     drop(stdin);
     let _ = child.wait();
     Ok(source)
