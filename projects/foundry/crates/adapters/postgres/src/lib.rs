@@ -71,6 +71,17 @@ impl PostgresStore {
         &self.pool
     }
 
+    /// Capsule profile configured for the project's final-artifact tests.
+    pub async fn project_test_capsule(&self, project_id: Uuid) -> Result<String, sqlx::Error> {
+        Ok(
+            sqlx::query_scalar("select test_capsule from projects where id = $1")
+                .bind(project_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .unwrap_or_else(|| "cli".to_string()),
+        )
+    }
+
     /// Apply every migration embedded from `migrations/`. Idempotent: sqlx
     /// records applied versions in `_sqlx_migrations`.
     pub async fn migrate(&self) -> Result<(), sqlx::migrate::MigrateError> {
@@ -462,8 +473,8 @@ impl ProjectRepository for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
             "insert into projects \
-             (id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, status, root_task_id, version, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+             (id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, test_capsule, status, root_task_id, version, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(project.id)
         .bind(&project.name)
@@ -473,6 +484,7 @@ impl ProjectRepository for PostgresStore {
         .bind(&project.design_space_url)
         .bind(&project.design_space_branch)
         .bind(project.skip_human_review)
+        .bind(project.test_capsule.as_str())
         .bind(project.status.as_str())
         .bind(project.root_task_id)
         .bind(project.version as i32)
@@ -495,8 +507,8 @@ impl ProjectRepository for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         sqlx::query(
             "insert into projects \
-             (id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, status, root_task_id, version, created_at, updated_at) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+             (id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, test_capsule, status, root_task_id, version, created_at, updated_at) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(project.id)
         .bind(&project.name)
@@ -506,6 +518,7 @@ impl ProjectRepository for PostgresStore {
         .bind(&project.design_space_url)
         .bind(&project.design_space_branch)
         .bind(project.skip_human_review)
+        .bind(project.test_capsule.as_str())
         .bind(project.status.as_str())
         .bind(project.root_task_id)
         .bind(project.version as i32)
@@ -525,7 +538,7 @@ impl ProjectRepository for PostgresStore {
         let mut tx = self.pool.begin().await.map_err(backend)?;
         let result = sqlx::query(
             "update projects set name = $3, description = $4, git_repository = $5, git_branch = $6, \
-             design_space_url = $7, design_space_branch = $8, skip_human_review = $9, status = $10, version = $11, updated_at = $12 \
+             design_space_url = $7, design_space_branch = $8, skip_human_review = $9, test_capsule = $10, status = $11, version = $12, updated_at = $13 \
              where id = $1 and version = $2",
         )
         .bind(project.id)
@@ -537,6 +550,7 @@ impl ProjectRepository for PostgresStore {
         .bind(&project.design_space_url)
         .bind(&project.design_space_branch)
         .bind(project.skip_human_review)
+        .bind(project.test_capsule.as_str())
         .bind(project.status.as_str())
         .bind(project.version as i32)
         .bind(project.updated_at)
@@ -560,7 +574,7 @@ impl ProjectRepository for PostgresStore {
 
     async fn get(&self, id: Uuid) -> Result<Option<Project>, RepoError> {
         let row = sqlx::query_as::<_, ProjectRow>(
-            "select id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, status, root_task_id, version, created_at, updated_at \
+            "select id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, test_capsule, status, root_task_id, version, created_at, updated_at \
              from projects where id = $1",
         )
         .bind(id)
@@ -817,7 +831,7 @@ impl ProjectRepository for PostgresStore {
     async fn list(&self, filter: ProjectFilter) -> Result<Vec<Project>, RepoError> {
         let status = filter.status.map(|status| status.as_str().to_string());
         let rows = sqlx::query_as::<_, ProjectRow>(
-            "select id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, status, root_task_id, version, created_at, updated_at \
+            "select id, name, description, git_repository, git_branch, design_space_url, design_space_branch, skip_human_review, test_capsule, status, root_task_id, version, created_at, updated_at \
              from projects \
              where ($1::text is null or status = $1) \
              and ($2::text is null or strpos(lower(name), lower($2)) > 0) \
@@ -849,6 +863,7 @@ type ProjectRow = (
     String,
     bool,
     String,
+    String,
     Option<Uuid>,
     i32,
     OffsetDateTime,
@@ -870,6 +885,7 @@ impl IntoProject for ProjectRow {
             design_space_url,
             design_space_branch,
             skip_human_review,
+            test_capsule,
             status,
             root_task_id,
             version,
@@ -885,6 +901,9 @@ impl IntoProject for ProjectRow {
             design_space_url,
             design_space_branch,
             skip_human_review,
+            test_capsule: test_capsule.parse().map_err(|_| {
+                RepoError::Backend(format!("unknown project capsule profile {test_capsule}"))
+            })?,
             status: parse_enum(&status)?,
             root_task_id,
             members,

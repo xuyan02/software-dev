@@ -71,6 +71,18 @@ impl CommentStore {
             .collect())
     }
 
+    /// Remove comments for one target, or all comments when `target` is `None`.
+    pub fn clear(&self, target: Option<&str>) -> Result<usize> {
+        let mut comments = self.load()?;
+        let before = comments.len();
+        match target {
+            Some(target) => comments.retain(|comment| comment.target != target),
+            None => comments.clear(),
+        }
+        self.save(&comments)?;
+        Ok(before - comments.len())
+    }
+
     pub fn resolve(&self, id: u64, conclusion: &str, agent: &str) -> Result<Comment> {
         let conclusion = conclusion.trim();
         if conclusion.is_empty() {

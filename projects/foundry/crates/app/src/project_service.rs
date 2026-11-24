@@ -9,8 +9,8 @@ use crate::ports::{
 use crate::task::TaskDispatcher;
 use crate::workflow::{WorkflowCatalog, WorkflowLookup};
 use foundry_domain::{
-    Account, AccountStatus, Actor, DEFAULT_BRANCH, DomainEvent, DomainEventKind, Project,
-    ProjectRole, ProjectStatus, TaskDAO, WorkflowOption,
+    Account, AccountKind, AccountStatus, Actor, DEFAULT_BRANCH, DomainEvent, DomainEventKind,
+    Project, ProjectRole, ProjectStatus, TaskDAO, WorkflowOption,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -72,6 +72,11 @@ where
         command: CreateProject,
     ) -> Result<Project, ServiceError> {
         let account = self.require_account(&actor).await?;
+        if account.kind != AccountKind::Human {
+            return Err(ServiceError::Unauthorized(
+                "only human accounts may create projects".to_string(),
+            ));
+        }
         if command.root_workflow_id.as_str().trim().is_empty() {
             return Err(ServiceError::Validation(
                 "root_workflow_id is required".to_string(),
@@ -215,6 +220,11 @@ where
         if let Some(skip_human_review) = command.skip_human_review {
             project
                 .set_skip_human_review(skip_human_review)
+                .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        }
+        if let Some(test_capsule) = command.test_capsule {
+            project
+                .set_test_capsule(test_capsule)
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
         }
         if command.status == Some(ProjectStatus::Archived) {

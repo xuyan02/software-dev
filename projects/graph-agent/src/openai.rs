@@ -239,7 +239,28 @@ fn is_deepseek(base_url: &str, model: &str) -> bool {
 fn message_json(message: &LlmMessage) -> Value {
     match message.role {
         LlmRole::System => json!({ "role": "system", "content": message.content }),
-        LlmRole::User => json!({ "role": "user", "content": message.content }),
+        LlmRole::User => {
+            if message.images.is_empty() {
+                json!({ "role": "user", "content": message.content })
+            } else {
+                let mut parts = vec![json!({
+                    "type": "text",
+                    "text": message.content,
+                })];
+                for image in &message.images {
+                    parts.push(json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!(
+                                "data:{};base64,{}",
+                                image.media_type, image.data_base64
+                            )
+                        }
+                    }));
+                }
+                json!({ "role": "user", "content": parts })
+            }
+        }
         LlmRole::Assistant => {
             let mut value = json!({ "role": "assistant", "content": message.content });
             if let Some(reasoning_content) = &message.reasoning_content {
@@ -610,6 +631,32 @@ mod tests {
         let overridden = OpenAiCompatibleConfig::new("http://localhost", "key", "unknown")
             .with_context_window(32_000);
         assert_eq!(overridden.context_window, Some(32_000));
+    }
+
+    #[test]
+    fn serializes_user_images_as_content_parts() {
+        let config = OpenAiCompatibleConfig::new("http://localhost", "key", "vision-model");
+        let request = LlmRequest {
+            model: ModelProfileRef::new("vision-model"),
+            params: LlmParams::default(),
+            messages: vec![LlmMessage::user_with_images(
+                "look at this",
+                vec![crate::LlmImage {
+                    media_type: "image/png".to_string(),
+                    data_base64: "aGVsbG8=".to_string(),
+                }],
+            )],
+            tools: Vec::new(),
+        };
+        let body = request_body(&config, &request);
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "look at this");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
     }
 
     #[tokio::test]

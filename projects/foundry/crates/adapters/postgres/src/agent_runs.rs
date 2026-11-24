@@ -190,3 +190,73 @@ impl PostgresStore {
         .map_err(backend)
     }
 }
+
+impl PostgresStore {
+    /// Document reviews that a skipped-approval project should approve
+    /// automatically. Goal clarification is deliberately excluded: a human
+    /// must take part in the interview and approve its result.
+    pub async fn pending_auto_document_approvals(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, String, i64, String)>, RepoError> {
+        sqlx::query_as(
+            "select l.task_id, l.project_id, l.kind, l.draft_revision, owner.handle \
+             from anchor_document_review_links l \
+             join tasks t on t.id = l.task_id \
+             join projects p on p.id = l.project_id \
+             join lateral ( \
+                 select a.handle \
+                 from project_members pm \
+                 join accounts a on a.id = pm.account_id \
+                 where pm.project_id = l.project_id \
+                   and pm.role = 'owner' \
+                   and a.kind = 'human' \
+                   and a.status = 'active' \
+                 order by pm.added_at, pm.account_id \
+                 limit 1 \
+             ) owner on true \
+             where l.released_at is null \
+               and p.skip_human_review \
+               and t.state = 'in_progress' \
+               and (t.stage = 'human_review' or (t.workflow = 'iteration' and t.stage = 'acceptance')) \
+               and t.workflow <> 'goal_clarification' \
+               and not exists ( \
+                   select 1 from anchor_document_approvals a \
+                   where a.project_id = l.project_id \
+                     and a.kind = l.kind \
+                     and a.decision = 'approved' \
+                     and a.revision >= l.draft_revision \
+               )",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)
+    }
+
+    /// Pending design-space merge requests whose project skips approvals.
+    /// Returns the owner account that will stand in as the reviewer.
+    pub async fn pending_auto_design_merges(&self) -> Result<Vec<(Uuid, Uuid, Uuid)>, RepoError> {
+        sqlx::query_as(
+            "select mr.project_id, mr.id, owner.account_id \
+             from design_space_merge_requests mr \
+             join tasks t on t.id = mr.task_id \
+             join projects p on p.id = mr.project_id \
+             join lateral ( \
+                 select pm.account_id \
+                 from project_members pm \
+                 join accounts a on a.id = pm.account_id \
+                 where pm.project_id = mr.project_id \
+                   and pm.role = 'owner' \
+                   and a.kind = 'human' \
+                   and a.status = 'active' \
+                 order by pm.added_at, pm.account_id \
+                 limit 1 \
+             ) owner on true \
+             where p.skip_human_review \
+               and t.state = 'in_progress' \
+               and t.stage in ('review', 'merge', 'human_review')",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)
+    }
+}

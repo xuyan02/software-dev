@@ -21,9 +21,17 @@ pub struct ToolContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ToolImage {
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ToolImage>,
 }
 
 impl ToolOutput {
@@ -31,6 +39,7 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
         }
     }
 
@@ -38,7 +47,13 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: true,
+            images: Vec::new(),
         }
+    }
+
+    pub fn with_images(mut self, images: Vec<ToolImage>) -> Self {
+        self.images = images;
+        self
     }
 }
 

@@ -11,6 +11,25 @@ cargo build --bins
 cargo run -p foundry-control-plane
 ```
 
+## 退出与残留进程
+
+控制平面收到 Ctrl-C 或 SIGTERM 后会：
+
+1. 停止 HTTP 服务并等待在途请求；
+2. 对每个 `foundry-agentd` 发送 SIGTERM，并等待最多 5 秒；
+3. 仍未退出的 agentd 用 SIGKILL 结束；
+4. 按 `foundry.agent_id` 标签清理 agent 和 service 胶囊；
+5. 正常 agentd 退出时也会通过 Drop 清理自己的胶囊。
+
+控制平面启动时会读取 `agent_processes`，清理上次崩溃遗留、且 `/proc/<pid>/comm` 仍是 `foundry-agentd` 的进程和对应胶囊。agentd 还设置了 Linux `PR_SET_PDEATHSIG`：控制平面异常退出时内核会向它发送 SIGTERM。
+
+手动检查：
+
+```bash
+pgrep -a foundry-agentd
+podman ps -a --filter label=foundry.agent_id
+```
+
 ## 本地源码仓库
 
 可以从本地 git daemon 读取源码，避免依赖 GitHub 网络：
@@ -32,7 +51,7 @@ git://<host-ip>:9418/software-dev.git
 git -C /home/xuyan/work/software-dev push /home/xuyan/git/software-dev.git --all
 ```
 
-切换 source URL 后，先更新仓库的 `repo.toml` 并让工作区执行 `ds fetch`；`ds source fetch` 会把 `.ds/source` 的 `origin` 改成新 URL 后继续 fetch。新工作区 clone 时直接使用 `repo.toml` 里的 URL。这个 daemon 没有认证，只应在受信网络使用；它只提供 fetch，不接受 push。
+切换 source URL 后，在工作区执行 `arche source set-url <url>`，再执行 `arche source fetch`。新工作区用 `arche clone --source <url>` 记录源码地址。这个 daemon 没有认证，只应在受信网络使用；它只提供 fetch，不接受 push。
 
 ## 胶囊凭据布局
 
@@ -41,68 +60,57 @@ git -C /home/xuyan/work/software-dev push /home/xuyan/git/software-dev.git --all
 
 | 路径 | 作用域 | 注入/清理 |
 |---|---|---|
-| `/run/foundry/ds_key` | agent 账户，shell 生命周期 | 创建 shell 时由 agentd 从 `/api/v1/agent/ds-credential` 注入 |
-| `/run/foundry/ds_known_hosts` | 同上 | 同上 |
-| `/run/foundry/ds_token` | agent 账户，可选 | 仅当控制平面返回 HTTP token 时注入；Foundry 使用 SSH 端点，通常不存在 |
+| `/run/foundry/arche_key` | agent 账户，shell 生命周期 | 创建 shell 时由 agentd 从 `/api/v1/agent/arche-credential` 注入 |
+| `/run/foundry/arche_known_hosts` | 同上 | 同上 |
 | `/run/foundry/git-credentials` | 任务 | 任务开始时注入，每 30 分钟刷新，任务结束删除 |
 
 - 镜像里的 `/etc/gitconfig` 固定配置
   `credential.helper = store --file=/run/foundry/git-credentials`；
-- `ds` 的 SSH 身份读 `ds_key`/`ds_known_hosts`，HTTP token 读 `ds_token`；
-- 任务清理只删除 `git-credentials`，不会删除 `ds_key`；
-- 不再往 `/work/<project>/.credentials` 写任何凭据；
-- `repo.toml` 是设计空间仓库的数据，不是凭据，放在仓库根，clone 时取到 `.ds/repo.toml`。
+- agentd 在 `~/.ssh/config` 写入 `Match host <host> user <user>` 块，把 Arche
+  host 的 `IdentityFile` 和 `UserKnownHostsFile` 指向上面两个文件；
+- 任务清理只删除 `git-credentials`，不会删除 Arche key；
+- 设计空间不再使用 HTTP token，也没有 `ds_token`。
 
 ## 设计空间 SSH 端点
 
-智能体不再使用 ds bearer token。控制平面为每个 agent 账户生成 SSH key，公钥、
-加密后的私钥和吊销状态保存在 Postgres 的 `agent_ds_keys` 表；AES-GCM master key
-保存在 `~/.foundry/ds-key-master`，不写入数据库。
+智能体只使用 Arche SSH。控制平面为每个 agent 账户生成 SSH key，公钥、
+加密后的私钥和吊销状态保存在 Postgres 的 `agent_arche_keys` 表；AES-GCM master key
+保存在 `~/.foundry/arche-key-master`（旧 `ds-key-master` 会在启动时自动改名）。
 
-SSH 采用和 Git 相同的模型：
+SSH 模型：
 
-- 宿主机只运行系统 sshd，不运行 design-space 专用 sshd 容器；
-- 所有 agent key 都登录同一个服务账户（默认 `foundry-ds`）；
-- 控制平面写出 `~/.foundry/ds-sshd/authorized_keys`，sshd 通过
+- 宿主机只运行系统 sshd；
+- 所有 agent key 登录同一个服务账户（默认 `foundry-arche`）；
+- 控制平面写出 `~/.foundry/arche-sshd/authorized_keys`，sshd 通过
   `AuthorizedKeysCommand` 读取；
-- 每一行 key 都带 `restrict` 和 `command="foundry-ds-stdio ..."`，不能开 shell；
+- 每一行 key 都带 `restrict` 和 `command="/usr/local/bin/foundry-arche-stdio ..."`，不能开 shell；
 - forced command 根据 key 对应的 allowlist 判断 repo，再执行
-  `ds-server --stdio --root <repos-root>/<repo>`。
+  `arche serve --stdio --root <repos-root>/<repo>`。
 
 安装或更新（需要 root，操作幂等）：
 
 ```bash
-cd projects/foundry
-cargo build --bins
-sudo scripts/install-ds-sshd.sh
+cd projects/arche
+sudo ./deploy/install.sh target/release/arche /srv/arche
 ```
 
-安装脚本会安装 `openssh-server` 和 `acl`（如果缺少），创建服务账户
-`foundry-ds`，安装 `/usr/local/bin/foundry-ds-stdio` 和
-`/usr/local/bin/foundry-ds-authorized-keys`，写
-`/etc/ssh/sshd_config.d/10-foundry-ds.conf`，并给服务账户授予
-`~/.foundry/design-spaces` 的 ACL 读写权限。然后重启 sshd。
+并在宿主 sshd 的 `Match User foundry-arche` 块中，把 `AuthorizedKeysCommand`
+指向 Foundry 生成的 `~/.foundry/arche-sshd/authorized_keys`。完整示例见
+`projects/arche/deploy/README.md`。然后配置 `arche_ssh_url`，默认是
+`ssh://foundry-arche@<宿主 IP>`，并重启控制平面。
 
-配置 `design_space_ssh_url`，默认是 `ssh://foundry-ds@<宿主 IP>`。
-`ds-server` 使用控制平面同目录的二进制；不在同目录时设置
-`FOUNDRY_DS_SERVER=/absolute/path/to/ds-server`。切换 SSH 端点后重启控制平面，
-再重启 agentd 和胶囊，使 agent 重新获取新的 host key。
+控制平面需要用 `umask 002` 启动（systemd 下设置 `UMask=0002`），并给
+`foundry-arche` 服务账户授予 `design_space_root` 的 ACL 读写权限。
 
-HTTP ds-server 以操作者身份运行，SSH ds-server 以服务账户运行，两者写同一组仓库。
-控制平面需要用 `umask 002` 启动（systemd 下设置 `UMask=0002`）；SSH 侧由
-`foundry-ds-stdio` 设置同样的 umask，仓库 ACL 由安装脚本维护。
+agentd 启动并创建常驻 shell 时，通过 `/api/v1/agent/arche-credential` 取一次，
+写到胶囊的 `/run/foundry/arche_key` 和 `/run/foundry/arche_known_hosts`。
+`arche` 访问 SSH remote 时使用这两个文件，不经过环境变量。
 
-这把 key 属于 agent 账户，不是任务的临时凭证。agentd 启动并创建常驻 shell 时，
-通过 `/api/v1/agent/ds-credential` 取一次，写到胶囊的 `/run/foundry/ds_key` 和
-`/run/foundry/ds_known_hosts`。`ds` 访问 SSH remote 时直接读取这两个文件，不经过
-环境变量，也不需要智能体或任务传参。GitHub token 仍是任务级、短期的凭证。
-`ds_known_hosts` 来自宿主 sshd 的 host key。
-
-删除 `agent_ds_keys` 里的 key 或将 `revoked_at` 置为非空，控制平面重新生成
+删除 `agent_arche_keys` 里的 key 或将 `revoked_at` 置为非空，控制平面重新生成
 `authorized_keys` 后即吊销该 agent 的访问。
 
-`~/.foundry/ds-key-master` 是数据库私钥的 AES-GCM master key，必须和数据库备份分开保存。
-丢失它会导致 `agent_ds_keys` 里的私钥无法解密，只能重新生成并轮换所有 agent key。
+`~/.foundry/arche-key-master` 是数据库私钥的 AES-GCM master key，必须和数据库备份分开保存。
+丢失它会导致 `agent_arche_keys` 里的私钥无法解密，只能重新生成并轮换所有 agent key。
 
 ## 项目删除
 
@@ -112,19 +120,19 @@ HTTP ds-server 以操作者身份运行，SSH ds-server 以服务账户运行，
 2. 删除带 `foundry.agent_id` 标签的胶囊；
 3. 删除每个 agent 的 `<workspace>/<project-id>` 工作区；
 4. 删除 agent 日志文件和 `source-cache/<project-id>-*`；
-5. 删除 `~/.foundry/design-spaces/<project-id>` 设计空间仓库（包括 `ds init` 创建的骨架元素、所有提交和分支）；
+5. 删除 `~/.foundry/design-spaces/<project-id>` 设计空间仓库（包括 `arche init` 创建的骨架对象、所有提交和分支）；
 6. 删除数据库中的项目和 agent 定义，并删除未被其他定义使用的 agent 账户、SSH key、allowlist，刷新 `authorized_keys`。
 
 删除前确认没有仍需保留的设计空间或工作区数据。
 
 ## 更新 agent shell 镜像
 
-agent 的常驻 shell 使用 `shell_image`（默认 `localhost/openergasterion-shell:1`）。镜像里的 `ds` 是构建时复制进去的二进制，不会随 control plane 或工作区的重新编译自动更新。修改 `design-space` 的 CLI 后，必须重建镜像：
+agent 的常驻 shell 使用 `shell_image`（默认 `localhost/openergasterion-shell:1`）。镜像里的 `arche` 是构建时复制进去的二进制，不会随 control plane 或工作区的重新编译自动更新。修改 `arche` 的 CLI 后，必须重建镜像：
 
 ```bash
 cd projects/foundry
-cargo build --release -p design-space --bin ds
-cp ../../target/release/ds deploy/shell/ds
+cargo build --release -p arche
+cp ../../target/release/arche deploy/shell/arche
 podman build -t localhost/openergasterion-shell:1 deploy/shell/
 ```
 
@@ -132,8 +140,8 @@ podman build -t localhost/openergasterion-shell:1 deploy/shell/
 
 ```bash
 for c in $(podman ps -q --filter ancestor=localhost/openergasterion-shell:1); do
-  podman cp ../../target/release/ds "$c":/usr/local/bin/ds
-  podman exec "$c" chmod 755 /usr/local/bin/ds
+  podman cp ../../target/release/arche "$c":/usr/local/bin/arche
+  podman exec "$c" chmod 755 /usr/local/bin/arche
 done
 ```
 
@@ -249,7 +257,9 @@ cargo xtask check
 5. 重复 Issue 直接转 `Duplicate`，写入 `duplicate_of`，不创建任务；
 6. 分诊完成后发送 `triage:done` 回到 `waiting`。
 
-设计迭代由 `design_iteration` 任务驱动：设计分派智能体读取设计池，判断 `design` / `design_baseline`，创建子设计任务；Task Dispatcher 按空闲智能体分配，一个智能体同时只做一个任务。旧 `triage_check` 和两级分诊已移除。
+设计迭代由 `design_iteration` 任务驱动：设计分派智能体读取设计池，判断 `design` / `design_baseline`，创建子设计任务；Task Dispatcher 按空闲智能体分配，一个智能体同时只做一个任务。一轮验收通过后任务回到 `dispatch` 继续取下一批，直到设计池为空；默认 `continuous` 触发器会在任务结束后立即重新武装，空闲时按退避间隔轮询。开发迭代 `development_iteration` 使用同样的持续处理方式。旧 `triage_check` 和两级分诊已移除。
+
+触发器不会重叠：上一轮任务未 `Completed` 时，定时和手动触发都会被拒绝或跳过。`daily_check` 每天并行运行需求、技术设计、代码、测试和产品试用五个审计子任务，结束后统一汇总并分流 Issue。
 
 当前自动处理范围是设计基线和设计缺陷：`design_baseline`、`design_correction`、`design`。旧 `issue_triage` 任务已停用。
 

@@ -33,38 +33,65 @@ qname 只能包含字母、数字、`/`、`#`。中文名称放在 `display_name
 
 ```text
 technical
-technical/system/<name>
-technical/module/<name>
-technical/layer/<name>
+technical/<system>
+technical/<system>/<module>
+technical/<system>/<layer>
 technical/directory/<path>
 technical/file/<path>
 technical/namespace/<name>
-<owner>/<type>
-<owner>/<method>#<hash8>
+<namespace>/<type>
+<type>/<method>#<hash8>
 ```
 
 常用类型：
 
 ```bash
 arche create technical-system <name>
-arche create technical-module <name> --parent <system>
-arche create technical-layer <name> --parent <system|module>
+arche create technical-module <name> --parent technical/<system>
+arche create technical-layer <name> --parent technical/<system>
 arche create technical-namespace <name> --parent technical
-arche create technical-class <name> --namespace <ns>
-arche create technical-struct <name> --namespace <ns>
-arche create technical-enum <name> --namespace <ns>
-arche create technical-interface <name> --namespace <ns>
-arche create technical-mixin <name> --namespace <ns>
-arche create technical-function <name> --namespace <ns>
-arche create technical-method --parent <type> --prototype "<name>(<types>) -> <return>"
+arche create technical-class <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-struct <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-enum <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-interface <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-mixin <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-function <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-method --parent <type> --prototype "<name>(<types>) -> <return>" --source <path:start-end>
 arche create technical-part <name> --parent <type> --source <path:start-end>
 ```
+
+对象类型：
+
+| kind | 说明 | qname |
+|---|---|---|
+| System | 顶层技术系统 | `technical/<system>` |
+| Module | 系统内的模块 | `technical/<system>/<module>` |
+| Layer | 系统内的层 | `technical/<system>/<layer>` |
+| Directory | 源码目录 | `technical/directory/<path>` |
+| File | 源码文件 | `technical/file/<path>` |
+| Namespace | 逻辑命名空间，不等于物理目录 | `technical/namespace/<name>` |
+| Class | 有数据和方法，或变体携带数据的类型 | `<namespace>/<name>` |
+| Struct | 只有数据、没有方法的类型 | `<namespace>/<name>` |
+| Enum | 只有常量变体的类型 | `<namespace>/<name>` |
+| Interface | 接口、协议或抽象契约 | `<namespace>/<name>` |
+| Mixin | 只提供可复用行为的行为片段 | `<namespace>/<name>` |
+| Function | 不属于某个类型的函数 | `<namespace>/<name>` |
+| Method | 类型内部的可调用成员 | `<type>/<name>#<hash8>` |
+| Part | 没有独立名字、但需要说明的代码片段 | `<parent>/part#<hash8>` |
+
+判断规则：
+
+- 变体携带数据的 enum 按 Class 处理；只有常量变体的用 Enum；
+- 只有数据没有方法用 Struct；只有抽象方法用 Interface；
+- 只有具体方法、没有数据的工具类按 Namespace + Function 处理；
+- 嵌套类型使用对应类型并指定 `--parent <type>`；
+- 继承、接口、混入、override 和依赖关系由调用方写入。
 
 Arche 内部不解析源码 AST。Namespace、Class、Method 等由你根据源码手工创建。
 
 ## 4. 文档字段
 
-文档不是独立对象树，而是对象字段：
+文档（documents）不是独立对象树，而是对象字段。字段写作规范见 `design-writing` 技能：
 
 ```text
 position             DocumentText
@@ -100,8 +127,17 @@ arche show <qname>
 arche show <qname> --format json
 arche show <qname> --format md
 arche ls
-arche search <text> [--kind <kind>]
+arche search <text> [--kind <kind>] [--has-design]
 arche check
+arche doc check
+arche structure list
+arche structure unassigned
+arche structure check
+arche structure assign <element> --parent <system|module|layer>
+arche comment add <qname> '<问题>'
+arche comment list [--open]
+arche comment resolve <id> --conclusion '<结论>' --agent <agent>
+arche comment clear [<qname>]
 ```
 
 `show --format md` 从对象字段动态生成文档，不存在单独的 Document 对象。
@@ -110,14 +146,14 @@ arche check
 
 ```bash
 arche status
-arche status --porcelain
+arche status --porcelain --detail
 arche add <qname>...
 arche add -A
 arche add --file <source-path>
 arche unstage <qname>...
 arche diff
 arche diff --staged
-arche commit -m "message"
+arche commit -m "message" --author <agent>
 arche reset
 arche reset --hard
 ```
@@ -133,6 +169,9 @@ arche source fetch
 arche source checkout <git-ref>
 arche source worktree
 arche source status
+arche source ls
+arche source cat <path>
+arche source set-url <git-url>
 arche source sync
 arche source changes
 ```
@@ -158,7 +197,7 @@ arche concept list
 
 ```bash
 arche remote add <url>
-arche clone <url> <dir> [--branch <branch>]
+arche clone <url> <dir> [--branch <branch>] [--source <git-url>]
 arche push
 arche push --force
 arche fetch

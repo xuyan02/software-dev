@@ -38,13 +38,14 @@ openai_model = "deepseek-chat"
 # github_app_private_key_file = "/home/me/.foundry/github-app.pem"
 # github_api_base = "https://api.github.com"
 
-# Local ds-server. The HTTP listener is only used by the control plane for
-# repository provisioning and admin work; agents never use it. Agents use the
-# SSH transport below, served by the dedicated foundry ds sshd.
+# Arche design-space repositories. New projects are created under this root;
+# each project is one Arche repository. Agents reach them through the SSH
+# address below, served by the forced command installed from
+# projects/arche/deploy/.
 # design_space_root = "/home/me/.foundry/design-spaces"
-# design_space_listen = "127.0.0.1:7700"
-# design_space_token_file = "/home/me/.foundry/design-space-token"
-# design_space_ssh_url = "ssh://root@192.0.2.10:2222"
+# arche_ssh_url = "ssh://foundry-arche@192.0.2.10"
 
-# Image used for an agent's persistent shell.
+# Image used for an agent's persistent shell (CLI/API/Web artifact tests).
 # shell_image = "localhost/openergasterion-shell:1"
+# Desktop capsule image used when a project's test capsule is `desktop`.
+# desktop_image = "localhost/linux-capsule:1"

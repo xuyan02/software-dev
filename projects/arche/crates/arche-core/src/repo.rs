@@ -24,6 +24,7 @@ use crate::object::{
     TechnicalStruct, TechnicalSystem,
 };
 use crate::pack::{PackKind, PackRecord};
+use crate::property::{PropertyAccess, PropertyValue};
 use crate::protocol::{read_ref_file, refs_under, valid_record_path, write_ref_file};
 use crate::snapshot::Snapshot;
 use crate::source::{SourcePath, SourceSpan};
@@ -32,6 +33,37 @@ use crate::symbol::SymbolStore;
 use crate::util::{list_files, write_atomic};
 
 type CodeTypeOwner = (String, &'static str, SymbolHash, SymbolHash, String);
+
+fn is_assignable(object: &Object) -> bool {
+    matches!(
+        object,
+        Object::TechnicalClass(_)
+            | Object::TechnicalStruct(_)
+            | Object::TechnicalEnum(_)
+            | Object::TechnicalInterface(_)
+            | Object::TechnicalFunction(_)
+            | Object::TechnicalMixin(_)
+    )
+}
+
+fn requires_design(object: &Object) -> bool {
+    matches!(
+        object,
+        Object::TechnicalSystem(_)
+            | Object::TechnicalModule(_)
+            | Object::TechnicalLayer(_)
+            | Object::TechnicalDirectory(_)
+            | Object::TechnicalFile(_)
+            | Object::TechnicalNamespace(_)
+            | Object::TechnicalClass(_)
+            | Object::TechnicalStruct(_)
+            | Object::TechnicalEnum(_)
+            | Object::TechnicalInterface(_)
+            | Object::TechnicalMixin(_)
+            | Object::TechnicalFunction(_)
+            | Object::TechnicalMethod(_)
+    )
+}
 
 struct RefLock {
     path: PathBuf,
@@ -687,6 +719,20 @@ impl Repository {
 
     pub fn source_url(&self) -> Option<&str> {
         self.source_url.as_deref()
+    }
+
+    /// Record the read-only source Git URL in `.arche/config`.
+    pub fn set_source_url(&self, url: &str) -> Result<()> {
+        let url = url.trim();
+        if url.is_empty() {
+            bail!("source URL must not be empty");
+        }
+        let mut config = String::from("format = 2\n");
+        if let Some(remote) = self.remote_url() {
+            config.push_str(&format!("remote={remote}\n"));
+        }
+        config.push_str(&format!("source={url}\n"));
+        write_atomic(&self.dir.join("config"), config.as_bytes(), &self.tmp)
     }
 
     pub fn remote_url(&self) -> Option<&str> {
@@ -1483,6 +1529,45 @@ impl Repository {
             snapshot.insert(technical, hash);
         }
         Ok(dir_hashes.len())
+    }
+
+    /// Tracked files in the current source checkout.
+    pub fn source_ls(&self) -> Result<Vec<String>> {
+        let worktree = self.source_worktree()?;
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&worktree)
+            .args(["ls-files", "-z"])
+            .output()
+            .context("list source files")?;
+        if !output.status.success() {
+            bail!(
+                "git ls-files failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let mut files = String::from_utf8(output.stdout)?
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        files.sort();
+        Ok(files)
+    }
+
+    /// Read one tracked file from the current source checkout.
+    pub fn source_cat(&self, path: &str) -> Result<String> {
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            bail!("invalid source path: {path}");
+        }
+        let worktree = self.source_worktree()?;
+        let full = worktree.join(relative);
+        fs::read_to_string(&full).with_context(|| format!("read source file {}", full.display()))
     }
 
     pub fn source_sync(&self) -> Result<usize> {
@@ -2334,6 +2419,10 @@ impl Repository {
 
     pub fn comment_list(&self, target: Option<&str>, open_only: bool) -> Result<Vec<Comment>> {
         self.comments.list(target, open_only)
+    }
+
+    pub fn comment_clear(&self, target: Option<&str>) -> Result<usize> {
+        self.comments.clear(target)
     }
 
     pub fn comment_resolve(&self, id: u64, conclusion: &str, agent: &str) -> Result<Comment> {
@@ -3524,6 +3613,257 @@ impl Repository {
         Ok(errors)
     }
 
+    /// Update one string-reference field (for example `file` or `module`) and
+    /// re-save the object. References to the old object are rewritten by the
+    /// worktree snapshot normalizer.
+    pub fn set_string_ref(&self, qname_text: &str, field: &str, target_qname: &str) -> Result<()> {
+        let mut snapshot = self.worktree_snapshot()?;
+        let qname = self.intern(qname_text)?;
+        let hash = snapshot
+            .get(qname)
+            .with_context(|| format!("{qname_text} not found"))?;
+        let mut object = self.read(hash)?;
+        let target = self.intern(target_qname)?;
+        object
+            .set_property(field, PropertyValue::StringRef(target))
+            .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?;
+        let hash = self.save_object(&object)?;
+        snapshot.insert(qname, hash);
+        self.write_snapshot("worktree", &snapshot)?;
+        Ok(())
+    }
+
+    /// Set the source span of a code object from `path:start-end`.
+    pub fn set_source(&self, qname_text: &str, source_text: &str) -> Result<()> {
+        let span = self.parse_source_span(source_text)?;
+        let mut snapshot = self.worktree_snapshot()?;
+        let qname = self.intern(qname_text)?;
+        let hash = snapshot
+            .get(qname)
+            .with_context(|| format!("{qname_text} not found"))?;
+        let mut object = self.read(hash)?;
+        object
+            .set_property("source", PropertyValue::SourceSpan(span))
+            .map_err(|error| anyhow::anyhow!("{qname_text}.source: {error}"))?;
+        let hash = self.save_object(&object)?;
+        snapshot.insert(qname, hash);
+        self.write_snapshot("worktree", &snapshot)?;
+        Ok(())
+    }
+
+    /// Assign a top-level code element to exactly one system, module, or layer.
+    pub fn assign_member(&self, member_qname: &str, parent_qname: &str) -> Result<()> {
+        let mut snapshot = self.worktree_snapshot()?;
+        let member_symbol = self.intern(member_qname)?;
+        let member_hash = snapshot
+            .get(member_symbol)
+            .with_context(|| format!("{member_qname} not found"))?;
+        let member = self.read(member_hash)?;
+        if !is_assignable(&member) {
+            bail!("{member_qname} is not a system/module-level design element");
+        }
+        let parent_symbol = self.intern(parent_qname)?;
+        let parent_hash = snapshot
+            .get(parent_symbol)
+            .with_context(|| format!("{parent_qname} not found"))?;
+        let parent = self.read(parent_hash)?;
+        if !matches!(
+            parent,
+            Object::TechnicalSystem(_) | Object::TechnicalModule(_) | Object::TechnicalLayer(_)
+        ) {
+            bail!("{parent_qname} is not a system, module, or layer");
+        }
+        self.remove_member(&mut snapshot, member_hash, parent_qname)?;
+        self.append_to_list(&mut snapshot, parent_qname, "members", member_hash)?;
+        self.write_snapshot("worktree", &snapshot)?;
+        Ok(())
+    }
+
+    fn remove_member(
+        &self,
+        snapshot: &mut Snapshot,
+        member: ObjectHash,
+        keep_owner: &str,
+    ) -> Result<()> {
+        for (qname, hash) in snapshot.entries().to_vec() {
+            let qname_text = self.resolve(qname)?;
+            let Some(owner_qname) = qname_text.strip_suffix("/members") else {
+                continue;
+            };
+            if owner_qname == keep_owner {
+                continue;
+            }
+            let owner_symbol = SymbolHash::of(owner_qname);
+            let Some(owner_hash) = snapshot.get(owner_symbol) else {
+                continue;
+            };
+            let mut owner = self.read(owner_hash)?;
+            if !matches!(
+                owner,
+                Object::TechnicalSystem(_) | Object::TechnicalModule(_) | Object::TechnicalLayer(_)
+            ) {
+                continue;
+            }
+            let mut list = match self.read(hash)? {
+                Object::ObjectList(value) => value,
+                _ => continue,
+            };
+            if !list.items.contains(&member) {
+                continue;
+            }
+            list.items.retain(|item| *item != member);
+            let list_hash = self.save_object(&Object::ObjectList(list))?;
+            snapshot.insert(qname, list_hash);
+            set_object_list_field(&mut owner, "members", list_hash)?;
+            let owner_hash = self.save_object(&owner)?;
+            snapshot.insert(owner_symbol, owner_hash);
+        }
+        Ok(())
+    }
+
+    fn list_has_items(&self, hash: ObjectHash) -> Result<bool> {
+        if hash.is_zero() {
+            return Ok(false);
+        }
+        Ok(match self.read(hash)? {
+            Object::ObjectList(value) => !value.items.is_empty(),
+            _ => false,
+        })
+    }
+
+    fn membership_lists(&self, snapshot: &Snapshot) -> Result<Vec<(String, Vec<ObjectHash>)>> {
+        let mut lists = Vec::new();
+        for (qname, hash) in snapshot.entries() {
+            let object = self.read(*hash)?;
+            if !matches!(
+                object,
+                Object::TechnicalSystem(_) | Object::TechnicalModule(_) | Object::TechnicalLayer(_)
+            ) {
+                continue;
+            }
+            let members = object_list_field(&object, "members")?;
+            let items = if members.is_zero() {
+                Vec::new()
+            } else {
+                match self.read(members)? {
+                    Object::ObjectList(value) => value.items,
+                    other => bail!(
+                        "{} members is {}",
+                        self.resolve(*qname)?,
+                        other.kind().name()
+                    ),
+                }
+            };
+            lists.push((self.resolve(*qname)?, items));
+        }
+        Ok(lists)
+    }
+
+    /// Systems, modules, layers and their direct members.
+    pub fn structure_list(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let snapshot = self.worktree_snapshot()?;
+        let mut out = Vec::new();
+        for (owner, items) in self.membership_lists(&snapshot)? {
+            let mut names = Vec::new();
+            for item in items {
+                names.push(self.resolve(self.read(item)?.qname())?);
+            }
+            names.sort();
+            out.push((owner, names));
+        }
+        out.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(out)
+    }
+
+    /// Top-level code elements that are not assigned to any system or module.
+    pub fn unassigned_members(&self) -> Result<Vec<String>> {
+        let snapshot = self.worktree_snapshot()?;
+        let assigned = self
+            .membership_lists(&snapshot)?
+            .into_iter()
+            .flat_map(|(_, items)| items)
+            .collect::<HashSet<_>>();
+        let mut out = Vec::new();
+        for (qname, hash) in snapshot.entries() {
+            let object = self.read(*hash)?;
+            if is_assignable(&object) && !assigned.contains(hash) {
+                out.push(self.resolve(*qname)?);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Validate that every top-level code element has exactly one owner and
+    /// that every membership list points at an existing object.
+    pub fn membership_check(&self) -> Result<Vec<String>> {
+        let snapshot = self.worktree_snapshot()?;
+        let lists = self.membership_lists(&snapshot)?;
+        let mut counts: HashMap<ObjectHash, usize> = HashMap::new();
+        let mut errors = Vec::new();
+        for (owner, items) in &lists {
+            if items.is_empty() {
+                let owner_hash = snapshot
+                    .get(SymbolHash::of(owner))
+                    .with_context(|| format!("{owner} not found"))?;
+                let has_children = match self.read(owner_hash)? {
+                    Object::TechnicalSystem(value) => {
+                        self.list_has_items(value.modules)? || self.list_has_items(value.layers)?
+                    }
+                    _ => false,
+                };
+                if !has_children {
+                    errors.push(format!("{owner}: has no members"));
+                }
+            }
+            for item in items {
+                *counts.entry(*item).or_default() += 1;
+                if self.read(*item).is_err() {
+                    errors.push(format!("{owner}: member {} is missing", item.to_hex()));
+                }
+            }
+        }
+        for (qname, hash) in snapshot.entries() {
+            let object = self.read(*hash)?;
+            if !is_assignable(&object) {
+                continue;
+            }
+            let qname = self.resolve(*qname)?;
+            match counts.get(hash).copied().unwrap_or(0) {
+                0 => errors.push(format!("{qname}: not assigned to a system or module")),
+                n if n > 1 => errors.push(format!("{qname}: assigned to {n} owners")),
+                _ => {}
+            }
+        }
+        errors.sort();
+        Ok(errors)
+    }
+
+    /// Report design objects that carry no document fields at all.
+    pub fn doc_check(&self) -> Result<Vec<String>> {
+        let snapshot = self.worktree_snapshot()?;
+        let mut errors = Vec::new();
+        for (qname, hash) in snapshot.entries() {
+            let object = self.read(*hash)?;
+            if !requires_design(&object) {
+                continue;
+            }
+            if matches!(object, Object::TechnicalMethod(_)) {
+                let parent = object.parent();
+                if let Some(parent_hash) = snapshot.get(parent)
+                    && matches!(self.read(parent_hash)?, Object::TechnicalPart(_))
+                {
+                    continue;
+                }
+            }
+            if doc_fields(&object).iter().all(|(_, value)| value.is_zero()) {
+                errors.push(format!("{}: missing design fields", self.resolve(*qname)?));
+            }
+        }
+        errors.sort();
+        Ok(errors)
+    }
+
     pub fn show_qname(&self, qname: &str) -> Result<(ObjectHash, Object)> {
         let hash = self.find_by_qname(qname)?;
         let object = self.read(hash)?;
@@ -3657,7 +3997,7 @@ impl Repository {
         });
         let root_hash = self.save_object(&root)?;
         let snapshot = self.snapshot_from_store()?;
-        self.commit(None, root_hash, "init".to_owned(), &snapshot)?;
+        self.commit(None, root_hash, "init".to_owned(), "arche", &snapshot)?;
         self.write_snapshot("index", &snapshot)?;
         self.write_snapshot("worktree", &snapshot)?;
         Ok(())
@@ -3844,6 +4184,15 @@ impl Repository {
     }
 
     pub fn commit_index(&self, message: &str, allow_empty: bool) -> Result<CommitHash> {
+        self.commit_index_as(message, allow_empty, "arche")
+    }
+
+    pub fn commit_index_as(
+        &self,
+        message: &str,
+        allow_empty: bool,
+        author: &str,
+    ) -> Result<CommitHash> {
         let head = self.head()?;
         let head_snapshot = Snapshot::from_entries(head.objects.clone());
         let mut index = self.index_snapshot()?;
@@ -3885,6 +4234,7 @@ impl Repository {
             Some(self.head_commit()?),
             root_hash,
             message.to_owned(),
+            author,
             &index,
         )?;
         self.write_snapshot("index", &index)?;
@@ -3899,6 +4249,7 @@ impl Repository {
         parent: Option<CommitHash>,
         root: ObjectHash,
         message: String,
+        author: &str,
         objects: &Snapshot,
     ) -> Result<CommitHash> {
         let timestamp = SystemTime::now()
@@ -3909,7 +4260,7 @@ impl Repository {
             parent,
             root,
             message,
-            author: "arche".to_owned(),
+            author: author.to_owned(),
             timestamp,
             objects: objects.entries().to_vec(),
         };

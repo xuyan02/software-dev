@@ -5,7 +5,8 @@
 
 use crate::graph_tools::adapt_registry;
 use crate::{
-    ContextBundle, RunError, Shell, ToolRegistry, codesummary, daily_check, design_baseline,
+    ContextBundle, DeterministicMode, RunError, Shell, ToolRegistry, codesummary, design_baseline,
+    deterministic,
 };
 use graph_agent::{
     Agent, Context, Graph, LlmConfig, LlmNode, LlmParams, LlmRuntime, ModelGateway,
@@ -76,7 +77,8 @@ pub struct AgentRuntime {
 enum RuntimeMode {
     Generic,
     CodeSummary,
-    DailyCheck,
+    Deterministic(DeterministicMode),
+    Hybrid(DeterministicMode),
     DesignBaseline { state_dir: PathBuf },
 }
 
@@ -103,12 +105,31 @@ impl AgentRuntime {
         }
     }
 
-    pub fn new_daily_check(model: Arc<dyn ModelGateway>, tools: Arc<ToolRegistry>) -> Self {
+    pub fn new_deterministic(
+        model: Arc<dyn ModelGateway>,
+        mode: DeterministicMode,
+        tools: Arc<ToolRegistry>,
+        shell: Option<Arc<dyn Shell>>,
+    ) -> Self {
         Self {
             model,
             tools,
-            shell: None,
-            mode: RuntimeMode::DailyCheck,
+            shell,
+            mode: RuntimeMode::Deterministic(mode),
+        }
+    }
+
+    pub fn new_hybrid(
+        model: Arc<dyn ModelGateway>,
+        mode: DeterministicMode,
+        tools: Arc<ToolRegistry>,
+        shell: Option<Arc<dyn Shell>>,
+    ) -> Self {
+        Self {
+            model,
+            tools,
+            shell,
+            mode: RuntimeMode::Hybrid(mode),
         }
     }
 
@@ -130,10 +151,15 @@ impl AgentRuntime {
         match &self.mode {
             RuntimeMode::Generic => self.run_generic(request).await,
             RuntimeMode::CodeSummary => self.run_codesummary(request).await,
-            RuntimeMode::DailyCheck => {
-                let tools = adapt_registry(&self.tools)
-                    .map_err(|error| RunError::Graph(format!("tool registry: {error}")))?;
-                daily_check::run(Arc::clone(&self.model), Arc::new(tools), request).await
+            RuntimeMode::Deterministic(mode) => {
+                deterministic::run(*mode, &self.tools, self.shell.as_ref(), request).await
+            }
+            RuntimeMode::Hybrid(mode) => {
+                if deterministic::handles_stage(*mode, request.stage.as_deref()) {
+                    deterministic::run(*mode, &self.tools, self.shell.as_ref(), request).await
+                } else {
+                    self.run_generic(request).await
+                }
             }
             RuntimeMode::DesignBaseline { state_dir } => {
                 let tools = adapt_registry(&self.tools)

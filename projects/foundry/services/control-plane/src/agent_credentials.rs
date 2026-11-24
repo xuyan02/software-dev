@@ -3,11 +3,11 @@
 //! Agentd authenticates with its agent token and asks for two different kinds
 //! of credential:
 //!
-//! - the design-space key belongs to the agent account and is installed once
+//! - the Arche SSH key belongs to the agent account and is installed once
 //!   when the agent's shell starts;
 //! - the GitHub token belongs to one task/repository and is short-lived.
 
-use crate::ds_ssh::DsSsh;
+use crate::arche_ssh::ArcheSsh;
 use crate::github_app::{GitCredential, GitHubApp};
 use axum::{
     Json, Router,
@@ -29,13 +29,16 @@ pub struct CredentialState {
     pub auth: Arc<AuthService<PostgresStore, PostgresStore>>,
     pub store: Arc<PostgresStore>,
     pub github: Option<Arc<GitHubApp>>,
-    pub ssh: Arc<DsSsh>,
+    pub ssh: Arc<ArcheSsh>,
 }
 
 pub fn router(state: CredentialState) -> Router {
     Router::new()
         .route("/api/v1/agent/credentials", post(handle))
-        .route("/api/v1/agent/ds-credential", post(handle_ds_credential))
+        .route(
+            "/api/v1/agent/arche-credential",
+            post(handle_arche_credential),
+        )
         .with_state(state)
 }
 
@@ -109,16 +112,16 @@ async fn handle(
 }
 
 #[derive(Debug, Deserialize)]
-struct DsCredentialRequest {
+struct ArcheCredentialRequest {
     definition_id: Uuid,
 }
 
-/// The design-space key belongs to the agent account, not to a task. Agentd
+/// The Arche SSH key belongs to the agent account, not to a task. Agentd
 /// installs it once when it creates the agent's shell.
-async fn handle_ds_credential(
+async fn handle_arche_credential(
     State(state): State<CredentialState>,
     headers: HeaderMap,
-    Json(request): Json<DsCredentialRequest>,
+    Json(request): Json<ArcheCredentialRequest>,
 ) -> Response {
     let Some(token) = bearer_token(&headers) else {
         return unauthorized("missing bearer token");
@@ -129,7 +132,7 @@ async fn handle_ds_credential(
         Err(error) => return server_error(error.to_string()),
     };
     if account.kind != AccountKind::Agent {
-        return unauthorized("only agent accounts may request a design-space key");
+        return unauthorized("only agent accounts may request a Arche SSH key");
     }
     let definition = match state.store.agent_definition(request.definition_id).await {
         Ok(Some(definition)) => definition,

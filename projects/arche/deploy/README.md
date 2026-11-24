@@ -82,3 +82,31 @@ arche serve --stdio --root /srv/arche/project-a
 - `foundry-arche-authorized-keys` 的 `AuthorizedKeysCommandUser` 必须是低权限账户；
 - 仓库目录建议使用 `umask 0002` 和 POSIX ACL；
 - `.arche/config` 不应保留过期 remote URL。
+
+## Foundry 集成
+
+Foundry 新项目会在 `design_space_root` 下创建 Arche 仓库，并由控制平面动态写入
+SSH 公钥。接入宿主 sshd 时：
+
+1. 安装 `foundry-arche-stdio`（本目录的 `install.sh`，或手动复制到
+   `/usr/local/bin`）；
+2. 让 `foundry-arche` 服务账户能读写 Foundry 的 `design_space_root`（建议 POSIX ACL）；
+3. 在宿主 sshd 的 `Match User foundry-arche` 块中，把 `AuthorizedKeysCommand`
+   指向 Foundry 生成的 `~/.foundry/arche-sshd/authorized_keys`。可以复用
+   `foundry-arche-authorized-keys`：
+
+   ```text
+   Match User foundry-arche
+       AuthorizedKeysCommand /usr/local/bin/foundry-arche-authorized-keys %u %k /home/<operator>/.foundry/arche-sshd/authorized_keys
+       AuthorizedKeysCommandUser <authorized keys user>
+       PasswordAuthentication no
+   ```
+
+4. 在 `~/.foundry/foundry.toml` 中设置
+   `arche_ssh_url = "ssh://foundry-arche@<host>"`。
+
+Foundry 写出的行形如：
+
+```text
+restrict,command="/usr/local/bin/foundry-arche-stdio '/home/<operator>/.foundry/design-spaces' '<project-id>'" ssh-ed25519 AAAA...
+```

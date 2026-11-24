@@ -1,6 +1,6 @@
 # 内置流程
 
-当前实现 19 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
+当前实现 42 个平台流程，随二进制发布，启动时播种为平台定义的 v1。它们是系统目录的一部分，不是业务数据：没有项目、账户或 Task 会被自动创建。
 
 RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响应和项目退役；下表后半部分是尚未实现的计划项，落地时必须按“新增流程”更新 `definitions/`、`builtin.rs` 的 `SOURCES` 和本文档。
 
@@ -10,8 +10,16 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 |---|---|---|---|
 | `empty` | Empty (no-op) | 不声明阶段和角色；用于测试和空 Task | 已实现 |
 | `project` | Project lifecycle | 旧项目生命周期模板（不再是根流程） | 已实现 |
-| `software_development` | Software development | 唯一的项目根流程；初始化日常检查触发器并进入长期运行 | 已实现 |
-| `daily_check` | Daily check | 创建设计检查子任务 | 已实现 |
+| `software_development` | Software development | 统一的全生命周期根流程：评估代码状态 → 澄清/确认（有代码时先通过 git 读代码）→ 需求发现/分析 → 交互/UI → 架构 → 详细设计 → 测试计划 → 迭代开发 → 测试执行 → 发布 → 持续反馈 → 长期运行 | 已实现 |
+| `feedback_cycle` | Continuous feedback cycle | 并行审计需求、技术设计、代码、测试和产品试用，去重后转成后续 Issue | 已实现 |
+| `requirements_audit` | Requirements audit | 需求反馈审计叶子流程 | 已实现 |
+| `design_audit` | Design audit | 技术设计反馈审计叶子流程 | 已实现 |
+| `code_audit` | Code audit | 代码反馈审计叶子流程 | 已实现 |
+| `test_audit` | Test audit | 测试反馈审计叶子流程 | 已实现 |
+| `product_audit` | Product audit | 产品试用反馈审计叶子流程 | 已实现 |
+| `maintenance_development` | Maintenance development | 长期运行的维护根流程；创建分诊子任务，适合已经完成生命周期、只需要持续维护的项目 | 已实现 |
+| `autonomous_software_development` | Autonomous software development | 早期完整生命周期根流程：目标澄清 → 需求 → 交互/UI → 架构 → 详细设计 → 测试计划 → 迭代开发 → 测试执行 → 设计基线 → 发布 → 长期运行 | 已实现 |
+| `daily_check` | Daily check | 并行创建五个审计子任务，汇总后发现进入设计/开发闭环 | 已实现 |
 | `goal_clarification` | 项目文档撰写 | 澄清并撰写项目文档；`task.created` 的 action 创建统一澄清 Issue，Clarifier → Writer → 文风 Reviewer → 内容 Reviewer → 人类审批 | 已实现 |
 | `requirements_discovery` | Requirements discovery | 发现初始需求池（独立流程；项目主流程已跳过） | 已实现 |
 | `requirements_analysis` | Requirements analysis | 需求锚点文档；Analyst → Style/Requirements/Feasibility Reviewer → 人类评审 | 已实现 |
@@ -41,9 +49,23 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `incident_response` | Incident response | 分级、止损、修复、复盘 | 计划 |
 | `project_retirement` | Project retirement | 依赖、数据、迁移、归档 | 计划 |
 
+
+## 自主生产线与人工角色
+
+- 项目只能由人类账户创建；智能体不能创建项目。
+- `software_development` 是推荐的新项目根流程：先评估代码状态；有代码时澄清、需求、交互/UI、架构、详细设计及其评审智能体通过 `git clone/fetch/checkout` 在 `/work/<project-id>/source` 读取代码，再把结论交给人类确认；无代码时正常澄清。流程不再先跑 `design_baseline_initial`；Arche 设计基线由后续设计一致性维护/反馈审计按需建立。
+- `autonomous_software_development` 保留为早期完整生命周期实现；`maintenance_development` 用于只需长期维护的项目。
+- 人类只承担三类工作：创建项目、回答澄清、审批。其他撰写、实现、评审、测试、合入、发布均由平台 Agent 执行。
+- 项目设置中的“跳过所有人工审批”开启后，除目标澄清外，所有人类审批阶段自动通过：
+  - 锚点文档由项目 Owner 自动批准，随后进入下一阶段；
+  - 设计空间合并请求由平台自动审批并执行快进合入；
+  - 代码变更、路线图、需求发现、项目复盘等人工审批由任务引擎自动完成。
+- 目标澄清始终保留人类参与；即使开启跳过审批，项目文档仍需要人类批准。
+- 发布约定：Agent 在项目工作区执行 `scripts/release.sh`、`scripts/verify.sh`、`scripts/deploy.sh`、`scripts/observe.sh`（存在时）；缺失时使用项目构建/测试，部署和观察必须由项目提供脚本，避免伪造成功。
+
 ## 技术设计一致性维护
 
-`software_development` 是唯一的项目根流程；`design_consistency_maintenance` 作为可被触发器或子任务调用的流程保留。`dispatch` 阶段由 Scanner 智能体完成基础同步、变化扫描和分组，并创建 `code_summary_group` 子任务。子任务串行执行，依次经过 summary、文风审查、内容审查、合入集成分支和删除组分支。
+`software_development` 是推荐的项目根流程；`design_consistency_maintenance` 作为可被触发器或子任务调用的流程保留。`dispatch` 阶段由 Scanner 智能体完成基础同步、变化扫描和分组，并创建 `code_summary_group` 子任务。子任务串行执行，依次经过 summary、文风审查、内容审查、合入集成分支和删除组分支。
 
 所有组完成后，模块架构师依次执行 `structure_survey`（盘点系统和元素）和 `structure_synthesis`（逐系统划分模块、绑定唯一成员、写模块文档），然后由独立的结构审查和文风审查两个阶段把关。通过后创建集成分支到 DS 主分支的最终 MR，进行集成内容审查和人类审批；合入前清理设计评论，合入后删除集成分支。
 
@@ -217,6 +239,19 @@ work (designer)
 
 `architect` 和 `reviewer` 的 `kind` 是 `agent`，`assignment` 指向对应的 workflow；`acceptor` 的 `kind` 是 `human`，`assignment` 是 `acceptor` 身份。`work` 和 `review` 的 `completed` / `decision` 是 stage 变量，进入 stage 时重置。项目生命周期通过子 Task 的 `approved`、`failed`、`infeasible`、`obsolete` 结果协调这些流程。
 
+## 执行方式：确定性代码优先
+
+平台按“能用代码完成就不用 LLM”执行任务：
+
+- **平台代码直接完成**：Task 状态机、阶段转移、子任务创建/等待、触发器防重叠、跳过人工审批、锚点文档自动批准、设计空间 MR 自动快进合入、Task Dispatcher 分配、Agent 生命周期管理。
+- **确定性运行时（不调用 LLM）**：`software_development:assessor`、`code_change:tester`、`code_change:merger`、`design_iteration:dispatcher`、`design_iteration:verifier`、`development_iteration:dispatcher`、`development_iteration:verifier`、`code_summary_group:merger`、`design_consistency_maintenance:scanner`、`release:release_manager`、`release:verifier`、`release:deployer`、`release:observer`。这些运行时代码直接读取项目、执行 git/shell/scripts、操作 Issue/任务/MR、写任务评论并发送阶段操作。
+- **混合运行时**：`design_consistency_maintenance:integrator` 的集成 MR 创建、最终合入和 clean up，`design_baseline:integrator` 的 cleanup，以及 `design` / `design_change` / `design_correction` 审查者的 cleanup 阶段由代码完成；同一角色的设计内容审查、冲突解决等判断阶段仍走 LLM。
+- **已有确定性控制流程**：`code_summary_group:summarizer`、`design_baseline:architect` 使用专用图运行时，按固定步骤执行；内容判断仍可能调用模型。
+- **需要 LLM 的环节**：目标澄清、需求/交互/UI/架构/详细设计写作与评审、测试计划与测试报告、代码实现与代码评审、分诊、代码/设计检查、反馈审计与汇总、发布风险审批，以及各类 merge conflict 的语义解决。这些环节需要理解、创作、审查或权衡，不能仅靠固定命令完成。
+- **人类负责审批**：所有 `kind = human` 的角色只做批准/拒绝；跳过审批开启后由平台代码自动通过，不调用 LLM。
+
+新增或修改 workflow 时，机械步骤应优先实现为确定性运行时或平台操作；只有确实需要判断的步骤才绑定 LLM Agent。
+
 ## 修改内置流程
 
 - **发布新版本**：平台管理员在「流程」页创建平台流程或编辑已有平台流程，发布后项目创建和新的子 Task 使用新版本；已有 Task 不受影响。
@@ -250,7 +285,7 @@ Issue 是问题的唯一记录；Issue 创建后自动生成 `issue_triage` 任�
 
 ## 软件开发根流程
 
-`software_development` 是新建项目时唯一可选的根流程：
+`software_development`、`maintenance_development`、`autonomous_software_development` 都可以作为项目根流程，其中 `software_development` 是推荐的统一流程：
 
 ```text
 setup（project_setup 智能体）
@@ -270,8 +305,14 @@ setup（project_setup 智能体）
 
 如果同名触发器已存在则复用。创建成功后根任务进入 `running` 并长期保持运行；用户可以在项目页手动运行触发器。
 
-`daily_check` 由触发器创建，调度阶段创建一个子任务：
+`daily_check` 由触发器创建，`audits` 阶段一次性并行创建五个子任务：
 
-1. `design_inspection`：设计检查。
+1. `requirements_audit`：需求检查；
+2. `design_audit`：技术设计检查；
+3. `code_audit`：代码检查；
+4. `test_audit`：测试检查；
+5. `product_audit`：产品试用检查。
 
-设计检查子任务完成后 `daily_check` 完成。子任务发现的问题通过 Issue 进入分诊和设计/开发闭环。
+五个子任务全部结束后进入 `synthesis` 阶段，由汇总智能体读取所有子任务评论，去重、归并并把后续工作分流到设计池/开发池。任一审计失败时本轮检查结果为 `failed`。`feedback_cycle` 使用相同的并行审计和汇总结构。
+
+触发器在创建任务前检查自己上一轮的任务：只要该任务还不是 `Completed`（包括 `Pending`、`InProgress` 和待重试的 `Failed`），本轮就跳过，避免同一触发器重叠运行。`design_iteration` 和 `development_iteration` 默认使用 `continuous` 调度：一轮验收通过后立即回到分派阶段继续处理池中任务，直到池为空才结束；空闲时由调度器按退避间隔重新检查。

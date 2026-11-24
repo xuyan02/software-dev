@@ -33,6 +33,13 @@ pub struct ToolDefinition {
 pub enum ToolOutput {
     Text(String),
     Json(Value),
+    /// Text plus one or more images. The runtime appends the text as the
+    /// tool result and sends the images in a follow-up user message so
+    /// vision-capable models can inspect them.
+    Multimodal {
+        text: String,
+        images: Vec<crate::message::LlmImage>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize)]

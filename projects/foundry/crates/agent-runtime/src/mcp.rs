@@ -139,6 +139,7 @@ impl McpClient {
         Ok(ToolOutput {
             content: parts.join("\n"),
             is_error,
+            images: Vec::new(),
         })
     }
 

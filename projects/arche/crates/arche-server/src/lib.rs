@@ -76,7 +76,14 @@ pub fn serve(options: &ServerOptions) -> Result<()> {
     fs::create_dir_all(&options.root)?;
     let listener =
         TcpListener::bind(&options.listen).with_context(|| format!("bind {}", options.listen))?;
-    eprintln!("arche listening on {}", options.listen);
+    serve_with_listener(options, listener)
+}
+
+/// Serve on an already-bound listener, so tests and embedders can choose the
+/// address before starting the loop.
+pub fn serve_with_listener(options: &ServerOptions, listener: TcpListener) -> Result<()> {
+    fs::create_dir_all(&options.root)?;
+    eprintln!("arche listening on {}", listener.local_addr()?);
     for stream in listener.incoming() {
         let stream = stream?;
         let root = options.root.clone();

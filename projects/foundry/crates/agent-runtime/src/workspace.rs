@@ -157,6 +157,7 @@ async fn run(
             Ok(ToolOutput {
                 content,
                 is_error: !output.status.success(),
+                images: Vec::new(),
             })
         }
     }

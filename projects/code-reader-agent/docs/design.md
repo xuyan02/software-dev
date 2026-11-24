@@ -1,7 +1,7 @@
 # 代码阅读 Agent 设计（草案）
 
-> 注意：本文是早期草案。设计已演进为独立的 `design-space` 工具，见
-> `projects/design-space/docs/design.md`。本文后续需要按新模型重写。
+> 注意：本文是早期草案。设计已演进为 Arche 设计仓库，见
+> `projects/arche/docs/design.md`。本文后续需要按新模型重写。
 
 
 - 状态：草案，未开始实现

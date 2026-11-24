@@ -728,6 +728,66 @@ impl Tool for TaskSpawnChildrenTool {
     }
 }
 
+pub struct TaskChildrenTool {
+    client: Arc<FoundryClient>,
+}
+
+impl TaskChildrenTool {
+    pub fn new(client: Arc<FoundryClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for TaskChildrenTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "task_children".to_string(),
+            description: "List the direct child tasks of a task, including each child's comments. Defaults to the current task."
+                .to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": { "type": "string", "format": "uuid" }
+                }
+            }),
+        }
+    }
+
+    async fn call(&self, arguments: Value, context: &ToolContext) -> Result<ToolOutput, ToolError> {
+        let task_id = match arguments.get("task_id").and_then(Value::as_str) {
+            Some(value) => value
+                .parse::<Uuid>()
+                .map_err(|_| ToolError::InvalidArguments("invalid task_id".to_string()))?,
+            None => context
+                .task_id
+                .parse::<Uuid>()
+                .map_err(|_| ToolError::InvalidArguments("invalid current task_id".to_string()))?,
+        };
+        let listed = self
+            .client
+            .list_tasks(None, &format!("parent_id={task_id}&limit=100"))
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))?;
+        let mut children = Vec::new();
+        for child in listed.as_array().cloned().unwrap_or_default() {
+            let Some(id) = child.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let id = id
+                .parse::<Uuid>()
+                .map_err(|_| ToolError::Failed(format!("invalid child task id {id}")))?;
+            children.push(
+                self.client
+                    .get_task(id)
+                    .await
+                    .map_err(|error| ToolError::Failed(error.to_string()))?,
+            );
+        }
+        pretty(Value::Array(children))
+    }
+}
+
 pub struct TaskCreateFollowUpTool {
     client: Arc<FoundryClient>,
 }

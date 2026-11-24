@@ -17,7 +17,7 @@ foundry-adapter-policy.workspace = true
 foundry-agent-runtime.workspace = true
 foundry-api-http.workspace = true
 foundry-shared.workspace = true
-design-space.workspace = true
+arche-core.workspace = true
 ring.workspace = true
 sqlx.workspace = true
 anyhow.workspace = true
@@ -31,3 +31,6 @@ jsonwebtoken.workspace = true
 tracing.workspace = true
 time.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

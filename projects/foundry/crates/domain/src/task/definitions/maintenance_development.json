@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "roles": [],
+  "initial_stage": "running",
+  "stages": [
+    {
+      "name": "running",
+      "active_roles": [],
+      "created": [
+        {"create_child": {"workflow": "triage", "title": "分诊"}}
+      ]
+    }
+  ]
+}

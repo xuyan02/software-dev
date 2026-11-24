@@ -1,7 +1,7 @@
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, IssueKind, IssuePool, IssueSeverity,
-    IssueSource, IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId, WorkflowLayout,
-    WorkflowVersionRef,
+    AccountKind, AccountRole, AccountStatus, Actor, CapsuleProfile, IssueKind, IssuePool,
+    IssueSeverity, IssueSource, IssueStatus, ProjectRole, ProjectStatus, WorkflowBody, WorkflowId,
+    WorkflowLayout, WorkflowVersionRef,
 };
 
 #[derive(Debug, Clone)]
@@ -84,6 +84,7 @@ pub struct UpdateProject {
     pub git_branch: Option<String>,
     pub status: Option<ProjectStatus>,
     pub skip_human_review: Option<bool>,
+    pub test_capsule: Option<CapsuleProfile>,
 }
 
 #[derive(Debug, Clone)]

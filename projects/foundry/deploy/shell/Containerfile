@@ -1,4 +1,4 @@
-# `ds` is copied in prebuilt from the host, so the runtime glibc must be at
+# `arche` is copied in prebuilt from the host, so the runtime glibc must be at
 # least as new as the build host's. Ubuntu 24.04 (glibc 2.39) matches the
 # current build host; a bookworm base (glibc 2.36) cannot load the binary.
 FROM docker.m.daocloud.io/library/ubuntu:24.04
@@ -19,11 +19,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         coreutils \
         curl \
         git \
+        nodejs \
+        npm \
         openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ds /usr/local/bin/ds
-RUN chmod +x /usr/local/bin/ds
+# Headless browser used by the test agent to operate the final artifact and
+# return screenshots to a vision-capable model.
+ENV NODE_PATH=/usr/local/lib/node_modules \
+    PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/ms-playwright
+RUN npm install -g playwright@1.49.1 \
+    && playwright install --with-deps chromium \
+    && rm -rf /root/.npm /var/lib/apt/lists/*
+COPY browser.js /usr/local/lib/foundry/browser.js
+RUN printf '#!/bin/sh\nexec node /usr/local/lib/foundry/browser.js "$@"\n' \
+        > /usr/local/bin/foundry-browser \
+    && chmod +x /usr/local/bin/foundry-browser
+
+COPY arche /usr/local/bin/arche
+RUN chmod +x /usr/local/bin/arche
 
 # Agents never configure Git themselves. The credential helper reads the
 # task-scoped file agentd writes to /run/foundry/git-credentials.

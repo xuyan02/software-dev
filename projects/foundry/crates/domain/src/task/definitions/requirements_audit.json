@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "auditor", "kind": "agent", "assignment": "feedback_cycle"}
+  ],
+  "initial_stage": "audit",
+  "stages": [
+    {
+      "name": "audit",
+      "active_roles": ["auditor"],
+      "vars": {
+        "checked": {"type": "bool", "display_name": "Checked"}
+      },
+      "operations": [
+        {
+          "name": "checked",
+          "display_name": "需求审计完成",
+          "description": "需求审计已完成，发现已写入任务评论。",
+          "roles": ["auditor"],
+          "action": "checked = true"
+        }
+      ],
+      "transitions": [
+        {"on": "checked", "action": "result = 'completed'", "to": "ended"}
+      ]
+    }
+  ]
+}

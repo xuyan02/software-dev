@@ -1,38 +1,36 @@
 # 设计文档撰写技能
 
-本技能规定 design-space 中每种对象的文档写什么、格式是什么。ds 命令、qname、文档位置和 staging 见 `design-space` 技能。
+本技能规定 Arche 中每种对象的设计字段写什么、格式是什么。命令、qname、字段位置和 staging 见 `arche` 技能。
+
+**模型映射**：Arche 没有独立文档树；下文中的设计字段就是对象字段。`DocumentTopic`、`DocumentList`、`DocumentCode`、`DocumentMermaid`、`DocumentHtml` 是 Arche 的字段对象，写入命令见 `arche` 技能。
 
 ## 1. 概念与术语
 
 设计文档中的专业词汇必须有清晰定义。凡含义不显然、容易被不同读者理解成不同东西，或在不同文档中用法不一致的词，都要在概念空间中建立概念，并在文档中用概念引用指向它。
 
-- 概念空间根是 `concepts`，概念按目录组织：`concepts/<分类>/<概念>`；目录结构由智能体维护。
-- 概念对象包含：
+- 概念空间根是 `concept`，概念按目录组织：`concept/<domain|requirement|technical>/<概念>`；目录结构由智能体维护。
+- Arche Concept 包含：
   - `name`：读者看到的术语，例如“智能体”；
-  - `summary`：一句话定义；
-  - `explanation`：这个术语是什么；
-  - `characteristics`：属性、状态、相关流程等特征；
-  - `relations`：与其他概念的关系、区别；
-  - `aliases`：同义词或英文名。
-- 文档中的概念引用使用 `[[concept:<qname>|<术语>]]`，例如 `[[concept:concepts/agent/agent|智能体]]`；引用是文本约定，不是 DS 对象。
-- 第一次出现的关键术语、以及容易歧义的术语，必须用概念引用；不要只写一个没有定义的名词。
+  - `explanation`：这个术语是什么、边界和与其他概念的区别。
+- 文档正文直接写术语名，并保证概念空间有对应 Concept；不要使用 v1 的 `[[concept:...]]` 语法。
+- 第一次出现的关键术语、以及容易歧义的术语，必须在概念空间有定义；不要只写一个没有定义的名词。
 - 不要为日常用语或显而易见的词建概念；已有概念能覆盖时复用，不要重复创建；不同说法用 `aliases` 记录。
 - 概念写定义、边界和关系，不写实现细节，也不复制设计正文。
 - 如果一个词无法用一句话说清，先拆成多个概念或澄清它的边界，再在文档中使用。
-- 概念引用必须能解析到 `concepts/` 下的 Concept 对象；`ds concept check` 用于校验。
+- 概念定义要能被设计字段中的术语直接对应到 Concept 对象。
 
 ### 1.1 概念维护
 
 概念是长期对象，按生命周期维护：
 
 - **更新**：定义、边界或用法变化时，更新 `summary`、`explanation`、`characteristics`、`relations`；新的同义说法加进 `aliases`，不要新建一个重复概念。
-- **合并**：两个概念指同一事物时，选一个作为 canonical；把另一个的名称和说法并入 `aliases`；把所有 `[[concept:...]]` 引用改到 canonical；确认没有引用后再删除旧概念。
+- **合并**：两个概念指同一事物时，选一个作为 canonical；更新所有引用，再删除旧概念。
 - **拆分**：一个概念无法用一句话说清、或不同用法已经产生歧义时，拆成多个概念；更新所有引用和 `relations`。
-- **移动/重命名**：`ds concept mv` 只移动对象，**不会改写文档正文里的 `[[concept:...]]`**。移动或改名后要更新所有引用，再运行 `ds concept check`。
-- **删除**：先确认没有引用，再 `ds concept rm`；非空概念目录要先移动或删除子项。
+- **移动/重命名**：更新对象 qname 和所有设计字段中的术语。
+- **删除**：先确认没有引用，再 `arche rm <qname>`；非空概念目录要先移动或删除子项。
 - **目录维护**：按领域分类，不按代码目录或技术分层；保持浅层；不建 `utils`、`misc`、`other` 这类兜底目录；目录名用领域术语。
-- **检查**：提交前运行 `ds concept check`；内容评审检查未定义术语、歧义、重复概念和失效引用；定期看 `aliases` 是否该合并。
-- `ds concept check` 只扫描文档文本和概念自身的说明/特征/关系，不扫描代码块、Mermaid 和 HTML/SVG；代码里的术语用正文说明，不要依赖检查。
+- **检查**：提交前运行 `arche check`；内容评审检查未定义术语、歧义和重复概念。
+- 代码块、Mermaid 和 HTML/SVG 中的术语也要在正文解释，不要依赖自动检查。
 
 ### 1.2 命名
 
@@ -55,16 +53,16 @@
 
 - Class、Struct、Enum、Interface、Method、Function、Mixin（以及 InnerClass、InnerStruct、InnerEnum、InnerInterface、嵌套 Mixin）：文档由块组成。
   - 块必须按对象块序列的顺序创建和排列；可省略的块直接省略，不能调换其余块的顺序。
-  - 每个块默认只建一个 `document-topic`；topic 的标题是块名（例如“定位”“职责”）。
-  - “设计要点”是一组 topic：每个设计点一个 `document-topic`，topic 标题是问题类别（例如“状态”“继承结构”“数据库结构”“并发模型”），正文写这个点的设计选择和约束；多个设计点按重要性排序，位置由块序列指定。
+  - 每个块默认只建一个 `DocumentTopic`；topic 的标题是块名（例如“定位”“职责”）。
+  - “设计要点”是一组 topic：每个设计点一个 `DocumentTopic`，topic 标题是问题类别（例如“状态”“继承结构”“数据库结构”“并发模型”），正文写这个点的设计选择和约束；多个设计点按重要性排序，位置由块序列指定。
   - 块的内容写在 topic 的段落里；一个块有多个段落时继续加段落，不要重复建同名 topic。
-  - 需要列表时，在 topic 的段落里放 `document-list`。
-  - 不要把块名写成文档章节标题，也不要为块再建文档 Section。
+  - 需要列表时，在 topic 的段落里放 `DocumentList`。
+  - 不要把块名写成文档章节标题，也不要为块再建设计字段。
   - 文档里的 topic 标题一律用对象文档规定的字段名或设计要点的设计点名称，不含“可省略”“默认不写”等状态说明，也不加“列表”“块”等后缀。
   - 只使用对象“写什么”列出的块，不要新增未列出的块名。
-  - 代码对象文档的全部内容都放在这些块里，不要在 Section 正文里另写无块归属的段落。
+  - 代码对象文档的全部内容都放在这些块里，不要在 设计字段正文里另写无块归属的段落。
 - System、Module：定义和“写什么”见各自的 System、Module 章节；文档同样由块组成，块顺序同上。
-- Directory、Namespace：写置放单句；File：写文件设计目的单句。都直接写在文档 Section 正文里，不建 topic。
+- Directory、Namespace：写置放单句；File：写文件设计目的单句。都直接写在设计字段正文里，不建 topic。
 
 Part 不关联设计文档，不写 Part 文档。
 
@@ -182,9 +180,9 @@ Module 的作用是复杂度分治：当 System 或 Module 的整体复杂到难
 ```text
 design/greeter
   design/greeter/startup      # 只有 main，不成立
-    namespaces/app/main
+    technical/namespace/app/main
   design/greeter/greeting     # 只有 greet，不成立
-    namespaces/app/greet
+    technical/namespace/app/greet
 ```
 
 正确做法：不建 Module，把两个函数直接挂在系统下：
@@ -192,8 +190,8 @@ design/greeter
 ```text
 design/greeter
   直属成员：
-    namespaces/app/main
-    namespaces/app/greet
+    technical/namespace/app/main
+    technical/namespace/app/greet
 ```
 
 判断方法：模块里只有一个元素时，去掉模块后这个元素仍然有明确归属（系统或父模块），说明模块没有聚合任何东西。`startup`、`greeting` 这类名字只是在给单个函数套壳；读文档的人会问“为什么不直接放在系统下”，而这里没有任何站得住的理由。系统下没有任何 Module 也是合法的。
@@ -282,15 +280,15 @@ Namespace 是编程语言中命名空间/模块概念在设计空间中的表示
 
 不同语言建立 Namespace 的例子：
 
-- C++：`namespace app::auth { class Token; }` → `namespaces/app/auth`，`Token` 属于该 Namespace；嵌套 namespace 逐级建子 Namespace。
-- C#：`namespace App.Auth { ... }` → `namespaces/app/auth`；按项目命名习惯统一大小写，不要为每个文件建 Namespace。
-- Java / Kotlin / Scala：`package app.auth;` → `namespaces/app/auth`；包层级对应 Namespace 层级，目录不自动等于 Namespace。
-- Rust：`mod app { pub mod auth { ... } }` → `namespaces/app/auth`；`mod` 模块路径对应 Namespace 路径，crate 根不会自动变成 Namespace。
-- Go：`package auth` → `namespaces/auth`；Go 包不嵌套，一个包一个 Namespace，不要因为 import path 带斜杠就自动建父子 Namespace。
+- C++：`namespace app::auth { class Token; }` → `technical/namespace/app/auth`，`Token` 属于该 Namespace；嵌套 namespace 逐级建子 Namespace。
+- C#：`namespace App.Auth { ... }` → `technical/namespace/app/auth`；按项目命名习惯统一大小写，不要为每个文件建 Namespace。
+- Java / Kotlin / Scala：`package app.auth;` → `technical/namespace/app/auth`；包层级对应 Namespace 层级，目录不自动等于 Namespace。
+- Rust：`mod app { pub mod auth { ... } }` → `technical/namespace/app/auth`；`mod` 模块路径对应 Namespace 路径，crate 根不会自动变成 Namespace。
+- Go：`package auth` → `technical/namespace/auth`；Go 包不嵌套，一个包一个 Namespace，不要因为 import path 带斜杠就自动建父子 Namespace。
 - Python：`app/auth/token.py` 的模块 `app.auth.token` 按逻辑模块建 Namespace；包 `app.auth` 是父 Namespace，不要为每个 `.py` 文件机械建 Namespace。
-- JavaScript / TypeScript：ES module 的文件作用域不是设计 Namespace；只为跨文件逻辑概念建 Namespace，TypeScript 的 `namespace Auth {}` 可以映射为 `namespaces/auth`。
+- JavaScript / TypeScript：ES module 的文件作用域不是设计 Namespace；只为跨文件逻辑概念建 Namespace，TypeScript 的 `namespace Auth {}` 可以映射为 `technical/namespace/auth`。
 - Swift：module（target/framework）对应一个 Namespace；类型不是 Namespace。
-- Ruby：`module Auth; class Token; end; end` → `namespaces/auth`；`class` 是类型，不是 Namespace。
+- Ruby：`module Auth; class Token; end; end` → `technical/namespace/auth`；`class` 是类型，不是 Namespace。
 
 只有具体方法、没有数据的类（工具类、static class 等）不作为 Class，按 Namespace 处理：方法作为 Function 挂在 Namespace 下。
 
@@ -449,11 +447,11 @@ Part 代表没有独立名字、但需要说明的代码片段：它依附在已
 
 - Part 的 qname 由 `<parent>/part#<内容哈希>` 决定，不是本地名；
 - 它必须带源码范围，identity 来自内容，不来自名字；
-- 它不建 Section，也没有独立设计文档，设计信息写在所属对象的设计要点里；
+- 它不建设计字段，也没有独立设计文档，设计信息写在所属对象的设计要点里；
 - 它可以有依赖和子对象，但不能作为容器结构中的成员。
 
 - Part 的设计信息写在所属对象的设计要点里；
-- 不新增文档块，不建 Part 文档 Section；
+- 不新增文档块，不建 Part 设计字段；
 - 需要读者知道 Part 的字段、关系或约束时，写进所属对象对应 topic。
 
 ### 2.14 怎么选择对象类型
@@ -566,7 +564,7 @@ C++ 的 `class` 和 `struct` 只差默认访问权限和默认继承方式，不
 
 #### File / Directory / Namespace 定位
 
-用一个单句描述这个目录、文件或命名空间中放什么内容，直接写在 Section 正文里，不建 topic。
+用一个单句描述这个目录、文件或命名空间中放什么内容，直接写在 设计字段正文里，不建 topic。
 
 - Directory / Namespace：用置放单句。
 - File：描述这个文件承载的设计角色或能力。
@@ -1262,7 +1260,7 @@ ns::BaseService
 错误原因：写了继承原因和契约，父类块只写限定名。
 
 ```text
-namespaces/app/BaseService
+technical/namespace/app/BaseService
 ```
 
 错误原因：写的是 design-space qname，不是代码限定名。
@@ -1294,7 +1292,7 @@ crate::auth::TokenValidator
 错误原因：写了继承原因和契约，父接口块只写限定名。
 
 ```text
-namespaces/app/TokenValidator
+technical/namespace/app/TokenValidator
 ```
 
 错误原因：写的是 design-space qname，不是代码限定名。
@@ -1346,7 +1344,7 @@ crate::store::Repository<Order>
 错误原因：写了实现原因和说明，接口块只写限定名。
 
 ```text
-namespaces/app/Authenticator
+technical/namespace/app/Authenticator
 ```
 
 错误原因：写的是 design-space qname，不是代码限定名。
@@ -1402,7 +1400,7 @@ crate::behaviour::Logging
 错误原因：写了混入原因和说明，混入块只写限定名。
 
 ```text
-namespaces/app/Logging
+technical/namespace/app/Logging
 ```
 
 错误原因：写的是 design-space qname，不是代码限定名。
@@ -1427,7 +1425,7 @@ Logging、Retryable
 - 只写签名，不写实现、用途或参数说明；
 - 参数和返回值分别写在“参数”“返回值”块，不在这里展开；
 - 签名按源码原样写，保留泛型、生命周期、修饰符等语言写法；
-- Section 标题仍只用对象短名，对象 qname 不变。
+- 设计字段标题仍只用对象短名，对象 qname 不变。
 
 正例：
 
@@ -1469,7 +1467,7 @@ refreshToken
 - 示例数量不固定；一个对象通常需要多个示例，按职责和公开行为检查示例覆盖，不要只写一个就停；
 - 覆盖基础、常用、边界和失败场景；
 - 每个示例闭环：构造或准备、主要调用、结果或清理；
-- 每个示例写成一个 `document-block`，不要拆成多段正文；
+- 每个示例写成一个 `DocumentCode`，不要拆成多段正文；
 - 块内包含自然语言说明、代码和注释；
 - 自然语言说明目标、顺序和结果；
 - 注释只说明主干步骤在做什么，不写前置条件、错误分支、副作用、后置条件等细节；
@@ -1604,7 +1602,7 @@ let validator = JwtValidator;
 
 ### 3.12 设计原则
 
-用于对设计的要求。技术设计文档的“设计原则”Section，以及 System/Module/Class 文档的“设计原则”块都用这个格式。挂在某个对象下的设计原则对该对象的所有子树有效。
+用于对设计的要求。技术设计文档的“设计原则”字段，以及 System/Module/Class 文档的“设计原则”块都用这个格式。挂在某个对象下的设计原则对该对象的所有子树有效。
 
 **什么算设计原则**
 
@@ -1617,7 +1615,7 @@ let validator = JwtValidator;
 
 设计原则不是职责、功能、不变量或约束，也不是实现策略、需求、质量目标或通用口号。
 
-设计原则 Section/块只放一个列表，每条一个原则；不要为原则建 topic，也不允许写定位、职责、非职责、功能、非功能、不变量、约束、对外依赖、设计要点、用法或其他块，也不写成员清单、结构说明或背景介绍。
+设计原则字段/块只放一个列表，每条一个原则；不要为原则建 topic，也不允许写定位、职责、非职责、功能、非功能、不变量、约束、对外依赖、设计要点、用法或其他块，也不写成员清单、结构说明或背景介绍。
 
 每条列表项只写一条简短的设计规范，不写范围、理由、代价、现状或实现细节。原则所在的位置就是它的范围。
 
@@ -1841,7 +1839,7 @@ topic 标题：缓存
 
 ### 3.14 代码块
 
-代码块是 `document-block`，用 Markdown 围栏渲染。只有内容本身就是设计需要表达的格式时才使用，例如：
+代码块是 `DocumentCode`，用 Markdown 围栏渲染。只有内容本身就是设计需要表达的格式时才使用，例如：
 
 - 协议请求/响应样例、数据格式或配置文件片段；
 - 接口使用示例中必须固定下来的调用形态；
@@ -1855,16 +1853,16 @@ topic 标题：缓存
 - 不要用代码块写实现细节、内部流程或可以写进正文的普通说明；
 - 代码内容按原样保留，不渲染 `[[concept:...]]` 引用；需要解释术语时写在代码块前后的正文里；
 - 代码块前后要有正文说明它展示什么、约束是什么，不能只放一个孤立的代码块；
-- 代码块只能放在 Section 正文或 Topic 段落里，不能作为列表项。
+- 代码块只能放在 设计字段正文或 Topic 段落里，不能作为列表项。
 
 ```bash
-ds doc block add <section-or-topic>/body --language rust --text $'let token = login();'
-ds doc block set <block-qname> --language text --text "新的内容"
+arche doc code add <qname> <field> --language rust "let token = login();"
+arche doc code add <qname> <field> --language text "新的内容"
 ```
 
 ### 3.15 图表（Mermaid）
 
-只有文字、列表或结构树不足以让人一眼看清关系时，才用 `document-mermaid`。先判断图的类型：
+只有文字、列表或结构树不足以让人一眼看清关系时，才用 `DocumentMermaid`。先判断图的类型：
 
 - **架构/上下文图**：跨多个 System/Module 的边界、外部系统、部署单元或数据流无法用短列表说清时画。节点名称必须与架构文档或结构树一致；不画代码目录、类图或调用细节；一张图只表达一种关系。
 - **流程图**：流程有分支、循环、并发、失败或重试路径时画；线性步骤用正文或列表。必须画出失败/异常分支，不能只画成功路径。
@@ -1881,15 +1879,15 @@ ds doc block set <block-qname> --language text --text "新的内容"
 - 没有信息量的图不要加。
 
 ```bash
-ds doc mermaid add <section-or-topic>/body --text $'flowchart TD\n  A[请求] --> B[校验]\n  B -->|失败| C[返回错误]'
-ds doc mermaid set <mermaid-qname> --text $'flowchart LR\n  A --> B'
+arche doc mermaid set <qname> <field> "flowchart TD; A-->B; B-->|失败| C"
+arche doc mermaid set <qname> <field> "flowchart LR; A --> B"
 ```
 
 Foundry 设计空间会把 Mermaid 源码渲染成图；存储里只保留源码，不保存图片。
 
 ### 3.16 HTML/SVG 预览
 
-当用文字或 Mermaid 都不足以表达视觉效果时，用 `document-html` 插入 HTML/SVG。典型用法是 UI 效果图；也可以用来表达布局、视觉状态、图标或 Mermaid 覆盖不到的示意图。
+当用文字或 Mermaid 都不足以表达视觉效果时，用 `DocumentHtml` 插入 HTML/SVG。典型用法是 UI 效果图；也可以用来表达布局、视觉状态、图标或 Mermaid 覆盖不到的示意图。
 
 写作规则：
 
@@ -1902,9 +1900,9 @@ Foundry 设计空间会把 Mermaid 源码渲染成图；存储里只保留源码
 - HTML/SVG 源码不渲染 `[[concept:...]]` 引用，术语解释写在正文里。
 
 ```bash
-ds doc html add <section-or-topic>/body --text '<div style="padding:12px">登录页效果图</div>'
-ds doc html add <section-or-topic>/body --text '<svg viewBox="0 0 100 40"><rect width="100" height="40" fill="#eee"/></svg>'
-ds doc html set <html-qname> --text '<div>新的效果图</div>'
+arche doc html add <qname> <field> '<div style="padding:12px">登录页效果图</div>'
+arche doc html add <qname> <field> '<svg viewBox="0 0 100 40"><rect width="100" height="40" fill="#eee"/></svg>'
+arche doc html add <qname> <field> '<div>新的效果图</div>'
 ```
 
 Foundry 设计空间在无脚本沙箱 iframe 中渲染，存储里只保留源码。

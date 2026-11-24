@@ -352,3 +352,181 @@ fn init_create_show() {
     assert!(stdout.contains("RequirementSystem"));
     assert!(stdout.contains("RequirementModule"));
 }
+
+#[test]
+fn structure_and_doc_checks_cover_authoring_commands() {
+    let temp = TempDir::new().unwrap();
+    let init = arche().arg("init").arg(temp.path()).output().unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let run = |args: &[&str]| {
+        let output = arche()
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let fail = |args: &[&str]| {
+        let output = arche()
+            .current_dir(temp.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{args:?} unexpectedly passed");
+        output
+    };
+
+    run(&["create", "technical-system", "app"]);
+    run(&[
+        "create",
+        "technical-module",
+        "core",
+        "--parent",
+        "technical/app",
+    ]);
+    run(&[
+        "create",
+        "technical-namespace",
+        "ns",
+        "--parent",
+        "technical",
+    ]);
+    run(&[
+        "create",
+        "technical-class",
+        "Foo",
+        "--namespace",
+        "technical/namespace/ns",
+        "--file",
+        "technical/file/src/lib.rs",
+        "--module",
+        "technical/app/core",
+        "--source",
+        "src/lib.rs:1-10",
+    ]);
+    let shown = run(&["show", "technical/namespace/ns/Foo"]);
+    assert!(shown.contains("file: technical/file/src/lib.rs"), "{shown}");
+    assert!(shown.contains("module: technical/app/core"), "{shown}");
+    assert!(shown.contains("source:"), "{shown}");
+
+    fail(&["structure", "check"]);
+    run(&[
+        "structure",
+        "assign",
+        "technical/namespace/ns/Foo",
+        "--parent",
+        "technical/app/core",
+    ]);
+    assert!(run(&["structure", "unassigned"]).trim().is_empty());
+    run(&["structure", "check"]);
+
+    fail(&["doc", "check"]);
+    for qname in [
+        "technical/app",
+        "technical/app/core",
+        "technical/namespace/ns",
+        "technical/namespace/ns/Foo",
+    ] {
+        run(&["doc", "text", "set", qname, "position", "定位"]);
+    }
+    run(&["doc", "check"]);
+
+    run(&["comment", "add", "technical/namespace/ns/Foo", "需要补充"]);
+    let listed = run(&["comment", "list", "--open"]);
+    assert!(listed.contains("需要补充"));
+    run(&["add", "-A"]);
+    let commit = run(&["commit", "-m", "baseline", "--author", "tester"]);
+    assert_eq!(commit.trim().len(), 64);
+    let log = run(&["log"]);
+    assert!(log.contains("Author: tester"));
+    run(&["comment", "clear"]);
+    assert!(!run(&["comment", "list"]).contains("需要补充"));
+}
+
+#[test]
+fn source_ls_and_cat_read_the_git_checkout() {
+    let source = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(source.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.test"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::create_dir_all(source.path().join("src")).unwrap();
+    std::fs::write(source.path().join("src/lib.rs"), "pub fn greet() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+
+    let design = TempDir::new().unwrap();
+    let init = arche()
+        .arg("init")
+        .arg(design.path())
+        .arg("--source")
+        .arg(source.path())
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let run = |args: &[&str]| {
+        let output = arche()
+            .current_dir(design.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(&["source", "fetch"]);
+    assert_eq!(run(&["source", "ls"]).trim(), "src/lib.rs");
+    assert!(run(&["source", "cat", "src/lib.rs"]).contains("greet"));
+}
+
+#[test]
+fn clone_records_the_source_url() {
+    let source = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .current_dir(source.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.test"]);
+    git(&["config", "user.name", "T"]);
+    std::fs::write(source.path().join("main.rs"), "fn main() {}\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "init"]);
+
+    let design = TempDir::new().unwrap();
+    arche().arg("init").arg(design.path()).output().unwrap();
+    let clone = TempDir::new().unwrap();
+    let destination = clone.path().join("repo");
+    let output = arche()
+        .arg("clone")
+        .arg(design.path())
+        .arg(&destination)
+        .arg("--source")
+        .arg(source.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let run = |args: &[&str]| {
+        let output = arche()
+            .current_dir(&destination)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    run(&["source", "fetch"]);
+    assert_eq!(run(&["source", "ls"]).trim(), "main.rs");
+    assert!(run(&["source", "cat", "main.rs"]).contains("fn main"));
+}

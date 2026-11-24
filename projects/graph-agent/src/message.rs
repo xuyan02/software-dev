@@ -35,10 +35,20 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmImage {
+    /// IANA media type such as `image/png` or `image/jpeg`.
+    pub media_type: String,
+    /// Standard base64, without a data URL prefix.
+    pub data_base64: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlmMessage {
     pub role: LlmRole,
     pub content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<LlmImage>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<LlmToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +62,7 @@ impl LlmMessage {
         Self {
             role: LlmRole::System,
             content: content.into(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
@@ -62,6 +73,18 @@ impl LlmMessage {
         Self {
             role: LlmRole::User,
             content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    pub fn user_with_images(content: impl Into<String>, images: Vec<LlmImage>) -> Self {
+        Self {
+            role: LlmRole::User,
+            content: content.into(),
+            images,
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
@@ -72,6 +95,7 @@ impl LlmMessage {
         Self {
             role: LlmRole::Assistant,
             content: content.into(),
+            images: Vec::new(),
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
@@ -86,6 +110,7 @@ impl LlmMessage {
         Self {
             role: LlmRole::Assistant,
             content: content.into(),
+            images: Vec::new(),
             tool_calls,
             tool_call_id: None,
             reasoning_content,
@@ -96,6 +121,7 @@ impl LlmMessage {
         Self {
             role: LlmRole::Tool,
             content: content.into(),
+            images: Vec::new(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,

@@ -15,6 +15,7 @@ foundry-domain.workspace = true
 foundry-adapter-postgres.workspace = true
 foundry-agent-runtime.workspace = true
 graph-agent.workspace = true
+libc.workspace = true
 linux-capsule.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

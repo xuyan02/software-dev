@@ -35,21 +35,34 @@ Initial implementation slice:
 - branches and `checkout`;
 - JSON and Markdown `show --format`;
 - requirement `ui` HTML and `flow` Mermaid validation;
-- `source sync` and `add --file` for tracked source files;
+- `source sync`, `source ls`, `source cat`, and `add --file` for tracked source
+  files;
+- code authoring with `--file`, `--module`, and `--source` on create;
+- structure membership: `structure assign/list/unassigned/check`;
+- document coverage checks (`doc check`) and graph checks (`check`);
+- PUSH2 bundles with incoming quarantine, fast-forward checks and ref CAS;
+- SSH forced-command and AuthorizedKeysCommand deployment scripts;
+- `commit --author` for audit trails;
 - CLI: `init [--source]`, `clone`, `remote add/show`, `push`, `fetch`, `pull`,
-  `branch list/create/delete`, `checkout`, `create technical-system`,
-  `create technical-module`, `doc text/list/topic/mermaid/html`,
-  `comment add/list/resolve`, `concept mkdir/create/list/link`,
-  `requirement create/list`, `source fetch/checkout/worktree/status/sync`,
-  `search`, `check`, `add [--file]`, `unstage`, `status`, `diff`, `commit`,
-  `reset`, `show --format text|json|md`, `ls`, `log`.
+  `branch list/create/delete`, `checkout`, `create technical-*`,
+  `structure assign/list/unassigned/check`, `doc text/list/topic/code/mermaid/html`,
+  `doc check`, `comment add/list/resolve/clear`, `concept mkdir/create/list`,
+  `requirement create/list`, `source fetch/checkout/worktree/status/ls/cat/sync`,
+  `search`, `check`, `add [--file]`, `unstage`, `status`, `diff`,
+  `commit [--author]`, `reset`, `show --format text|json|md`, `ls`, `log`.
+
+Foundry integration:
+
+- new projects are provisioned as Arche repositories;
+- the Foundry console reads Arche repositories;
+- `arche-client`/`arche-server` provide the push/fetch transport over local,
+  HTTP, and SSH remotes.
 
 Not yet implemented:
 
-- HTTP/SSH remote push fast-forward and ref CAS;
-- SSH forced-command/allowlist deployment;
-- full source directory/namespace/class object sync;
-- Foundry UI integration.
+- source AST parsing; namespaces, types and members are authored by agents;
+- richer Arche-specific console pages (object editor and requirement views);
+- tags and additional ref operations.
 
 The detailed implementation status and remaining work are recorded in
 [`docs/design.md` §23](docs/design.md#23-当前实现与剩余工作).

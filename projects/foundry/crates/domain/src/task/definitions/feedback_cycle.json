@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "roles": [
+    {"name": "synthesizer", "kind": "agent", "assignment": "feedback_cycle"}
+  ],
+  "vars": {
+    "done": {"type": "int", "display_name": "Completed audits"},
+    "failed": {"type": "int", "display_name": "Failed audits"}
+  },
+  "initial_stage": "audits",
+  "stages": [
+    {
+      "name": "audits",
+      "active_roles": [],
+      "created": [
+        {
+          "create_child": {
+            "workflow": "requirements_audit",
+            "title": "需求反馈审计"
+          }
+        },
+        {
+          "create_child": {
+            "workflow": "design_audit",
+            "title": "技术设计反馈审计"
+          }
+        },
+        {
+          "create_child": {
+            "workflow": "code_audit",
+            "title": "代码反馈审计"
+          }
+        },
+        {
+          "create_child": {
+            "workflow": "test_audit",
+            "title": "测试反馈审计"
+          }
+        },
+        {
+          "create_child": {
+            "workflow": "product_audit",
+            "title": "产品试用反馈审计"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.state == 'completed' { if event.child.workflow == 'requirements_audit' or event.child.workflow == 'design_audit' or event.child.workflow == 'code_audit' or event.child.workflow == 'test_audit' or event.child.workflow == 'product_audit' { if event.child.result == 'completed' { done = done + 1 } else { failed = failed + 1 } } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "done + failed == count_children('requirements_audit') + count_children('design_audit') + count_children('code_audit') + count_children('test_audit') + count_children('product_audit')",
+          "to": "synthesis"
+        }
+      ]
+    },
+    {
+      "name": "synthesis",
+      "active_roles": ["synthesizer"],
+      "vars": {
+        "synthesized": {"type": "bool", "display_name": "Synthesized"}
+      },
+      "operations": [
+        {
+          "name": "synthesized",
+          "display_name": "反馈汇总完成",
+          "description": "发现已去重、归并并转成后续 Issue。",
+          "roles": ["synthesizer"],
+          "action": "synthesized = true"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "synthesized",
+          "action": "if failed > 0 { result = 'failed' } else { result = 'completed' }",
+          "to": "ended"
+        }
+      ]
+    }
+  ]
+}

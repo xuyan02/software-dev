@@ -30,12 +30,14 @@ pub struct AgentSupervisor {
     /// Platform model API key from config/env. Never persisted.
     api_key: String,
     shell_image: String,
+    desktop_image: String,
     agent_logs: Arc<AgentLogFiles>,
     running: Mutex<HashSet<Uuid>>,
     stopping: Mutex<HashSet<Uuid>>,
 }
 
 impl AgentSupervisor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Arc<PostgresStore>,
         database_url: String,
@@ -43,6 +45,7 @@ impl AgentSupervisor {
         session_ttl_hours: i64,
         api_key: String,
         shell_image: String,
+        desktop_image: String,
         agent_logs: Arc<AgentLogFiles>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -52,10 +55,106 @@ impl AgentSupervisor {
             session_ttl_hours,
             api_key,
             shell_image,
+            desktop_image,
             agent_logs,
             running: Mutex::new(HashSet::new()),
             stopping: Mutex::new(HashSet::new()),
         })
+    }
+
+    /// Stop every known `foundry-agentd` process. Called when the control
+    /// plane exits so a terminal Ctrl-C or service restart does not leave
+    /// orphaned agent processes and capsules behind.
+    pub async fn shutdown_all(self: &Arc<Self>) {
+        let processes = match self.store.list_agent_processes().await {
+            Ok(processes) => processes,
+            Err(error) => {
+                tracing::warn!(%error, "cannot list agent processes for shutdown");
+                Vec::new()
+            }
+        };
+        let mut pids = Vec::new();
+        for process in &processes {
+            if let Some(pid) = process.pid
+                && process_alive(pid)
+                && is_agentd(pid)
+            {
+                pids.push((process.agent_definition_id, pid));
+            }
+        }
+        for id in self
+            .running
+            .lock()
+            .await
+            .iter()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            if let Some(pid) = self.process_pid(id).await
+                && process_alive(pid)
+                && !pids.iter().any(|(_, known)| *known == pid)
+            {
+                pids.push((id, pid));
+            }
+        }
+        if pids.is_empty() {
+            return;
+        }
+        for (_, pid) in &pids {
+            terminate(*pid);
+        }
+        for _ in 0..50 {
+            if pids.iter().all(|(_, pid)| !process_alive(*pid)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        for (id, pid) in &pids {
+            if process_alive(*pid) {
+                tracing::warn!(agent_id = %id, pid = *pid, "agentd ignored SIGTERM; killing");
+                kill_force(*pid);
+            }
+            let _ = self.store.agent_process_stopped(*id).await;
+        }
+        tracing::info!(count = pids.len(), "agentd processes stopped");
+        cleanup_agent_containers();
+    }
+
+    /// Kill `foundry-agentd` processes recorded by an earlier control-plane
+    /// crash before starting new agents.
+    pub async fn reap_orphans(self: &Arc<Self>) {
+        let processes = match self.store.list_agent_processes().await {
+            Ok(processes) => processes,
+            Err(error) => {
+                tracing::warn!(%error, "cannot list agent processes for orphan cleanup");
+                return;
+            }
+        };
+        for process in processes {
+            let Some(pid) = process.pid else { continue };
+            if process_alive(pid) && is_agentd(pid) {
+                tracing::warn!(
+                    agent_id = %process.agent_definition_id,
+                    pid,
+                    "reaping orphaned agentd from a previous control plane"
+                );
+                terminate(pid);
+                for _ in 0..20 {
+                    if !process_alive(pid) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                if process_alive(pid) {
+                    kill_force(pid);
+                }
+            }
+            let _ = self
+                .store
+                .agent_process_stopped(process.agent_definition_id)
+                .await;
+        }
+        cleanup_agent_containers();
     }
 
     /// Start every enabled definition. Called once at control-plane startup.
@@ -145,6 +244,8 @@ impl AgentSupervisor {
             .arg(id.to_string())
             .arg("--shell-image")
             .arg(&self.shell_image)
+            .arg("--desktop-image")
+            .arg(&self.desktop_image)
             .arg("--api-key")
             .arg(&self.api_key)
             .kill_on_drop(true)
@@ -301,9 +402,50 @@ fn process_alive(pid: i32) -> bool {
     Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// Only signal PIDs that still look like our agentd; PIDs can be reused after
+/// a crash or long uptime.
+fn is_agentd(pid: i32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|comm| comm.trim() == "foundry-agentd")
+        .unwrap_or(false)
+}
+
 fn terminate(pid: i32) {
     let _ = std::process::Command::new("kill")
         .arg("-TERM")
         .arg(pid.to_string())
         .status();
+}
+
+fn kill_force(pid: i32) {
+    let _ = std::process::Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .status();
+}
+
+/// Best-effort removal of agent and service capsules left by a terminated
+/// agentd. Normal shutdown removes them through Rust Drop; this covers the
+/// SIGKILL/crash path.
+fn cleanup_agent_containers() {
+    let output = std::process::Command::new("podman")
+        .args(["ps", "-aq", "--filter", "label=foundry.agent_id"])
+        .output();
+    let Ok(output) = output else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    for id in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let _ = std::process::Command::new("podman")
+            .args(["rm", "-f", id])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }

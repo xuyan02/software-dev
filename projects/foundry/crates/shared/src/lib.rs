@@ -36,16 +36,12 @@ pub struct Config {
     /// definitions are reconciled from these values at startup.
     pub openai_base_url: Option<String>,
     pub openai_model: Option<String>,
-    /// Local ds-server repository collection root.
+    /// Local Arche repository collection root; each project is one repository.
     pub design_space_root: PathBuf,
-    /// Local ds-server listen address. It must be reachable from agent shells.
-    pub design_space_listen: String,
-    /// Bearer token file for the local ds-server admin API.
-    pub design_space_token_file: PathBuf,
-    /// SSH base URL agents use to reach the design space, for example
-    /// `ssh://foundry-ds@10.0.0.5`. Defaults to the detected host IP and the
+    /// SSH base URL agents use to reach Arche design spaces, for example
+    /// `ssh://foundry-arche@10.0.0.5`. Defaults to the detected host IP and the
     /// host's sshd on port 22.
-    pub design_space_ssh_url: Option<String>,
+    pub arche_ssh_url: Option<String>,
     /// Built SPA assets for the workflow editor. The control plane serves
     /// `/workflows/editor/` from this directory and answers 503 while it is
     /// missing.
@@ -59,6 +55,8 @@ pub struct Config {
     pub github_api_base: String,
     /// Container image used for an agent's persistent shell.
     pub shell_image: String,
+    /// Desktop capsule image used by desktop final-artifact tests.
+    pub desktop_image: String,
     /// The file that was loaded, if any. `None` means defaults only.
     pub config_file: Option<PathBuf>,
 }
@@ -85,14 +83,13 @@ struct ConfigFile {
     openai_base_url: Option<String>,
     openai_model: Option<String>,
     design_space_root: Option<String>,
-    design_space_listen: Option<String>,
-    design_space_token_file: Option<String>,
-    design_space_ssh_url: Option<String>,
+    arche_ssh_url: Option<String>,
     editor_dir: Option<String>,
     github_app_id: Option<GithubAppId>,
     github_app_private_key_file: Option<String>,
     github_api_base: Option<String>,
     shell_image: Option<String>,
+    desktop_image: Option<String>,
     /// Deprecated: human-review skipping is a project setting on the project
     /// page. Accepted and ignored so an older config file still starts.
     #[serde(default)]
@@ -211,6 +208,11 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| DEFAULT_SHELL_IMAGE.to_string());
+        let desktop_image = file
+            .desktop_image
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "localhost/linux-capsule:1".to_string());
         let foundry_dir = default_config_path()
             .and_then(|path| path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from(".foundry"));
@@ -219,18 +221,8 @@ impl Config {
             .map(|value| PathBuf::from(value.trim()))
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| foundry_dir.join("design-spaces"));
-        let design_space_listen = file
-            .design_space_listen
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "127.0.0.1:7700".to_string());
-        let design_space_token_file = file
-            .design_space_token_file
-            .map(|value| PathBuf::from(value.trim()))
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or_else(|| foundry_dir.join("design-space-token"));
-        let design_space_ssh_url = file
-            .design_space_ssh_url
+        let arche_ssh_url = file
+            .arche_ssh_url
             .map(|value| value.trim().trim_end_matches('/').to_string())
             .filter(|value| !value.is_empty());
         let _ = file.skip_human_review;
@@ -249,10 +241,8 @@ impl Config {
             openai_api_key: file.openai_api_key.filter(|value| !value.is_empty()),
             openai_base_url: file.openai_base_url.filter(|value| !value.is_empty()),
             openai_model: file.openai_model.filter(|value| !value.is_empty()),
-            design_space_ssh_url,
+            arche_ssh_url,
             design_space_root,
-            design_space_listen,
-            design_space_token_file,
             editor_dir: PathBuf::from(
                 file.editor_dir
                     .unwrap_or_else(|| "web/workflow-editor/dist".to_string()),
@@ -261,6 +251,7 @@ impl Config {
             github_app_private_key_file,
             github_api_base,
             shell_image,
+            desktop_image,
             config_file,
         })
     }

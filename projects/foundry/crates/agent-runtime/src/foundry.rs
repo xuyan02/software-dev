@@ -556,12 +556,12 @@ impl FoundryClient {
         .await
     }
 
-    /// The agent account's design-space key. It belongs to the agent, not to a
+    /// The agent account's Arche SSH key. It belongs to the agent, not to a
     /// task, and is installed once when the shell starts.
-    pub async fn agent_ds_credential(&self, definition_id: Uuid) -> Result<Value, FoundryError> {
+    pub async fn agent_arche_credential(&self, definition_id: Uuid) -> Result<Value, FoundryError> {
         self.post_scoped(
             &format!(
-                "{}/api/v1/agent/ds-credential",
+                "{}/api/v1/agent/arche-credential",
                 self.base_url.trim_end_matches('/')
             ),
             serde_json::json!({ "definition_id": definition_id }),

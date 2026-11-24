@@ -15,6 +15,15 @@ pub struct ShellOutput {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellInput {
+    Move { x: i16, y: i16 },
+    Click { x: i16, y: i16, button: u8 },
+    Scroll { x: i16, y: i16, delta: i32 },
+    Key { key: String },
+    Text { text: String },
+}
+
 /// A shell owned by one agent process.
 ///
 /// The implementation decides how the shell is isolated; agents only see a
@@ -25,6 +34,33 @@ pub trait Shell: Send + Sync {
 
     /// Upload one local file into the shell.
     async fn upload(&self, local: &std::path::Path, container_path: &str) -> Result<(), ToolError>;
+
+    /// Download one file from the shell. Implementations that cannot copy
+    /// files keep the default error; tools that need images must then fall
+    /// back to base64 over stdout.
+    async fn download(
+        &self,
+        _container_path: &str,
+        _local: &std::path::Path,
+    ) -> Result<(), ToolError> {
+        Err(ToolError::Failed(
+            "this shell does not support file download".to_string(),
+        ))
+    }
+
+    /// Capture the desktop capsule screen, when the shell has a desktop.
+    async fn screenshot(&self) -> Result<Vec<u8>, ToolError> {
+        Err(ToolError::Failed(
+            "this shell has no desktop screenshot".to_string(),
+        ))
+    }
+
+    /// Send one mouse or keyboard event to a desktop capsule.
+    async fn input(&self, _input: ShellInput) -> Result<(), ToolError> {
+        Err(ToolError::Failed(
+            "this shell has no desktop input".to_string(),
+        ))
+    }
 }
 
 pub struct ShellTool {

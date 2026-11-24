@@ -1064,6 +1064,9 @@ pub async fn create_project_form(
             {
                 tracing::warn!(project_id = %project.id, %error, "cannot create default development-iteration trigger");
             }
+            if let Err(error) = state.triggers.ensure_feedback_cycle(project.id).await {
+                tracing::warn!(project_id = %project.id, %error, "cannot create default feedback trigger");
+            }
             state.agents.ensure_project_dispatcher(project.id).await;
             Redirect::to(&format!("/projects/{}", project.id)).into_response()
         }
@@ -2980,6 +2983,9 @@ pub async fn create_project(
     {
         tracing::warn!(project_id = %project.id, %error, "cannot create default development-iteration trigger");
     }
+    if let Err(error) = state.triggers.ensure_feedback_cycle(project.id).await {
+        tracing::warn!(project_id = %project.id, %error, "cannot create default feedback trigger");
+    }
     state.agents.ensure_project_dispatcher(project.id).await;
     Ok((StatusCode::CREATED, Json(project)))
 }
@@ -3836,24 +3842,34 @@ pub async fn issue_index(State(state): State<AppState>, headers: HeaderMap) -> R
     }
 }
 
-pub async fn tasks_index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn tasks_index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TaskListQuery>,
+) -> Response {
     let session = match auth::web_session(&state, &headers).await {
         Ok(session) => session,
         Err(response) => return response,
     };
+    let filter = match query.into_filter() {
+        Ok(filter) => filter,
+        Err(message) => return auth::web_error(ServiceError::Validation(message)),
+    };
+    let selected_state = filter.state;
     let tasks = match state
         .tasks
-        .list(
-            session.project.id,
-            TaskFilter::default(),
-            web_task_viewer(&session),
-        )
+        .list(session.project.id, filter, web_task_viewer(&session))
         .await
     {
         Ok(tasks) => tasks,
         Err(error) => return auth::web_error(error),
     };
-    Html(foundry_web::tasks_page(&session.context, &tasks)).into_response()
+    Html(foundry_web::tasks_page(
+        &session.context,
+        &tasks,
+        selected_state,
+    ))
+    .into_response()
 }
 
 pub async fn task_page(
@@ -4015,18 +4031,22 @@ async fn task_recovery_form(
     Redirect::to(&format!("/tasks/{id}")).into_response()
 }
 
-pub async fn tasks_state(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn tasks_state(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<TaskListQuery>,
+) -> Response {
     let session = match auth::web_session(&state, &headers).await {
         Ok(session) => session,
         Err(response) => return response,
     };
+    let filter = match query.into_filter() {
+        Ok(filter) => filter,
+        Err(message) => return auth::web_error(ServiceError::Validation(message)),
+    };
     let tasks = match state
         .tasks
-        .list(
-            session.project.id,
-            TaskFilter::default(),
-            web_task_viewer(&session),
-        )
+        .list(session.project.id, filter, web_task_viewer(&session))
         .await
     {
         Ok(tasks) => tasks,

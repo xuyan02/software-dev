@@ -13,3 +13,7 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = { workspace = true }
 arche-core = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+arche-client.workspace = true

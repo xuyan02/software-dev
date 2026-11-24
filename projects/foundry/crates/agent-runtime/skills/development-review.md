@@ -19,7 +19,7 @@
 9. `document`，`action = "toc"`，`kind = "development"` 读取锚点。
 10. `document`，`action = "annotations_list"`，`kind = "development"` 读取已有批注。
 11. `task_allowed_operations` 确认当前允许的操作。
-12. 用 `workspace_list`、`workspace_read`、`workspace_diff` 检查实际代码和 diff；用 `workspace_run` 重跑构建和测试。
+12. 用 `shell` 在 `/work/<project-id>/repo` 检查实际代码和 diff，并重跑构建和测试（存在 `scripts/verify.sh` 时优先运行它）。
 
 你不修改代码或文档。
 
@@ -34,9 +34,9 @@
 
 ### 2. 代码与证据
 
-- 开发记录中的 commit、分支和 diff 是否与工作区一致？
-- 用 `workspace_diff`，`base` 传开发记录中的 base commit，检查实际 diff；用 `workspace_read` 检查关键文件。
-- 用 `workspace_run` 重跑构建、格式、lint 和测试；结果是否与记录一致？
+- 开发记录中的 commit、分支和 diff 是否与 `/work/<project-id>/repo` 一致？
+- 用 `git diff <base>..<head>` 检查实际 diff；用 `sed` / `cat` 检查关键文件。
+- 用 `shell` 重跑构建、格式、lint 和测试；结果是否与记录一致？
 - 单测、集成测试、验收测试是否真实执行过？
 - 失败和跳过的测试是否如实记录？
 - 证据能否由第三方复现？是否只是“已完成/通过”的自述？

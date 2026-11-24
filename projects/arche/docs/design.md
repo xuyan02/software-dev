@@ -7,7 +7,7 @@
 
 ## 1. 范围
 
-v2 从头实现，不迁移 v1 数据。v1 继续保留，直到 v2 达到功能对等并通过验收，再整体替换 v1。
+v2 从头实现，不迁移 v1 数据。v1 实现已删除；Foundry 现在只使用 Arche。
 
 v2 覆盖：
 
@@ -1756,6 +1756,18 @@ GET  /api/v1/projects/{project}/arche/concepts
 
 本节记录截至 2026-11-23 的实际实现状态。它不改变前面的目标设计，只说明哪些已经落地、哪些仍缺。
 
+**2026-11-24 补充**：
+
+- 创作能力补齐：`create` 支持 `--file`、`--module`、`--source`；新增
+  `structure assign/list/unassigned/check`、`doc check`、`comment clear`、
+  `commit --author`、`source ls`、`source cat`。
+- PUSH2 bundle、`incoming/` quarantine、fast-forward 检查和 ref CAS 已落地；
+  `deploy/` 提供 SSH forced command 和 AuthorizedKeysCommand。
+- Foundry 已切换：新项目创建为 Arche 仓库；v1 实现已删除；
+  design_baseline、CodeSummary、技能和平台提示词改用 `arche` 命令和对象字段。
+- 仍未实现：源码 AST 解析、Foundry 专属 Arche 页面、tag/更多 ref 操作、
+  Arche client/server 的 HTTP/SSH 端到端与并发测试。
+
 ### 23.1 已实现
 
 - `DSO2` 对象记录、`CMT2` 提交记录、SHA-256 内容寻址；
@@ -1837,7 +1849,7 @@ Arche 内部**不提供源码 AST 解析**：
 还需要：
 
 - 宿主 sshd 配置；
-- `foundry-ds` 或 `arche` 服务账户；
+- `foundry-arche` 服务账户；
 - `AuthorizedKeysCommand`；
 - forced command；
 - allowlist；

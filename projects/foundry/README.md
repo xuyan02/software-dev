@@ -15,6 +15,8 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 
 ## 当前状态：可运行的纵向切片
 
+设计空间使用 Arche：每个项目一个 `.arche` 仓库，设计基线、CodeSummary、设计审查和控制台都使用 `arche` 命令与对象字段。
+
 已实现：
 
 - Issue 聚合（问题空间）：反馈、缺陷、问题、想法、任务请求、事故；评论、处置、状态机、乐观并发、历史。
@@ -60,6 +62,25 @@ Foundry 不是 Jira 加一个 AI 字段，也不是 IDE 插件。它是所有工
 | [RFC 0020](docs/rfcs/0020-requirements-subsystem.md) | 需求子系统：项目文档与需求文档、用户/功能/故事/操作、版本/草案/冲突 |
 
 设计原则见 [ADR 0007](docs/adr/0007-management-backbone-and-auxiliary-systems.md)（管理主干与辅助系统分离）和 [ADR 0008](docs/adr/0008-artifact-lineage-baselines-change.md)（产物血缘、基线与变更是贯穿主线）。这些 RFC 是设计稿，不代表已实现；实施顺序见 RFC 0008 §13。
+
+
+## 自主生产线
+
+- 项目只能由人类账户创建；智能体没有创建项目的权限。
+- 推荐根流程 `software_development`：评估代码状态 → 澄清/确认（有代码时先通过 git 读代码）→ 需求发现/分析 → 交互/UI → 架构 → 详细设计 → 测试计划 → 迭代开发 → 测试执行 → 发布 → 持续反馈 → 长期运行。
+- `maintenance_development` 用于只需长期维护的项目；`autonomous_software_development` 保留为早期完整生命周期实现。
+- 人类只负责创建项目、回答澄清和审批；其余环节由平台 Agent 或确定性运行时执行。
+- 能用代码完成的环节不调用 LLM：代码评估、代码验证/合入、设计/开发迭代分派与验收、技术设计一致性扫描、设计分支清理、组任务合并，以及发布候选、验证、部署、观察都由确定性运行时执行；设计/需求写作、评审、分诊、审计和需要权衡的选择才使用 LLM。
+- 有代码时，澄清、需求、交互/UI、架构、详细设计及其评审智能体通过 `git clone/fetch/checkout` 在 `/work/<project-id>/source` 读取代码；不再先执行 `design_baseline_initial`。
+- 项目设置中可开启“跳过所有人工审批”。开启后，除目标澄清外的所有人类审批自动通过，锚点文档自动批准、设计空间合并请求自动合入。
+- 默认每天 09:00 运行 `daily_check`：并行创建需求、技术设计、代码、测试、产品试用五个审计子任务，完成后汇总去重并分流到设计池/开发池。
+- 默认每 7 天运行一次 `feedback_cycle`，使用与 `daily_check` 相同的五个并行审计子任务。
+- `design_iteration` / `development_iteration` 默认使用 `continuous` 触发器：只要设计池/开发池还有任务，就一轮接一轮持续处理；空闲时每小时检查一次。
+- 同一个触发器上一轮任务未结束（未 `Completed`）时不会创建新任务；手动运行和定时运行都受此限制。
+- 发布阶段约定项目工作区提供这些脚本（存在时执行）：`scripts/release.sh`、`scripts/verify.sh`、`scripts/deploy.sh`、`scripts/observe.sh`。没有部署/观察脚本时发布不会伪造成功。
+- 最终产物验收：测试执行智能体不跑单元测试，而是启动真实产物、操作并观察。项目设置里选择客户端测试胶囊：`cli` / `api` / `web` / `desktop`。CLI 用 headless shell，API/Web 用 shell 或浏览器客户端，Desktop 用桌面胶囊和 `desktop_screenshot` / `desktop_input`。
+- 有服务端的产物必须把服务端放在独立服务胶囊：`service_start` 在共享 Podman 网络启动后端（绑定 0.0.0.0），返回容器 hostname/url；Web 浏览器客户端或 API/桌面客户端通过该 url 访问。不能把服务端塞进 Web 浏览器胶囊。
+- 截图作为图片交给多模态模型查看，`openai_model` 必须是支持视觉输入的模型。无法启动、操作或观察时测试失败，不能伪造通过。
 
 ## 快速开始
 
@@ -117,15 +138,14 @@ openai_model = "deepseek-chat"
 | `openai_api_key` | 无 | 平台智能体模型 key；不落库 |
 | `openai_base_url` | 平台默认 `http://127.0.0.1:11434/v1` | 平台智能体模型 base URL |
 | `openai_model` | 平台默认 `qwen2.5-coder` | 平台智能体模型名 |
-| `design_space_root` | `~/.foundry/design-spaces` | 本地 `ds-server` 的仓库集合根目录；每个项目一个子仓库 |
-| `design_space_listen` | `127.0.0.1:7700` | 本地 `ds-server` 的 HTTP 监听地址；只供控制平面做仓库创建和管理 |
-| `design_space_token_file` | `~/.foundry/design-space-token` | ds-server 的 admin token 文件；只给控制平面使用，不注入智能体 |
-| `design_space_ssh_url` | `ssh://foundry-ds@<宿主 IP>` | 智能体访问设计空间的 SSH 地址；使用宿主 sshd 和服务账户，由 `scripts/install-ds-sshd.sh` 配置 |
+| `design_space_root` | `~/.foundry/design-spaces` | Arche 仓库集合根目录；每个项目一个仓库 |
+| `arche_ssh_url` | `ssh://foundry-arche@<宿主 IP>` | 智能体访问 Arche 设计空间的 SSH 地址；宿主需安装 `projects/arche/deploy/` 的 forced command |
 | `editor_dir` | `web/workflow-editor/dist` | 流程编辑器的构建产物目录 |
 | `github_app_id` | 无 | GitHub App ID；用于签发短期仓库 token |
 | `github_app_private_key_file` | 无 | GitHub App 私钥路径；私钥不会写入数据库或交给 agent |
 | `github_api_base` | `https://api.github.com` | GitHub API 地址；GitHub Enterprise 用 `https://host/api/v3` |
-| `shell_image` | `localhost/openergasterion-shell:1` | agent 常驻 shell 使用的容器镜像 |
+| `shell_image` | `localhost/openergasterion-shell:1` | agent 常驻 shell；CLI/API/Web 产物测试胶囊使用的镜像 |
+| `desktop_image` | `localhost/linux-capsule:1` | 桌面 GUI 产物测试使用的桌面胶囊镜像 |
 
 引导规则：
 

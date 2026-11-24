@@ -163,6 +163,69 @@ fn iteration_workflows_wait_for_the_dispatcher_after_creation() {
 }
 
 #[test]
+fn iteration_keeps_dispatching_until_the_pool_is_empty() {
+    for (workflow_id, child_workflow) in [
+        ("design_iteration", "design"),
+        ("development_iteration", "code_change"),
+    ] {
+        let workflow = builtin(workflow_id);
+        let iteration = task(workflow_id, TaskState::Pending, None);
+        let task_id = iteration.id;
+        let dispatcher = Uuid::now_v7();
+        let verifier = Uuid::now_v7();
+        let child = ChildState {
+            task_id: Uuid::now_v7(),
+            workflow: WorkflowId::new(child_workflow),
+            state: TaskState::Pending,
+            result: None,
+        };
+        let child_id = child.task_id;
+        let state = aggregate(
+            iteration,
+            vec![
+                actor(task_id, "dispatcher", dispatcher, false),
+                actor(task_id, "verifier", verifier, false),
+            ],
+            vec![],
+            vec![child],
+        );
+        let created = apply(&workflow, state.clone(), TaskEvent::Created, now()).unwrap();
+        let mut state = absorb(state, created);
+
+        let before = state.clone();
+        let dispatched = operation(&workflow, state, "dispatch:dispatched", dispatcher);
+        assert_eq!(
+            dispatched.task.stage.as_deref(),
+            Some("waiting"),
+            "{workflow_id}"
+        );
+        state = absorb(before, dispatched);
+
+        let (next, mutation) =
+            child_changed(&workflow, state, child_id, child_workflow, "completed");
+        state = absorb(next, mutation);
+        assert_eq!(state.task.stage.as_deref(), Some("verify"), "{workflow_id}");
+
+        let before = state.clone();
+        let verified = operation(&workflow, state, "verify:ready", verifier);
+        assert_eq!(
+            verified.task.stage.as_deref(),
+            Some("dispatch"),
+            "{workflow_id}"
+        );
+        state = absorb(before, verified);
+
+        let empty = operation(&workflow, state, "dispatch:nothing", dispatcher);
+        assert_eq!(empty.task.state, TaskState::Completed, "{workflow_id}");
+        assert_eq!(
+            empty.task.result.as_ref().map(TaskResult::as_str),
+            Some("completed"),
+            "{workflow_id}"
+        );
+    }
+}
+
+#[test]
 fn builtin_definitions_parse_validate_and_round_trip() {
     let workflows = builtin_workflows();
     let mut ids: Vec<&str> = workflows.iter().map(|workflow| workflow.id()).collect();
@@ -171,12 +234,15 @@ fn builtin_definitions_parse_validate_and_round_trip() {
         ids,
         vec![
             "architecture_design",
+            "autonomous_software_development",
+            "code_audit",
             "code_change",
             "code_summary_group",
             "cohesion_inspection",
             "consistency_inspection",
             "daily_check",
             "design",
+            "design_audit",
             "design_baseline",
             "design_change",
             "design_consistency_maintenance",
@@ -187,19 +253,24 @@ fn builtin_definitions_parse_validate_and_round_trip() {
             "detailed_design",
             "development_iteration",
             "empty",
+            "feedback_cycle",
             "goal_clarification",
             "interaction_design",
             "issue_triage",
             "iteration",
             "logic_inspection",
+            "maintenance_development",
+            "product_audit",
             "project",
             "project_review",
             "release",
             "requirements_analysis",
+            "requirements_audit",
             "requirements_discovery",
             "roadmap",
             "software_development",
             "style_inspection",
+            "test_audit",
             "test_execution",
             "test_planning",
             "triage",
@@ -966,6 +1037,71 @@ fn project_walks_lifecycle_numbers_iterations_and_completes() {
     );
     assert_eq!(mutation.task.state, TaskState::Completed);
     assert_eq!(mutation.task.result.as_deref(), Some("approved"));
+}
+
+#[test]
+fn human_roles_only_approve() {
+    for workflow in builtin_workflows() {
+        let human_roles = workflow
+            .roles()
+            .iter()
+            .filter(|role| role.kind == crate::RoleKind::Human)
+            .map(|role| role.name.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        if human_roles.is_empty() {
+            continue;
+        }
+        for stage in workflow.stages() {
+            if !stage
+                .active_roles
+                .iter()
+                .any(|role| human_roles.contains(role.as_str()))
+            {
+                continue;
+            }
+            for operation in &stage.operations {
+                assert!(
+                    matches!(
+                        operation.name.as_str(),
+                        "approved"
+                            | "approve"
+                            | "review_approved"
+                            | "review_rejected"
+                            | "rejected"
+                            | "merge"
+                            | "conflict"
+                            | "close"
+                    ),
+                    "{} stage {} exposes non-approval human operation {}",
+                    workflow.id(),
+                    stage.name,
+                    operation.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn autonomous_root_starts_with_human_goal_clarification() {
+    let workflow = builtin("autonomous_software_development");
+    let root = task("autonomous_software_development", TaskState::Pending, None);
+    let mutation = apply(
+        &workflow,
+        aggregate(root, vec![], vec![], vec![]),
+        TaskEvent::Created,
+        now(),
+    )
+    .unwrap();
+
+    assert_eq!(mutation.task.state, TaskState::InProgress);
+    assert_eq!(mutation.task.stage.as_deref(), Some("goal"));
+    assert_eq!(mutation.children.len(), 1);
+    assert_eq!(
+        mutation.children[0].task.workflow.as_str(),
+        "goal_clarification"
+    );
+    assert!(crate::ENABLED_ROOT_WORKFLOWS.contains(&"autonomous_software_development"));
 }
 
 #[test]
@@ -1812,9 +1948,9 @@ fn disabled_workflows_stay_resolvable_but_are_marked_disabled() {
 }
 
 #[test]
-fn software_development_starts_in_running() {
-    let workflow = builtin("software_development");
-    let task = task("software_development", TaskState::Pending, None);
+fn maintenance_development_starts_in_running() {
+    let workflow = builtin("maintenance_development");
+    let task = task("maintenance_development", TaskState::Pending, None);
     let task_id = task.id;
     let state = aggregate(task, vec![], vec![], vec![]);
     let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
@@ -1827,74 +1963,113 @@ fn software_development_starts_in_running() {
 }
 
 #[test]
-fn daily_check_waits_for_the_design_inspection() {
+fn software_development_starts_with_assessment() {
+    let workflow = builtin("software_development");
+    let task = task("software_development", TaskState::Pending, None);
+    let state = aggregate(task, vec![], vec![], vec![]);
+    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+    assert_eq!(created.task.stage.as_deref(), Some("assessment"));
+    assert_eq!(created.task.state, TaskState::Pending);
+    assert!(created.task.task_variables.contains_key("has_code"));
+}
+
+#[test]
+fn daily_check_runs_every_audit_in_parallel_then_synthesizes() {
     let workflow = builtin("daily_check");
-    let task = task("daily_check", TaskState::Pending, None);
-    let task_id = task.id;
-    let dispatcher = Uuid::now_v7();
+    let daily = task("daily_check", TaskState::Pending, None);
+    let task_id = daily.id;
+    let synthesizer = Uuid::now_v7();
     let state = aggregate(
-        task,
-        vec![actor(task_id, "dispatcher", dispatcher, false)],
+        daily,
+        vec![actor(task_id, "synthesizer", synthesizer, true)],
         vec![],
         vec![],
     );
     let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
-    let state = aggregate_of(created);
-    let dispatched = operation(&workflow, state, "dispatch:dispatched", dispatcher);
-    assert_eq!(dispatched.task.stage.as_deref(), Some("waiting"));
-    let state = aggregate_of(dispatched);
-
-    let completed = apply(
-        &workflow,
-        state,
-        TaskEvent::ChildStateChanged {
-            child_id: Uuid::now_v7(),
-            child_workflow: WorkflowId::new("design_inspection"),
-            child_state: TaskState::Completed,
-            result: Some(TaskResult::new("completed")),
-        },
-        now(),
-    )
-    .unwrap();
-    assert_eq!(completed.task.state, TaskState::Completed);
+    let mut workflows = created
+        .children
+        .iter()
+        .map(|child| child.task.workflow.to_string())
+        .collect::<Vec<_>>();
+    workflows.sort();
     assert_eq!(
-        completed.task.result.as_ref().map(TaskResult::as_str),
+        workflows,
+        vec![
+            "code_audit",
+            "design_audit",
+            "product_audit",
+            "requirements_audit",
+            "test_audit",
+        ]
+    );
+
+    let mut state = absorb(
+        aggregate(
+            task("daily_check", TaskState::Pending, Some("audits")),
+            vec![actor(task_id, "synthesizer", synthesizer, true)],
+            vec![],
+            vec![],
+        ),
+        created,
+    );
+    let children = state
+        .children
+        .iter()
+        .map(|child| (child.task_id, child.workflow.to_string()))
+        .collect::<Vec<_>>();
+    for (child_id, child_workflow) in children {
+        let (next, mutation) =
+            child_changed(&workflow, state, child_id, &child_workflow, "completed");
+        state = absorb(next, mutation);
+    }
+    assert_eq!(state.task.stage.as_deref(), Some("synthesis"));
+
+    let synthesized = operation(&workflow, state, "synthesis:synthesized", synthesizer);
+    assert_eq!(synthesized.task.state, TaskState::Completed);
+    assert_eq!(
+        synthesized.task.result.as_ref().map(TaskResult::as_str),
         Some("completed")
     );
 }
 
 #[test]
-fn daily_check_fails_when_an_inspection_is_abandoned() {
+fn daily_check_fails_when_an_audit_is_abandoned() {
     let workflow = builtin("daily_check");
-    let task = task("daily_check", TaskState::Pending, None);
-    let task_id = task.id;
-    let dispatcher = Uuid::now_v7();
+    let daily = task("daily_check", TaskState::Pending, None);
+    let task_id = daily.id;
+    let synthesizer = Uuid::now_v7();
     let state = aggregate(
-        task,
-        vec![actor(task_id, "dispatcher", dispatcher, false)],
+        daily,
+        vec![actor(task_id, "synthesizer", synthesizer, true)],
         vec![],
         vec![],
     );
-    let created = aggregate_of(apply(&workflow, state, TaskEvent::Created, now()).unwrap());
-    let state = aggregate_of(operation(
-        &workflow,
+    let created = apply(&workflow, state, TaskEvent::Created, now()).unwrap();
+    let mut state = absorb(
+        aggregate(
+            task("daily_check", TaskState::Pending, Some("audits")),
+            vec![actor(task_id, "synthesizer", synthesizer, true)],
+            vec![],
+            vec![],
+        ),
         created,
-        "dispatch:dispatched",
-        dispatcher,
-    ));
+    );
+    let children = state
+        .children
+        .iter()
+        .map(|child| (child.task_id, child.workflow.to_string()))
+        .collect::<Vec<_>>();
+    for (index, (child_id, child_workflow)) in children.into_iter().enumerate() {
+        let result = if index == 0 { "abandoned" } else { "completed" };
+        let (next, mutation) = child_changed(&workflow, state, child_id, &child_workflow, result);
+        state = absorb(next, mutation);
+    }
+    assert_eq!(state.task.stage.as_deref(), Some("synthesis"));
 
-    let failed = apply(
-        &workflow,
-        state,
-        TaskEvent::ChildStateChanged {
-            child_id: Uuid::now_v7(),
-            child_workflow: WorkflowId::new("design_inspection"),
-            child_state: TaskState::Completed,
-            result: Some(TaskResult::new("abandoned")),
-        },
-        now(),
-    )
-    .unwrap();
-    assert_eq!(failed.task.stage.as_deref(), Some("failed"));
-    assert_eq!(failed.task.result.as_ref().map(TaskResult::as_str), None);
+    let synthesized = operation(&workflow, state, "synthesis:synthesized", synthesizer);
+    assert_eq!(synthesized.task.state, TaskState::Completed);
+    assert_eq!(
+        synthesized.task.result.as_ref().map(TaskResult::as_str),
+        Some("failed")
+    );
 }

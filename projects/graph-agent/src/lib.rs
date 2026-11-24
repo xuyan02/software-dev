@@ -47,7 +47,7 @@ pub use llm::{
     LlmConfig, LlmNode, LlmParams, LlmRequest, LlmResponse, LlmRuntime, ModelError, ModelGateway,
     ModelProfileRef, SkillError, SkillRegistry,
 };
-pub use message::{LlmMessage, LlmRole, LlmToolCall, Usage};
+pub use message::{LlmImage, LlmMessage, LlmRole, LlmToolCall, Usage};
 pub use node::{Node, NodeError};
 pub use openai::{OpenAiCompatibleConfig, OpenAiCompatibleModel, context_window_for_model};
 pub use scripted::ScriptedModel;

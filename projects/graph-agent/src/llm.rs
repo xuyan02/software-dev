@@ -270,32 +270,54 @@ impl<N: LlmNode + 'static> Node for LlmNodeAdapter<N> {
             let registry = ctx.tool_registry()?.clone();
             let tool_context = ctx.tool_context().clone();
             for call in message.tool_calls {
-                let content = if !allowed.contains(&call.name) {
-                    tool_error_json(
-                        &call.name,
-                        codes::DENIED,
-                        "tool is not enabled for this node",
+                let (content, images) = if !allowed.contains(&call.name) {
+                    (
+                        tool_error_json(
+                            &call.name,
+                            codes::DENIED,
+                            "tool is not enabled for this node",
+                        ),
+                        Vec::new(),
                     )
                 } else if let Some(error) = &call.argument_error {
                     // The provider emitted arguments that are not valid JSON.
                     // Report it as a tool error so the model can retry with
                     // well-formed arguments; the call itself is not executed.
-                    tool_error_json(&call.name, codes::INVALID_ARGUMENTS, error)
+                    (
+                        tool_error_json(&call.name, codes::INVALID_ARGUMENTS, error),
+                        Vec::new(),
+                    )
                 } else {
                     match registry
                         .call(&call.name, call.arguments, &tool_context)
                         .await
                     {
-                        Ok(ToolOutput::Text(text)) => text,
-                        Ok(ToolOutput::Json(value)) => {
-                            serde_json::to_string(&value).unwrap_or_else(|_| "null".to_owned())
-                        }
-                        Err(error) => tool_error_json(&call.name, error.code, &error.message),
+                        Ok(ToolOutput::Text(text)) => (text, Vec::new()),
+                        Ok(ToolOutput::Json(value)) => (
+                            serde_json::to_string(&value).unwrap_or_else(|_| "null".to_owned()),
+                            Vec::new(),
+                        ),
+                        Ok(ToolOutput::Multimodal { text, images }) => (text, images),
+                        Err(error) => (
+                            tool_error_json(&call.name, error.code, &error.message),
+                            Vec::new(),
+                        ),
                     }
                 };
-                let tool_message = LlmMessage::tool(call.id, content);
+                let tool_message = LlmMessage::tool(call.id.clone(), content);
                 ctx.history_mut().push(tool_message.clone());
                 messages.push(tool_message);
+                if !images.is_empty() {
+                    let image_message = LlmMessage::user_with_images(
+                        format!(
+                            "Images returned by tool {}. Inspect them visually.",
+                            call.name
+                        ),
+                        images,
+                    );
+                    ctx.history_mut().push(image_message.clone());
+                    messages.push(image_message);
+                }
             }
         }
     }

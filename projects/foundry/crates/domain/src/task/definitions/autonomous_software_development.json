@@ -1,0 +1,401 @@
+{
+  "schema_version": 1,
+  "roles": [],
+  "initial_stage": "goal",
+  "stages": [
+    {
+      "name": "goal",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "set_state": "in_progress"
+        }
+      ],
+      "events": [
+        {
+          "event": "task.created",
+          "action": "create_issue(kind = 'question', title = 'Project clarification: {task.title}', description = 'Discuss the project goal, users, success metrics, scope and risks with the creator. Use Issue comments for the conversation.', relation = 'clarifies', task_workflow = 'goal_clarification', task_title = '项目文档撰写')"
+        },
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'goal_clarification' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "requirements_analysis"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "requirements_analysis",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "requirements_analysis",
+            "title": "Analyze the requirement pool"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'requirements_analysis' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "interaction_design"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "interaction_design",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "interaction_design",
+            "title": "Design interactions"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'interaction_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "ui_design"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "ui_design",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "ui_design",
+            "title": "Design UI"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'ui_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "architecture"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "architecture",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "architecture_design",
+            "title": "Define architecture and key ADRs"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'architecture_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "detailed_design"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "detailed_design",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "detailed_design",
+            "title": "Write the detailed design"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'detailed_design' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "test_planning"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "test_planning",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "test_planning",
+            "title": "Write the test plan"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'test_planning' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "development"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "development",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        },
+        "next": {
+          "type": "bool",
+          "display_name": "Next iteration"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "iteration",
+            "title": "Iteration {count_children('iteration') + 1}"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'iteration' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } else if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } else { next = true } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "test_execution"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        },
+        {
+          "on": "next",
+          "to": "development"
+        }
+      ]
+    },
+    {
+      "name": "test_execution",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "test_execution",
+            "title": "Execute tests and record evidence"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'test_execution' and event.child.state == 'completed' { if event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "design_baseline"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "design_baseline",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "design_baseline",
+            "title": "Establish the design baseline"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'design_baseline' and event.child.state == 'completed' { if event.child.result == 'completed' or event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'infeasible' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "release"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "release",
+      "vars": {
+        "outcome": {
+          "type": "string",
+          "display_name": "Outcome"
+        }
+      },
+      "created": [
+        {
+          "create_child": {
+            "workflow": "release",
+            "title": "Release and observe"
+          }
+        }
+      ],
+      "events": [
+        {
+          "event": "child.state_changed",
+          "action": "if event.child.workflow == 'release' and event.child.state == 'completed' { if event.child.result == 'released' or event.child.result == 'approved' { outcome = 'approved' } if event.child.result == 'failed' or event.child.result == 'obsolete' { outcome = 'failed' } }"
+        }
+      ],
+      "transitions": [
+        {
+          "on": "outcome == 'approved'",
+          "to": "running"
+        },
+        {
+          "on": "outcome == 'failed'",
+          "action": "result = 'failed'",
+          "to": "ended"
+        }
+      ]
+    },
+    {
+      "name": "running",
+      "created": [
+        {
+          "create_child": {
+            "workflow": "triage",
+            "title": "分诊"
+          }
+        }
+      ]
+    }
+  ]
+}

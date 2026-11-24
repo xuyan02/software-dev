@@ -2,7 +2,9 @@
 
 本技能说明 CodeSummary 如何从源码反推设计，以及不同用户提示词下应该执行什么任务。
 
-- ds 命令、qname、对象关系和 staging 见 `design-space` 技能；
+Arche 没有独立文档树：评论直接挂在对象 qname 上，设计内容都是对象字段。
+
+- arche 命令、qname、对象关系和 staging 见 `arche` 技能；
 - 文档块、写什么、怎么写、正例和反例见 `design-writing` 技能；
 - 本技能只讲任务判断、设计反推方法、各任务的具体流程和写权限。
 
@@ -24,7 +26,7 @@
 
 - 下表中的用户提示词是识别前缀；实际提示词还会包含输出格式等要求，以当前实际提示词为准。
 - 总结任务和修改任务使用不同的用户提示词：“总结工作项”是总结，“修改工作项”是修改。
-- 修改任务只收到“Review 未通过，请查看评论列表”；Review 的问题正文和 Section 列表不进入修改提示词，必须从 open 评论读取。Review JSON 里的 Section 只用于内部路由。
+- 修改任务只收到“Review 未通过，请查看评论列表”；Review 的问题正文和对象列表不进入修改提示词，必须从 open 评论读取。Review JSON 里的对象只用于内部路由。
 - `kind` 已经在用户提示词中写明，决定当前是文件还是目录。
 - Review 文件/目录的用户提示词会给出具体路径，并明确写“本次总结”；这是 Review，不是修改。
 - Review 全部的提示词明确写“全部已暂存改动”；它检查整个已暂存改动，不是单个工作项。
@@ -110,22 +112,22 @@
 
 ### 4.1 任务
 
-读当前文件的源码，反推这个文件和文件内代码元素的设计，更新 design-space 对象和文档。
+读当前文件的源码，反推这个文件和文件内代码元素的设计，更新 Arche 设计对象和设计字段。
 
 ### 4.2 流程
 
-1. 用 `ds source cat <path>` 读取源码；需要时读取调用方、测试和相关文件；
-2. 用 `ds show files/<path>` 查看 File 对象、`document` 字段和已有子对象；
+1. 用 `arche source cat <path>` 读取源码；需要时读取调用方、测试和相关文件；
+2. 用 `arche show technical/file/<path>` 查看 File 对象、设计字段和已有子对象；
 3. 找出 `source` 指向当前文件的已有 namespace、class、interface、method、function、part、mixin；
 4. 根据源码反推设计：
    - 这个文件放什么功能或顶层类型；
    - 每个类型/函数的职责、边界、契约和关键约束；
    - 对象之间的关系和依赖方向；
 5. 创建、更新或删除对象；类型走 Namespace 或父类型，不要挂在 File qname 下；Namespace 对象和文档也要按现有规则更新；
-6. 更新 File、Namespace 和除 Part 外代码对象的 `document` 引用；
+6. 更新 File、Namespace 和除 Part 外代码对象的设计字段；
 7. 按 `design-writing` 写文档：
    - File、Namespace 写一个单句；
-   - Class、Struct、Enum、Interface、Method、Function、Mixin 的块写成 `document-topic`；
+   - Class、Struct、Enum、Interface、Method、Function、Mixin 的设计要点写成 `arche doc topic`；
    - 设计要点写反推出的设计，不写代码流水账；
 8. 不确定的设计点写成文档评论；
 9. 输出 `{"ok":true}`。
@@ -135,7 +137,7 @@
 - File 文档只描述本文件，不描述整个目录；
 - 不要因为文件里有多个类型，就跳过文件级定位；
 - 不要只根据目录结构决定 Namespace；
-- 不要在总结阶段 `ds add`、`ds commit` 或 `ds push`；
+- 不要在总结阶段 `arche add`、`arche commit` 或 `arche push`；
 - 不要只在最终回复里输出设计正文。
 
 ## 5. 目录总结
@@ -148,13 +150,13 @@
 
 ### 5.2 流程
 
-1. 用 `ds show files/<path>` 查看 Directory 对象、`document` 字段和子对象；
-2. 用 `ds status --porcelain`、`ds source ls` 或源码读取确认直属子项；
+1. 用 `arche show technical/file/<path>` 查看 Directory 对象、设计字段和子对象；
+2. 用 `arche status --porcelain --detail`、`arche source ls` 或源码读取确认直属子项；
 3. 根据直属子项反推目录定位：
    - 整个子树放哪类内容；
    - 为什么这些内容放在一起；
    - 目录边界在哪里；
-4. 更新 Directory 对象和 `document` 引用；
+4. 更新 Directory 对象和设计字段；
 5. 按 `design-writing` 写一个单句，抽象概括整个子树，不枚举子项；
 6. 不确定的目录边界写成文档评论；
 7. 输出 `{"ok":true}`。
@@ -164,11 +166,11 @@
 - 目录文档不是子目录/文件清单；
 - 不要为子目录或文件写本该由子工作项处理的文档；
 - 不要只写“放代码”这类无法指导判断的内容；
-- 不要 `ds add`、`ds commit` 或 `ds push`。
+- 不要 `arche add`、`arche commit` 或 `arche push`。
 
 ## 6. 文件或目录修改
 
-用户提示词是“修改工作项”，并给出 `kind`、`path`，以及“Review 未通过，请查看评论列表”。提示词不包含 Review 的问题正文或 Section 列表。
+用户提示词是“修改工作项”，并给出 `kind`、`path`，以及“Review 未通过，请查看评论列表”。提示词不包含 Review 的问题正文或对象列表。
 
 ### 6.1 任务
 
@@ -176,16 +178,16 @@
 
 ### 6.2 流程
 
-1. 根据 `kind` 和 `path` 找到当前工作项相关的文档 Section：
-   - 文件：当前 File、该文件内代码对象和相关 Namespace 的 `document:` 指向的 Section；
-   - 目录：当前 Directory 的 Section；
-   - 用 `ds status --porcelain` 找到本次改动对象，用 `ds show <qname>` 读取 `document:`；
-2. 对找到的每个 Section 运行 `ds doc comment list`；
+1. 根据 `kind` 和 `path` 找到当前工作项相关的对象：
+   - 文件：当前 File、该文件内代码对象和相关 Namespace 对象；
+   - 目录：当前 Directory 对象；
+   - 用 `arche status --porcelain --detail` 找到本次改动对象，用 `arche show <qname>` 读取设计字段；
+2. 对找到的每个对象运行 `arche comment list --open`；
 3. 只处理 `open` 评论；
 4. 重新读相关源码、调用方和文档，确认评论指出的问题是否真实存在；
 5. 找到问题的根因：是设计判断错了、证据不够，还是文档表达错了；
 6. 修正对象、关系或文档；
-7. 一条评论真正解决后，运行 `ds doc comment resolve`；
+7. 一条评论真正解决后，运行 `arche comment resolve <id> --conclusion ... --agent code-summary`；
 8. 如果评论不成立，写一条说明理由的评论并保留原评论，不要假 resolve；
 9. 发现新的独立问题时可以新增评论，但不要重复已有评论；
 10. 输出 `{"ok":true}`。
@@ -201,11 +203,11 @@
 - 不要只改措辞来让评论消失；
 - 不要删除被评论的内容来“消除问题”；
 - 不要输出 Review 结论，下一轮 Review 才会判断；
-- 不要在修改阶段 `ds add`、`ds commit` 或 `ds push`。
+- 不要在修改阶段 `arche add`、`arche commit` 或 `arche push`。
 
 ## 7. 文件 Review
 
-用户提示词是“检查文件 `<path>` 的本次总结”，并说明需要修改的问题写成 `ds doc comment add`。
+用户提示词是“检查文件 `<path>` 的本次总结”，并说明需要修改的问题写成 `arche comment add`。
 
 ### 7.1 任务
 
@@ -220,9 +222,9 @@
    - 设计结论是否能从源码、测试或调用方式得到支持；
    - 是否遗漏关键职责、契约、生命周期、失败语义或扩展约束；
    - 是否把偶然实现细节当成设计；
-   - 对象类型、关系、qname 和 `document` 引用是否正确；
+   - 对象类型、关系、qname 和设计字段是否正确；
    - 是否存在凭空编造的设计；
-4. 发现必须修改的问题，用 `ds doc comment add` 写到对应 Section；
+4. 发现必须修改的问题，用 `arche comment add` 写到对应对象；
 5. 返回 `{"passed":...,"sections":["<section-qname>", ...]}`；
 6. 不要修改对象或文档，不要 resolve 评论。
 
@@ -235,7 +237,7 @@
 
 ## 8. 目录 Review
 
-用户提示词是“检查目录 `<path>` 的本次总结”，并说明需要修改的问题写成 `ds doc comment add`。
+用户提示词是“检查目录 `<path>` 的本次总结”，并说明需要修改的问题写成 `arche comment add`。
 
 ### 8.1 任务
 
@@ -249,9 +251,9 @@
    - 是否抽象概括整个子树，而不是枚举子项；
    - 是否说明了放哪类内容、边界在哪里；
    - 是否与子项的实际用途一致；
-   - `document` 引用是否正确；
+   - 设计字段是否正确；
    - 是否存在凭空编造的目录职责；
-4. 发现必须修改的问题，用 `ds doc comment add` 写到对应 Section；
+4. 发现必须修改的问题，用 `arche comment add` 写到对应对象；
 5. 返回 `{"passed":...,"sections":["<section-qname>", ...]}`；
 6. 不要修改对象或文档，不要 resolve 评论。
 
@@ -263,7 +265,7 @@
 
 ## 9. 整体 Review
 
-用户提示词是“检查全部已暂存改动”，并说明需要修改的问题写成 `ds doc comment add`。
+用户提示词是“检查全部已暂存改动”，并说明需要修改的问题写成 `arche comment add`。
 
 ### 9.1 任务
 
@@ -271,15 +273,15 @@
 
 ### 9.2 流程
 
-1. 用 `ds status` 查看已暂存改动；
-2. 用 `ds diff --staged`、`ds show --staged`、`ds ls --staged`、`ds doc show` 核对；
+1. 用 `arche status --porcelain --detail` 查看已暂存改动；
+2. 用 `arche diff --staged`、`arche status --porcelain --detail`、`arche show <qname> --format json` 核对；
 3. 检查：
-   - 对象、关系、文档和源码是否一致；
+   - 对象、关系、设计字段和源码是否一致；
    - 是否存在机械总结或凭空编造；
    - 跨文件、跨目录的对象关系和文档链接是否完整；
    - 是否有未暂存但应当属于本次改动的对象；
    - 是否存在重复、遗漏或互相矛盾的设计；
-4. 对必须修改的问题，用 `ds doc comment add` 写到对应 Section；
+4. 对必须修改的问题，用 `arche comment add` 写到对应对象；
 5. 返回：
    `{"passed":...,"files":[{"path":"...","sections":[...]}],"directories":[{"path":"...","sections":[...]}]}`
 6. 不要修改对象或文档，不要 resolve 评论。
@@ -287,7 +289,7 @@
 ### 9.3 注意
 
 - 整体 Review 的范围是已暂存改动，不是单个工作项；
-- 问题要落到具体文件/目录和 Section；
+- 问题要落到具体文件/目录和对象；
 - 只写阻塞问题；
 - 本阶段不修改文档；失败结果包含多个文件/目录，不能直接作为一个单工作项修改任务的输入，会按文件/目录拆分后逐个进入修改任务。
 
@@ -300,7 +302,7 @@
 - 不编造代码不支持的需求、技术、外部系统或未来功能；
 - 不在 Review 阶段修改对象或文档；
 - 不在 Review 阶段 resolve 评论；
-- 不在总结、修改、Review 阶段自行 `ds add`、`ds commit` 或 `ds push`；
+- 不在总结、修改、Review 阶段自行 `arche add`、`arche commit` 或 `arche push`；
 - 不把 Review 意见写进 JSON 正文或最终回复；
 - 不只在最终回复里输出设计文本。
 

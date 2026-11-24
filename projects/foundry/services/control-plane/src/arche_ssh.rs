@@ -1,10 +1,11 @@
-//! Per-agent SSH credentials for the local design-space server.
+//! Per-agent SSH credentials for Arche design repositories.
 //!
 //! Public keys, encrypted private keys and revocation state live in Postgres.
 //! The AES-GCM master key stays outside the database in
-//! `~/.foundry/ds-key-master`. The host sshd reads only the generated
+//! `~/.foundry/arche-key-master`. The host sshd reads only the generated
 //! `authorized_keys` through `AuthorizedKeysCommand`; each key is restricted to
-//! `foundry-ds-stdio`, which validates the repo against that agent's allowlist.
+//! `foundry-arche-stdio`, which validates the repo against that agent's
+//! allowlist.
 
 use ring::aead::{AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::digest;
@@ -17,7 +18,7 @@ use std::process::Command;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-const FORCED_COMMAND: &str = "/usr/local/bin/foundry-ds-stdio";
+const FORCED_COMMAND: &str = "/usr/local/bin/foundry-arche-stdio";
 const DEFAULT_HOST_KEY_FILES: &[&str] = &[
     "/etc/ssh/ssh_host_ed25519_key.pub",
     "/etc/ssh/ssh_host_ecdsa_key.pub",
@@ -26,31 +27,29 @@ const DEFAULT_HOST_KEY_FILES: &[&str] = &[
 const NONCE_LEN: usize = 12;
 
 #[derive(Debug, Clone)]
-pub struct DsSshCredential {
+pub struct ArcheSshCredential {
     pub url: String,
     pub private_key: String,
     pub known_hosts: String,
 }
 
-pub struct DsSsh {
+pub struct ArcheSsh {
     server_root: PathBuf,
     base: String,
     repos_root: PathBuf,
-    ds_server: PathBuf,
     pool: PgPool,
     master: [u8; 32],
     lock: Mutex<()>,
 }
 
-impl DsSsh {
+impl ArcheSsh {
     pub fn new(
         foundry_dir: &Path,
         base: impl Into<String>,
         repos_root: PathBuf,
-        ds_server: PathBuf,
         pool: PgPool,
     ) -> Result<Self, String> {
-        let server_root = foundry_dir.join("ds-sshd");
+        let server_root = foundry_dir.join("arche-sshd");
         ensure_dir(&server_root, 0o755)?;
         ensure_dir(&server_root.join("allowlists"), 0o755)?;
         let master = load_master_key(foundry_dir)?;
@@ -58,7 +57,6 @@ impl DsSsh {
             server_root,
             base: base.into().trim_end_matches('/').to_string(),
             repos_root: absolute_path(repos_root),
-            ds_server: absolute_path(ds_server),
             pool,
             master,
             lock: Mutex::new(()),
@@ -77,7 +75,7 @@ impl DsSsh {
         &self,
         account_id: Uuid,
         repo: &str,
-    ) -> Result<DsSshCredential, String> {
+    ) -> Result<ArcheSshCredential, String> {
         let _guard = self.lock.lock().await;
         let private_key = match self.load_key(account_id).await? {
             Some(private_key) => private_key,
@@ -86,7 +84,7 @@ impl DsSsh {
                 let fingerprint = fingerprint(&public_key);
                 let sealed = self.seal(private_key.as_bytes())?;
                 sqlx::query(
-                    "insert into agent_ds_keys \
+                    "insert into agent_arche_keys \
                      (account_id, public_key, private_key_ciphertext, fingerprint) \
                      values ($1, $2, $3, $4) \
                      on conflict (account_id) do update set \
@@ -107,7 +105,7 @@ impl DsSsh {
         };
         self.write_allowlist(account_id, repo)?;
         self.write_authorized_keys().await?;
-        Ok(DsSshCredential {
+        Ok(ArcheSshCredential {
             url: format!("{}/{repo}", self.base),
             private_key,
             known_hosts: self.known_hosts()?,
@@ -130,7 +128,7 @@ impl DsSsh {
 
     async fn load_key(&self, account_id: Uuid) -> Result<Option<String>, String> {
         let row = sqlx::query(
-            "select private_key_ciphertext from agent_ds_keys \
+            "select private_key_ciphertext from agent_arche_keys \
              where account_id = $1 and revoked_at is null",
         )
         .bind(account_id)
@@ -148,7 +146,7 @@ impl DsSsh {
 
     async fn write_authorized_keys(&self) -> Result<(), String> {
         let rows = sqlx::query(
-            "select account_id, public_key from agent_ds_keys \
+            "select account_id, public_key from agent_arche_keys \
              where revoked_at is null order by account_id",
         )
         .fetch_all(&self.pool)
@@ -166,12 +164,11 @@ impl DsSsh {
                 .server_root
                 .join("allowlists")
                 .join(account_id.to_string());
-            text.push_str(&authorized_keys_line(
-                &public_key,
-                &allowlist,
-                &self.repos_root,
-                &self.ds_server,
-            )?);
+            let repo = fs::read_to_string(&allowlist).unwrap_or_default();
+            let repo = repo.trim();
+            if !repo.is_empty() && self.repos_root.join(repo).join(".arche").is_dir() {
+                text.push_str(&authorized_keys_line(&public_key, &self.repos_root, repo)?);
+            }
         }
         let path = self.server_root.join("authorized_keys");
         write_atomic(&path, text.as_bytes())?;
@@ -203,7 +200,7 @@ impl DsSsh {
         if text.is_empty() {
             return Err(format!(
                 "no host SSH public key found; install OpenSSH server and run the \
-                 design-space sshd installer (looked in {})",
+                 Arche SSH installer from projects/arche/deploy (looked in {})",
                 DEFAULT_HOST_KEY_FILES.join(", ")
             ));
         }
@@ -255,7 +252,14 @@ fn aead_key(master: &[u8; 32]) -> Result<LessSafeKey, String> {
 }
 
 fn load_master_key(foundry_dir: &Path) -> Result<[u8; 32], String> {
-    let path = foundry_dir.join("ds-key-master");
+    let path = foundry_dir.join("arche-key-master");
+    if !path.exists() {
+        // Preserve keys issued before the Arche rename.
+        let legacy = foundry_dir.join("ds-key-master");
+        if legacy.is_file() {
+            let _ = fs::rename(&legacy, &path);
+        }
+    }
     if let Ok(bytes) = fs::read(&path) {
         return bytes
             .try_into()
@@ -264,14 +268,14 @@ fn load_master_key(foundry_dir: &Path) -> Result<[u8; 32], String> {
     let mut key = [0u8; 32];
     SystemRandom::new()
         .fill(&mut key)
-        .map_err(|_| "generate design-space key master".to_string())?;
+        .map_err(|_| "generate Arche key master".to_string())?;
     write_atomic(&path, &key)?;
     set_mode(&path, 0o600)?;
     Ok(key)
 }
 
 fn generate_keypair(account_id: Uuid) -> Result<(String, String), String> {
-    let dir = std::env::temp_dir().join(format!("foundry-ds-key-{}", Uuid::now_v7()));
+    let dir = std::env::temp_dir().join(format!("foundry-arche-key-{}", Uuid::now_v7()));
     ensure_private_dir(&dir)?;
     let key = dir.join("key");
     let result = (|| {
@@ -314,18 +318,12 @@ fn run_ssh_keygen(path: &Path, comment: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn authorized_keys_line(
-    public_key: &str,
-    allowlist: &Path,
-    repos_root: &Path,
-    ds_server: &Path,
-) -> Result<String, String> {
+fn authorized_keys_line(public_key: &str, repos_root: &Path, repo: &str) -> Result<String, String> {
     Ok(format!(
-        "restrict,command=\"{} {} {} {}\" {}\n",
+        "restrict,command=\"{} {} {}\" {}\n",
         FORCED_COMMAND,
-        shell_arg(allowlist)?,
         shell_arg(repos_root)?,
-        shell_arg(ds_server)?,
+        shell_arg(Path::new(repo))?,
         public_key.trim()
     ))
 }
@@ -400,7 +398,7 @@ fn set_mode(path: &Path, mode: u32) -> Result<(), String> {
 fn parse_base(base: &str) -> Result<(String, u16), String> {
     let rest = base
         .strip_prefix("ssh://")
-        .ok_or_else(|| format!("design_space_ssh_url must start with ssh://: {base}"))?;
+        .ok_or_else(|| format!("arche_ssh_url must start with ssh://: {base}"))?;
     let authority = rest.split('/').next().unwrap_or(rest);
     let host_port = authority
         .rsplit_once('@')
@@ -415,7 +413,7 @@ fn parse_base(base: &str) -> Result<(String, u16), String> {
         None => (host_port.to_owned(), 22),
     };
     if host.is_empty() {
-        return Err("design_space_ssh_url has an empty host".to_string());
+        return Err("arche_ssh_url has an empty host".to_string());
     }
     Ok((host, port))
 }
@@ -455,7 +453,7 @@ mod tests {
     #[test]
     fn parses_ssh_base_with_a_custom_port() {
         assert_eq!(
-            parse_base("ssh://foundry-ds@127.0.0.1:2222").unwrap(),
+            parse_base("ssh://foundry-arche@127.0.0.1:2222").unwrap(),
             ("127.0.0.1".to_string(), 2222)
         );
     }
@@ -463,7 +461,7 @@ mod tests {
     #[test]
     fn parses_ssh_base_with_the_default_port() {
         assert_eq!(
-            parse_base("ssh://foundry-ds@127.0.0.1").unwrap(),
+            parse_base("ssh://foundry-arche@127.0.0.1").unwrap(),
             ("127.0.0.1".to_string(), 22)
         );
     }
@@ -472,17 +470,15 @@ mod tests {
     fn builds_a_forced_command_with_the_host_paths() {
         let line = authorized_keys_line(
             "ssh-ed25519 AAAA agent\n",
-            Path::new("/home/foundry/.foundry/ds-sshd/allowlists/agent"),
             Path::new("/home/foundry/.foundry/design-spaces"),
-            Path::new("/usr/local/bin/ds-server"),
+            "project-a",
         )
         .unwrap();
         assert_eq!(
             line,
-            "restrict,command=\"/usr/local/bin/foundry-ds-stdio \
-             '/home/foundry/.foundry/ds-sshd/allowlists/agent' \
-             '/home/foundry/.foundry/design-spaces' \
-             '/usr/local/bin/ds-server'\" ssh-ed25519 AAAA agent\n"
+            "restrict,command=\"/usr/local/bin/foundry-arche-stdio \
+             '/home/foundry/.foundry/design-spaces' 'project-a'\" \
+             ssh-ed25519 AAAA agent\n"
         );
     }
 

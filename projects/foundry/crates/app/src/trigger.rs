@@ -10,7 +10,15 @@ use std::sync::Arc;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{AccountRepository, NewTask, ProjectRepository, RepoError, ServiceError, TaskUseCases};
+use crate::{
+    AccountRepository, NewTask, ProjectRepository, RepoError, ServiceError, TaskUseCases,
+    TaskViewer,
+};
+
+/// How long a continuous trigger waits before polling again after a run that
+/// found no work. Productive runs re-arm immediately, so a busy pool keeps
+/// running back-to-back while an idle project only checks once per hour.
+const CONTINUOUS_IDLE_BACKOFF_MINUTES: i64 = 60;
 
 /// Workflows that a trigger may start. Triggers are intentionally limited to
 /// known inspection/quality tasks.
@@ -22,6 +30,8 @@ pub const SCHEDULABLE_WORKFLOWS: &[&str] = &[
     "design_inspection",
     "design_iteration",
     "development_iteration",
+    "design_consistency_maintenance",
+    "feedback_cycle",
     "daily_check",
 ];
 
@@ -108,6 +118,13 @@ pub trait TriggerUseCases: Send + Sync {
     /// Deterministically create the default development-iteration trigger for
     /// a project if it is missing. Safe to call repeatedly.
     async fn ensure_development_iteration(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError>;
+
+    /// Deterministically create the default continuous-feedback trigger for a
+    /// project if it is missing. Safe to call repeatedly.
+    async fn ensure_feedback_cycle(
         &self,
         project_id: Uuid,
     ) -> Result<Option<Trigger>, ServiceError>;
@@ -344,11 +361,14 @@ where
         {
             // Upgrade the system-created default without touching a trigger
             // the project has customized.
-            let legacy_description = "按计划运行代码-设计一致性检查和设计检查。";
-            let legacy_template = "运行代码-设计一致性和设计检查。";
+            let legacy_descriptions = [
+                "按计划运行代码-设计一致性检查和设计检查。",
+                "按计划运行设计检查。",
+            ];
+            let legacy_templates = ["运行代码-设计一致性和设计检查。", "运行设计检查。"];
             if trigger.name == "日常检查"
-                && trigger.description == legacy_description
-                && trigger.description_template == legacy_template
+                && legacy_descriptions.contains(&trigger.description.as_str())
+                && legacy_templates.contains(&trigger.description_template.as_str())
             {
                 return self
                     .update(
@@ -357,11 +377,13 @@ where
                             project_id,
                             id: trigger.id,
                             name: None,
-                            description: Some("按计划运行设计检查。".to_string()),
+                            description: Some(
+                                "按计划运行需求、技术设计、代码、测试和产品检查。".to_string(),
+                            ),
                             input: None,
                             schedule: None,
                             title_template: None,
-                            description_template: Some("运行设计检查。".to_string()),
+                            description_template: Some("运行全面日常检查。".to_string()),
                             enabled: None,
                         },
                     )
@@ -373,12 +395,12 @@ where
         let trigger = Trigger::new(
             project_id,
             "日常检查",
-            "按计划运行设计检查。",
+            "按计划运行需求、技术设计、代码、测试和产品检查。",
             "daily_check",
             json!({}),
             "daily@09:00",
             "日常检查",
-            "运行设计检查。",
+            "运行全面日常检查。",
             owner.actor(),
             owner.id,
         )
@@ -414,17 +436,88 @@ where
             .iter()
             .find(|trigger| trigger.workflow_id == "design_iteration")
         {
+            if trigger.schedule == "every:10080"
+                && trigger.name == "设计迭代"
+                && trigger.description == "按计划从设计池启动一轮设计迭代。"
+                && trigger.description_template == "从设计池选批并处理。"
+            {
+                return self
+                    .update(
+                        owner.actor(),
+                        UpdateTrigger {
+                            project_id,
+                            id: trigger.id,
+                            name: None,
+                            description: Some(
+                                "只要有设计任务就持续运行，空闲后定期检查。".to_string(),
+                            ),
+                            input: None,
+                            schedule: Some("continuous".to_string()),
+                            title_template: None,
+                            description_template: None,
+                            enabled: None,
+                        },
+                    )
+                    .await
+                    .map(Some);
+            }
             return Ok(Some(trigger.clone()));
         }
         let trigger = Trigger::new(
             project_id,
             "设计迭代",
-            "按计划从设计池启动一轮设计迭代。",
+            "只要有设计任务就持续运行，空闲后定期检查。",
             "design_iteration",
             json!({}),
-            "every:10080",
+            "continuous",
             "设计迭代",
             "从设计池选批并处理。",
+            owner.actor(),
+            owner.id,
+        )
+        .map_err(|error| ServiceError::Validation(error.to_string()))?;
+        self.triggers.insert(&trigger).await?;
+        Ok(Some(trigger))
+    }
+
+    pub async fn ensure_feedback_cycle(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        let project = self
+            .projects
+            .get(project_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("project", project_id))?;
+        let owner_id = project
+            .members
+            .iter()
+            .find(|member| member.role == ProjectRole::Owner)
+            .map(|member| member.account_id)
+            .ok_or_else(|| {
+                ServiceError::Validation("project has no owner for default trigger".to_string())
+            })?;
+        let owner = self
+            .accounts
+            .get(owner_id)
+            .await?
+            .ok_or_else(|| ServiceError::not_found("account", owner_id))?;
+        let existing = self.triggers.list(project_id).await?;
+        if let Some(trigger) = existing
+            .iter()
+            .find(|trigger| trigger.workflow_id == "feedback_cycle")
+        {
+            return Ok(Some(trigger.clone()));
+        }
+        let trigger = Trigger::new(
+            project_id,
+            "反馈审计",
+            "定期检查需求、设计、代码、测试和产品试用反馈。",
+            "feedback_cycle",
+            json!({}),
+            "every:10080",
+            "反馈审计",
+            "运行持续反馈检查。",
             owner.actor(),
             owner.id,
         )
@@ -460,15 +553,40 @@ where
             .iter()
             .find(|trigger| trigger.workflow_id == "development_iteration")
         {
+            if trigger.schedule == "every:10080"
+                && trigger.name == "开发迭代"
+                && trigger.description == "按计划从开发池启动一轮开发迭代。"
+                && trigger.description_template == "从开发池选批并处理。"
+            {
+                return self
+                    .update(
+                        owner.actor(),
+                        UpdateTrigger {
+                            project_id,
+                            id: trigger.id,
+                            name: None,
+                            description: Some(
+                                "只要有开发任务就持续运行，空闲后定期检查。".to_string(),
+                            ),
+                            input: None,
+                            schedule: Some("continuous".to_string()),
+                            title_template: None,
+                            description_template: None,
+                            enabled: None,
+                        },
+                    )
+                    .await
+                    .map(Some);
+            }
             return Ok(Some(trigger.clone()));
         }
         let trigger = Trigger::new(
             project_id,
             "开发迭代",
-            "按计划从开发池启动一轮开发迭代。",
+            "只要有开发任务就持续运行，空闲后定期检查。",
             "development_iteration",
             json!({}),
-            "every:10080",
+            "continuous",
             "开发迭代",
             "从开发池选批并处理。",
             owner.actor(),
@@ -493,6 +611,10 @@ where
             {
                 continue;
             }
+            if trigger.schedule == "continuous" && self.continuous_run_is_idle(&trigger).await? {
+                self.back_off_continuous(trigger, now).await?;
+                continue;
+            }
             let actor = Actor::System;
             if self
                 .run_trigger(
@@ -508,6 +630,35 @@ where
             }
         }
         Ok(started)
+    }
+
+    /// A continuous trigger re-arms immediately after a productive run. If the
+    /// previous run ended without a successful result, wait for the idle
+    /// backoff instead of spinning.
+    async fn continuous_run_is_idle(&self, trigger: &Trigger) -> Result<bool, ServiceError> {
+        let runs = self.triggers.runs(trigger.project_id, trigger.id).await?;
+        let Some(run) = runs.first() else {
+            return Ok(false);
+        };
+        let task = self
+            .tasks
+            .get(trigger.project_id, run.task_id, TaskViewer::system())
+            .await?;
+        Ok(continuous_result_is_idle(
+            task.result.as_ref().map(|result| result.as_str()),
+        ))
+    }
+
+    async fn back_off_continuous(
+        &self,
+        mut trigger: Trigger,
+        now: OffsetDateTime,
+    ) -> Result<(), ServiceError> {
+        let previous = trigger.version;
+        trigger.next_run_at = Some(now + time::Duration::minutes(CONTINUOUS_IDLE_BACKOFF_MINUTES));
+        trigger.touch();
+        self.triggers.save(&trigger, previous).await?;
+        Ok(())
     }
 
     async fn run_trigger(
@@ -574,9 +725,17 @@ where
         self.triggers.insert_run(&run).await?;
         trigger.last_run_at = Some(run.created_at);
         if reason == TriggerRunReason::Scheduled {
-            trigger.next_run_at = TriggerSchedule::parse(&trigger.schedule)
-                .and_then(|schedule| schedule.next_after(run.created_at))
+            let schedule = TriggerSchedule::parse(&trigger.schedule)
                 .map_err(|error| ServiceError::Validation(error.to_string()))?;
+            trigger.next_run_at = match schedule {
+                // Keep the trigger armed while the run is active; the scheduler
+                // skips it through `has_active_run` and re-runs immediately
+                // once a productive run finishes.
+                TriggerSchedule::Continuous => Some(run.created_at),
+                schedule => schedule
+                    .next_after(run.created_at)
+                    .map_err(|error| ServiceError::Validation(error.to_string()))?,
+            };
         }
         trigger.touch();
         self.triggers
@@ -584,6 +743,10 @@ where
             .await?;
         Ok(run)
     }
+}
+
+fn continuous_result_is_idle(result: Option<&str>) -> bool {
+    result.is_some_and(|result| !matches!(result, "completed" | "approved" | "released"))
 }
 
 fn render_template(template: &str, trigger: &Trigger) -> String {
@@ -660,5 +823,28 @@ where
         project_id: Uuid,
     ) -> Result<Option<Trigger>, ServiceError> {
         TriggerService::ensure_development_iteration(self, project_id).await
+    }
+
+    async fn ensure_feedback_cycle(
+        &self,
+        project_id: Uuid,
+    ) -> Result<Option<Trigger>, ServiceError> {
+        TriggerService::ensure_feedback_cycle(self, project_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::continuous_result_is_idle;
+
+    #[test]
+    fn continuous_trigger_only_rearms_after_a_successful_result() {
+        assert!(!continuous_result_is_idle(Some("completed")));
+        assert!(!continuous_result_is_idle(Some("approved")));
+        assert!(!continuous_result_is_idle(Some("released")));
+        assert!(continuous_result_is_idle(Some("no_work")));
+        assert!(continuous_result_is_idle(Some("blocked")));
+        assert!(continuous_result_is_idle(Some("failed")));
+        assert!(!continuous_result_is_idle(None));
     }
 }

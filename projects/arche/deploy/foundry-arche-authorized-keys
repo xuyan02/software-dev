@@ -10,13 +10,23 @@
 #
 # Each line grants one public key access to one repository. The forced
 # command embeds the repository so the client cannot request another one.
+#
+# Foundry manages keys in a ready-made authorized_keys file. Pass it as the
+# third argument to serve that file directly:
+#   AuthorizedKeysCommand /usr/local/bin/foundry-arche-authorized-keys %u %k /home/<operator>/.foundry/arche-sshd/authorized_keys
 
 set -eu
 
 user=${1:-}
 key=${2:-}
+authorized_keys=${3:-}
 mapping=${ARCHE_KEY_MAP:-/etc/arche/keys}
 repos_root=${ARCHE_REPOS_ROOT:-/srv/arche}
+
+if [ -n "$authorized_keys" ]; then
+    [ -r "$authorized_keys" ] || exit 0
+    exec /bin/cat "$authorized_keys"
+fi
 
 if [ "$user" != "foundry-arche" ] || [ -z "$key" ] || [ ! -r "$mapping" ]; then
     exit 0

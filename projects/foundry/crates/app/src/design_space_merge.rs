@@ -860,14 +860,16 @@ impl MergeRequestService {
                         ));
                     }
                 }
-                let comments = self
-                    .design_space
-                    .comment_count(project, &request.source_commit)
-                    .await?;
-                if comments > 0 {
-                    return Err(ServiceError::Validation(format!(
-                        "源分支还有 {comments} 条设计评论；合并到受保护分支前请清理评论并刷新合并请求"
-                    )));
+                if !project.skip_human_review {
+                    let comments = self
+                        .design_space
+                        .comment_count(project, &request.source_commit)
+                        .await?;
+                    if comments > 0 {
+                        return Err(ServiceError::Validation(format!(
+                            "源分支还有 {comments} 条设计评论；合并到受保护分支前请清理评论并刷新合并请求"
+                        )));
+                    }
                 }
             }
             self.design_space

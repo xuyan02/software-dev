@@ -53,9 +53,9 @@ hash8 由参数类型和修饰符计算；参数只取类型，不含参数名�
 技术对象：
 
   technical                        TechnicalRoot
-  technical/system/<name>          TechnicalSystem
-  technical/module/<name>          TechnicalModule
-  technical/layer/<name>           TechnicalLayer
+  technical/<system>               TechnicalSystem
+  technical/<system>/<module>      TechnicalModule
+  technical/<system>/<layer>       TechnicalLayer
   technical/directory/<path>       TechnicalDirectory
   technical/file/<path>            TechnicalFile
   technical/namespace/<name>       TechnicalNamespace
@@ -851,7 +851,15 @@ TechnicalClass
       仍按 TechnicalClass 处理，不是 TechnicalStruct。
 
   创建
-    arche create technical-class <name> --namespace <namespace>
+    arche create technical-class <name> --namespace <namespace> \
+      --file technical/file/<path> --module technical/<system>/<module> \
+      --source <path:start-end>
+
+  结构归属
+    arche structure assign <element> --parent <system|module|layer>
+    arche structure list
+    arche structure unassigned
+    arche structure check
 
   结构字段
     namespace / file / module
@@ -1471,6 +1479,7 @@ const DOCUMENT: &str = r#"文档没有独立对象树；文档就是对象字段
   arche doc grep <text>
   arche doc lint
   arche doc layout <qname>
+  arche doc check
 
 导入格式：
 
@@ -1527,7 +1536,7 @@ const STAGING: &str = r#"暂存和提交：
   arche reset
   arche reset <qname>...
   arche reset --hard
-  arche commit -m "message"
+  arche commit -m "message" [--author <name>]
   arche rm <qname>... [--force] [--recursive]
 
 状态：
@@ -1554,6 +1563,9 @@ const SOURCE: &str = r#"源码：
   arche source checkout <git-ref>
   arche source worktree
   arche source status
+  arche source ls
+  arche source cat <path>
+  arche source set-url <git-url>
   arche source sync
   arche source changes
   arche source changes --base <git-ref>
@@ -1587,6 +1599,7 @@ const REMOTE: &str = r#"远程：
   arche remote show
   arche clone <url> <dir>
   arche clone <url> <dir> --branch <name>
+  arche clone <url> <dir> --source <git-url>
   arche push
   arche push --force
   arche fetch

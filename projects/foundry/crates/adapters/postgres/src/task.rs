@@ -559,6 +559,28 @@ fn auto_approval_operation(
     workflow: &dyn TaskWorkflow,
     task: &TaskDAO,
 ) -> Option<(foundry_domain::OperationName, Vec<String>)> {
+    // Clarification must keep a human in the loop. Document review and
+    // design-space merge have their own approval side effects and are handled
+    // by the control-plane loops, never by the task engine alone.
+    if matches!(
+        task.workflow.as_str(),
+        "goal_clarification"
+            | "requirements_analysis"
+            | "interaction_design"
+            | "ui_design"
+            | "architecture_design"
+            | "detailed_design"
+            | "iteration"
+            | "test_planning"
+            | "test_execution"
+            | "design_space_merge"
+            | "design"
+            | "design_baseline"
+            | "design_change"
+            | "design_correction"
+    ) {
+        return None;
+    }
     let stage_name = task.stage.as_ref().map(|stage| stage.as_str())?;
     let stage = workflow.stage(stage_name)?;
     if stage.active_roles.is_empty() {
@@ -569,13 +591,13 @@ fn auto_approval_operation(
             .roles()
             .iter()
             .find(|spec| spec.name == role)
-            .is_some_and(|spec| {
-                spec.kind == RoleKind::Human || matches!(role, "acceptor" | "approver")
-            })
+            .is_some_and(|spec| spec.kind == RoleKind::Human)
     };
     if !stage.active_roles.iter().all(|role| humanish(role)) {
         return None;
     }
+    // Prefer an explicit approval operation; several legacy design flows use
+    // `merge` as the positive human decision.
     let approval = stage
         .operations
         .iter()
@@ -584,7 +606,19 @@ fn auto_approval_operation(
             stage
                 .operations
                 .iter()
+                .find(|operation| operation.name == "approve")
+        })
+        .or_else(|| {
+            stage
+                .operations
+                .iter()
                 .find(|operation| operation.name.ends_with("approved"))
+        })
+        .or_else(|| {
+            stage
+                .operations
+                .iter()
+                .find(|operation| operation.name == "merge")
         })?;
     if approval.roles.is_empty() || !approval.roles.iter().all(|role| humanish(role)) {
         return None;
@@ -639,15 +673,40 @@ impl PostgresTaskDispatcher {
         else {
             return Ok(false);
         };
-        let Some(actor) = aggregate.actors.iter().find(|actor| {
-            actor.active
-                && approval_roles
-                    .iter()
-                    .any(|role| role == actor.role_key.as_str())
-        }) else {
-            return Ok(false);
+        let assigned = aggregate
+            .actors
+            .iter()
+            .find(|actor| {
+                actor.active
+                    && approval_roles
+                        .iter()
+                        .any(|role| role == actor.role_key.as_str())
+            })
+            .map(|actor| actor.account_id);
+        let actor_id = match assigned {
+            Some(account_id) => account_id,
+            None => {
+                // As a fallback, the project owner stands in for the absent
+                // human assignee. The owner chose the skip setting, so the
+                // approval is attributable to them.
+                let owner: Option<Uuid> = sqlx::query_scalar(
+                    "select pm.account_id from project_members pm \
+                     join accounts a on a.id = pm.account_id \
+                     where pm.project_id = $1 and pm.role = 'owner' \
+                       and a.kind = 'human' and a.status = 'active' \
+                     order by pm.added_at, pm.account_id limit 1",
+                )
+                .bind(aggregate.task.project_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .map_err(db_error)?;
+                let Some(owner) = owner else {
+                    return Ok(false);
+                };
+                owner
+            }
         };
-        let Some(Actor::Human { .. }) = load_actor(tx, actor.account_id).await? else {
+        let Some(Actor::Human { .. }) = load_actor(tx, actor_id).await? else {
             return Ok(false);
         };
         let key = format!(
@@ -671,7 +730,7 @@ impl PostgresTaskDispatcher {
             tx,
             aggregate,
             TaskCommand::SendOperation {
-                actor_id: actor.account_id,
+                actor_id,
                 operation: operation.clone(),
                 idempotency_key: key,
             },
@@ -1297,11 +1356,11 @@ mod auto_approval_tests {
     use super::*;
     use foundry_domain::builtin_workflows;
 
-    fn task_for(stage: &str) -> TaskDAO {
+    fn task_for(workflow: &str, stage: &str) -> TaskDAO {
         let mut task = TaskDAO::new(
             Uuid::now_v7(),
             None,
-            WorkflowId::new("test"),
+            WorkflowId::new(workflow),
             1,
             "task",
             OffsetDateTime::now_utc(),
@@ -1320,8 +1379,11 @@ mod auto_approval_tests {
                 .unwrap_or_else(|| panic!("missing workflow {id}"))
         };
 
-        let (code_change, roles) =
-            auto_approval_operation(find("code_change"), &task_for("human_review")).unwrap();
+        let (code_change, roles) = auto_approval_operation(
+            find("code_change"),
+            &task_for("code_change", "human_review"),
+        )
+        .unwrap();
         assert_eq!(code_change.as_str(), "human_review:approved");
         assert_eq!(roles, vec!["acceptor".to_string()]);
 
@@ -1329,14 +1391,43 @@ mod auto_approval_tests {
         // approved, so there is no human "approved" task operation to
         // auto-send here.
         assert!(
-            auto_approval_operation(find("design_change"), &task_for("human_review")).is_none()
+            auto_approval_operation(
+                find("design_change"),
+                &task_for("design_change", "human_review")
+            )
+            .is_none()
         );
 
-        let (merge, _) =
-            auto_approval_operation(find("design_space_merge"), &task_for("review")).unwrap();
-        assert_eq!(merge.as_str(), "review:review_approved");
+        // Design-space merges are performed by the merge-request service so
+        // the branch actually moves; the task engine must not shortcut them.
+        assert!(
+            auto_approval_operation(
+                find("design_space_merge"),
+                &task_for("design_space_merge", "review")
+            )
+            .is_none()
+        );
 
-        assert!(auto_approval_operation(find("code_change"), &task_for("code_review")).is_none());
-        assert!(auto_approval_operation(find("iteration"), &task_for("review")).is_none());
+        assert!(
+            auto_approval_operation(
+                find("goal_clarification"),
+                &task_for("goal_clarification", "human_review")
+            )
+            .is_none()
+        );
+        assert!(
+            auto_approval_operation(
+                find("requirements_analysis"),
+                &task_for("requirements_analysis", "human_review")
+            )
+            .is_none()
+        );
+        assert!(
+            auto_approval_operation(find("code_change"), &task_for("code_change", "code_review"))
+                .is_none()
+        );
+        assert!(
+            auto_approval_operation(find("iteration"), &task_for("iteration", "review")).is_none()
+        );
     }
 }

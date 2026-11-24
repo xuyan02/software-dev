@@ -4,10 +4,10 @@ use foundry_app::{
     TaskFilter, TransitionIssue, UpdateAccount, UpdateProject, WorkflowScope,
 };
 use foundry_domain::{
-    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, IssueClassification,
-    IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind, IssueStatus,
-    IssueTriage, ProjectRole, ProjectStatus, RoleKey, StageKey, TaskDispatchState, TaskState,
-    WorkflowBody, WorkflowId, WorkflowVersionRef,
+    AccountKind, AccountRole, AccountStatus, Actor, ApprovalDecision, CapsuleProfile,
+    IssueClassification, IssueConfidence, IssueKind, IssueSeverity, IssueSource, IssueSourceKind,
+    IssueStatus, IssueTriage, ProjectRole, ProjectStatus, RoleKey, StageKey, TaskDispatchState,
+    TaskState, WorkflowBody, WorkflowId, WorkflowVersionRef,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -310,6 +310,8 @@ pub struct UpdateProjectRequest {
     pub status: Option<ProjectStatus>,
     #[serde(default)]
     pub skip_human_review: Option<bool>,
+    #[serde(default)]
+    pub test_capsule: Option<CapsuleProfile>,
 }
 
 impl UpdateProjectRequest {
@@ -321,6 +323,7 @@ impl UpdateProjectRequest {
             git_branch: self.git_branch,
             status: self.status,
             skip_human_review: self.skip_human_review,
+            test_capsule: self.test_capsule,
         }
     }
 }
@@ -412,6 +415,8 @@ pub struct ProjectUpdateForm {
     pub status: String,
     #[serde(default)]
     pub skip_human_review: bool,
+    #[serde(default)]
+    pub test_capsule: String,
 }
 
 impl ProjectUpdateForm {
@@ -427,6 +432,7 @@ impl ProjectUpdateForm {
                 Some(parse_project_status(&self.status))
             },
             skip_human_review: Some(self.skip_human_review),
+            test_capsule: self.test_capsule.trim().parse().ok(),
         }
     }
 }

@@ -351,6 +351,31 @@ async fn suspended_accounts_lose_their_sessions() {
 }
 
 #[tokio::test]
+async fn agents_cannot_create_projects() {
+    let harness = harness().await;
+    create_account(&harness, "automation", "agent").await;
+    let agent = login(&harness.router, "automation", "automation-password").await;
+
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            "/api/v1/projects",
+            Some(&agent),
+            None,
+            json!({
+                "git_repository": "git@example.com:test/repo.git",
+                "name": "Agent project",
+                "root_workflow_id": "autonomous_software_development"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(error_body(&body)["code"], "unauthorized");
+}
+
+#[tokio::test]
 async fn only_owners_can_delete_a_project_and_deletion_removes_its_data() {
     let harness = harness().await;
     create_account(&harness, "observer", "human").await;
@@ -918,6 +943,27 @@ async fn task_console_lists_the_tree_and_links_the_issue() {
     assert!(body.contains("项目文档撰写"));
     assert!(body.contains("goal_clarification"));
     assert!(body.contains("智能体"));
+    assert!(body.contains(r#"name="state""#));
+
+    let request = Request::builder()
+        .uri("/tasks?state=pending")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("goal_clarification"));
+    assert!(body.contains("当前筛选"));
+
+    let request = Request::builder()
+        .uri("/tasks?state=completed")
+        .header(header::COOKIE, &cookie)
+        .body(Body::empty())
+        .unwrap();
+    let (status, _, body) = send(&harness.router, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!body.contains("goal_clarification"));
+    assert!(body.contains("该状态下没有任务"));
 
     let request = Request::builder()
         .uri(format!("/tasks/{child_id}"))
@@ -1197,6 +1243,27 @@ async fn triggers_can_be_created_and_run_manually() {
     assert_eq!(task["workflow"], "design_inspection");
     assert_eq!(task["input"]["scope"], "design/app");
 
+    let (status, _, body) = send(
+        &harness.router,
+        json_request(
+            "POST",
+            &format!(
+                "/api/v1/projects/{}/triggers/{trigger_id}/run",
+                harness.project_id
+            ),
+            Some(&harness.admin_token),
+            Some(&harness.project_id),
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        error_body(&body)["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("上一轮触发器任务还没有结束"))
+    );
+
     body_json(
         &harness.router,
         json_request(
@@ -1256,24 +1323,40 @@ async fn project_creation_creates_the_default_triggers() {
     )
     .await;
     let triggers = triggers.as_array().unwrap();
-    assert_eq!(triggers.len(), 3);
+    assert_eq!(triggers.len(), 4);
     let daily = triggers
         .iter()
         .find(|trigger| trigger["workflow_id"] == "daily_check")
         .expect("daily check trigger");
-    assert_eq!(daily["description"], "按计划运行设计检查。");
-    assert_eq!(daily["description_template"], "运行设计检查。");
+    assert_eq!(
+        daily["description"],
+        "按计划运行需求、技术设计、代码、测试和产品检查。"
+    );
+    assert_eq!(daily["description_template"], "运行全面日常检查。");
     assert_eq!(daily["schedule"], "daily@09:00");
     let design = triggers
         .iter()
         .find(|trigger| trigger["workflow_id"] == "design_iteration")
         .expect("design iteration trigger");
-    assert_eq!(design["schedule"], "every:10080");
+    assert_eq!(design["schedule"], "continuous");
+    assert_eq!(
+        design["description"],
+        "只要有设计任务就持续运行，空闲后定期检查。"
+    );
     let development = triggers
         .iter()
         .find(|trigger| trigger["workflow_id"] == "development_iteration")
         .expect("development iteration trigger");
-    assert_eq!(development["schedule"], "every:10080");
+    assert_eq!(development["schedule"], "continuous");
+    assert_eq!(
+        development["description"],
+        "只要有开发任务就持续运行，空闲后定期检查。"
+    );
+    let feedback = triggers
+        .iter()
+        .find(|trigger| trigger["workflow_id"] == "feedback_cycle")
+        .expect("feedback trigger");
+    assert_eq!(feedback["schedule"], "every:10080");
 }
 
 #[tokio::test]
@@ -1650,7 +1733,7 @@ async fn mcp_requires_auth_and_uses_the_authenticated_project() {
             .as_array()
             .unwrap()
             .len(),
-        25
+        33
     );
 
     let created = body_json(
@@ -2480,7 +2563,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
     )
     .await;
     let platform = platform.as_array().unwrap();
-    assert_eq!(platform.len(), 25);
+    assert_eq!(platform.len(), 33);
     assert!(
         platform
             .iter()
@@ -2648,7 +2731,7 @@ async fn workflow_definitions_are_writable_only_by_their_owner() {
         json_request("GET", "/api/v1/workflows", Some(&author), None, json!({})),
     )
     .await;
-    assert_eq!(own.as_array().unwrap().len(), 26);
+    assert_eq!(own.as_array().unwrap().len(), 34);
 }
 
 #[tokio::test]

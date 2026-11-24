@@ -70,9 +70,24 @@ impl GraphTool for GraphToolAdapter {
                     tool = %name,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     output_bytes = output.content.len(),
+                    images = output.images.len(),
                     "tool call finished"
                 );
-                Ok(GraphToolOutput::Text(output.content))
+                if output.images.is_empty() {
+                    Ok(GraphToolOutput::Text(output.content))
+                } else {
+                    Ok(GraphToolOutput::Multimodal {
+                        text: output.content,
+                        images: output
+                            .images
+                            .into_iter()
+                            .map(|image| graph_agent::LlmImage {
+                                media_type: image.media_type,
+                                data_base64: image.data_base64,
+                            })
+                            .collect(),
+                    })
+                }
             }
             Err(error) => {
                 tracing::warn!(

@@ -6,10 +6,11 @@
 //! Model messages, providers, tool execution and the LLM tool loop come from
 //! `graph-agent`.
 
+pub mod artifact;
 pub mod codesummary;
 pub mod context;
-pub mod daily_check;
 pub mod design_baseline;
+pub mod deterministic;
 pub mod error;
 pub mod eval;
 pub mod file;
@@ -32,7 +33,9 @@ pub mod tool;
 pub mod tools;
 pub mod workspace;
 
+pub use artifact::*;
 pub use context::*;
+pub use deterministic::*;
 pub use error::*;
 pub use eval::*;
 pub use file::*;

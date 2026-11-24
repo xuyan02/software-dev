@@ -54,6 +54,9 @@ enum Command {
         /// Branch to check out.
         #[arg(long)]
         branch: Option<String>,
+        /// Read-only source Git URL recorded in the clone.
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Serve repositories over HTTP or stdio.
     Serve {
@@ -131,9 +134,20 @@ Run `arche help technical` for qnames and fields."
         /// Canonical prototype text; required for technical-method.
         #[arg(long)]
         prototype: Option<String>,
-        /// Source span for a Part; required for technical-part.
+        /// Source span (`path:start-end`) for a code element or Part.
         #[arg(long)]
         source: Option<String>,
+        /// Source file qname for a code type or function.
+        #[arg(long)]
+        file: Option<String>,
+        /// Module qname for a code type or function.
+        #[arg(long)]
+        module: Option<String>,
+    },
+    /// Structure membership operations.
+    Structure {
+        #[command(subcommand)]
+        command: StructureCommand,
     },
     /// Document content operations.
     #[command(
@@ -229,6 +243,9 @@ JSON format."
         message: String,
         #[arg(long)]
         allow_empty: bool,
+        /// Commit author recorded in the commit record.
+        #[arg(long, default_value = "arche")]
+        author: String,
     },
     /// Reset index and optionally worktree to HEAD.
     Reset {
@@ -315,6 +332,26 @@ enum DocCommand {
         /// JSON file, or "-" for stdin.
         file: String,
     },
+    /// Validate that design objects carry document fields.
+    Check,
+}
+
+#[derive(Debug, Subcommand)]
+enum StructureCommand {
+    /// Assign a top-level element to a system, module, or layer.
+    Assign {
+        /// Element qname.
+        qname: String,
+        /// Owning system, module, or layer qname.
+        #[arg(long)]
+        parent: String,
+    },
+    /// List systems, modules, layers and their members.
+    List,
+    /// List top-level elements without a system or module.
+    Unassigned,
+    /// Validate membership.
+    Check,
 }
 
 #[derive(Debug, Subcommand)]
@@ -450,6 +487,11 @@ enum CommentCommand {
         #[arg(long)]
         agent: String,
     },
+    /// Clear comments for one target, or all comments when no target is given.
+    Clear {
+        /// Target object qname.
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -548,6 +590,13 @@ enum SourceCommand {
     Worktree,
     /// Show source worktree status.
     Status,
+    /// List tracked source files.
+    Ls,
+    /// Print one tracked source file.
+    Cat {
+        /// Source path.
+        path: String,
+    },
     /// Align TechnicalFile objects with tracked source files.
     Sync,
     /// Show source changes since the design baseline.
@@ -555,6 +604,11 @@ enum SourceCommand {
         /// Base Git ref; defaults to the design baseline commit.
         #[arg(long)]
         base: Option<String>,
+    },
+    /// Record the read-only source Git URL.
+    SetUrl {
+        /// Source Git URL.
+        url: String,
     },
 }
 
@@ -575,12 +629,16 @@ fn main() -> Result<()> {
             remote,
             dir,
             branch,
+            source,
         } => {
             let repo = arche_client::clone_from(
                 &remote,
                 dir.unwrap_or_else(|| PathBuf::from(".")),
                 branch.as_deref(),
             )?;
+            if let Some(source) = source {
+                repo.set_source_url(&source)?;
+            }
             println!("Cloned Arche repository into {}", repo.root().display());
         }
         Command::Serve {
@@ -657,12 +715,23 @@ fn main() -> Result<()> {
                 SourceCommand::Status => {
                     print!("{}", repo.source_status()?);
                 }
+                SourceCommand::Ls => {
+                    for path in repo.source_ls()? {
+                        println!("{path}");
+                    }
+                }
+                SourceCommand::Cat { path } => {
+                    print!("{}", repo.source_cat(&path)?);
+                }
                 SourceCommand::Sync => {
                     let count = repo.source_sync()?;
                     println!("synced {count} source files");
                 }
                 SourceCommand::Changes { base } => {
                     print!("{}", repo.source_changes(base.as_deref())?);
+                }
+                SourceCommand::SetUrl { url } => {
+                    repo.set_source_url(&url)?;
                 }
             }
         }
@@ -673,6 +742,8 @@ fn main() -> Result<()> {
             namespace,
             prototype,
             source,
+            file,
+            module,
         } => {
             let repo = Repository::open(".")?;
             let (qname, hash) = create_object(
@@ -683,9 +754,43 @@ fn main() -> Result<()> {
                 namespace.as_deref(),
                 prototype.as_deref(),
                 source.as_deref(),
+                file.as_deref(),
+                module.as_deref(),
             )?;
             println!("{}", repo.resolve(qname)?);
             println!("object {}", hash.to_hex());
+        }
+        Command::Structure { command } => {
+            let repo = Repository::open(".")?;
+            match command {
+                StructureCommand::Assign { qname, parent } => {
+                    repo.assign_member(&qname, &parent)?;
+                }
+                StructureCommand::List => {
+                    for (owner, members) in repo.structure_list()? {
+                        println!("{owner}");
+                        for member in members {
+                            println!("\t{member}");
+                        }
+                    }
+                }
+                StructureCommand::Unassigned => {
+                    for qname in repo.unassigned_members()? {
+                        println!("{qname}");
+                    }
+                }
+                StructureCommand::Check => {
+                    let errors = repo.membership_check()?;
+                    if errors.is_empty() {
+                        println!("ok");
+                    } else {
+                        for error in errors {
+                            println!("{error}");
+                        }
+                        bail!("structure check failed");
+                    }
+                }
+            }
         }
         Command::Doc { command } => {
             let repo = Repository::open(".")?;
@@ -786,6 +891,17 @@ fn main() -> Result<()> {
                     let count = repo.import_doc_json(&qname, &text)?;
                     println!("imported {count} document fields");
                 }
+                DocCommand::Check => {
+                    let errors = repo.doc_check()?;
+                    if errors.is_empty() {
+                        println!("ok");
+                    } else {
+                        for error in errors {
+                            println!("{error}");
+                        }
+                        bail!("doc check failed");
+                    }
+                }
             }
         }
         Command::Comment { command } => {
@@ -816,6 +932,10 @@ fn main() -> Result<()> {
                     agent,
                 } => {
                     repo.comment_resolve(id, &conclusion, &agent)?;
+                }
+                CommentCommand::Clear { target } => {
+                    let count = repo.comment_clear(target.as_deref())?;
+                    println!("cleared {count} comment(s)");
                 }
             }
         }
@@ -991,9 +1111,10 @@ fn main() -> Result<()> {
         Command::Commit {
             message,
             allow_empty,
+            author,
         } => {
             let repo = Repository::open(".")?;
-            let hash = repo.commit_index(&message, allow_empty)?;
+            let hash = repo.commit_index_as(&message, allow_empty, &author)?;
             println!("{}", hash.to_hex());
         }
         Command::Reset { hard, qnames } => {
@@ -1773,6 +1894,7 @@ fn object_source_path(repo: &Repository, object: &Object) -> Result<String> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn create_object(
     repo: &Repository,
     kind: &str,
@@ -1781,11 +1903,13 @@ fn create_object(
     namespace: Option<&str>,
     prototype: Option<&str>,
     source: Option<&str>,
+    file: Option<&str>,
+    module: Option<&str>,
 ) -> Result<(SymbolHash, ObjectHash)> {
     let require_parent =
         || parent.ok_or_else(|| anyhow::anyhow!("{kind} requires --parent <qname>"));
     let require_name = || name.ok_or_else(|| anyhow::anyhow!("{kind} requires <name>"));
-    match kind {
+    let (qname, _) = match kind {
         "technical-system" => repo.create_technical_system(require_name()?),
         "technical-module" => repo.create_technical_module(require_parent()?, require_name()?),
         "technical-layer" => repo.create_technical_layer(require_parent()?, require_name()?),
@@ -1821,7 +1945,21 @@ fn create_object(
              technical-struct, technical-enum, technical-interface, technical-method, \
              technical-function, technical-mixin, technical-part"
         ),
+    }?;
+    let qname_text = repo.resolve(qname)?;
+    if let Some(file) = file {
+        repo.set_string_ref(&qname_text, "file", file)?;
     }
+    if let Some(module) = module {
+        repo.set_string_ref(&qname_text, "module", module)?;
+    }
+    if let Some(source) = source
+        && kind != "technical-part"
+    {
+        repo.set_source(&qname_text, source)?;
+    }
+    let (hash, _) = repo.show_qname(&qname_text)?;
+    Ok((qname, hash))
 }
 
 fn batch(repo: &Repository, file: &str) -> Result<()> {
@@ -1846,6 +1984,8 @@ fn batch(repo: &Repository, file: &str) -> Result<()> {
                 field("namespace"),
                 field("prototype"),
                 field("source"),
+                field("file"),
+                field("module"),
             )?;
             println!("{}", repo.resolve(qname)?);
             println!("object {}", hash.to_hex());

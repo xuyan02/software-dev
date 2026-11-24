@@ -1,12 +1,12 @@
 //! Permanent project deletion.
 //!
 //! Deleting a project removes its agents, workspaces, logs, capsules, SSH
-//! access, design-space repository and source cache. The database delete is
+//! access, Arche repository and source cache. The database delete is
 //! synchronous so the project disappears from the UI immediately; stopping the
 //! remaining processes and removing the filesystem resources run in the
 //! background.
 
-use crate::ds_ssh::DsSsh;
+use crate::arche_ssh::ArcheSsh;
 use crate::supervisor::AgentSupervisor;
 use foundry_adapter_postgres::PostgresStore;
 use foundry_api_http::ProjectPurger as ProjectPurgerPort;
@@ -26,7 +26,7 @@ pub struct ProjectPurger {
     supervisor: Arc<AgentSupervisor>,
     design_root: PathBuf,
     agent_logs: Arc<AgentLogFiles>,
-    ds_ssh: Arc<DsSsh>,
+    arche_ssh: Arc<ArcheSsh>,
     foundry_dir: PathBuf,
 }
 
@@ -37,7 +37,7 @@ impl ProjectPurger {
         supervisor: Arc<AgentSupervisor>,
         design_root: PathBuf,
         agent_logs: Arc<AgentLogFiles>,
-        ds_ssh: Arc<DsSsh>,
+        arche_ssh: Arc<ArcheSsh>,
     ) -> Self {
         Self {
             projects,
@@ -45,7 +45,7 @@ impl ProjectPurger {
             supervisor,
             design_root,
             agent_logs,
-            ds_ssh,
+            arche_ssh,
             foundry_dir: foundry_shared::default_foundry_dir(),
         }
     }
@@ -76,7 +76,7 @@ impl ProjectPurger {
             store: Arc::clone(&self.store),
             design_root: self.design_root.clone(),
             agent_logs: Arc::clone(&self.agent_logs),
-            ds_ssh: Arc::clone(&self.ds_ssh),
+            arche_ssh: Arc::clone(&self.arche_ssh),
             foundry_dir: self.foundry_dir.clone(),
             project_id,
             definitions,
@@ -118,7 +118,7 @@ struct PurgeCleanup {
     store: Arc<PostgresStore>,
     design_root: PathBuf,
     agent_logs: Arc<AgentLogFiles>,
-    ds_ssh: Arc<DsSsh>,
+    arche_ssh: Arc<ArcheSsh>,
     foundry_dir: PathBuf,
     project_id: Uuid,
     definitions: Vec<AgentDefinition>,
@@ -277,7 +277,7 @@ impl PurgeCleanup {
                 "cannot remove agent account"
             ),
         }
-        if let Err(error) = self.ds_ssh.revoke_account(definition.account_id).await {
+        if let Err(error) = self.arche_ssh.revoke_account(definition.account_id).await {
             tracing::warn!(
                 account_id = %definition.account_id,
                 %error,

@@ -2,7 +2,7 @@
 # Serve a local bare clone of this repository for agent source fetches.
 #
 # The daemon is read-only (`git daemon` without receive-pack). Agents fetch
-# `git://<host-ip>:<port>/<repo>.git`; design-space changes still go through
+# `git://<host-ip>:<port>/<repo>.git`; Arche design changes still go through
 # the ds remote, not this server.
 set -euo pipefail
 

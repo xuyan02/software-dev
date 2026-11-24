@@ -20,13 +20,14 @@ use foundry_adapter_postgres::{
 use foundry_api_http::{AppState, SetupState};
 use foundry_app::{
     AccountService, AgentAdminUseCases, AnchorDocumentService, AnchorDocumentUseCases, AuthService,
-    DesignSpaceGateway, IssueService, MergeRequestRepository, MergeRequestService, NewTask,
-    ProjectFilter, ProjectRepository, ProjectService, ProjectUseCases, RequirementsDocumentService,
-    RequirementsDocumentUseCases, TaskCommand, TaskDispatcher, TaskFilter, TaskLinkService,
-    TaskLinkUseCases, TaskRepository, TaskService, TaskUseCases, TaskViewer, TriggerService,
-    TriggerUseCases, WorkflowCatalog, WorkflowService, WorkflowUseCases,
+    DecideAnchorDocument, DesignSpaceGateway, IssueService, MergeRequestRepository,
+    MergeRequestService, NewTask, ProjectFilter, ProjectRepository, ProjectService,
+    ProjectUseCases, RequirementsDocumentService, RequirementsDocumentUseCases, TaskCommand,
+    TaskDispatcher, TaskFilter, TaskLinkService, TaskLinkUseCases, TaskRepository, TaskService,
+    TaskUseCases, TaskViewer, TriggerService, TriggerUseCases, WorkflowCatalog, WorkflowService,
+    WorkflowUseCases,
 };
-use foundry_domain::{OperationName, TaskState};
+use foundry_domain::{Actor, ApprovalDecision, OperationName, TaskState};
 use foundry_shared::{AgentLogFiles, Config};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,8 +35,8 @@ use std::time::Duration;
 
 mod agent_admin;
 mod agent_credentials;
+mod arche_ssh;
 mod design_space;
-mod ds_ssh;
 mod github_app;
 mod platform_agents;
 mod project_purge;
@@ -71,47 +72,32 @@ async fn main() -> anyhow::Result<()> {
 
     let issues = IssueService::new(Arc::clone(&store), Arc::clone(&events), Arc::clone(&policy));
     let accounts = Arc::new(AccountService::new(Arc::clone(&store), Arc::clone(&events)));
-    let (local_design_space, design_space_base, design_space_port, design_space_token) =
-        design_space::start_local(
-            config.design_space_root.clone(),
-            config.design_space_listen.clone(),
-            config.design_space_token_file.clone(),
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!(error))?;
-    let design_space_ssh_base = config
-        .design_space_ssh_url
+    let arche_ssh_base = config
+        .arche_ssh_url
         .clone()
-        .unwrap_or_else(|| format!("ssh://foundry-ds@{}", design_space::host_ip()));
+        .unwrap_or_else(|| format!("ssh://foundry-arche@{}", design_space::host_ip()));
     tracing::info!(
-        url = %design_space_base,
-        ssh = %design_space_ssh_base,
-        port = design_space_port,
-        "started local ds-server"
+        ssh = %arche_ssh_base,
+        root = %config.design_space_root.display(),
+        "using Arche design spaces"
     );
-    // Keep the child alive until the control plane exits. Dropping it kills
-    // ds-server (`kill_on_drop`).
-    let _local_design_space = local_design_space;
-    let ds_ssh = Arc::new(
-        ds_ssh::DsSsh::new(
+    let arche_ssh = Arc::new(
+        arche_ssh::ArcheSsh::new(
             &foundry_shared::default_foundry_dir(),
-            design_space_ssh_base.clone(),
+            arche_ssh_base.clone(),
             config.design_space_root.clone(),
-            ds_server_binary()?,
             store.pool().clone(),
         )
         .map_err(|error| anyhow::anyhow!(error))?,
     );
-    ds_ssh
+    arche_ssh
         .refresh_authorized_keys()
         .await
         .map_err(|error| anyhow::anyhow!(error))?;
-    migrate_design_space_urls(store.as_ref(), &design_space_ssh_base).await?;
     let design_spaces: Arc<dyn foundry_app::ports::DesignSpaceProvisioner> =
-        Arc::new(design_space::HttpDesignSpaceProvisioner::new(
-            &design_space_base,
-            &design_space_ssh_base,
-            Some(design_space_token.clone()),
+        Arc::new(design_space::ArcheDesignSpaceProvisioner::new(
+            config.design_space_root.clone(),
+            &arche_ssh_base,
         ));
     let projects = Arc::new(ProjectService::new(
         Arc::clone(&store),
@@ -215,8 +201,10 @@ async fn main() -> anyhow::Result<()> {
         config.session_ttl_hours,
         config.openai_api_key.clone().unwrap_or_default(),
         config.shell_image.clone(),
+        config.desktop_image.clone(),
         Arc::clone(&agent_logs),
     );
+    supervisor.reap_orphans().await;
     let agents: Arc<dyn AgentAdminUseCases> = Arc::new(agent_admin::PostgresAgentAdmin::new(
         Arc::clone(&store),
         Arc::clone(&supervisor),
@@ -271,6 +259,13 @@ async fn main() -> anyhow::Result<()> {
                         project_id = %project.id,
                         %error,
                         "cannot ensure default development-iteration trigger"
+                    );
+                }
+                if let Err(error) = triggers.ensure_feedback_cycle(project.id).await {
+                    tracing::warn!(
+                        project_id = %project.id,
+                        %error,
+                        "cannot ensure default feedback trigger"
                     );
                 }
                 if let Some(root_id) = project.root_task_id {
@@ -343,7 +338,7 @@ async fn main() -> anyhow::Result<()> {
             Arc::clone(&supervisor),
             config.design_space_root.clone(),
             Arc::clone(&agent_logs),
-            Arc::clone(&ds_ssh),
+            Arc::clone(&arche_ssh),
         ));
     let state = AppState {
         issues: Arc::new(issues),
@@ -354,7 +349,7 @@ async fn main() -> anyhow::Result<()> {
         agents,
         agent_logs,
         workflows: workflows_admin,
-        anchor_docs,
+        anchor_docs: Arc::clone(&anchor_docs),
         requirements_doc,
         task_links,
         auth,
@@ -363,17 +358,22 @@ async fn main() -> anyhow::Result<()> {
             &config.editor_dir,
         ))),
         design_space: design_space_access,
-        merge_requests,
+        merge_requests: Arc::clone(&merge_requests),
         project_purger: Some(project_purger),
     };
     let credentials = agent_credentials::CredentialState {
         auth: credential_auth,
         store: Arc::clone(&store),
         github,
-        ssh: ds_ssh,
+        ssh: arche_ssh,
     };
     let app = foundry_api_http::router(state).merge(agent_credentials::router(credentials));
-    tokio::spawn(run_task_dispatcher(task_dispatcher, Arc::clone(&store)));
+    tokio::spawn(run_task_dispatcher(
+        task_dispatcher,
+        Arc::clone(&store),
+        Arc::clone(&anchor_docs),
+        Arc::clone(&merge_requests),
+    ));
 
     let listener = tokio::net::TcpListener::bind(config.addr).await?;
     tracing::info!(
@@ -398,6 +398,13 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    tracing::info!("http server stopped; stopping agentd processes");
+    if tokio::time::timeout(Duration::from_secs(10), supervisor.shutdown_all())
+        .await
+        .is_err()
+    {
+        tracing::warn!("agent shutdown timed out");
+    }
     Ok(())
 }
 
@@ -422,14 +429,21 @@ fn resolve_editor_dir(configured: &Path) -> PathBuf {
     }
 }
 
+#[cfg(unix)]
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+    tracing::info!("shutdown signal received; waiting for requests and agents to stop");
+}
+
+#[cfg(not(unix))]
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
-    tracing::info!("shutdown signal received; waiting up to 5s for requests to finish");
-    tokio::spawn(async {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        tracing::warn!("graceful shutdown timed out; forcing process exit");
-        std::process::exit(0);
-    });
+    tracing::info!("shutdown signal received; waiting for requests and agents to stop");
 }
 
 /// Re-evaluate transitions for tasks that were already in progress when the
@@ -459,10 +473,70 @@ async fn reevaluate_transitions(store: &PostgresStore, dispatcher: &dyn TaskDisp
 /// Advances task workflows and reconciles durable state into agent
 /// activations. Notifications are not persisted; this loop rebuilds missed
 /// ones from task state, assignments and Issue comments.
-async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<PostgresStore>) {
+async fn run_task_dispatcher(
+    dispatcher: Arc<dyn TaskDispatcher>,
+    store: Arc<PostgresStore>,
+    anchor_docs: Arc<dyn AnchorDocumentUseCases>,
+    merge_requests: Arc<MergeRequestService>,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
+        match store.pending_auto_document_approvals().await {
+            Ok(rows) => {
+                for (task_id, project_id, kind, revision, handle) in rows {
+                    let command = DecideAnchorDocument {
+                        project_id,
+                        kind,
+                        expected_revision: revision as u64,
+                        decision: ApprovalDecision::Approved,
+                        comment: Some(
+                            "auto-approved by project skip-approvals setting".to_string(),
+                        ),
+                    };
+                    if let Err(error) = anchor_docs.decide(Actor::human(handle), command).await {
+                        tracing::debug!(
+                            %error,
+                            task_id = %task_id,
+                            "auto document approval deferred"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "auto document approval scan failed"),
+        }
+        match store.pending_auto_design_merges().await {
+            Ok(rows) => {
+                for (project_id, merge_request_id, owner_id) in rows {
+                    let Ok(Some(project)) =
+                        ProjectRepository::get(store.as_ref(), project_id).await
+                    else {
+                        continue;
+                    };
+                    if let Err(error) = merge_requests
+                        .approve(&project, merge_request_id, owner_id)
+                        .await
+                    {
+                        tracing::debug!(
+                            %error,
+                            merge_request_id = %merge_request_id,
+                            "auto merge approval deferred"
+                        );
+                    }
+                    if let Err(error) = merge_requests
+                        .merge(&project, merge_request_id, owner_id)
+                        .await
+                    {
+                        tracing::debug!(
+                            %error,
+                            merge_request_id = %merge_request_id,
+                            "auto merge deferred"
+                        );
+                    }
+                }
+            }
+            Err(error) => tracing::warn!(%error, "auto design merge scan failed"),
+        }
         match dispatcher.dispatch_ready().await {
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "woke ready tasks"),
@@ -604,46 +678,4 @@ async fn run_task_dispatcher(dispatcher: Arc<dyn TaskDispatcher>, store: Arc<Pos
             Err(error) => tracing::warn!(%error, "document review link release scan failed"),
         }
     }
-}
-
-/// The SSH forced command runs `ds-server` directly instead of going through
-/// the control plane. Prefer the sibling built by `cargo build --bins`, and
-/// fall back to a system-wide install.
-fn ds_server_binary() -> anyhow::Result<PathBuf> {
-    if let Some(path) = std::env::var_os("FOUNDRY_DS_SERVER") {
-        return Ok(PathBuf::from(path));
-    }
-    let exe = std::env::current_exe()?;
-    let sibling = exe
-        .parent()
-        .map(|directory| directory.join("ds-server"))
-        .filter(|path| path.is_file());
-    if let Some(path) = sibling {
-        return Ok(path);
-    }
-    let installed = PathBuf::from("/usr/local/bin/ds-server");
-    if installed.is_file() {
-        return Ok(installed);
-    }
-    anyhow::bail!(
-        "ds-server binary not found next to {}; build it with `cargo build --bins` \
-         or set FOUNDRY_DS_SERVER",
-        exe.display()
-    )
-}
-
-/// Point every project at the local SSH transport. The repo name is the
-/// project id, so the stored URL only records the transport address.
-async fn migrate_design_space_urls(store: &PostgresStore, ssh_base: &str) -> anyhow::Result<()> {
-    let projects = ProjectRepository::list(store, ProjectFilter::default()).await?;
-    for mut project in projects {
-        let expected = format!("{ssh_base}/{}", project.id);
-        if project.design_space_url == expected {
-            continue;
-        }
-        let version = project.version;
-        project.design_space_url = expected;
-        ProjectRepository::save(store, &project, version).await?;
-    }
-    Ok(())
 }

@@ -1,120 +1,6 @@
 use async_trait::async_trait;
 use foundry_app::ports::DesignSpaceProvisioner;
-use serde::Deserialize;
 use std::path::PathBuf;
-use std::time::Duration;
-
-/// Start the local `ds-server` used for repo provisioning and admin work.
-///
-/// The child is returned so the caller keeps it alive for the process
-/// lifetime. Agents never use this HTTP endpoint; they use the SSH transport.
-pub async fn start_local(
-    root: PathBuf,
-    listen: String,
-    token_file: PathBuf,
-) -> Result<(tokio::process::Child, String, u16, String), String> {
-    std::fs::create_dir_all(&root)
-        .map_err(|error| format!("create design-space root {}: {error}", root.display()))?;
-    let admin_token = ensure_token(&token_file)?;
-
-    let listen = normalize_listen(&listen)?;
-    let port = listen_port(&listen)?;
-
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("ds-server")))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from("ds-server"));
-
-    let mut command = tokio::process::Command::new(&binary);
-    command
-        .arg("--root")
-        .arg(&root)
-        .arg("--listen")
-        .arg(&listen)
-        .arg("--admin-token-file")
-        .arg(&token_file);
-    command.kill_on_drop(true);
-    command.stdout(std::process::Stdio::inherit());
-    command.stderr(std::process::Stdio::inherit());
-    let mut child = command.spawn().map_err(|error| {
-        format!(
-            "failed to start {}: {error}; build it with `cargo build --bins`",
-            binary.display()
-        )
-    })?;
-
-    let base = format!("http://127.0.0.1:{port}");
-    let client = reqwest::Client::new();
-    for _ in 0..50 {
-        if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
-            return Err(format!("ds-server exited during startup: {status}"));
-        }
-        let request = client
-            .get(format!("{base}/repos"))
-            .header("Authorization", format!("Bearer {admin_token}"));
-        if request.send().await.is_ok() {
-            return Ok((child, base, port, admin_token));
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    let _ = child.kill().await;
-    Err(
-        "ds-server did not answer within 5s; rebuild it with `cargo build --bins` and retry"
-            .to_string(),
-    )
-}
-
-fn ensure_token(path: &PathBuf) -> Result<String, String> {
-    if let Ok(text) = std::fs::read_to_string(path) {
-        let token = text.trim().to_owned();
-        if !token.is_empty() {
-            return Ok(token);
-        }
-    }
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::now_v7().simple(),
-        uuid::Uuid::now_v7().simple()
-    );
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create token directory {}: {error}", parent.display()))?;
-    }
-    std::fs::write(path, format!("{token}\n"))
-        .map_err(|error| format!("write design-space token {}: {error}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("chmod design-space token: {error}"))?;
-    }
-    Ok(token)
-}
-
-fn normalize_listen(listen: &str) -> Result<String, String> {
-    let listen = listen.trim();
-    let addr: std::net::SocketAddr = listen
-        .parse()
-        .map_err(|_| format!("invalid design_space_listen: {listen}"))?;
-    if addr.port() == 0 {
-        let listener = std::net::TcpListener::bind(addr)
-            .map_err(|error| format!("bind design_space_listen {listen}: {error}"))?;
-        let port = listener
-            .local_addr()
-            .map_err(|error| error.to_string())?
-            .port();
-        return Ok(format!("{}:{port}", addr.ip()));
-    }
-    Ok(addr.to_string())
-}
-
-fn listen_port(listen: &str) -> Result<u16, String> {
-    listen
-        .parse::<std::net::SocketAddr>()
-        .map(|addr| addr.port())
-        .map_err(|error| error.to_string())
-}
 
 pub fn host_ip() -> String {
     std::net::UdpSocket::bind("0.0.0.0:0")
@@ -125,65 +11,102 @@ pub fn host_ip() -> String {
         .unwrap_or_else(|_| "127.0.0.1".to_string())
 }
 
-pub struct HttpDesignSpaceProvisioner {
-    base: String,
+/// Provision new projects as Arche repositories.
+///
+/// Arche stores one repository per project under the collection root the
+/// console reads.
+pub struct ArcheDesignSpaceProvisioner {
+    root: PathBuf,
     ssh_base: String,
-    client: reqwest::Client,
-    token: Option<String>,
 }
 
-impl HttpDesignSpaceProvisioner {
-    pub fn new(
-        base: impl Into<String>,
-        ssh_base: impl Into<String>,
-        token: Option<String>,
-    ) -> Self {
+impl ArcheDesignSpaceProvisioner {
+    pub fn new(root: PathBuf, ssh_base: impl Into<String>) -> Self {
         Self {
-            base: base.into().trim_end_matches('/').to_string(),
+            root,
             ssh_base: ssh_base.into().trim_end_matches('/').to_string(),
-            client: reqwest::Client::new(),
-            token,
         }
     }
 }
 
-#[derive(Deserialize)]
-struct CreatedRepo {
-    name: String,
-}
-
 #[async_trait]
-impl DesignSpaceProvisioner for HttpDesignSpaceProvisioner {
+impl DesignSpaceProvisioner for ArcheDesignSpaceProvisioner {
     async fn create_design_space(
         &self,
         repo: &str,
         branch: &str,
         source_url: &str,
     ) -> Result<String, String> {
-        let mut request =
-            self.client
-                .post(format!("{}/repos", self.base))
-                .json(&serde_json::json!({
-                    "name": repo,
-                    "branch": branch,
-                    "source_url": source_url,
-                }));
-        if let Some(token) = &self.token {
-            request = request.header("Authorization", format!("Bearer {token}"));
+        if repo.is_empty() || repo.contains('/') || repo.contains("..") {
+            return Err(format!("invalid Arche repository name: {repo}"));
         }
-        let response = request
-            .send()
+        let root = self.root.clone();
+        let name = repo.to_owned();
+        let branch = branch.to_owned();
+        let source_url = source_url.to_owned();
+        let url = format!("{}/{}", self.ssh_base, repo);
+        tokio::task::spawn_blocking(move || {
+            let path = root.join(&name);
+            if path.join(".arche").is_dir() {
+                return Ok(url);
+            }
+            if path.exists() {
+                return Err(format!(
+                    "{} already exists and is not an Arche repository",
+                    path.display()
+                ));
+            }
+            std::fs::create_dir_all(&root)
+                .map_err(|error| format!("create {}: {error}", root.display()))?;
+            let repo = arche_core::Repository::init_with_source(&path, Some(&source_url))
+                .map_err(|error| format!("create Arche repository {}: {error}", path.display()))?;
+            let current = repo
+                .current_branch()
+                .map_err(|error| format!("read Arche branch {}: {error}", path.display()))?;
+            let exists = repo
+                .branch_list()
+                .map_err(|error| format!("list Arche branches {}: {error}", path.display()))?
+                .iter()
+                .any(|candidate| candidate == &branch);
+            if !branch.trim().is_empty() && branch != current && !exists {
+                repo.branch_create(&branch)
+                    .map_err(|error| format!("create Arche branch {branch}: {error}"))?;
+            }
+            Ok(url)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn provisions_an_arche_repository() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let provisioner = ArcheDesignSpaceProvisioner::new(
+            temp.path().to_path_buf(),
+            "ssh://foundry-arche@example.test",
+        );
+        let id = "01900000-0000-7000-8000-000000000001";
+        let url = provisioner
+            .create_design_space(id, "source", "https://example.test/repo.git")
             .await
-            .map_err(|error| format!("design space server: {error}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("design space server {status}: {body}"));
-        }
-        let created: CreatedRepo = response
-            .json()
+            .unwrap();
+        assert_eq!(url, format!("ssh://foundry-arche@example.test/{id}"));
+
+        let path = temp.path().join(id);
+        assert!(path.join(".arche").is_dir());
+        let repo = arche_core::Repository::open(&path).unwrap();
+        assert!(repo.branch_list().unwrap().contains(&"source".to_owned()));
+
+        // Provisioning the same project again is idempotent.
+        let again = provisioner
+            .create_design_space(id, "source", "https://example.test/repo.git")
             .await
-            .map_err(|error| format!("design space response: {error}"))?;
-        Ok(format!("{}/{}", self.ssh_base, created.name))
+            .unwrap();
+        assert_eq!(again, url);
     }
 }

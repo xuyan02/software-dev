@@ -61,6 +61,46 @@ pub struct ProjectMember {
     pub added_at: OffsetDateTime,
 }
 
+/// Capsule profile used by the final-artifact test executor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapsuleProfile {
+    /// Command-line artifact: shell, environment, exit codes.
+    #[default]
+    Cli,
+    /// HTTP/API artifact: shell plus real requests; no browser.
+    Api,
+    /// Web/UI artifact: headless browser, screenshots.
+    Web,
+    /// Desktop/GUI artifact: desktop capsule with screenshot and input.
+    Desktop,
+}
+
+impl CapsuleProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Api => "api",
+            Self::Web => "web",
+            Self::Desktop => "desktop",
+        }
+    }
+}
+
+impl std::str::FromStr for CapsuleProfile {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "cli" => Ok(Self::Cli),
+            "api" => Ok(Self::Api),
+            "web" => Ok(Self::Web),
+            "desktop" => Ok(Self::Desktop),
+            other => Err(format!("unknown capsule profile {other:?}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: Uuid,
@@ -83,6 +123,9 @@ pub struct Project {
     /// project's tasks. Normal workflow transitions still run.
     #[serde(default)]
     pub skip_human_review: bool,
+    /// Capsule used by the final-artifact test executor.
+    #[serde(default)]
+    pub test_capsule: CapsuleProfile,
     pub status: ProjectStatus,
     #[serde(default)]
     pub root_task_id: Option<Uuid>,
@@ -144,6 +187,7 @@ impl Project {
             design_space_url: String::new(),
             design_space_branch: DESIGN_SPACE_BRANCH.to_owned(),
             skip_human_review: false,
+            test_capsule: CapsuleProfile::default(),
             status: ProjectStatus::Active,
             root_task_id: None,
             members: vec![ProjectMember {
@@ -260,6 +304,20 @@ impl Project {
             ]));
         }
         self.skip_human_review = skip_human_review;
+        self.touch();
+        Ok(())
+    }
+
+    pub fn set_test_capsule(
+        &mut self,
+        test_capsule: CapsuleProfile,
+    ) -> Result<(), ProjectValidationError> {
+        if self.is_archived() {
+            return Err(ProjectValidationError(vec![
+                "archived projects cannot be edited".to_string(),
+            ]));
+        }
+        self.test_capsule = test_capsule;
         self.touch();
         Ok(())
     }
@@ -407,6 +465,20 @@ mod tests {
         assert_eq!(project.status, ProjectStatus::Active);
         assert_eq!(project.git_branch, "main");
         assert_eq!(project.design_space_branch, DESIGN_SPACE_BRANCH);
+        assert_eq!(project.test_capsule, CapsuleProfile::Cli);
+    }
+
+    #[test]
+    fn capsule_profiles_round_trip() {
+        for profile in [
+            CapsuleProfile::Cli,
+            CapsuleProfile::Api,
+            CapsuleProfile::Web,
+            CapsuleProfile::Desktop,
+        ] {
+            assert_eq!(profile.as_str().parse::<CapsuleProfile>(), Ok(profile));
+        }
+        assert!("browser".parse::<CapsuleProfile>().is_err());
     }
 
     #[test]

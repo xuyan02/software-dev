@@ -1,6 +1,6 @@
 # 设计草案撰写技能
 
-本技能只说明设计草案怎么写；设计文档本身的块规则见 `design-writing`。
+本技能只说明设计草案怎么写；设计字段本身的块规则见 `design-writing`。
 
 设计草案用于 `design`：先把根源性的设计修改写成一份完整、可实施的设计，
 由智能体和人类 review，通过后再按草案修改设计空间。
@@ -10,22 +10,23 @@
 ## 1. 位置、ID 和名字
 
 ```text
-文档 qname：documents/design/drafts/<draft-id>
-文档标题：设计草案：<draft-name>
+草案对象 qname：concept/technical/draft/<draft-id>
+显示名：设计草案：<draft-name>
+草案正文：写入该 Concept 的 explanation 字段（Markdown 文本）
 ```
 
-- `<draft-id>` 是草案自己的稳定 ID，创建时生成，例如 `draft-7f3a2c9e`，在 drafts 目录下唯一；
-- `<draft-name>` 是人类可读名字，写在 Document 标题里；
+- `<draft-id>` 是草案自己的稳定 ID，创建时生成，例如 `draft-7f3a2c9e`，在 concept/technical/draft 下唯一；
+- `<draft-name>` 是人类可读名字，写在 Concept 的 name 字段；
 - Issue 不进入 ID 或名字，只在“背景”中引用。
 
 ## 2. 章节骨架
 
-按顺序创建顶层 Section；只有标“可选”的可以省略。
+在 explanation 中按顺序写 Markdown 标题；只有标“可选”的可以省略。
 
 ```markdown
 # 背景
 
-- Issue：[[issue:<issue-id>|<issue-title>]]
+- Issue：<issue-id> <issue-title>
 - 触发原因：
 - 本次设计要解决的问题：
 - 目标：
@@ -33,8 +34,8 @@
 
 # 现状设计
 
-- 相关 System / Module / 元素 / 文档：
-  - [[ds:<qname>|<name>]]
+- 相关 System / Module / 元素 / 设计字段：
+  - <qname>（<name>）
 - 当前职责和边界：
 - 当前接口和契约：
 - 当前数据、状态和生命周期：
@@ -107,9 +108,9 @@
 
 # 影响范围
 
-- 新增的设计对象和文档：
-- 修改的设计对象和文档：
-- 删除的设计对象和文档：
+- 新增的设计对象和设计字段：
+- 修改的设计对象和设计字段：
+- 删除的设计对象和设计字段：
 - 对代码、任务、流程和兼容性的影响：
 - 迁移考虑：
 - 回滚考虑：
@@ -118,15 +119,14 @@
 
 - 设计空间修改顺序：
   1. 结构树：
-  2. 技术设计文档：
-  3. 目录设计文档：
-  4. 命名空间设计文档：
-- 草案内容如何落到正式设计文档：
+  2. 技术对象设计字段：
+  3. 目录对象 position 字段：
+  4. 命名空间对象 position 字段：
+- 草案内容如何落到正式对象设计字段：
 - 验证方式：
-  - ds structure check
-  - ds doc layout
-  - ds doc check
-  - ds verify
+  - arche structure check
+  - arche doc check
+  - arche check
 - 实施风险：
 
 # 关键取舍（可选）
@@ -148,13 +148,13 @@
 
 ## 4. 引用
 
-草案中的 Issue、对象、文档和代码位置使用 DS 引用格式：
+草案中的 Issue、对象、设计字段和代码位置使用纯文本引用：
 
 ```text
-[[issue:<issue-id>|<label>]]
-[[task:<task-id>|<label>]]
-[[ds:<qname>|<label>]]
-[[code:<path>[:<start>-<end>]|<label>]]
+Issue <issue-id>（<label>）
+Task <task-id>（<label>）
+设计对象 <qname>（<label>）
+代码 <path>:<start>-<end>
 ```
 
-引用只是文本约定，不是 DS 对象；Web 渲染为超链接。详见 `design-space` 技能的“引用”一节。
+引用只是文本约定，Arche 不解析链接。详见 `arche` 技能。

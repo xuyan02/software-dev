@@ -38,7 +38,16 @@ const COHESION_INSPECTION: &str = include_str!("../definitions/cohesion_inspecti
 const CONSISTENCY_INSPECTION: &str = include_str!("../definitions/consistency_inspection.json");
 const DESIGN_INSPECTION: &str = include_str!("../definitions/design_inspection.json");
 const DAILY_CHECK: &str = include_str!("../definitions/daily_check.json");
+const MAINTENANCE_DEVELOPMENT: &str = include_str!("../definitions/maintenance_development.json");
 const SOFTWARE_DEVELOPMENT: &str = include_str!("../definitions/software_development.json");
+const FEEDBACK_CYCLE: &str = include_str!("../definitions/feedback_cycle.json");
+const REQUIREMENTS_AUDIT: &str = include_str!("../definitions/requirements_audit.json");
+const DESIGN_AUDIT: &str = include_str!("../definitions/design_audit.json");
+const CODE_AUDIT: &str = include_str!("../definitions/code_audit.json");
+const TEST_AUDIT: &str = include_str!("../definitions/test_audit.json");
+const PRODUCT_AUDIT: &str = include_str!("../definitions/product_audit.json");
+const AUTONOMOUS_SOFTWARE_DEVELOPMENT: &str =
+    include_str!("../definitions/autonomous_software_development.json");
 
 const SOURCES: &[(&str, &str, &str)] = &[
     ("empty", "Empty (no-op)", EMPTY),
@@ -99,6 +108,30 @@ const SOURCES: &[(&str, &str, &str)] = &[
         "Software development",
         SOFTWARE_DEVELOPMENT,
     ),
+    (
+        "maintenance_development",
+        "Maintenance development",
+        MAINTENANCE_DEVELOPMENT,
+    ),
+    (
+        "feedback_cycle",
+        "Continuous feedback cycle",
+        FEEDBACK_CYCLE,
+    ),
+    (
+        "requirements_audit",
+        "Requirements audit",
+        REQUIREMENTS_AUDIT,
+    ),
+    ("design_audit", "Design audit", DESIGN_AUDIT),
+    ("code_audit", "Code audit", CODE_AUDIT),
+    ("test_audit", "Test audit", TEST_AUDIT),
+    ("product_audit", "Product audit", PRODUCT_AUDIT),
+    (
+        "autonomous_software_development",
+        "Autonomous software development",
+        AUTONOMOUS_SOFTWARE_DEVELOPMENT,
+    ),
     ("daily_check", "Daily check", DAILY_CHECK),
     ("issue_triage", "Issue triage", ISSUE_TRIAGE),
     ("triage", "Issue triage", TRIAGE),
@@ -130,7 +163,11 @@ const SOURCES: &[(&str, &str, &str)] = &[
 ];
 
 /// Builtin workflows currently offered as project root tasks.
-pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &["software_development"];
+pub const ENABLED_ROOT_WORKFLOWS: &[&str] = &[
+    "software_development",
+    "maintenance_development",
+    "autonomous_software_development",
+];
 
 /// Builtin workflows temporarily disabled. They stay in the catalog so
 /// existing tasks can resolve their pinned versions, but they are hidden from

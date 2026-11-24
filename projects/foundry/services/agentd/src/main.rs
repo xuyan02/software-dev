@@ -13,22 +13,29 @@ use foundry_adapter_postgres::{
 };
 use foundry_agent_runtime::{
     AgentCreateForRoleTool, AgentRunRequest, AgentRuntime, AgentTemplatesListTool, AgentsListTool,
-    DesignPoolBatchTool, DevelopmentPoolBatchTool, EditFileTool, FoundryClient, IssueCommentTool,
-    IssueCreateTool, IssueGetTool, IssueListTool, IssueTransitionTool, IssueTriageBatchTool,
-    IssueTriageResultTool, MergeRequestTool, ProjectTool, ReadFileTool, Shell, ShellOutput,
-    ShellTool, TaskAddLinkTool, TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool,
+    ArtifactLogsTool, ArtifactStartTool, ArtifactStatusTool, ArtifactStopTool, BrowserTool,
+    DesignPoolBatchTool, DesktopInputTool, DesktopScreenshotTool, DeterministicMode,
+    DevelopmentPoolBatchTool, EditFileTool, FoundryClient, IssueCommentTool, IssueCreateTool,
+    IssueGetTool, IssueListTool, IssueTransitionTool, IssueTriageBatchTool, IssueTriageResultTool,
+    MergeRequestTool, ProjectTool, ReadFileTool, Shell, ShellOutput, ShellTool, TaskAddLinkTool,
+    TaskAllowedOperationsTool, TaskAssignAgentTool, TaskBindActorTool, TaskChildrenTool,
     TaskCommentTool, TaskCreateFollowUpTool, TaskGetTool, TaskHistoryTool, TaskLinksListTool,
     TaskOperationTool, TaskRemoveLinkTool, TaskSpawnChildrenTool, TaskStartTool,
     TasksReadyListTool, ToolError, ToolRegistry, TriggerCreateTool, TriggerListTool, WriteFileTool,
     compose_system_prompt,
 };
-use foundry_domain::AgentDefinition;
+use foundry_domain::{AgentDefinition, CapsuleProfile};
 use graph_agent::{
     LlmMessage, LlmParams, LlmRequest, ModelGateway, ModelProfileRef, OpenAiCompatibleConfig,
     OpenAiCompatibleModel,
 };
-use linux_capsule::LinuxCapsule;
+use linux_capsule::{Input as CapsuleInput, LinuxCapsule};
+
+mod services;
 use serde_json::{Value, json};
+use services::{
+    ServiceCapsules, ServiceLogsTool, ServiceStartTool, ServiceStatusTool, ServiceStopTool,
+};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -49,6 +56,8 @@ struct Cli {
     #[arg(long)]
     shell_image: String,
     #[arg(long)]
+    desktop_image: String,
+    #[arg(long)]
     api_key: String,
 }
 
@@ -58,6 +67,7 @@ struct Config {
     foundry_token: String,
     agent_id: Uuid,
     shell_image: String,
+    desktop_image: String,
     api_key: String,
 }
 
@@ -70,6 +80,7 @@ impl Config {
             foundry_token: cli.foundry_token,
             agent_id: cli.agent_id,
             shell_image: cli.shell_image,
+            desktop_image: cli.desktop_image,
             api_key: cli.api_key,
         }
     }
@@ -80,6 +91,18 @@ async fn main() -> anyhow::Result<()> {
     foundry_shared::init_agent_tracing(
         "foundry_agentd=info,foundry_agent_runtime=info,graph_agent=info",
     );
+    #[cfg(target_os = "linux")]
+    {
+        // If the control plane exits without running Drop (Ctrl-C, SIGTERM,
+        // crash), the kernel terminates this agentd as well. Check the parent
+        // after installing the hook to close the race where it already died.
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
+        }
+        if unsafe { libc::getppid() } == 1 {
+            return Ok(());
+        }
+    }
     let config = Config::from_args();
     let store = Arc::new(PostgresStore::connect(&config.database_url).await?);
 
@@ -114,9 +137,19 @@ async fn main() -> anyhow::Result<()> {
         "agentd started"
     );
 
+    let capsule_profile = if definition.role == "test_execution:executor" {
+        store
+            .project_test_capsule(definition.project_id)
+            .await
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default()
+    } else {
+        CapsuleProfile::Cli
+    };
     let shell = if definition.shell {
-        let shell = create_shell(&config).await?;
-        install_ds_credential(&config, &definition, &shell).await?;
+        let shell = create_shell(&config, capsule_profile).await?;
+        install_arche_credential(&config, &definition, &shell).await?;
         Some(shell)
     } else {
         None
@@ -131,7 +164,10 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
+async fn create_shell(
+    config: &Config,
+    capsule_profile: CapsuleProfile,
+) -> anyhow::Result<Arc<dyn Shell>> {
     let workspace = foundry_shared::default_agent_workspace_dir(&config.agent_id.to_string());
     foundry_shared::ensure_private_dir(&workspace).map_err(|error| {
         anyhow::anyhow!(
@@ -139,24 +175,38 @@ async fn create_shell(config: &Config) -> anyhow::Result<Arc<dyn Shell>> {
             workspace.display()
         )
     })?;
-    let capsule = LinuxCapsule::headless_with_image_workspace_and_labels(
-        config.shell_image.clone(),
-        workspace,
-        vec![("foundry.agent_id".to_string(), config.agent_id.to_string())],
-    )
-    .await?;
+    let labels = vec![("foundry.agent_id".to_string(), config.agent_id.to_string())];
+    let capsule = if capsule_profile == CapsuleProfile::Desktop {
+        LinuxCapsule::desktop_with_image_workspace_and_labels(
+            config.desktop_image.clone(),
+            workspace,
+            labels,
+        )
+        .await?
+    } else {
+        LinuxCapsule::headless_with_image_workspace_and_labels(
+            config.shell_image.clone(),
+            workspace,
+            labels,
+        )
+        .await?
+    };
+    tracing::info!(
+        agent_id = %config.agent_id,
+        capsule = capsule_profile.as_str(),
+        "capsule created"
+    );
     Ok(Arc::new(CapsuleShell { capsule }))
 }
 
 const RUNTIME_DIR: &str = "/run/foundry";
-const DS_KEY_PATH: &str = "/run/foundry/ds_key";
-const DS_KNOWN_HOSTS_PATH: &str = "/run/foundry/ds_known_hosts";
-const DS_TOKEN_PATH: &str = "/run/foundry/ds_token";
+const ARCHE_KEY_PATH: &str = "/run/foundry/arche_key";
+const ARCHE_KNOWN_HOSTS_PATH: &str = "/run/foundry/arche_known_hosts";
 const GIT_CREDENTIALS_PATH: &str = "/run/foundry/git-credentials";
 
-/// Install the account's design-space key once, for the shell's lifetime.
+/// Install the account's Arche SSH key once, for the shell's lifetime.
 /// The key is the agent's, not the task's, so task cleanup leaves it alone.
-async fn install_ds_credential(
+async fn install_arche_credential(
     config: &Config,
     definition: &AgentDefinition,
     shell: &Arc<dyn Shell>,
@@ -167,74 +217,100 @@ async fn install_ds_credential(
         definition.project_id.to_string(),
     );
     let credential = client
-        .agent_ds_credential(definition.id)
+        .agent_arche_credential(definition.id)
         .await
-        .map_err(|error| anyhow::anyhow!("cannot fetch design-space credential: {error}"))?;
+        .map_err(|error| anyhow::anyhow!("cannot fetch Arche credential: {error}"))?;
     let private_key = credential
         .get("private_key")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("design-space credential has no private key"))?;
+        .ok_or_else(|| anyhow::anyhow!("Arche credential has no private key"))?;
     let known_hosts = credential
         .get("known_hosts")
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("design-space credential has no known_hosts"))?;
+        .ok_or_else(|| anyhow::anyhow!("Arche credential has no known_hosts"))?;
+    let url = credential
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     shell_ok(
         shell,
+        format!("mkdir -p {RUNTIME_DIR} && chmod 700 {RUNTIME_DIR}"),
+    )
+    .await?;
+    upload_text(
+        shell,
+        ARCHE_KEY_PATH,
+        &format!("{}\n", private_key.trim_end()),
+    )
+    .await?;
+    upload_text(shell, ARCHE_KNOWN_HOSTS_PATH, known_hosts).await?;
+    shell_ok(
+        shell,
         format!(
-            "mkdir -p {RUNTIME_DIR} && chmod 700 {RUNTIME_DIR} && \
-             rm -f {}",
-            shell_quote(DS_TOKEN_PATH)
+            "chmod 600 {} {}",
+            shell_quote(ARCHE_KEY_PATH),
+            shell_quote(ARCHE_KNOWN_HOSTS_PATH)
         ),
     )
     .await?;
-    upload_text(shell, DS_KEY_PATH, &format!("{}\n", private_key.trim_end())).await?;
-    upload_text(shell, DS_KNOWN_HOSTS_PATH, known_hosts).await?;
-    let mut protected = format!(
-        "{} {}",
-        shell_quote(DS_KEY_PATH),
-        shell_quote(DS_KNOWN_HOSTS_PATH)
-    );
-    // Foundry normally uses the SSH design-space endpoint, so no HTTP token
-    // is returned. If a deployment does return one, install it here as well;
-    // `ds` reads this path automatically.
-    if let Some(token) = credential
-        .get("token")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-    {
-        upload_text(shell, DS_TOKEN_PATH, &format!("{}\n", token.trim())).await?;
-        protected.push(' ');
-        protected.push_str(&shell_quote(DS_TOKEN_PATH));
-    }
-    shell_ok(shell, format!("chmod 600 {protected}")).await?;
 
-    // The workspace keeps its own copy of the remote URL in `.ds/config`.
-    // A project's URL can change when the deployment moves its SSH endpoint,
-    // so refresh it from the credential instead of leaving the agent on a
-    // stale address.
-    if let Some(url) = credential
-        .get("url")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-    {
-        let workspace = format!("/work/{}/ds", definition.project_id);
-        let config = format!("{workspace}/.ds/config");
+    if let Some((host, user, port)) = url.and_then(ssh_target) {
+        let mut block = format!(
+            "# >>> foundry-arche\nMatch host {host} user {user}\n  IdentityFile {key}\n  UserKnownHostsFile {known}\n  IdentitiesOnly yes\n  StrictHostKeyChecking yes\n",
+            key = ARCHE_KEY_PATH,
+            known = ARCHE_KNOWN_HOSTS_PATH,
+        );
+        if port != 22 {
+            block.push_str(&format!("  Port {port}\n"));
+        }
+        block.push_str("# <<< foundry-arche\n");
         shell_ok(
             shell,
             format!(
-                "if [ -f {} ] && command -v ds >/dev/null 2>&1; then \
-                 ds remote set-url {} --dir {}; fi",
+                "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/config && chmod 600 ~/.ssh/config && \
+                 sed -i '/^# >>> foundry-arche$/,/^# <<< foundry-arche$/d' ~/.ssh/config && \
+                 printf '%s' {} >> ~/.ssh/config",
+                shell_quote(&block)
+            ),
+        )
+        .await?;
+    }
+
+    // A project's URL can change when the deployment moves its SSH endpoint,
+    // so refresh the workspace remote from the credential.
+    if let Some(url) = url {
+        let workspace = format!("/work/{}/arche", definition.project_id);
+        let config = format!("{workspace}/.arche/config");
+        shell_ok(
+            shell,
+            format!(
+                "if [ -f {} ] && command -v arche >/dev/null 2>&1; then \
+                 (cd {} && arche remote add {}); fi",
                 shell_quote(&config),
-                shell_quote(url.trim()),
-                shell_quote(&workspace)
+                shell_quote(&workspace),
+                shell_quote(url)
             ),
         )
         .await?;
     }
     Ok(())
+}
+
+fn ssh_target(url: &str) -> Option<(String, String, u16)> {
+    let rest = url.strip_prefix("ssh://")?;
+    let (authority, _) = rest.split_once('/')?;
+    let (user, host_port) = authority
+        .rsplit_once('@')
+        .unwrap_or(("foundry-arche", authority));
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse().ok()?),
+        None => (host_port, 22),
+    };
+    Some((host.to_owned(), user.to_owned(), port))
 }
 
 const SHELL_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -255,6 +331,38 @@ impl Shell for CapsuleShell {
     async fn upload(&self, local: &Path, container_path: &str) -> Result<(), ToolError> {
         self.capsule
             .upload(local, container_path)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))
+    }
+
+    async fn download(&self, container_path: &str, local: &Path) -> Result<(), ToolError> {
+        self.capsule
+            .download(container_path, local)
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))
+    }
+
+    async fn screenshot(&self) -> Result<Vec<u8>, ToolError> {
+        self.capsule
+            .screenshot()
+            .await
+            .map_err(|error| ToolError::Failed(error.to_string()))
+    }
+
+    async fn input(&self, input: foundry_agent_runtime::ShellInput) -> Result<(), ToolError> {
+        let input = match input {
+            foundry_agent_runtime::ShellInput::Move { x, y } => CapsuleInput::Move { x, y },
+            foundry_agent_runtime::ShellInput::Click { x, y, button } => {
+                CapsuleInput::Click { x, y, button }
+            }
+            foundry_agent_runtime::ShellInput::Scroll { x, y, delta } => {
+                CapsuleInput::Scroll { x, y, delta }
+            }
+            foundry_agent_runtime::ShellInput::Key { key } => CapsuleInput::Key { key },
+            foundry_agent_runtime::ShellInput::Text { text } => CapsuleInput::Text { text },
+        };
+        self.capsule
+            .input(input)
             .await
             .map_err(|error| ToolError::Failed(error.to_string()))
     }
@@ -386,7 +494,7 @@ async fn run_agent_watcher(
                     )
                     .await;
                 }
-                _ = tokio::signal::ctrl_c() => return Ok(()),
+                _ = shutdown_requested() => return Ok(()),
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
             // One scan sees every current assignment, so merge a burst of
@@ -488,7 +596,7 @@ async fn run_dispatcher_watcher(
                         break;
                     }
                 }
-                _ = tokio::signal::ctrl_c() => return Ok(()),
+                _ = shutdown_requested() => return Ok(()),
             }
             tokio::time::sleep(Duration::from_millis(700)).await;
             // A sweep reads the whole ready pool, so intermediate signals add
@@ -860,7 +968,13 @@ async fn execute_task(
         &config.foundry_token,
         task.project_id.to_string(),
     ));
-    let tools = build_tools(definition, &client, shell.clone())?;
+    let workspace = foundry_shared::default_agent_workspace_dir(&config.agent_id.to_string());
+    let services = ServiceCapsules::new(
+        config.agent_id.to_string(),
+        config.shell_image.clone(),
+        workspace,
+    );
+    let tools = build_tools(definition, &client, shell.clone(), services)?;
     let runtime = build_runtime(definition, model, tools, shell.clone())?;
 
     let mut credential_refresh: Option<GitCredentialRefresher> = None;
@@ -1238,7 +1352,7 @@ fn start_git_credential_refresh(
     Some(GitCredentialRefresher { handle })
 }
 
-/// Remove task-scoped credentials. The design-space key and known-hosts files
+/// Remove task-scoped credentials. The Arche key and known-hosts files
 /// belong to the agent account and stay for the shell's lifetime.
 async fn clear_task_credentials(shell: Option<&Arc<dyn Shell>>) {
     if let Some(shell) = shell {
@@ -1259,6 +1373,21 @@ fn system_prompt_for(definition: &AgentDefinition) -> Result<String, String> {
     );
     let base = format!("{identity}{}", definition.system_prompt);
     compose_system_prompt(&base, &definition.skills).map_err(|error| error.to_string())
+}
+
+#[cfg(unix)]
+async fn shutdown_requested() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = terminate.recv() => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_requested() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn truncate(text: &str, limit: usize) -> String {
@@ -1306,10 +1435,58 @@ fn build_runtime(
             )
         })?;
         Ok(AgentRuntime::new_codesummary(model, Arc::new(tools), shell))
-    } else if definition.role == "daily_check:dispatcher" {
-        Ok(AgentRuntime::new_daily_check(model, Arc::new(tools)))
+    } else if let Some(mode) = deterministic_mode(&definition.role) {
+        Ok(AgentRuntime::new_deterministic(
+            model,
+            mode,
+            Arc::new(tools),
+            shell,
+        ))
+    } else if let Some(mode) = hybrid_mode(&definition.role) {
+        Ok(AgentRuntime::new_hybrid(
+            model,
+            mode,
+            Arc::new(tools),
+            shell,
+        ))
     } else {
         Ok(AgentRuntime::new(model, Arc::new(tools)))
+    }
+}
+
+fn deterministic_mode(role: &str) -> Option<DeterministicMode> {
+    match role {
+        "software_development:assessor" => Some(DeterministicMode::Assessor),
+        "code_change:tester" => Some(DeterministicMode::CodeTester),
+        "code_change:merger" => Some(DeterministicMode::CodeMerger),
+        "code_summary_group:merger" => Some(DeterministicMode::CodeSummaryMerger),
+        "design_consistency_maintenance:scanner" => {
+            Some(DeterministicMode::DesignConsistencyScanner)
+        }
+        "design_iteration:dispatcher" => Some(DeterministicMode::DesignDispatcher),
+        "design_iteration:verifier" => Some(DeterministicMode::DesignVerifier),
+        "development_iteration:dispatcher" => Some(DeterministicMode::DevelopmentDispatcher),
+        "development_iteration:verifier" => Some(DeterministicMode::DevelopmentVerifier),
+        "release:release_manager" => Some(DeterministicMode::ReleaseManager),
+        "release:verifier" => Some(DeterministicMode::ReleaseVerifier),
+        "release:deployer" => Some(DeterministicMode::ReleaseDeployer),
+        "release:observer" => Some(DeterministicMode::ReleaseObserver),
+        _ => None,
+    }
+}
+
+fn hybrid_mode(role: &str) -> Option<DeterministicMode> {
+    match role {
+        "design_consistency_maintenance:integrator" => {
+            Some(DeterministicMode::DesignConsistencyIntegrator)
+        }
+        "design:design_reviewer" => Some(DeterministicMode::DesignCleanupDesign),
+        "design_change:design_reviewer" => Some(DeterministicMode::DesignCleanupDesignChange),
+        "design_correction:design_reviewer" => {
+            Some(DeterministicMode::DesignCleanupDesignCorrection)
+        }
+        "design_baseline:integrator" => Some(DeterministicMode::DesignCleanupDesignBaseline),
+        _ => None,
     }
 }
 
@@ -1317,6 +1494,7 @@ fn build_tools(
     definition: &AgentDefinition,
     client: &Arc<FoundryClient>,
     shell: Option<Arc<dyn Shell>>,
+    services: Arc<ServiceCapsules>,
 ) -> anyhow::Result<ToolRegistry> {
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(ProjectTool::new(Arc::clone(client))));
@@ -1346,6 +1524,9 @@ fn build_tools(
             }
             "task_history" => {
                 tools.register(Arc::new(TaskHistoryTool::new(Arc::clone(client))));
+            }
+            "task_children" => {
+                tools.register(Arc::new(TaskChildrenTool::new(Arc::clone(client))));
             }
             "task_spawn_children" => {
                 tools.register(Arc::new(TaskSpawnChildrenTool::new(Arc::clone(client))));
@@ -1398,6 +1579,60 @@ fn build_tools(
             "merge_request" => {
                 tools.register(Arc::new(MergeRequestTool::new(Arc::clone(client))));
             }
+            "artifact_start" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("artifact_start requires a shell"))?;
+                tools.register(Arc::new(ArtifactStartTool::new(shell)));
+            }
+            "artifact_status" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("artifact_status requires a shell"))?;
+                tools.register(Arc::new(ArtifactStatusTool::new(shell)));
+            }
+            "artifact_logs" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("artifact_logs requires a shell"))?;
+                tools.register(Arc::new(ArtifactLogsTool::new(shell)));
+            }
+            "artifact_stop" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("artifact_stop requires a shell"))?;
+                tools.register(Arc::new(ArtifactStopTool::new(shell)));
+            }
+            "browser" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("browser requires a shell"))?;
+                tools.register(Arc::new(BrowserTool::new(shell)));
+            }
+            "desktop_screenshot" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("desktop_screenshot requires a shell"))?;
+                tools.register(Arc::new(DesktopScreenshotTool::new(shell)));
+            }
+            "desktop_input" => {
+                let shell = shell
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("desktop_input requires a shell"))?;
+                tools.register(Arc::new(DesktopInputTool::new(shell)));
+            }
+            "service_start" => {
+                tools.register(Arc::new(ServiceStartTool::new(Arc::clone(&services))));
+            }
+            "service_status" => {
+                tools.register(Arc::new(ServiceStatusTool::new(Arc::clone(&services))));
+            }
+            "service_logs" => {
+                tools.register(Arc::new(ServiceLogsTool::new(Arc::clone(&services))));
+            }
+            "service_stop" => {
+                tools.register(Arc::new(ServiceStopTool::new(Arc::clone(&services))));
+            }
             _ => {}
         }
     }
@@ -1414,4 +1649,56 @@ fn build_tools(
         tools.register(Arc::new(EditFileTool::new(shell)));
     }
     Ok(tools)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mechanical_roles_do_not_use_the_llm_runtime() {
+        for role in [
+            "software_development:assessor",
+            "code_change:tester",
+            "code_change:merger",
+            "code_summary_group:merger",
+            "design_consistency_maintenance:scanner",
+            "design_iteration:dispatcher",
+            "design_iteration:verifier",
+            "development_iteration:dispatcher",
+            "development_iteration:verifier",
+            "release:release_manager",
+            "release:verifier",
+            "release:deployer",
+            "release:observer",
+        ] {
+            assert!(
+                deterministic_mode(role).is_some(),
+                "{role} should use a deterministic runtime"
+            );
+        }
+        for role in [
+            "design_consistency_maintenance:integrator",
+            "design:design_reviewer",
+            "design_change:design_reviewer",
+            "design_correction:design_reviewer",
+            "design_baseline:integrator",
+        ] {
+            assert!(
+                hybrid_mode(role).is_some(),
+                "{role} should use a hybrid runtime"
+            );
+        }
+        for role in [
+            "code_change:developer",
+            "code_change:code_reviewer",
+            "release:approver",
+            "triage:triage",
+        ] {
+            assert!(
+                deterministic_mode(role).is_none() && hybrid_mode(role).is_none(),
+                "{role} needs judgment and should stay on the LLM runtime"
+            );
+        }
+    }
 }

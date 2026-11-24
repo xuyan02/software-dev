@@ -6,12 +6,13 @@
 
 use foundry_domain::{
     Account, AccountKind, AccountRole, AccountStatus, AgentDefinition, AgentOverview,
-    AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, Confidence, EntityStatus, Issue,
-    IssueClassification, IssueConfidence, IssueKind, IssueSeverity, IssueSourceKind, IssueStatus,
-    MergeRequestChangeStatus, MergeRequestDetail, MergeRequestReview, MergeRequestStatus, Project,
-    ProjectRole, ProjectStatus, RequirementsAnnotation, RequirementsDocumentBody, RoleKind,
-    StoryPriority, Task, TaskDispatchState, TaskLink, TaskLinkKind, TaskLinkRelation, TaskState,
-    Trigger, WorkflowDefinition, WorkflowOption, WorkflowOwner,
+    AnchorAnnotation, AnchorAnnotationStatus, ApprovalDecision, CapsuleProfile, Confidence,
+    EntityStatus, Issue, IssueClassification, IssueConfidence, IssueKind, IssueSeverity,
+    IssueSourceKind, IssueStatus, MergeRequestChangeStatus, MergeRequestDetail, MergeRequestReview,
+    MergeRequestStatus, Project, ProjectRole, ProjectStatus, RequirementsAnnotation,
+    RequirementsDocumentBody, RoleKind, StoryPriority, Task, TaskDispatchState, TaskLink,
+    TaskLinkKind, TaskLinkRelation, TaskState, Trigger, WorkflowDefinition, WorkflowOption,
+    WorkflowOwner,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -1911,7 +1912,11 @@ pub fn workbench(ctx: &ConsoleContext, issues: &[Issue], tasks: &[Task]) -> Stri
     layout(ctx, Section::Workbench, "工作台", &body)
 }
 
-pub fn tasks_page(ctx: &ConsoleContext, tasks: &[Task]) -> String {
+pub fn tasks_page(
+    ctx: &ConsoleContext,
+    tasks: &[Task],
+    selected_state: Option<TaskState>,
+) -> String {
     let ids: std::collections::HashSet<_> = tasks.iter().map(|task| task.id).collect();
     let mut children: std::collections::HashMap<Option<uuid::Uuid>, Vec<&Task>> =
         std::collections::HashMap::new();
@@ -1924,13 +1929,64 @@ pub fn tasks_page(ctx: &ConsoleContext, tasks: &[Task]) -> String {
         render_task_tree(&mut rows, root, 0, &children);
     }
     if rows.is_empty() {
-        rows = r#"<tr><td colspan="5" class="empty">还没有任务。项目创建后，流程脚本会创建第一个任务。</td></tr>"#.to_string();
+        rows = if selected_state.is_some() {
+            r#"<tr><td colspan="5" class="empty">该状态下没有任务。</td></tr>"#.to_string()
+        } else {
+            r#"<tr><td colspan="5" class="empty">还没有任务。项目创建后，流程脚本会创建第一个任务。</td></tr>"#.to_string()
+        };
     }
 
-    let refresh = task_refresh_script("/tasks/state", &tasks_fingerprint(tasks));
+    let mut options = String::new();
+    options.push_str(&format!(
+        r#"<option value=""{}>全部状态</option>"#,
+        if selected_state.is_none() {
+            " selected"
+        } else {
+            ""
+        }
+    ));
+    for state in [
+        TaskState::Pending,
+        TaskState::InProgress,
+        TaskState::Failed,
+        TaskState::Completed,
+    ] {
+        options.push_str(&format!(
+            r#"<option value="{value}"{selected}>{label}</option>"#,
+            value = state.as_str(),
+            selected = if selected_state == Some(state) {
+                " selected"
+            } else {
+                ""
+            },
+            label = task_state_label(state),
+        ));
+    }
+    let filter = format!(
+        r#"<form class="inline-form" method="get" action="/tasks">
+  <label for="task-state-filter">状态</label>
+  <select id="task-state-filter" name="state" onchange="this.form.submit()">{options}</select>
+  <noscript><button type="submit">筛选</button></noscript>
+  <a href="/tasks">清除筛选</a>
+</form>"#
+    );
+    let state_query = selected_state
+        .map(|state| format!("?state={}", state.as_str()))
+        .unwrap_or_default();
+    let refresh = task_refresh_script(
+        &format!("/tasks/state{state_query}"),
+        &tasks_fingerprint(tasks),
+    );
+    let count = if selected_state.is_some() {
+        format!("当前筛选：{} 个任务", tasks.len())
+    } else {
+        format!("共 {} 个任务", tasks.len())
+    };
     let body = format!(
         r#"<h1>任务</h1>
 <p class="sub">执行空间：谁在什么时候做什么。任务由流程脚本创建；声明 agent 角色的任务由任务池调度。</p>
+{filter}
+<p class="hint">{count}</p>
 <table>
 <thead><tr><th>标题 / 流程</th><th>状态</th><th>阶段</th><th>调度</th><th>Agent</th></tr></thead>
 <tbody>{rows}</tbody>
@@ -3956,6 +4012,29 @@ pub fn project_page(
         let role_field = format!(
             r#"<div class="field"><label for="role">角色</label><select id="role" name="role">{role_options}</select></div>"#
         );
+        let capsule_options = [
+            (CapsuleProfile::Cli, "CLI / 命令行产物"),
+            (CapsuleProfile::Api, "API / HTTP 服务产物"),
+            (CapsuleProfile::Web, "Web / UI 产物"),
+            (CapsuleProfile::Desktop, "桌面 GUI 产物"),
+        ]
+        .into_iter()
+        .map(|(profile, label)| {
+            format!(
+                r#"<option value="{value}"{selected}>{label}</option>"#,
+                value = profile.as_str(),
+                selected = if project.test_capsule == profile {
+                    " selected"
+                } else {
+                    ""
+                },
+                label = label,
+            )
+        })
+        .collect::<String>();
+        let capsule_field = format!(
+            r#"<div class="field"><label for="test_capsule">最终产物测试胶囊</label><select id="test_capsule" name="test_capsule">{capsule_options}</select><p class="hint">测试 Agent 按产物类型选择胶囊：CLI/API 用 headless shell，Web 用浏览器胶囊，桌面用带截图/输入的桌面胶囊。</p></div>"#
+        );
         format!(
             r#"<h2>项目设置</h2>
 <form method="post" action="/projects/{id}/edit">
@@ -3965,9 +4044,10 @@ pub fn project_page(
   </div>
   {description}
   {git_branch}
+  {capsule_field}
   <div class="field">
-    <label><input type="checkbox" name="skip_human_review" value="true"{skip_checked}> 跳过人工审查</label>
-    <p class="hint">测试开关：开启后本项目所有人工审查阶段自动批准；merge、cleanup、测试和检查仍正常执行。</p>
+    <label><input type="checkbox" name="skip_human_review" value="true"{skip_checked}> 跳过所有人工审批</label>
+    <p class="hint">开启后本项目所有人类审批自动通过；项目创建和澄清仍需人类参与，其余撰写、实现、评审、测试、合入、发布由智能体执行。</p>
   </div>
   <p class="hint">归档后项目只读。恢复为活跃后才能继续编辑和变更成员。</p>
   <div class="actions"><button type="submit">保存设置</button></div>
@@ -3996,6 +4076,7 @@ pub fn project_page(
                 None,
             ),
             git_branch = input_field("git_branch", "Git 分支", &project.git_branch, true),
+            capsule_field = capsule_field,
             skip_checked = if project.skip_human_review {
                 " checked"
             } else {
@@ -4069,7 +4150,7 @@ pub fn project_page(
       <option value="cohesion_inspection">逻辑聚合度检查</option>
       <option value="design_consistency_maintenance">技术设计一致性维护</option>
     </select></div>
-    <div class="field"><label for="trigger-schedule">计划</label><input id="trigger-schedule" name="schedule" required placeholder="manual / every:60 / daily@09:00"></div>
+    <div class="field"><label for="trigger-schedule">计划</label><input id="trigger-schedule" name="schedule" required placeholder="manual / continuous / every:60 / daily@09:00"></div>
     <div class="field"><label for="trigger-scope">范围（可选）</label><input id="trigger-scope" name="scope" placeholder="例如 src 或 design/app"></div>
   </div>
   <p class="hint">计划使用 UTC；manual 表示只手动运行。</p>
@@ -4100,7 +4181,8 @@ pub fn project_page(
   <dt>Git 分支</dt><dd><code>{git_branch}</code></dd>
   <dt>设计空间</dt><dd>{design_space_display}</dd>
   <dt>设计空间分支</dt><dd><code>{design_space_branch}</code></dd>
-  <dt>跳过人工审查</dt><dd>{skip_human_review}</dd>
+  <dt>跳过所有人工审批</dt><dd>{skip_human_review}</dd>
+  <dt>最终产物测试胶囊</dt><dd><code>{test_capsule}</code></dd>
   <dt>成员</dt><dd class="plain">{member_count}</dd>
   <dt>版本</dt><dd class="plain">{version}</dd>
 </dl>
@@ -4126,6 +4208,7 @@ pub fn project_page(
         } else {
             "关闭"
         },
+        test_capsule = project.test_capsule.as_str(),
         short_id = short_id,
         member_count = members.len(),
         version = project.version,
@@ -4356,7 +4439,7 @@ pub fn design_space_unavailable_page(
   <section class="ds-pane ds-detail-pane">
     <div class="ds-detail">
       <div class="ds-source-error">{message}</div>
-      <p class="hint">控制台无法连接到设计空间；检查本地 ds-server 和设计空间仓库。</p>
+      <p class="hint">控制台无法读取设计空间仓库；检查本地设计空间目录和项目地址。</p>
     </div>
   </section>
 </div>"#,
@@ -4499,7 +4582,7 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
                 r#"<div class="ds-empty">该系统或模块还没有关联设计文档。</div>"#.to_string()
             }
             None => {
-                r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>ds describe</code> 补充。</div>"#
+                r#"<div class="ds-empty">尚未为该元素编写设计。可在本地使用 <code>arche doc</code> 补充。</div>"#
                     .to_string()
             }
         }
@@ -5129,15 +5212,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     elixir: 'EX', haskell: 'HS', text: 'TXT'
   };
   const folderIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.5 3.5h4.2l1.3 1.6h7.5v7.4h-13z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg>';
-  const fileIcon = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3 1.5h6.2L13 5.3v9.2H3z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M9.2 1.5v3.8H13" fill="none" stroke="currentColor"/></svg>';
-  const rootIcon = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor"/><path d="M2 6h12M6 6v8" fill="none" stroke="currentColor"/></svg>';
   const langLabel = (lang) => glyphs[lang] || (lang ? lang.slice(0, 4).toUpperCase() : '');
-  const isDocumentKind = (kind) => kind === 'document' || String(kind || '').startsWith('document-');
-  const documentChip = (kind) => ({
-    'document-directory': 'DOC DIR', document: 'DOC', 'document-section': 'SEC',
-    'document-list': 'LIST', 'document-text': 'TEXT', 'document-topic': 'TOPIC',
-    'document-block': 'CODE', 'document-mermaid': 'MER', 'document-html': 'HTML'
-  })[kind] || 'DOC';
   const codeKindLabels = {
     'class': '类', 'inner-class': '内部类',
     struct: '结构', 'inner-struct': '内部结构',
@@ -5146,21 +5221,12 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     method: '方法', function: '函数', mixin: '混入', part: '部件'
   };
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
-  const documentDisplayName = (item) => {
-    const qname = String(item.qname || '');
-    if (qname === 'documents/design') return '设计文档';
-    if (qname === 'documents/design/drafts' || qname === 'documents/design/proposals') return '设计草案';
-    return item.name || shortName(qname);
-  };
-  const baseName = (path) => { const parts = String(path).split('/'); return parts[parts.length - 1] || String(path); };
   let expanded = new Set(['root', 'view:namespaces', 'view:concepts', 'view:structure', 'view:documents']);
   try {
     const saved = localStorage.getItem(storeKey);
     if (saved) expanded = new Set(JSON.parse(saved));
   } catch (_) {}
   let data = null;
-  let nsRoot = null;
-  let fileRoot = null;
   let selected = null;
   let query = '';
   let timer = 0;
@@ -5172,282 +5238,10 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     if (text !== undefined) node.textContent = text;
     return node;
   };
-  const byName = (a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN');
-  const byNatural = (a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hans-CN', { numeric: true });
-  // The preset design documents read directory, namespace, technical, then
-  // drafts last.
-  const DESIGN_DOCUMENT_ORDER = { directory: 0, namespace: 1, technical: 2, drafts: 3, proposals: 3 };
-  const byDocumentChild = (a, b) => {
-    const rank = (node) => Object.prototype.hasOwnProperty.call(DESIGN_DOCUMENT_ORDER, node.name)
-      ? DESIGN_DOCUMENT_ORDER[node.name]
-      : 2;
-    return rank(a) - rank(b) || byNatural(a, b);
-  };
-
-  function buildNamespaces(elements) {
-    const root = { name: '命名空间', path: '', children: new Map(), element: null, count: 0 };
-    for (const item of elements) {
-      if (item.isFile || item.kind === 'directory') continue;
-      const qname = String(item.qname || item.name);
-      if (!qname.startsWith('namespaces/')) continue;
-      const parts = qname.slice('namespaces/'.length).split(/::|\//).filter(Boolean);
-      if (!parts.length) continue;
-      let node = root;
-      const acc = [];
-      for (let index = 0; index < parts.length; index += 1) {
-        const segment = parts[index];
-        acc.push(segment);
-        let next = node.children.get(segment);
-        if (!next) {
-          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
-          node.children.set(segment, next);
-        }
-        node = next;
-        if (index === parts.length - 1) node.element = item;
-      }
-    }
-    const annotate = (node) => {
-      let count = node.element ? 1 : 0;
-      for (const child of node.children.values()) count += annotate(child);
-      node.count = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
-  // Inside a file, strip the module prefix shared by every element so the
-  // remaining tree starts at the top-level entity and keeps parent/child
-  // relationships (class -> method, enum -> variant, ...).
-  function relativeElementTree(items, filePath) {
-    const prefix = 'files/' + filePath + '/';
-    const partsList = items.map((item) => {
-      const qname = String(item.qname || item.name);
-      const relative = qname.startsWith(prefix) ? qname.slice(prefix.length) : String(item.name);
-      return relative.split(/::|\//).filter(Boolean);
-    });
-    const minLength = Math.min(...partsList.map((parts) => parts.length));
-    let common = minLength;
-    for (let index = 0; index < common; index += 1) {
-      if (!partsList.every((parts) => parts[index] === partsList[0][index])) {
-        common = index;
-        break;
-      }
-    }
-    const strip = Math.max(0, Math.min(common, minLength - 1));
-    const root = { name: '', path: '', children: new Map(), element: null, count: 0 };
-    items.forEach((item, index) => {
-      const parts = partsList[index];
-      let relative = parts.slice(strip);
-      if (!relative.length) relative = [parts[parts.length - 1]];
-      let node = root;
-      const acc = [];
-      for (let part = 0; part < relative.length; part += 1) {
-        const segment = relative[part];
-        acc.push(segment);
-        let next = node.children.get(segment);
-        if (!next) {
-          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
-          node.children.set(segment, next);
-        }
-        node = next;
-        if (part === relative.length - 1) node.element = item;
-      }
-    });
-    const annotate = (node) => {
-      let count = node.element ? 1 : 0;
-      for (const child of node.children.values()) count += annotate(child);
-      node.count = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
-  function buildFiles(elements) {
-    const root = { name: '文件空间', path: '', dirs: new Map(), files: new Map(), fileCount: 0 };
-    const filesByPath = new Map();
-    const dirFor = (segments) => {
-      let node = root;
-      let acc = '';
-      for (const segment of segments) {
-        acc = acc ? acc + '/' + segment : segment;
-        if (!node.dirs.has(segment)) {
-          node.dirs.set(segment, { name: segment, path: acc, dirs: new Map(), files: new Map(), fileCount: 0, item: null });
-        }
-        node = node.dirs.get(segment);
-      }
-      return node;
-    };
-    const addFile = (path, item) => {
-      const segments = String(path).split('/');
-      const name = segments.pop();
-      const dir = dirFor(segments);
-      if (dir.files.has(name)) {
-        const existing = dir.files.get(name);
-        if (item && !existing.item) existing.item = item;
-        return existing;
-      }
-      const file = { name, path, item, elements: [], tree: null };
-      dir.files.set(name, file);
-      dir.fileCount += 1;
-      filesByPath.set(path, file);
-      return file;
-    };
-    for (const item of elements) {
-      if (item.isFile) addFile(item.path, item);
-    }
-    // Directories carry their own rule document; attach them to the directory
-    // row built from file paths.
-    for (const item of elements) {
-      if (item.kind !== 'directory') continue;
-      const qname = String(item.qname || '');
-      if (!qname.startsWith('files/')) continue;
-      const path = qname.slice('files/'.length);
-      if (!path) continue;
-      const segments = path.split('/');
-      const name = segments.pop();
-      const parent = dirFor(segments);
-      if (!parent.dirs.has(name)) {
-        parent.dirs.set(name, { name, path, dirs: new Map(), files: new Map(), fileCount: 0, item: null });
-      }
-      parent.dirs.get(name).item = item;
-    }
-    // An element path always has a blob, but a tree row keeps source browsing
-    // available even if the file object is missing.
-    for (const item of elements) {
-      if (item.isFile || item.kind === 'directory' || !item.path) continue;
-      const qname = String(item.qname || '');
-      if (qname && !qname.startsWith('files/')) continue;
-      const file = addFile(item.path, null);
-      file.elements.push(item);
-    }
-    for (const file of filesByPath.values()) {
-      file.elements.sort((a, b) => a.startLine - b.startLine || byName(a, b));
-      if (file.elements.length) file.tree = relativeElementTree(file.elements, file.path);
-    }
-    const annotate = (node) => {
-      let count = node.fileCount;
-      for (const dir of node.dirs.values()) count += annotate(dir);
-      node.fileCount = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
-  function buildDocuments(elements) {
-    const root = { name: '文档空间', path: '', children: new Map(), element: null, count: 0 };
-    for (const item of elements) {
-      if (!isDocumentKind(item.kind)) continue;
-      if (item.kind !== 'document' && item.kind !== 'document-directory') continue;
-      const qname = String(item.qname || '');
-      if (!qname.startsWith('documents/')) continue;
-      const parts = qname.slice('documents/'.length).split('/').filter(Boolean);
-      if (!parts.length) continue;
-      let node = root;
-      const acc = [];
-      for (let index = 0; index < parts.length; index += 1) {
-        const segment = parts[index];
-        acc.push(segment);
-        let next = node.children.get(segment);
-        if (!next) {
-          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
-          node.children.set(segment, next);
-        }
-        node = next;
-        if (index === parts.length - 1) node.element = item;
-      }
-    }
-    const annotate = (node) => {
-      let count = node.element ? 1 : 0;
-      for (const child of node.children.values()) count += annotate(child);
-      node.count = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
-  function buildConcepts(elements) {
-    const root = { name: '概念空间', path: '', children: new Map(), element: null, count: 0 };
-    for (const item of elements) {
-      if (item.kind !== 'concept' && item.kind !== 'concept-directory') continue;
-      const qname = String(item.qname || '');
-      if (!qname.startsWith('concepts/')) continue;
-      const parts = qname.slice('concepts/'.length).split('/').filter(Boolean);
-      if (!parts.length) continue;
-      let node = root;
-      const acc = [];
-      for (let index = 0; index < parts.length; index += 1) {
-        const segment = parts[index];
-        acc.push(segment);
-        let next = node.children.get(segment);
-        if (!next) {
-          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, count: 0 };
-          node.children.set(segment, next);
-        }
-        node = next;
-        if (index === parts.length - 1) {
-          node.element = item;
-          if (item.kind === 'concept' && item.name) node.name = item.name;
-        }
-      }
-    }
-    const annotate = (node) => {
-      let count = node.element ? 1 : 0;
-      for (const child of node.children.values()) count += annotate(child);
-      node.count = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
-  function buildStructure(elements) {
-    const byQname = new Map();
-    for (const item of elements) byQname.set(item.qname, item);
-    const rootItem = elements.find((item) => item.kind === 'design-structure');
-    if (!rootItem) return null;
-    const root = { name: '技术空间', path: 'design', children: new Map(), element: rootItem, members: [], count: 0 };
-    for (const item of elements) {
-      if (!item.isStructure || item.kind === 'design-structure') continue;
-      const qname = String(item.qname || '');
-      if (!qname.startsWith('design/')) continue;
-      const parts = qname.slice('design/'.length).split('/').filter(Boolean);
-      if (!parts.length) continue;
-      let node = root;
-      const acc = [];
-      for (let index = 0; index < parts.length; index += 1) {
-        const segment = parts[index];
-        acc.push(segment);
-        let next = node.children.get(segment);
-        if (!next) {
-          next = { name: segment, path: acc.join('/'), children: new Map(), element: null, members: [], count: 0 };
-          node.children.set(segment, next);
-        }
-        node = next;
-        if (index === parts.length - 1) {
-          node.element = item;
-          node.members = (item.members || []).map((member) => byQname.get(member)).filter(Boolean);
-        }
-      }
-    }
-    const annotate = (node) => {
-      let count = node.element && node.element.kind !== 'design-structure' ? 1 : 0;
-      for (const child of node.children.values()) count += annotate(child);
-      node.count = count;
-      return count;
-    };
-    annotate(root);
-    return root;
-  }
-
   function chip(item) {
     let label;
     if (item.isFile) label = 'FILE';
     else if (item.isStructure) label = item.kind === 'system' ? 'SYS' : item.kind === 'module' ? 'MOD' : item.kind === 'layer' ? 'LAY' : '结构';
-    else if (isDocumentKind(item.kind)) label = documentChip(item.kind);
     else if (item.kind === 'concept') label = '概念';
     else if (item.kind === 'concept-directory') label = '概念目录';
     else if (item.kind === 'namespace') label = 'NS';
@@ -5508,235 +5302,13 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     return wrap;
   }
 
-  function namespaceRow(node, keyPrefix) {
-    const wrap = el('div');
-    const prefix = keyPrefix || '';
-    const key = 'ns:' + prefix + node.path;
-    const open = expanded.has(key);
-    const item = node.element;
-    const hasChildren = node.children.size > 0;
-    const row = el('div', 'ds-row' + (open ? ' open' : ''));
-    if (item && selected === item.hash) row.classList.add('active');
-    if (item) row.dataset.hash = item.hash;
-    row.appendChild(caret(hasChildren, key));
-    if (item) {
-      row.appendChild(chip(item));
-      const name = el('span', 'ds-name', shortName(item.name));
-      name.title = item.name;
-      row.appendChild(name);
-      const kind = kindBadge(item);
-      if (kind) row.appendChild(kind);
-      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
-      row.appendChild(el('span', 'ds-meta', item.startLine ? 'L' + item.startLine + '–' + item.endLine : ''));
-    } else {
-      const glyph = el('span', 'ds-folder');
-      glyph.innerHTML = folderIcon;
-      row.appendChild(glyph);
-      const name = el('span', 'ds-name', node.name);
-      name.title = node.path;
-      row.appendChild(name);
-      row.appendChild(el('span', 'ds-count', countLabel(node.count, '元素')));
-    }
-    row.addEventListener('click', () => {
-      if (item) select(item);
-      else if (hasChildren) toggle(key);
-    });
-    wrap.appendChild(row);
-    if (open && hasChildren) {
-      const kids = el('div', 'ds-children');
-      for (const child of [...node.children.values()].sort(byName)) kids.appendChild(namespaceRow(child, prefix));
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
-  function fileDirRow(node) {
-    const wrap = el('div');
-    const key = 'fd:' + node.path;
-    const open = expanded.has(key);
-    const row = el('div', 'ds-row' + (open ? ' open' : ''));
-    if (node.item && selected === node.item.hash) row.classList.add('active');
-    if (node.item) row.dataset.hash = node.item.hash;
-    row.appendChild(caret(true, key));
-    const glyph = el('span', 'ds-folder');
-    glyph.innerHTML = folderIcon;
-    row.appendChild(glyph);
-    const name = el('span', 'ds-name', node.name);
-    name.title = node.path;
-    row.appendChild(name);
-    row.appendChild(el('span', 'ds-count', countLabel(node.fileCount, '文件')));
-    if (node.item) {
-      const right = el('span', 'ds-right');
-      const rules = el('button', 'ds-action', '规则');
-      rules.type = 'button';
-      rules.title = '查看目录规则';
-      rules.addEventListener('click', (event) => {
-        event.stopPropagation();
-        select(node.item);
-      });
-      right.appendChild(rules);
-      row.appendChild(right);
-    }
-    row.addEventListener('click', () => toggle(key));
-    wrap.appendChild(row);
-    if (open) {
-      const kids = el('div', 'ds-children');
-      for (const dir of [...node.dirs.values()].sort(byName)) kids.appendChild(fileDirRow(dir));
-      for (const file of [...node.files.values()].sort(byName)) kids.appendChild(fileRow(file));
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
-  function fileRow(file) {
-    const wrap = el('div');
-    const key = 'fe:' + file.path;
-    const open = expanded.has(key);
-    const hasElements = file.elements.length > 0;
-    const row = el('div', 'ds-row' + (open ? ' open' : ''));
-    if (file.item && selected === file.item.hash) row.classList.add('active');
-    if (file.item) row.dataset.hash = file.item.hash;
-    row.appendChild(caret(hasElements, key));
-    const glyph = el('span', 'ds-file');
-    glyph.innerHTML = fileIcon;
-    row.appendChild(glyph);
-    const name = el('span', 'ds-name', file.name);
-    name.title = file.path;
-    row.appendChild(name);
-    const right = el('span', 'ds-right');
-    if (hasElements) right.appendChild(el('span', 'ds-count', countLabel(file.elements.length, '元素')));
-    if (file.item) {
-      const source = el('button', 'ds-action', '源码');
-      source.type = 'button';
-      source.title = '查看文件源码';
-      source.addEventListener('click', (event) => {
-        event.stopPropagation();
-        select(file.item);
-      });
-      right.appendChild(source);
-    }
-    row.appendChild(right);
-    row.addEventListener('click', () => {
-      // Files are containers first: clicking a file with elements expands it.
-      // The 源码 button opens the file object itself.
-      if (hasElements) toggle(key);
-      else if (file.item) select(file.item);
-    });
-    wrap.appendChild(row);
-    if (open && hasElements) {
-      const kids = el('div', 'ds-children');
-      for (const child of [...file.tree.children.values()].sort(byName)) {
-        kids.appendChild(namespaceRow(child, file.path + '/'));
-      }
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
-  function documentRow(node, keyPrefix) {
-    const wrap = el('div');
-    const prefix = keyPrefix || '';
-    const key = 'doc:' + prefix + node.path;
-    const open = expanded.has(key);
-    const item = node.element;
-    const hasChildren = node.children.size > 0;
-    const row = el('div', 'ds-row' + (open ? ' open' : ''));
-    if (item && selected === item.hash) row.classList.add('active');
-    if (item) row.dataset.hash = item.hash;
-    row.appendChild(caret(hasChildren, key));
-    if (item) {
-      row.appendChild(chip(item));
-      const name = el('span', 'ds-name', documentDisplayName(item));
-      name.title = item.qname || item.name;
-      row.appendChild(name);
-      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
-    } else {
-      const glyph = el('span', 'ds-folder');
-      glyph.innerHTML = hasChildren ? folderIcon : fileIcon;
-      row.appendChild(glyph);
-      const name = el('span', 'ds-name', node.name);
-      name.title = node.path;
-      row.appendChild(name);
-      row.appendChild(el('span', 'ds-count', countLabel(node.count, '文档')));
-    }
-    row.addEventListener('click', () => {
-      if (item) select(item);
-      else if (hasChildren) toggle(key);
-    });
-    wrap.appendChild(row);
-    if (open && hasChildren) {
-      const kids = el('div', 'ds-children');
-      const children = [...node.children.values()];
-      children.sort(node.path === 'design' ? byDocumentChild : byNatural);
-      for (const child of children) {
-        kids.appendChild(documentRow(child, prefix));
-      }
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
-  function structureMemberRow(item) {
-    const row = el('div', 'ds-row');
-    if (selected === item.hash) row.classList.add('active');
-    row.dataset.hash = item.hash;
-    row.appendChild(el('span', 'ds-caret empty'));
-    row.appendChild(chip(item));
-    const name = el('span', 'ds-name', shortName(item.name));
-    name.title = item.qname || item.name;
-    row.appendChild(name);
-    const kind = kindBadge(item);
-    if (kind) row.appendChild(kind);
-    row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
-    row.addEventListener('click', () => select(item));
-    return row;
-  }
-
-  function structureRow(node, keyPrefix) {
-    const wrap = el('div');
-    const prefix = keyPrefix || '';
-    const key = 'st:' + prefix + node.path;
-    const open = expanded.has(key);
-    const item = node.element;
-    const hasChildren = node.children.size > 0 || node.members.length > 0;
-    const row = el('div', 'ds-row' + (open ? ' open' : ''));
-    if (item && selected === item.hash) row.classList.add('active');
-    if (item) row.dataset.hash = item.hash;
-    row.appendChild(caret(hasChildren, key));
-    if (item) {
-      row.appendChild(chip(item));
-      const name = el('span', 'ds-name', item.name || shortName(item.qname));
-      name.title = item.qname || item.name;
-      row.appendChild(name);
-      row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
-      row.appendChild(el('span', 'ds-count', countLabel(node.count, '项')));
-    } else {
-      const glyph = el('span', 'ds-folder');
-      glyph.innerHTML = folderIcon;
-      row.appendChild(glyph);
-      row.appendChild(el('span', 'ds-name', node.name));
-    }
-    row.addEventListener('click', () => {
-      if (item) select(item);
-      else if (hasChildren) toggle(key);
-    });
-    wrap.appendChild(row);
-    if (open && hasChildren) {
-      const kids = el('div', 'ds-children');
-      for (const child of [...node.children.values()].sort(byName)) kids.appendChild(structureRow(child, prefix));
-      for (const member of node.members) kids.appendChild(structureMemberRow(member));
-      wrap.appendChild(kids);
-    }
-    return wrap;
-  }
-
   function searchRow(item) {
     const row = el('div', 'ds-row');
     if (selected === item.hash) row.classList.add('active');
     row.dataset.hash = item.hash;
     row.appendChild(el('span', 'ds-caret empty'));
     row.appendChild(chip(item));
-    const name = el('span', 'ds-name', item.isFile ? baseName(item.path) : (isDocumentKind(item.kind) ? documentDisplayName(item) : shortName(item.name)));
+    const name = el('span', 'ds-name', item.name || shortName(item.qname));
     name.title = item.isFile ? item.path : item.name;
     row.appendChild(name);
     const kind = kindBadge(item);
@@ -5749,12 +5321,8 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
   }
 
   function renderSearch() {
-    const matches = data.elements.filter((item) => {
-      if (isDocumentKind(item.kind) && item.kind !== 'document' && item.kind !== 'document-directory') {
-        return false;
-      }
-      return (item.name + ' ' + (item.qname || '') + ' ' + item.path).toLowerCase().includes(query);
-    });
+    const matches = data.elements.filter((item) =>
+      (item.name + ' ' + (item.qname || '') + ' ' + item.path).toLowerCase().includes(query));
     if (!matches.length) {
       treeEl.replaceChildren(el('div', 'ds-empty', '没有匹配的元素'));
       return;
@@ -5768,6 +5336,85 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     treeEl.replaceChildren(list, el('div', 'ds-empty', note));
   }
 
+  function isArcheData(elements) {
+    return elements.some((item) => /^(technical|requirement|concept)(\/|$)/.test(String(item.qname || '')));
+  }
+
+  function archeTree(elements) {
+    const byQname = new Map();
+    for (const item of elements) byQname.set(String(item.qname), item);
+    const children = new Map();
+    const hasParent = new Set();
+    for (const item of elements) {
+      const kids = (item.members || [])
+        .map((qname) => byQname.get(String(qname)))
+        .filter(Boolean);
+      if (kids.length) children.set(String(item.qname), kids);
+      for (const kid of kids) hasParent.add(String(kid.qname));
+    }
+    return {
+      children,
+      roots: elements.filter((item) => !hasParent.has(String(item.qname))),
+    };
+  }
+
+  function archeRow(item, children) {
+    const qname = String(item.qname);
+    const kids = children.get(qname) || [];
+    const key = 'ar:' + qname;
+    const open = expanded.has(key);
+    const wrap = el('div');
+    const row = el('div', 'ds-row' + (open ? ' open' : ''));
+    if (selected === item.hash) row.classList.add('active');
+    row.dataset.hash = item.hash;
+    row.appendChild(caret(kids.length > 0, key));
+    row.appendChild(chip(item));
+    const name = el('span', 'ds-name', item.name || shortName(qname));
+    name.title = qname;
+    row.appendChild(name);
+    const badge = kindBadge(item);
+    if (badge) row.appendChild(badge);
+    row.appendChild(el('span', 'ds-dot ' + (item.hasDesign ? 'on' : 'off')));
+    row.appendChild(el('span', 'ds-meta', item.startLine ? 'L' + item.startLine + '–' + item.endLine : ''));
+    row.addEventListener('click', () => select(item));
+    wrap.appendChild(row);
+    if (open && kids.length) {
+      const list = el('div', 'ds-children');
+      for (const kid of kids) list.appendChild(archeRow(kid, children));
+      wrap.appendChild(list);
+    }
+    return wrap;
+  }
+
+  function renderArcheTree(elements) {
+    const { children, roots } = archeTree(elements);
+    const groups = [
+      { key: 'arche:technical', label: '技术空间', prefix: 'technical' },
+      { key: 'arche:requirement', label: '需求空间', prefix: 'requirement' },
+      { key: 'arche:concept', label: '概念空间', prefix: 'concept' },
+    ];
+    const list = el('div', 'ds-list');
+    for (const group of groups) {
+      const items = roots.filter((item) => {
+        const qname = String(item.qname);
+        return qname === group.prefix || qname.startsWith(group.prefix + '/');
+      });
+      if (!items.length) continue;
+      list.appendChild(virtualRow(
+        group.key,
+        group.label,
+        countLabel(items.length, '项'),
+        folderIcon,
+        () => {
+          const kids = el('div', 'ds-list');
+          for (const item of items) kids.appendChild(archeRow(item, children));
+          return kids;
+        }
+      ));
+    }
+    treeEl.replaceChildren(list);
+  }
+
   function renderTree() {
     if (!data) return;
     if (query) {
@@ -5776,90 +5423,13 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     }
     if (!data.elements.length) {
       treeEl.replaceChildren(el('div', 'ds-empty',
-        '设计空间还没有元素。用 ds create 创建概念元素并 ds push 后刷新页面。'));
+        '设计空间还没有元素。用 arche create 创建元素并 arche push 后刷新页面。'));
       return;
     }
-    const documentRoot = buildDocuments(data.elements);
-    const conceptRoot = buildConcepts(data.elements);
-    const structureRoot = buildStructure(data.elements);
-    const list = el('div', 'ds-list');
-    list.appendChild(virtualRow(
-      'root',
-      '设计空间',
-      countLabel(data.elementCount, '元素'),
-      rootIcon,
-      () => {
-        const kids = el('div', 'ds-list');
-        kids.appendChild(virtualRow(
-          'view:namespaces',
-          '命名空间',
-          countLabel(data.elementCount, '元素'),
-          folderIcon,
-          () => {
-            const namespaces = el('div', 'ds-list');
-            for (const child of [...nsRoot.children.values()].sort(byName)) {
-              namespaces.appendChild(namespaceRow(child));
-            }
-            return namespaces;
-          }
-        ));
-        kids.appendChild(virtualRow(
-          'view:files',
-          '文件空间',
-          countLabel(fileRoot.fileCount, '文件'),
-          folderIcon,
-          () => {
-            const files = el('div', 'ds-list');
-            for (const dir of [...fileRoot.dirs.values()].sort(byName)) files.appendChild(fileDirRow(dir));
-            for (const file of [...fileRoot.files.values()].sort(byName)) files.appendChild(fileRow(file));
-            return files;
-          }
-        ));
-        kids.appendChild(virtualRow(
-          'view:concepts',
-          '概念空间',
-          countLabel(conceptRoot.count, '概念'),
-          folderIcon,
-          () => {
-            const concepts = el('div', 'ds-list');
-            for (const child of [...conceptRoot.children.values()].sort(byName)) {
-              concepts.appendChild(namespaceRow(child, 'concept:'));
-            }
-            return concepts;
-          }
-        ));
-        if (structureRoot) {
-          kids.appendChild(virtualRow(
-            'view:structure',
-            '技术空间',
-            countLabel(structureRoot.count, '项'),
-            folderIcon,
-            () => {
-              const structure = el('div', 'ds-list');
-              for (const child of [...structureRoot.children.values()].sort(byName)) {
-                structure.appendChild(structureRow(child));
-              }
-              return structure;
-            }
-          ));
-        }
-        kids.appendChild(virtualRow(
-          'view:documents',
-          '文档空间',
-          countLabel(documentRoot.count, '文档'),
-          folderIcon,
-          () => {
-            const documents = el('div', 'ds-list');
-            for (const child of [...documentRoot.children.values()].sort(byNatural)) {
-              documents.appendChild(documentRow(child));
-            }
-            return documents;
-          }
-        ));
-        return kids;
-      }
-    ));
-    treeEl.replaceChildren(list);
+    if (isArcheData(data.elements)) {
+      renderArcheTree(data.elements);
+      return;
+    }
   }
 
   let mermaidLoader = null;
@@ -6174,27 +5744,6 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       .finally(() => { delete panel.dataset.loading; });
   }
 
-  function collectNamespaces(node, keyPrefix) {
-    const prefix = keyPrefix || '';
-    for (const child of node.children.values()) {
-      expanded.add('ns:' + prefix + child.path);
-      collectNamespaces(child, prefix);
-    }
-  }
-
-  function collectFiles(node) {
-    for (const dir of node.dirs.values()) {
-      expanded.add('fd:' + dir.path);
-      collectFiles(dir);
-    }
-    for (const file of node.files.values()) {
-      if (file.tree) {
-        expanded.add('fe:' + file.path);
-        collectNamespaces(file.tree, file.path + '/');
-      }
-    }
-  }
-
   searchEl.addEventListener('input', () => {
     clearTimeout(timer);
     timer = setTimeout(() => {
@@ -6203,12 +5752,11 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     }, 120);
   });
   expandBtn.addEventListener('click', () => {
-    if (!nsRoot) return;
-    expanded.add('root');
-    expanded.add('view:namespaces');
-    if (fileRoot.fileCount) expanded.add('view:files');
-    collectNamespaces(nsRoot);
-    collectFiles(fileRoot);
+    if (!data) return;
+    for (const item of data.elements) expanded.add('ar:' + item.qname);
+    expanded.add('arche:technical');
+    expanded.add('arche:requirement');
+    expanded.add('arche:concept');
     save();
     renderTree();
   });
@@ -6226,8 +5774,6 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     .then((payload) => {
       if (payload.error) throw new Error(payload.error);
       data = payload;
-      nsRoot = buildNamespaces(data.elements);
-      fileRoot = buildFiles(data.elements);
       renderTree();
     })
     .catch((error) => {

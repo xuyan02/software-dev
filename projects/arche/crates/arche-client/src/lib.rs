@@ -63,8 +63,9 @@ pub fn clone_from(
     dir: impl AsRef<Path>,
     branch: Option<&str>,
 ) -> Result<Repository> {
+    let path = dir.as_ref().to_path_buf();
     if is_http(remote_path) || is_ssh(remote_path) {
-        let repo = Repository::init(dir)?;
+        let repo = Repository::init(&path)?;
         repo.set_remote(remote_path)?;
         if is_http(remote_path) {
             http_fetch(&repo, remote_path)?;
@@ -86,12 +87,12 @@ pub fn clone_from(
         repo.set_ref(&format!("refs/remotes/origin/{branch}"), hash)?;
         repo.set_head(&branch)?;
         repo.adopt_commit(hash)?;
-        return Ok(repo);
+        return Repository::open(&path);
     }
 
     let remote = Repository::open(remote_path)?;
     let branch = branch.unwrap_or(&remote.current_branch()?).to_owned();
-    let repo = Repository::init_with_source(dir, remote.source_url())?;
+    let repo = Repository::init_with_source(&path, remote.source_url())?;
     for name in ["objects", "symbols", "commits"] {
         copy_tree(&remote.dir().join(name), &repo.dir().join(name))?;
     }
@@ -103,7 +104,7 @@ pub fn clone_from(
     }
     repo.adopt_commit(remote_head)?;
     repo.set_remote(remote_path)?;
-    Ok(repo)
+    Repository::open(&path)
 }
 
 fn http_push(repo: &Repository, url: &str, force: bool) -> Result<()> {

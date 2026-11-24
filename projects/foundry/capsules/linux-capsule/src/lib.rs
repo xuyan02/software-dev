@@ -354,6 +354,27 @@ impl LinuxCapsule {
         .await
     }
 
+    /// Desktop capsule with a persistent `/work` directory and extra labels.
+    /// Screenshot and input are available through the desktop sidecar.
+    pub async fn desktop_with_image_workspace_and_labels(
+        image: impl Into<String>,
+        workspace: impl Into<std::path::PathBuf>,
+        labels: Vec<(String, String)>,
+    ) -> Result<Self> {
+        Self::create(LinuxCapsuleSpec {
+            mode: LinuxCapsuleMode::Desktop,
+            image: image.into(),
+            app: Vec::new(),
+            volumes: vec![VolumeMount {
+                host: workspace.into(),
+                container: "/work".to_string(),
+            }],
+            labels,
+            ..LinuxCapsuleSpec::default()
+        })
+        .await
+    }
+
     /// Create a capsule and wait until it is ready.
     ///
     /// This single call:
@@ -489,6 +510,12 @@ impl LinuxCapsule {
             session_dir,
             closed: false,
         })
+    }
+
+    /// Container name. It resolves on the shared capsule network, so another
+    /// capsule can reach services by this hostname.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub async fn screenshot(&self) -> Result<Vec<u8>> {

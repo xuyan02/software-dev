@@ -17,7 +17,7 @@ const SKILLS: &[Skill] = &[
         prompt: include_str!("../skills/document.md"),
     },
     Skill {
-        id: "design-space",
+        id: "arche",
         prompt: include_str!("../skills/arche.md"),
     },
     Skill {
@@ -369,13 +369,15 @@ mod tests {
     }
 
     #[test]
-    fn design_space_skill_covers_object_kinds_and_documents() {
-        let skill = skill("design-space").expect("design-space skill");
+    fn arche_skill_covers_object_kinds_and_documents() {
+        let skill = skill("arche").expect("arche skill");
         for kind in [
             "Directory",
             "File",
             "Namespace",
             "Class",
+            "Struct",
+            "Enum",
             "Interface",
             "Method",
             "Function",
@@ -386,7 +388,7 @@ mod tests {
         }
         assert!(skill.prompt.contains("documents"));
         assert!(skill.prompt.contains("design-writing"));
-        assert!(skill.prompt.contains("ds source sync"));
+        assert!(skill.prompt.contains("arche source sync"));
         assert!(skill.prompt.contains("变体携带数据"));
     }
 }

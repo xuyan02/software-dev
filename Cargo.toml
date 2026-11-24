@@ -24,7 +24,6 @@ members = [
     "projects/foundry/capsules/linux-capsule",
     "projects/foundry/xtask",
     "projects/graph-agent",
-    "projects/design-space/crates/design-space",
     "projects/arche/crates/arche",
     "projects/arche/crates/arche-core",
     "projects/arche/crates/arche-client",
@@ -53,7 +52,6 @@ foundry-web = { path = "projects/foundry/crates/web" }
 foundry-cli = { path = "projects/foundry/crates/cli" }
 foundry-shared = { path = "projects/foundry/crates/shared" }
 linux-capsule = { path = "projects/foundry/capsules/linux-capsule" }
-design-space = { path = "projects/design-space/crates/design-space" }
 arche = { path = "projects/arche/crates/arche" }
 arche-core = { path = "projects/arche/crates/arche-core" }
 arche-client = { path = "projects/arche/crates/arche-client" }
@@ -79,6 +77,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 argon2 = "0.5"
+base64 = "0.22"
+libc = "0.2"
 sha2 = "0.10"
 ring = "0.17"
 rand_core = { version = "0.6", features = ["getrandom"] }

@@ -111,8 +111,15 @@ impl Trigger {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerSchedule {
     Manual,
+    /// Run immediately whenever the previous run finished with work still
+    /// available. When a run ends with `no_work`, the scheduler backs off
+    /// before polling again.
+    Continuous,
     EveryMinutes(u64),
-    DailyAt { hour: u8, minute: u8 },
+    DailyAt {
+        hour: u8,
+        minute: u8,
+    },
 }
 
 impl TriggerSchedule {
@@ -120,6 +127,9 @@ impl TriggerSchedule {
         let value = value.trim();
         if value == "manual" {
             return Ok(Self::Manual);
+        }
+        if value == "continuous" {
+            return Ok(Self::Continuous);
         }
         if let Some(rest) = value.strip_prefix("every:") {
             let minutes = rest
@@ -154,6 +164,7 @@ impl TriggerSchedule {
         let now = now.to_offset(time::UtcOffset::UTC);
         Ok(match self {
             Self::Manual => None,
+            Self::Continuous => Some(now),
             Self::EveryMinutes(minutes) => Some(now + time::Duration::minutes(*minutes as i64)),
             Self::DailyAt { hour, minute } => {
                 let time = time::Time::from_hms(*hour, *minute, 0)
@@ -233,6 +244,10 @@ mod tests {
             TriggerSchedule::EveryMinutes(60)
         );
         assert_eq!(
+            TriggerSchedule::parse("continuous").unwrap(),
+            TriggerSchedule::Continuous
+        );
+        assert_eq!(
             TriggerSchedule::parse("daily@09:30").unwrap(),
             TriggerSchedule::DailyAt {
                 hour: 9,
@@ -248,6 +263,10 @@ mod tests {
     fn computes_next_runs() {
         let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
         assert_eq!(TriggerSchedule::Manual.next_after(now).unwrap(), None);
+        assert_eq!(
+            TriggerSchedule::Continuous.next_after(now).unwrap(),
+            Some(now)
+        );
         assert!(
             TriggerSchedule::EveryMinutes(30)
                 .next_after(now)

@@ -116,6 +116,7 @@ impl Tool for LocalSandbox {
                 Ok(ToolOutput {
                     content,
                     is_error: !output.status.success(),
+                    images: Vec::new(),
                 })
             }
         }

@@ -22,6 +22,10 @@
       "type": "bool",
       "display_name": "No work"
     },
+    "did_work": {
+      "type": "bool",
+      "display_name": "Did work"
+    },
     "ready": {
       "type": "bool",
       "display_name": "Ready"
@@ -49,9 +53,9 @@
         }
       ],
       "transitions": [
-        {"on": "no_work", "action": "result = 'no_work'", "to": "ended"},
-        {"on": "expected > 0", "to": "waiting"},
-        {"on": "expected == 0", "action": "result = 'no_work'", "to": "ended"}
+        {"on": "no_work", "action": "if did_work { result = 'completed' } else { result = 'no_work' }", "to": "ended"},
+        {"on": "expected > 0", "action": "did_work = true", "to": "waiting"},
+        {"on": "expected == 0", "action": "if did_work { result = 'completed' } else { result = 'no_work' }", "to": "ended"}
       ]
     },
     {
@@ -87,7 +91,7 @@
         }
       ],
       "transitions": [
-        {"on": "ready", "action": "result = 'completed'", "to": "ended"},
+        {"on": "ready", "to": "dispatch"},
         {"on": "not ready", "action": "result = 'blocked'", "to": "ended"}
       ]
     }
