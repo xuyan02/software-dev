@@ -1,14 +1,28 @@
 use std::path::PathBuf;
 
 use std::collections::BTreeSet;
+use std::io::Read;
 
-use anyhow::{Result, bail};
-use arche::snapshot::Snapshot;
-use arche::{ConceptRelation, Object, ObjectHash, Repository, SymbolHash};
+use anyhow::{Context, Result, bail};
+use arche_core::snapshot::Snapshot;
+use arche_core::{Object, ObjectHash, Repository, SymbolHash};
+use arche_server::{ServerOptions, serve, serve_stdio};
 use clap::{Parser, Subcommand};
 
+mod help;
+
 #[derive(Debug, Parser)]
-#[command(name = "arche", version, about = "A versioned design repository")]
+#[command(
+    name = "arche",
+    version,
+    about = "A versioned design repository",
+    long_about = "Arche is a versioned design repository for technical, requirement and concept \
+design objects. Documents are object fields; Arche does not parse source ASTs.",
+    after_help = "Run `arche help` for full built-in documentation: objects, fields, design, \
+writing, writing-detail, kinds, naming, technical, requirement, concept, document, staging, \
+source, remote, examples.",
+    disable_help_subcommand = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -16,6 +30,12 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Show built-in documentation for objects, fields and workflows.
+    Help {
+        /// Topic: objects, fields, technical, requirement, concept, document,
+        /// staging, source, remote, examples.
+        topic: Option<String>,
+    },
     /// Create a new Arche repository.
     Init {
         /// Directory to initialize. Defaults to the current directory.
@@ -31,6 +51,30 @@ enum Command {
         remote: String,
         /// Destination directory.
         dir: Option<PathBuf>,
+        /// Branch to check out.
+        #[arg(long)]
+        branch: Option<String>,
+    },
+    /// Serve repositories over HTTP or stdio.
+    Serve {
+        /// Directory containing Arche repositories.
+        #[arg(long)]
+        root: PathBuf,
+        /// HTTP listen address.
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        listen: String,
+        /// Optional bearer token.
+        #[arg(long)]
+        token: Option<String>,
+        /// Token allowed to move protected branches.
+        #[arg(long)]
+        admin_token: Option<String>,
+        /// Protected branch name; repeat for multiple branches.
+        #[arg(long = "protect", default_value = "main")]
+        protect: Vec<String>,
+        /// Serve one repository over stdin/stdout for SSH.
+        #[arg(long)]
+        stdio: bool,
     },
     /// Remote operations.
     Remote {
@@ -51,7 +95,11 @@ enum Command {
         create: bool,
     },
     /// Push to the configured remote.
-    Push,
+    Push {
+        /// Allow non-fast-forward ref updates.
+        #[arg(long)]
+        force: bool,
+    },
     /// Fetch from the configured remote.
     Fetch,
     /// Fast-forward the local branch from the configured remote.
@@ -62,16 +110,37 @@ enum Command {
         command: SourceCommand,
     },
     /// Create a design object.
+    #[command(
+        after_help = "Kinds: technical-system, technical-module, technical-layer, \
+technical-namespace, technical-class, technical-struct, technical-enum, technical-interface, \
+technical-mixin, technical-function, technical-method, technical-part. \
+Run `arche help technical` for qnames and fields."
+    )]
     Create {
         /// Object kind, for example technical-system.
         kind: String,
-        /// Local object name.
-        name: String,
+        /// Local object name; for requirement-user this is the real name.
+        /// Not used for technical-method.
+        name: Option<String>,
         /// Parent qname for nested objects.
         #[arg(long)]
         parent: Option<String>,
+        /// Namespace qname for a code type or function.
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Canonical prototype text; required for technical-method.
+        #[arg(long)]
+        prototype: Option<String>,
+        /// Source span for a Part; required for technical-part.
+        #[arg(long)]
+        source: Option<String>,
     },
     /// Document content operations.
+    #[command(
+        after_help = "Fields are DocumentText, DocumentList, DocumentParagraphList or \
+DocumentMermaid depending on the object. Run `arche help document` for field rules and import \
+JSON format."
+    )]
     Doc {
         #[command(subcommand)]
         command: DocCommand,
@@ -122,16 +191,32 @@ enum Command {
         /// Stage objects for one source file path.
         #[arg(long)]
         file: Option<String>,
+        /// Stage objects for one source directory path.
+        #[arg(long)]
+        directory: Option<String>,
         /// Object qnames to stage.
         qnames: Vec<String>,
     },
     /// Restore index entries from HEAD.
     Unstage {
+        /// Restore objects for one source file path.
+        #[arg(long)]
+        file: Option<String>,
+        /// Restore objects for one source directory path.
+        #[arg(long)]
+        directory: Option<String>,
         /// Object qnames to unstage.
         qnames: Vec<String>,
     },
     /// Show repository status.
-    Status,
+    Status {
+        /// Print only unstaged changes, one per line.
+        #[arg(long)]
+        porcelain: bool,
+        /// Include kind and source in porcelain output.
+        #[arg(long)]
+        detail: bool,
+    },
     /// Compare snapshots.
     Diff {
         /// Compare index against HEAD instead of worktree against index.
@@ -149,7 +234,29 @@ enum Command {
     Reset {
         #[arg(long)]
         hard: bool,
+        /// Only reset these qnames in the index.
+        qnames: Vec<String>,
     },
+    /// Apply a batch JSON plan.
+    Batch {
+        /// JSON plan file, or "-" for stdin.
+        file: String,
+    },
+    /// Remove design objects from the worktree.
+    Rm {
+        /// Object qnames to remove.
+        qnames: Vec<String>,
+        /// Remove objects even when still referenced.
+        #[arg(long)]
+        force: bool,
+        /// Also remove all descendant objects.
+        #[arg(long)]
+        recursive: bool,
+    },
+    /// Remove unreachable loose objects.
+    Gc,
+    /// Pack all loose records into one pack file.
+    Repack,
     /// Show commit history.
     Log {
         #[arg(long, default_value_t = 20)]
@@ -183,6 +290,30 @@ enum DocCommand {
     Html {
         #[command(subcommand)]
         command: DocHtmlCommand,
+    },
+    /// Add a code block.
+    Code {
+        #[command(subcommand)]
+        command: DocCodeCommand,
+    },
+    /// Search document text.
+    Grep {
+        /// Text to search for.
+        text: String,
+    },
+    /// Check document text rules.
+    Lint,
+    /// Print the projected field order of one object.
+    Layout {
+        /// Object qname.
+        qname: String,
+    },
+    /// Import document fields from a JSON projection.
+    Import {
+        /// Object qname.
+        qname: String,
+        /// JSON file, or "-" for stdin.
+        file: String,
     },
 }
 
@@ -276,6 +407,22 @@ enum DocHtmlCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum DocCodeCommand {
+    /// Append a code block to a paragraph-list field.
+    Add {
+        /// Object qname.
+        owner: String,
+        /// Field name.
+        field: String,
+        /// Code language.
+        #[arg(long)]
+        language: String,
+        /// Code source.
+        source: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum CommentCommand {
     /// Add a comment to an object.
     Add {
@@ -294,8 +441,14 @@ enum CommentCommand {
     },
     /// Resolve a comment.
     Resolve {
-        /// Comment qname.
-        qname: String,
+        /// Comment id.
+        id: u64,
+        /// Conclusion written when resolving.
+        #[arg(long)]
+        conclusion: String,
+        /// Agent that wrote the conclusion.
+        #[arg(long)]
+        agent: String,
     },
 }
 
@@ -303,7 +456,7 @@ enum CommentCommand {
 enum ConceptCommand {
     /// Create a concept directory.
     Mkdir {
-        /// Directory qname under concepts/domain, concepts/requirements, or concepts/technical.
+        /// Directory qname under concept/domain, concept/requirement, or concept/technical.
         qname: String,
     },
     /// Create a concept.
@@ -313,37 +466,12 @@ enum ConceptCommand {
         /// Display name. Defaults to the last path segment.
         #[arg(long)]
         name: Option<String>,
-        /// One-sentence summary.
+        /// Concept explanation text.
         #[arg(long)]
-        summary: String,
-    },
-    /// Link two concepts.
-    Link {
-        #[command(subcommand)]
-        command: ConceptLinkCommand,
+        explanation: String,
     },
     /// List concepts.
     List,
-}
-
-#[derive(Debug, Subcommand)]
-enum ConceptLinkCommand {
-    /// Add a concept link.
-    Add {
-        /// Source concept qname.
-        qname: String,
-        /// Target concept qname.
-        target: String,
-        /// refines, realizes, or corresponds.
-        relation: String,
-    },
-    /// Remove links from a source concept to a target concept.
-    Remove {
-        /// Source concept qname.
-        qname: String,
-        /// Target concept qname.
-        target: String,
-    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -422,11 +550,20 @@ enum SourceCommand {
     Status,
     /// Align TechnicalFile objects with tracked source files.
     Sync,
+    /// Show source changes since the design baseline.
+    Changes {
+        /// Base Git ref; defaults to the design baseline commit.
+        #[arg(long)]
+        base: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Help { topic } => {
+            help::print(topic.as_deref())?;
+        }
         Command::Init { dir, source } => {
             let repo = Repository::init_with_source(
                 dir.unwrap_or_else(|| PathBuf::from(".")),
@@ -434,9 +571,37 @@ fn main() -> Result<()> {
             )?;
             println!("Initialized Arche repository at {}", repo.dir().display());
         }
-        Command::Clone { remote, dir } => {
-            let repo = Repository::clone_from(&remote, dir.unwrap_or_else(|| PathBuf::from(".")))?;
+        Command::Clone {
+            remote,
+            dir,
+            branch,
+        } => {
+            let repo = arche_client::clone_from(
+                &remote,
+                dir.unwrap_or_else(|| PathBuf::from(".")),
+                branch.as_deref(),
+            )?;
             println!("Cloned Arche repository into {}", repo.root().display());
+        }
+        Command::Serve {
+            root,
+            listen,
+            token,
+            admin_token,
+            protect,
+            stdio,
+        } => {
+            if stdio {
+                serve_stdio(&root)?;
+            } else {
+                serve(
+                    &ServerOptions::new(root)
+                        .listen(listen)
+                        .token(token)
+                        .admin_token(admin_token)
+                        .protected(protect),
+                )?;
+            }
         }
         Command::Remote { command } => {
             let repo = Repository::open(".")?;
@@ -467,14 +632,14 @@ fn main() -> Result<()> {
         Command::Checkout { branch, create } => {
             Repository::open(".")?.checkout(&branch, create)?;
         }
-        Command::Push => {
-            Repository::open(".")?.remote_push()?;
+        Command::Push { force } => {
+            arche_client::push(&Repository::open(".")?, force)?;
         }
         Command::Fetch => {
-            Repository::open(".")?.remote_fetch()?;
+            arche_client::fetch(&Repository::open(".")?)?;
         }
         Command::Pull => {
-            Repository::open(".")?.remote_pull()?;
+            arche_client::pull(&Repository::open(".")?)?;
         }
         Command::Source { command } => {
             let repo = Repository::open(".")?;
@@ -496,28 +661,31 @@ fn main() -> Result<()> {
                     let count = repo.source_sync()?;
                     println!("synced {count} source files");
                 }
+                SourceCommand::Changes { base } => {
+                    print!("{}", repo.source_changes(base.as_deref())?);
+                }
             }
         }
-        Command::Create { kind, name, parent } => {
+        Command::Create {
+            kind,
+            name,
+            parent,
+            namespace,
+            prototype,
+            source,
+        } => {
             let repo = Repository::open(".")?;
-            match kind.as_str() {
-                "technical-system" => {
-                    let (qname, hash) = repo.create_technical_system(&name)?;
-                    println!("{}", repo.resolve(qname)?);
-                    println!("object {}", hash.to_hex());
-                }
-                "technical-module" => {
-                    let parent = parent.ok_or_else(|| {
-                        anyhow::anyhow!("technical-module requires --parent <qname>")
-                    })?;
-                    let (qname, hash) = repo.create_technical_module(&parent, &name)?;
-                    println!("{}", repo.resolve(qname)?);
-                    println!("object {}", hash.to_hex());
-                }
-                other => bail!(
-                    "unsupported object kind {other}; supported: technical-system, technical-module"
-                ),
-            }
+            let (qname, hash) = create_object(
+                &repo,
+                &kind,
+                name.as_deref(),
+                parent.as_deref(),
+                namespace.as_deref(),
+                prototype.as_deref(),
+                source.as_deref(),
+            )?;
+            println!("{}", repo.resolve(qname)?);
+            println!("object {}", hash.to_hex());
         }
         Command::Doc { command } => {
             let repo = Repository::open(".")?;
@@ -577,33 +745,77 @@ fn main() -> Result<()> {
                         println!("object {}", hash.to_hex());
                     }
                 },
+                DocCommand::Code { command } => match command {
+                    DocCodeCommand::Add {
+                        owner,
+                        field,
+                        language,
+                        source,
+                    } => {
+                        let (code_qname, hash) =
+                            repo.doc_code_add(&owner, &field, &language, &source)?;
+                        println!("{}", repo.resolve(code_qname)?);
+                        println!("object {}", hash.to_hex());
+                    }
+                },
+                DocCommand::Grep { text } => {
+                    doc_grep(&repo, &text)?;
+                }
+                DocCommand::Lint => {
+                    let errors = repo.doc_lint()?;
+                    if errors.is_empty() {
+                        println!("ok");
+                    } else {
+                        for error in errors {
+                            println!("{error}");
+                        }
+                        bail!("doc lint failed");
+                    }
+                }
+                DocCommand::Layout { qname } => {
+                    doc_layout(&repo, &qname)?;
+                }
+                DocCommand::Import { qname, file } => {
+                    let text = if file == "-" {
+                        let mut text = String::new();
+                        std::io::stdin().read_to_string(&mut text)?;
+                        text
+                    } else {
+                        std::fs::read_to_string(&file)?
+                    };
+                    let count = repo.import_doc_json(&qname, &text)?;
+                    println!("imported {count} document fields");
+                }
             }
         }
         Command::Comment { command } => {
             let repo = Repository::open(".")?;
             match command {
                 CommentCommand::Add { target, text } => {
-                    let (qname, hash) = repo.comment_add(&target, &text)?;
-                    println!("{}", repo.resolve(qname)?);
-                    println!("object {}", hash.to_hex());
+                    let comment = repo.comment_add(&target, &text)?;
+                    println!("comment {}", comment.id);
                 }
                 CommentCommand::List { target, open } => {
-                    for comment in repo.comment_list(target.as_deref())? {
-                        if open && comment.resolved {
-                            continue;
-                        }
+                    for comment in repo.comment_list(target.as_deref(), open)? {
                         let state = if comment.resolved { "resolved" } else { "open" };
                         println!(
                             "{}\t{}\t{}\t{}",
-                            repo.resolve(comment.qname)?,
-                            state,
-                            repo.resolve(comment.target)?,
-                            comment.body_text()
+                            comment.id, state, comment.target, comment.body
                         );
+                        if !comment.conclusion.is_empty() {
+                            println!(
+                                "  conclusion (by {}): {}",
+                                comment.resolved_by, comment.conclusion
+                            );
+                        }
                     }
                 }
-                CommentCommand::Resolve { qname } => {
-                    repo.comment_resolve(&qname)?;
+                CommentCommand::Resolve {
+                    id,
+                    conclusion,
+                    agent,
+                } => {
+                    repo.comment_resolve(id, &conclusion, &agent)?;
                 }
             }
         }
@@ -618,7 +830,7 @@ fn main() -> Result<()> {
                 ConceptCommand::Create {
                     qname,
                     name,
-                    summary,
+                    explanation,
                 } => {
                     let name = name.unwrap_or_else(|| {
                         qname
@@ -626,31 +838,13 @@ fn main() -> Result<()> {
                             .map(|(_, name)| name.to_owned())
                             .unwrap_or_else(|| qname.clone())
                     });
-                    let (qname, hash) = repo.concept_create(&qname, &name, &summary)?;
+                    let (qname, hash) = repo.concept_create(&qname, &name, &explanation)?;
                     println!("{}", repo.resolve(qname)?);
                     println!("object {}", hash.to_hex());
                 }
-                ConceptCommand::Link { command } => match command {
-                    ConceptLinkCommand::Add {
-                        qname,
-                        target,
-                        relation,
-                    } => {
-                        let relation = match relation.as_str() {
-                            "refines" => ConceptRelation::Refines,
-                            "realizes" => ConceptRelation::Realizes,
-                            "corresponds" => ConceptRelation::Corresponds,
-                            other => bail!("unknown concept relation {other}"),
-                        };
-                        repo.concept_link_add(&qname, &target, relation)?;
-                    }
-                    ConceptLinkCommand::Remove { qname, target } => {
-                        repo.concept_link_remove(&qname, &target)?;
-                    }
-                },
                 ConceptCommand::List => {
                     for (qname, concept) in repo.concept_list()? {
-                        println!("{}\t{}", repo.resolve(qname)?, repo.resolve(concept.name)?);
+                        println!("{}\t{}", repo.resolve(qname)?, concept.display_name());
                     }
                 }
             }
@@ -755,23 +949,40 @@ fn main() -> Result<()> {
                 bail!("check failed");
             }
         }
-        Command::Add { all, file, qnames } => {
+        Command::Add {
+            all,
+            file,
+            directory,
+            qnames,
+        } => {
             let repo = Repository::open(".")?;
             if let Some(file) = file {
                 repo.add_file(&file)?;
+            } else if let Some(directory) = directory {
+                repo.add_directory(&directory)?;
             } else if all || qnames.is_empty() {
                 repo.add_all()?;
             } else {
                 repo.add(&qnames)?;
             }
         }
-        Command::Unstage { qnames } => {
+        Command::Unstage {
+            file,
+            directory,
+            qnames,
+        } => {
             let repo = Repository::open(".")?;
-            repo.unstage(&qnames)?;
+            if let Some(file) = file {
+                repo.unstage_file(&file)?;
+            } else if let Some(directory) = directory {
+                repo.unstage_directory(&directory)?;
+            } else {
+                repo.unstage(&qnames)?;
+            }
         }
-        Command::Status => {
+        Command::Status { porcelain, detail } => {
             let repo = Repository::open(".")?;
-            status(&repo)?;
+            status(&repo, porcelain, detail)?;
         }
         Command::Diff { staged } => {
             let repo = Repository::open(".")?;
@@ -785,9 +996,35 @@ fn main() -> Result<()> {
             let hash = repo.commit_index(&message, allow_empty)?;
             println!("{}", hash.to_hex());
         }
-        Command::Reset { hard } => {
+        Command::Reset { hard, qnames } => {
             let repo = Repository::open(".")?;
-            repo.reset(hard)?;
+            if qnames.is_empty() {
+                repo.reset(hard)?;
+            } else {
+                repo.reset_paths(&qnames)?;
+            }
+        }
+        Command::Batch { file } => {
+            let repo = Repository::open(".")?;
+            batch(&repo, &file)?;
+        }
+        Command::Rm {
+            qnames,
+            force,
+            recursive,
+        } => {
+            let repo = Repository::open(".")?;
+            repo.remove_objects(&qnames, force, recursive)?;
+        }
+        Command::Gc => {
+            let repo = Repository::open(".")?;
+            let removed = repo.gc()?;
+            println!("removed {removed} unreachable objects");
+        }
+        Command::Repack => {
+            let repo = Repository::open(".")?;
+            let count = repo.repack()?;
+            println!("packed {count} records");
         }
         Command::Log { limit } => {
             let repo = Repository::open(".")?;
@@ -806,208 +1043,460 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn show_object(repo: &Repository, hash: arche::ObjectHash, object: &Object) -> Result<()> {
+fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object) -> Result<()> {
     println!("qname: {}", repo.resolve(object.qname())?);
-    if let Some(name) = object.name() {
+    let name = object.name();
+    if !name.is_zero() {
         println!("name:  {}", repo.resolve(name)?);
     }
     println!("kind:  {}", object.kind().name());
     println!("hash:  {}", hash.to_hex());
 
     match object {
-        Object::Technical(value) => {
-            println!("files: {}", optional_symbol(repo, value.files)?);
-            println!("namespaces: {}", optional_symbol(repo, value.namespaces)?);
-            println!("systems: {}", optional_symbol(repo, value.systems)?);
+        Object::TechnicalRoot(value) => {
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("directory: {}", optional_symbol(repo, value.directory())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("system: {}", optional_symbol(repo, value.system())?);
         }
-        Object::Requirements(value) => {
-            println!("users: {}", optional_symbol(repo, value.users)?);
-            println!("stories: {}", optional_symbol(repo, value.stories)?);
-            println!("systems: {}", optional_symbol(repo, value.systems)?);
+        Object::RequirementRoot(value) => {
+            println!("user: {}", optional_symbol(repo, value.user())?);
+            println!("story: {}", optional_symbol(repo, value.story())?);
+            println!("system: {}", optional_symbol(repo, value.system())?);
         }
         Object::TechnicalSystem(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("members: {}", optional_symbol(repo, value.members)?);
-            println!("modules: {}", optional_symbol(repo, value.modules)?);
-            println!("layers: {}", optional_symbol(repo, value.layers)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            println!("modules: {}", optional_symbol(repo, value.modules())?);
+            println!("layers: {}", optional_symbol(repo, value.layers())?);
+            println!("constants: {}", optional_symbol(repo, value.constants())?);
+            println!("variables: {}", optional_symbol(repo, value.variables())?);
             print_design_fields(
                 repo,
                 &[
-                    ("position", value.position),
-                    ("responsibilities", value.responsibilities),
-                    ("non_responsibilities", value.non_responsibilities),
-                    ("features", value.features),
-                    ("non_features", value.non_features),
-                    ("invariants", value.invariants),
-                    ("constraints", value.constraints),
-                    ("design_principles", value.design_principles),
-                    ("external_dependencies", value.external_dependencies),
-                    ("usage", value.usage),
-                    ("design_points", value.design_points),
+                    ("position", value.position()),
+                    ("responsibilities", value.responsibilities()),
+                    ("non_responsibilities", value.non_responsibilities()),
+                    ("features", value.features()),
+                    ("non_features", value.non_features()),
+                    ("invariants", value.invariants()),
+                    ("constraints", value.constraints()),
+                    ("design_principles", value.design_principles()),
+                    ("external_dependencies", value.external_dependencies()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
                 ],
             )?;
         }
         Object::TechnicalModule(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("members: {}", optional_symbol(repo, value.members)?);
-            println!("modules: {}", optional_symbol(repo, value.modules)?);
-            println!("layers: {}", optional_symbol(repo, value.layers)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            print_symbol_list(repo, "dependencies", &value.dependencies())?;
+            println!("constants: {}", optional_symbol(repo, value.constants())?);
+            println!("variables: {}", optional_symbol(repo, value.variables())?);
             print_design_fields(
                 repo,
                 &[
-                    ("position", value.position),
-                    ("responsibilities", value.responsibilities),
-                    ("non_responsibilities", value.non_responsibilities),
-                    ("features", value.features),
-                    ("non_features", value.non_features),
-                    ("invariants", value.invariants),
-                    ("constraints", value.constraints),
-                    ("design_principles", value.design_principles),
-                    ("external_dependencies", value.external_dependencies),
-                    ("usage", value.usage),
-                    ("design_points", value.design_points),
+                    ("position", value.position()),
+                    ("responsibilities", value.responsibilities()),
+                    ("non_responsibilities", value.non_responsibilities()),
+                    ("features", value.features()),
+                    ("non_features", value.non_features()),
+                    ("invariants", value.invariants()),
+                    ("constraints", value.constraints()),
+                    ("design_principles", value.design_principles()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
                 ],
             )?;
         }
         Object::TechnicalDirectory(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("source_path: {}", optional_symbol(repo, value.source_path)?);
-            println!("children: {}", optional_symbol(repo, value.children)?);
-            print_design_fields(repo, &[("position", value.position)])?;
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("children: {}", optional_symbol(repo, value.children())?);
+            print_design_fields(repo, &[("position", value.position())])?;
         }
         Object::TechnicalFile(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("source_path: {}", optional_symbol(repo, value.source_path)?);
-            println!("source_hash: {}", value.source_hash);
-            println!("children: {}", optional_symbol(repo, value.children)?);
-            print_design_fields(repo, &[("position", value.position)])?;
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("entities: {}", optional_symbol(repo, value.entities())?);
+            print_design_fields(repo, &[("position", value.position())])?;
         }
-        Object::RequirementUser(value) => {
+        Object::TechnicalLayer(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            print_symbol_list(repo, "dependencies", &value.dependencies())?;
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalNamespace(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("children: {}", optional_symbol(repo, value.children())?);
+            println!("entities: {}", optional_symbol(repo, value.entities())?);
+            println!("constants: {}", optional_symbol(repo, value.constants())?);
+            println!("variables: {}", optional_symbol(repo, value.variables())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalClass(value) => {
+            println!("parent: {}", optional_symbol(repo, value.parent())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("superclass: {}", optional_symbol(repo, value.superclass())?);
+            print_symbol_list(repo, "interfaces", &value.interfaces())?;
+            print_symbol_list(repo, "mixins", &value.mixins())?;
+            print_symbol_list(
+                repo,
+                "explicit_dependencies",
+                &value.explicit_dependencies(),
+            )?;
+            print_symbol_list(
+                repo,
+                "implicit_dependencies",
+                &value.implicit_dependencies(),
+            )?;
+            println!("method: {}", optional_symbol(repo, value.method())?);
+            println!("types: {}", optional_symbol(repo, value.types())?);
+            println!("parts: {}", optional_symbol(repo, value.parts())?);
+            println!("constants: {}", optional_symbol(repo, value.constants())?);
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            println!("properties: {}", optional_symbol(repo, value.properties())?);
             print_design_fields(
                 repo,
                 &[
-                    ("age", value.age),
-                    ("basic_situation", value.basic_situation),
-                    ("hobbies", value.hobbies),
-                    ("occupation", value.occupation),
-                    ("typical_scenario", value.typical_scenario),
-                    ("needs", value.needs),
-                    ("priority", value.priority),
+                    ("position", value.position()),
+                    ("responsibilities", value.responsibilities()),
+                    ("non_responsibilities", value.non_responsibilities()),
+                    ("features", value.features()),
+                    ("non_features", value.non_features()),
+                    ("invariants", value.invariants()),
+                    ("constraints", value.constraints()),
+                    ("design_principles", value.design_principles()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
                 ],
             )?;
+        }
+        Object::TechnicalStruct(value) => {
+            println!("parent: {}", optional_symbol(repo, value.parent())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            print_symbol_list(repo, "dependencies", &value.dependencies())?;
+            println!("method: {}", optional_symbol(repo, value.method())?);
+            println!("types: {}", optional_symbol(repo, value.types())?);
+            println!("constants: {}", optional_symbol(repo, value.constants())?);
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            print_design_fields(
+                repo,
+                &[
+                    ("position", value.position()),
+                    ("invariants", value.invariants()),
+                ],
+            )?;
+        }
+        Object::TechnicalEnum(value) => {
+            println!("parent: {}", optional_symbol(repo, value.parent())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            print_symbol_list(repo, "dependencies", &value.dependencies())?;
+            println!("values: {}", optional_symbol(repo, value.values())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalInterface(value) => {
+            println!("parent: {}", optional_symbol(repo, value.parent())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("extends: {}", optional_symbol(repo, value.extends())?);
+            print_symbol_list(repo, "dependencies", &value.dependencies())?;
+            println!("methods: {}", optional_symbol(repo, value.methods())?);
+            print_design_fields(
+                repo,
+                &[
+                    ("position", value.position()),
+                    ("responsibilities", value.responsibilities()),
+                    ("non_responsibilities", value.non_responsibilities()),
+                    ("features", value.features()),
+                    ("non_features", value.non_features()),
+                    ("invariants", value.invariants()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
+                ],
+            )?;
+        }
+        Object::TechnicalMethod(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("is_static: {}", value.is_static());
+            println!("is_async: {}", value.is_async());
+            println!("is_abstract: {}", value.is_abstract());
+            println!("is_const: {}", value.is_const());
+            println!("overrides: {}", optional_symbol(repo, value.overrides())?);
+            print_symbol_list(
+                repo,
+                "explicit_dependencies",
+                &value.explicit_dependencies(),
+            )?;
+            print_symbol_list(
+                repo,
+                "implicit_dependencies",
+                &value.implicit_dependencies(),
+            )?;
+            println!("arguments: {}", optional_symbol(repo, value.arguments())?);
+            println!(
+                "return_value: {}",
+                optional_symbol(repo, value.return_value())?
+            );
+            print_design_fields(
+                repo,
+                &[
+                    ("position", value.position()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
+                ],
+            )?;
+        }
+        Object::TechnicalFunction(value) => {
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("is_async: {}", value.is_async());
+            print_symbol_list(
+                repo,
+                "explicit_dependencies",
+                &value.explicit_dependencies(),
+            )?;
+            print_symbol_list(
+                repo,
+                "implicit_dependencies",
+                &value.implicit_dependencies(),
+            )?;
+            println!("arguments: {}", optional_symbol(repo, value.arguments())?);
+            println!(
+                "return_value: {}",
+                optional_symbol(repo, value.return_value())?
+            );
+            print_design_fields(
+                repo,
+                &[
+                    ("position", value.position()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
+                ],
+            )?;
+        }
+        Object::TechnicalMixin(value) => {
+            println!("parent: {}", optional_symbol(repo, value.parent())?);
+            println!("namespace: {}", optional_symbol(repo, value.namespace())?);
+            println!("file: {}", optional_symbol(repo, value.file())?);
+            println!("module: {}", optional_symbol(repo, value.module())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            print_symbol_list(repo, "on", &value.on())?;
+            println!("superclass: {}", optional_symbol(repo, value.superclass())?);
+            print_symbol_list(repo, "interfaces", &value.interfaces())?;
+            print_symbol_list(repo, "mixins", &value.mixins())?;
+            print_symbol_list(
+                repo,
+                "explicit_dependencies",
+                &value.explicit_dependencies(),
+            )?;
+            print_symbol_list(
+                repo,
+                "implicit_dependencies",
+                &value.implicit_dependencies(),
+            )?;
+            println!("methods: {}", optional_symbol(repo, value.methods())?);
+            println!("types: {}", optional_symbol(repo, value.types())?);
+            print_design_fields(
+                repo,
+                &[
+                    ("position", value.position()),
+                    ("responsibilities", value.responsibilities()),
+                    ("non_responsibilities", value.non_responsibilities()),
+                    ("features", value.features()),
+                    ("non_features", value.non_features()),
+                    ("invariants", value.invariants()),
+                    ("usage", value.usage()),
+                    ("design_points", value.design_points()),
+                ],
+            )?;
+        }
+        Object::TechnicalPart(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            print_symbol_list(
+                repo,
+                "explicit_dependencies",
+                &value.explicit_dependencies(),
+            )?;
+            print_symbol_list(
+                repo,
+                "implicit_dependencies",
+                &value.implicit_dependencies(),
+            )?;
+            println!("members: {}", optional_symbol(repo, value.members())?);
+            println!("methods: {}", optional_symbol(repo, value.methods())?);
+            println!("types: {}", optional_symbol(repo, value.types())?);
+        }
+        Object::RequirementUser(value) => {
+            println!("real_name: {}", value.real_name());
+            println!("age: {}", value.age());
+            println!("occupation: {}", value.occupation());
+            print_design_fields(
+                repo,
+                &[
+                    ("situations", value.situations()),
+                    ("hobbies", value.hobbies()),
+                    ("needs", value.needs()),
+                ],
+            )?;
+            println!("priority: {}", value.priority());
+            print_symbol_list(repo, "stories", &value.stories())?;
         }
         Object::RequirementStory(value) => {
             print_design_fields(
                 repo,
                 &[
-                    ("preconditions", value.preconditions),
-                    ("frequency", value.frequency),
-                    ("description", value.description),
-                    ("related_requirements", value.related_requirements),
+                    ("preconditions", value.preconditions()),
+                    ("description", value.description()),
+                    ("requirement", value.requirement()),
                 ],
             )?;
+            println!("frequency: {}", value.frequency());
+            print_symbol_list(repo, "users", &value.users())?;
+            print_symbol_list(repo, "functions", &value.functions())?;
         }
         Object::RequirementSystem(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("modules: {}", optional_symbol(repo, value.modules)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("modules: {}", optional_symbol(repo, value.modules())?);
             print_design_fields(
                 repo,
                 &[
-                    ("form", value.form),
-                    ("covered_users", value.covered_users),
-                    ("closed_loop_goal", value.closed_loop_goal),
-                    ("relationships", value.relationships),
-                    ("boundary", value.boundary),
+                    ("form", value.form()),
+                    ("covered_users", value.covered_users()),
+                    ("closed_loop_goal", value.closed_loop_goal()),
+                    ("relationships", value.relationships()),
+                    ("boundary", value.boundary()),
                 ],
             )?;
         }
         Object::RequirementModule(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("functions: {}", optional_symbol(repo, value.functions)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("functions: {}", optional_symbol(repo, value.functions())?);
             print_design_fields(
                 repo,
                 &[
-                    ("core_concept", value.core_concept),
-                    ("included_concepts", value.included_concepts),
-                    ("concept_relations", value.concept_relations),
-                    ("boundary", value.boundary),
+                    ("core_concept", value.core_concept()),
+                    ("included_concepts", value.included_concepts()),
+                    ("concept_relations", value.concept_relations()),
+                    ("boundary", value.boundary()),
                 ],
             )?;
         }
         Object::RequirementFunction(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
-            println!("flow: {}", optional_symbol(repo, value.flow)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("flow: {}", optional_symbol(repo, value.flow())?);
             println!(
                 "interactions: {}",
-                optional_symbol(repo, value.interactions)?
+                optional_symbol(repo, value.interactions())?
             );
             print_design_fields(
                 repo,
                 &[
-                    ("initiator", value.initiator),
-                    ("system_change", value.system_change),
-                    ("preconditions", value.preconditions),
-                    ("feedback", value.feedback),
-                    ("description", value.description),
+                    ("initiator", value.initiator()),
+                    ("system_change", value.system_change()),
+                    ("preconditions", value.preconditions()),
+                    ("feedback", value.feedback()),
+                    ("description", value.description()),
                 ],
             )?;
         }
         Object::RequirementInteraction(value) => {
-            println!("parent: {}", repo.resolve(value.parent)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
             print_design_fields(
                 repo,
-                &[("description", value.description), ("ui", value.ui)],
+                &[("description", value.description()), ("ui", value.ui())],
             )?;
         }
         Object::ObjectList(value) => {
-            println!("owner: {}", repo.resolve(value.owner)?);
-            println!("items: {}", value.items.len());
-            for item in &value.items {
-                println!("  - {}", repo.resolve(*item)?);
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("items: {}", value.items().len());
+            for item in &value.items() {
+                println!("  - {}", repo.resolve(repo.read(*item)?.qname())?);
             }
         }
-        Object::View(value) => {
-            println!("source_commit: {}", value.source_commit);
-            println!("technical: {}", value.technical.to_hex());
-            println!("requirements: {}", value.requirements.to_hex());
-            println!("concepts: {}", value.concepts.to_hex());
-            if let Some(comments) = value.comments {
-                println!("comments: {}", comments.to_hex());
-            }
+        Object::Root(value) => {
+            println!("source_commit: {}", value.source_commit());
+            println!("technical: {}", value.technical().get().to_hex());
+            println!("requirement: {}", value.requirement().get().to_hex());
+            println!("concept: {}", value.concept().get().to_hex());
         }
         Object::Concept(value) => {
-            print_design_fields(
-                repo,
-                &[
-                    ("summary", value.summary),
-                    ("explanation", value.explanation),
-                    ("characteristics", value.characteristics),
-                    ("relations", value.relations),
-                    ("aliases", value.aliases),
-                ],
-            )?;
-            for link in &value.links {
-                println!("link: {} ({:?})", repo.resolve(link.target)?, link.relation);
-            }
-        }
-        Object::Comment(value) => {
-            println!("target: {}", repo.resolve(value.target)?);
-            println!("resolved: {}", value.resolved);
-            println!("text: {}", value.body_text());
+            println!("display_name: {}", value.display_name());
+            print_design_fields(repo, &[("explanation", value.explanation())])?;
         }
         Object::DocumentText(value) => {
-            println!("text: {}", arche::object::inline_plain_text(&value.content));
+            println!("text: {}", value.content());
         }
         Object::DocumentTopic(value) => {
-            println!("title: {}", arche::object::inline_plain_text(&value.title));
-            println!("body: {}", value.body.to_hex());
+            println!("title: {}", value.title());
+            println!("body: {}", value.body().get().to_hex());
         }
         Object::DocumentList(value) => {
-            println!("ordered: {}", value.ordered);
-            println!("items: {}", value.items.len());
+            println!("items: {}", value.items().len());
         }
         Object::DocumentParagraphList(value) => {
-            println!("items: {}", value.items.len());
+            println!("items: {}", value.items().len());
+        }
+        Object::TechnicalVariable(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalConstant(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalMember(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            println!("is_static: {}", value.is_static());
+            println!("is_const: {}", value.is_const());
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalProperty(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            println!("getter: {}", optional_symbol(repo, value.getter())?);
+            println!("setter: {}", optional_symbol(repo, value.setter())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalEnumValue(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalArgument(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            print_design_fields(repo, &[("position", value.position())])?;
+        }
+        Object::TechnicalReturnValue(value) => {
+            println!("parent: {}", repo.resolve(value.parent())?);
+            println!("source: {}", optional_symbol(repo, value.source())?);
+            println!("ty: {}", optional_symbol(repo, value.ty())?);
+            print_design_fields(repo, &[("position", value.position())])?;
         }
         _ => {}
     }
@@ -1022,72 +1511,159 @@ fn show_json(repo: &Repository, hash: ObjectHash, object: &Object) -> Result<()>
         object.kind().name(),
         hash.to_hex()
     );
-    if let Some(name) = object.name() {
+    let name = object.name();
+    if !name.is_zero() {
         print!(",\"name\":\"{}\"", json_escape(&repo.resolve(name)?));
     }
-    let fields = arche::repo::doc_fields(object);
+    let fields = arche_core::repo::doc_fields(object);
     let present = fields
         .into_iter()
-        .filter_map(|(field, value)| value.map(|value| (field, value)))
+        .filter(|(_, value)| !value.is_zero())
         .collect::<Vec<_>>();
     print!(",\"fields\":{{");
     for (index, (field, value)) in present.iter().enumerate() {
         if index > 0 {
             print!(",");
         }
-        let field_qname = repo.resolve(*value)?;
-        let kind = repo
-            .show_qname(&field_qname)
-            .map(|(_, object)| object.kind().name().to_owned())
-            .unwrap_or_else(|_| "missing".to_owned());
+        let field_object = repo.read(*value)?;
         print!(
-            "\"{}\":{{\"qname\":\"{}\",\"kind\":\"{}\"}}",
+            "\"{}\":{}",
             json_escape(field),
-            json_escape(&field_qname),
-            json_escape(&kind)
+            json_block(repo, &field_object)?
         );
     }
     println!("}}}}");
     Ok(())
 }
 
+fn json_block(repo: &Repository, object: &Object) -> Result<String> {
+    Ok(match object {
+        Object::DocumentText(value) => format!(
+            "{{\"type\":\"DocumentText\",\"content\":[{{\"type\":\"text\",\"text\":\"{}\"}}]}}",
+            json_escape(value.content())
+        ),
+        Object::DocumentList(value) => {
+            let items = value
+                .items()
+                .iter()
+                .map(|hash| {
+                    let item = repo.read(*hash)?;
+                    match item {
+                        Object::DocumentText(text) => Ok(format!(
+                            "{{\"type\":\"text\",\"text\":\"{}\"}}",
+                            json_escape(text.content())
+                        )),
+                        other => Ok(format!(
+                            "{{\"type\":\"object\",\"qname\":\"{}\"}}",
+                            json_escape(&repo.resolve(other.qname())?)
+                        )),
+                    }
+                })
+                .collect::<Result<Vec<_>>>()?;
+            format!(
+                "{{\"type\":\"DocumentList\",\"items\":[{}]}}",
+                items.join(",")
+            )
+        }
+        Object::DocumentParagraphList(value) => {
+            let items = value
+                .items()
+                .iter()
+                .map(|hash| json_block(repo, &repo.read(*hash)?))
+                .collect::<Result<Vec<_>>>()?;
+            format!(
+                "{{\"type\":\"DocumentParagraphList\",\"items\":[{}]}}",
+                items.join(",")
+            )
+        }
+        Object::DocumentTopic(value) => {
+            let body = repo.read(value.body().get())?;
+            format!(
+                "{{\"type\":\"topic\",\"title\":\"{}\",\"body\":{}}}",
+                json_escape(value.title()),
+                json_block(repo, &body)?
+            )
+        }
+        Object::DocumentCode(value) => format!(
+            "{{\"type\":\"code\",\"language\":\"{}\",\"source\":\"{}\"}}",
+            json_escape(value.language()),
+            json_escape(value.source())
+        ),
+        Object::DocumentMermaid(value) => format!(
+            "{{\"type\":\"mermaid\",\"source\":\"{}\"}}",
+            json_escape(value.source())
+        ),
+        Object::DocumentHtml(value) => format!(
+            "{{\"type\":\"html\",\"source\":\"{}\"}}",
+            json_escape(value.source())
+        ),
+        other => format!(
+            "{{\"type\":\"{}\",\"qname\":\"{}\"}}",
+            other.kind().name(),
+            json_escape(&repo.resolve(other.qname())?)
+        ),
+    })
+}
+
 fn show_markdown(repo: &Repository, _hash: ObjectHash, object: &Object) -> Result<()> {
     let qname = repo.resolve(object.qname())?;
-    let title = object
-        .name()
-        .map(|name| repo.resolve(name))
-        .transpose()?
-        .unwrap_or_else(|| qname.clone());
+    let name = object.name();
+    let title = if name.is_zero() {
+        qname.clone()
+    } else {
+        repo.resolve(name)?
+    };
     println!("# {title}\n");
     println!("- qname: `{qname}`");
     println!("- kind: `{}`\n", object.kind().name());
-    for (field, value) in arche::repo::doc_fields(object) {
-        let Some(value) = value else { continue };
-        let field_qname = repo.resolve(value)?;
+    for (field, value) in arche_core::repo::doc_fields(object) {
+        if value.is_zero() {
+            continue;
+        }
+        let field_object = repo.read(value)?;
         println!("## {field}\n");
-        match repo.show_qname(&field_qname) {
-            Ok((_, Object::DocumentText(text))) => {
-                println!("{}\n", arche::object::inline_plain_text(&text.content));
+        print_markdown_block(repo, &field_object, 2)?;
+    }
+    Ok(())
+}
+
+fn print_markdown_block(repo: &Repository, object: &Object, level: usize) -> Result<()> {
+    match object {
+        Object::DocumentText(value) => {
+            println!("{}\n", value.content());
+        }
+        Object::DocumentList(value) => {
+            for hash in value.items().iter() {
+                if let Object::DocumentText(text) = repo.read(*hash)? {
+                    println!("- {}", text.content());
+                }
             }
-            Ok((_, Object::DocumentTopic(topic))) => {
-                println!("### {}\n", arche::object::inline_plain_text(&topic.title));
+            println!();
+        }
+        Object::DocumentParagraphList(value) => {
+            for hash in value.items().iter() {
+                print_markdown_block(repo, &repo.read(*hash)?, level + 1)?;
             }
-            Ok((_, Object::DocumentMermaid(value))) => {
-                println!("```mermaid\n{}\n```\n", value.source);
-            }
-            Ok((_, Object::DocumentHtml(value))) => {
-                println!("```html\n{}\n```\n", value.source);
-            }
-            Ok((_, Object::DocumentList(value))) => {
-                println!("- items: {}\n", value.items.len());
-            }
-            Ok((_, Object::DocumentParagraphList(value))) => {
-                println!("- paragraphs: {}\n", value.items.len());
-            }
-            Ok((_, other)) => {
-                println!("- {}: `{}`\n", other.kind().name(), field_qname);
-            }
-            Err(_) => {}
+        }
+        Object::DocumentTopic(value) => {
+            println!("{} {}\n", "#".repeat(level), value.title());
+            print_markdown_block(repo, &repo.read(value.body().get())?, level + 1)?;
+        }
+        Object::DocumentCode(value) => {
+            println!("```{}\n{}\n```\n", value.language(), value.source());
+        }
+        Object::DocumentMermaid(value) => {
+            println!("```mermaid\n{}\n```\n", value.source());
+        }
+        Object::DocumentHtml(value) => {
+            println!("```html\n{}\n```\n", value.source());
+        }
+        other => {
+            println!(
+                "- {}: `{}`\n",
+                other.kind().name(),
+                repo.resolve(other.qname())?
+            );
         }
     }
     Ok(())
@@ -1109,10 +1685,13 @@ fn json_escape(text: &str) -> String {
     out
 }
 
-fn status(repo: &Repository) -> Result<()> {
+fn status(repo: &Repository, porcelain: bool, detail: bool) -> Result<()> {
     let head = repo.head_snapshot()?;
     let index = repo.index_snapshot()?;
     let worktree = repo.worktree_snapshot()?;
+    if porcelain {
+        return status_porcelain(repo, &index, &worktree, detail);
+    }
     println!("repository: {}", repo.root().display());
     println!("branch: {}", repo.current_branch()?);
     println!("HEAD: {}", repo.head_commit()?.to_hex());
@@ -1125,13 +1704,206 @@ fn status(repo: &Repository) -> Result<()> {
     Ok(())
 }
 
+fn status_porcelain(
+    repo: &Repository,
+    index: &Snapshot,
+    worktree: &Snapshot,
+    detail: bool,
+) -> Result<()> {
+    let mut qnames = BTreeSet::new();
+    qnames.extend(index.entries().iter().map(|(qname, _)| *qname));
+    qnames.extend(worktree.entries().iter().map(|(qname, _)| *qname));
+    let mut rows = Vec::new();
+    for qname in qnames {
+        if qname == SymbolHash::of("root") {
+            continue;
+        }
+        let old_hash = index.get(qname);
+        let new_hash = worktree.get(qname);
+        let status = match (old_hash, new_hash) {
+            (None, Some(_)) => 'A',
+            (Some(_), None) => 'D',
+            (Some(old), Some(new)) if old != new => 'M',
+            _ => continue,
+        };
+        let hash = new_hash.or(old_hash).expect("one side exists");
+        rows.push((qname, status, hash));
+    }
+    rows.sort_by_key(|(qname, _, _)| qname.to_hex());
+    for (qname, status, hash) in rows {
+        if detail {
+            let object = repo.read(hash)?;
+            let source = object_source_path(repo, &object)?;
+            println!(
+                "{status}\t{}\t{source}\t{}",
+                object.kind().name(),
+                repo.resolve(qname)?
+            );
+        } else {
+            println!("{status}\t{}", repo.resolve(qname)?);
+        }
+    }
+    Ok(())
+}
+
+fn object_source_path(repo: &Repository, object: &Object) -> Result<String> {
+    let path = match object {
+        Object::TechnicalDirectory(value) => value.source().path,
+        Object::TechnicalFile(value) => value.source().path,
+        Object::TechnicalClass(value) => value.source().path,
+        Object::TechnicalStruct(value) => value.source().path,
+        Object::TechnicalEnum(value) => value.source().path,
+        Object::TechnicalInterface(value) => value.source().path,
+        Object::TechnicalMethod(value) => value.source().path,
+        Object::TechnicalFunction(value) => value.source().path,
+        Object::TechnicalMixin(value) => value.source().path,
+        Object::TechnicalPart(value) => value.source().path,
+        Object::TechnicalVariable(value) => value.source().path,
+        Object::TechnicalConstant(value) => value.source().path,
+        Object::TechnicalMember(value) => value.source().path,
+        Object::TechnicalEnumValue(value) => value.source().path,
+        Object::TechnicalArgument(value) => value.source().path,
+        Object::TechnicalReturnValue(value) => value.source().path,
+        _ => return Ok(String::from("-")),
+    };
+    if path.is_zero() {
+        Ok(String::from("-"))
+    } else {
+        repo.resolve(path)
+    }
+}
+
+fn create_object(
+    repo: &Repository,
+    kind: &str,
+    name: Option<&str>,
+    parent: Option<&str>,
+    namespace: Option<&str>,
+    prototype: Option<&str>,
+    source: Option<&str>,
+) -> Result<(SymbolHash, ObjectHash)> {
+    let require_parent =
+        || parent.ok_or_else(|| anyhow::anyhow!("{kind} requires --parent <qname>"));
+    let require_name = || name.ok_or_else(|| anyhow::anyhow!("{kind} requires <name>"));
+    match kind {
+        "technical-system" => repo.create_technical_system(require_name()?),
+        "technical-module" => repo.create_technical_module(require_parent()?, require_name()?),
+        "technical-layer" => repo.create_technical_layer(require_parent()?, require_name()?),
+        "technical-namespace" => {
+            repo.create_technical_namespace(require_parent()?, require_name()?)
+        }
+        "technical-class" => repo.create_technical_class(parent, namespace, require_name()?),
+        "technical-struct" => repo.create_technical_struct(parent, namespace, require_name()?),
+        "technical-enum" => repo.create_technical_enum(parent, namespace, require_name()?),
+        "technical-interface" => {
+            repo.create_technical_interface(parent, namespace, require_name()?)
+        }
+        "technical-mixin" => repo.create_technical_mixin(parent, namespace, require_name()?),
+        "technical-function" => {
+            let namespace = namespace.ok_or_else(|| {
+                anyhow::anyhow!("technical-function requires --namespace <qname>")
+            })?;
+            repo.create_technical_function(namespace, require_name()?)
+        }
+        "technical-method" => {
+            let prototype = prototype
+                .ok_or_else(|| anyhow::anyhow!("technical-method requires --prototype <text>"))?;
+            repo.create_technical_method(require_parent()?, prototype)
+        }
+        "technical-part" => {
+            let source = source
+                .ok_or_else(|| anyhow::anyhow!("technical-part requires --source <path:lines>"))?;
+            repo.create_technical_part(require_parent()?, source)
+        }
+        other => bail!(
+            "unsupported object kind {other}; supported: technical-system, \
+             technical-module, technical-layer, technical-namespace, technical-class, \
+             technical-struct, technical-enum, technical-interface, technical-method, \
+             technical-function, technical-mixin, technical-part"
+        ),
+    }
+}
+
+fn batch(repo: &Repository, file: &str) -> Result<()> {
+    let text = if file == "-" {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        text
+    } else {
+        std::fs::read_to_string(file)?
+    };
+    let plan: serde_json::Value = serde_json::from_str(&text).context("parse batch JSON")?;
+    let mut created = 0;
+    if let Some(objects) = plan.get("objects").and_then(|value| value.as_array()) {
+        for object in objects {
+            let field = |name: &str| object.get(name).and_then(|value| value.as_str());
+            let kind = field("kind").context("batch object requires kind")?;
+            let (qname, hash) = create_object(
+                repo,
+                kind,
+                field("name"),
+                field("parent"),
+                field("namespace"),
+                field("prototype"),
+                field("source"),
+            )?;
+            println!("{}", repo.resolve(qname)?);
+            println!("object {}", hash.to_hex());
+            created += 1;
+        }
+    }
+    if let Some(documents) = plan.get("documents").and_then(|value| value.as_array()) {
+        for document in documents {
+            let qname = document
+                .get("qname")
+                .and_then(|value| value.as_str())
+                .context("batch document requires qname")?;
+            let fields = document
+                .get("fields")
+                .cloned()
+                .context("batch document requires fields")?;
+            let projection = serde_json::json!({ "fields": fields });
+            repo.import_doc_json(qname, &projection.to_string())?;
+            created += 1;
+        }
+    }
+    println!("applied {created} batch entries");
+    Ok(())
+}
+
+fn doc_grep(repo: &Repository, text: &str) -> Result<()> {
+    for (_, object) in repo.list_objects()? {
+        let haystack = match &object {
+            Object::DocumentText(value) => value.content(),
+            Object::DocumentTopic(value) => value.title(),
+            Object::DocumentCode(value) => value.source(),
+            Object::DocumentMermaid(value) => value.source(),
+            Object::DocumentHtml(value) => value.source(),
+            _ => continue,
+        };
+        if haystack.contains(text) {
+            println!("{}\t{haystack}", repo.resolve(object.qname())?);
+        }
+    }
+    Ok(())
+}
+
+fn doc_layout(repo: &Repository, qname: &str) -> Result<()> {
+    let (_, object) = repo.show_qname(qname)?;
+    println!("{}", object.kind().name());
+    for property in arche_core::PropertyAccess::properties(&object) {
+        println!("{}\t{:?}", property.name, property.kind);
+    }
+    Ok(())
+}
+
 fn print_snapshot_changes(repo: &Repository, old: &Snapshot, new: &Snapshot) -> Result<()> {
     let mut qnames = BTreeSet::new();
     qnames.extend(old.entries().iter().map(|(qname, _)| *qname));
     qnames.extend(new.entries().iter().map(|(qname, _)| *qname));
     let mut rows = Vec::new();
     for qname in qnames {
-        if qname == SymbolHash::of("view") {
+        if qname == SymbolHash::of("root") {
             continue;
         }
         let old_hash = old.get(qname);
@@ -1167,7 +1939,7 @@ fn diff(repo: &Repository, staged: bool) -> Result<()> {
     qnames.extend(new.entries().iter().map(|(qname, _)| *qname));
     let mut rows = Vec::new();
     for qname in qnames {
-        if qname == SymbolHash::of("view") {
+        if qname == SymbolHash::of("root") {
             continue;
         }
         let old_hash = old.get(qname);
@@ -1191,14 +1963,8 @@ fn diff(repo: &Repository, staged: bool) -> Result<()> {
             if let (Object::DocumentText(old_text), Object::DocumentText(new_text)) =
                 (&old_object, &new_object)
             {
-                println!(
-                    "  - {}",
-                    arche::object::inline_plain_text(&old_text.content)
-                );
-                println!(
-                    "  + {}",
-                    arche::object::inline_plain_text(&new_text.content)
-                );
+                println!("  - {}", old_text.content());
+                println!("  + {}", new_text.content());
                 continue;
             }
             println!(
@@ -1213,29 +1979,120 @@ fn diff(repo: &Repository, staged: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_design_fields(
-    repo: &Repository,
-    fields: &[(&str, Option<arche::SymbolHash>)],
-) -> Result<()> {
+fn print_design_fields(repo: &Repository, fields: &[(&str, arche_core::ObjectRef)]) -> Result<()> {
     for (name, value) in fields {
-        if let Some(value) = value {
-            let qname = repo.resolve(*value)?;
-            if let Ok((_, Object::DocumentText(text))) = repo.show_qname(&qname) {
-                println!(
-                    "{name}: {}",
-                    arche::object::inline_plain_text(&text.content)
-                );
-                continue;
-            }
-            println!("{name}: {qname}");
+        if value.is_zero() {
+            continue;
         }
+        let object = repo.read(value.get())?;
+        if let Object::DocumentText(text) = object {
+            println!("{name}: {}", text.content());
+            continue;
+        }
+        println!("{name}: {}", repo.resolve(object.qname())?);
     }
     Ok(())
 }
 
-fn optional_symbol(repo: &Repository, value: Option<arche::SymbolHash>) -> Result<String> {
-    match value {
-        Some(value) => repo.resolve(value),
-        None => Ok(String::from("-")),
+trait PrintableRef: Copy {
+    fn is_empty_ref(self) -> bool;
+    fn printable(self, repo: &Repository) -> Result<String>;
+}
+
+impl PrintableRef for arche_core::SymbolHash {
+    fn is_empty_ref(self) -> bool {
+        self.0.is_zero()
     }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        repo.resolve(self)
+    }
+}
+
+impl PrintableRef for arche_core::ObjectHash {
+    fn is_empty_ref(self) -> bool {
+        self.0.is_zero()
+    }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        repo.resolve(repo.read(self)?.qname())
+    }
+}
+
+impl PrintableRef for arche_core::Hash32 {
+    fn is_empty_ref(self) -> bool {
+        self.is_zero()
+    }
+
+    fn printable(self, _repo: &Repository) -> Result<String> {
+        Ok(self.to_hex())
+    }
+}
+
+impl PrintableRef for arche_core::StringRef {
+    fn is_empty_ref(self) -> bool {
+        self.is_zero()
+    }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        repo.resolve(self)
+    }
+}
+
+impl PrintableRef for arche_core::ObjectRef {
+    fn is_empty_ref(self) -> bool {
+        self.is_zero()
+    }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        repo.resolve(repo.read(self.get())?.qname())
+    }
+}
+
+impl PrintableRef for arche_core::SourcePath {
+    fn is_empty_ref(self) -> bool {
+        self.path.is_zero()
+    }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        repo.resolve(self.path)
+    }
+}
+
+impl PrintableRef for arche_core::SourceSpan {
+    fn is_empty_ref(self) -> bool {
+        self.path.is_zero()
+    }
+
+    fn printable(self, repo: &Repository) -> Result<String> {
+        Ok(format!(
+            "{}:{}-{}",
+            repo.resolve(self.path)?,
+            self.start,
+            self.end
+        ))
+    }
+}
+
+fn optional_symbol<T: PrintableRef>(repo: &Repository, value: T) -> Result<String> {
+    if value.is_empty_ref() {
+        Ok(String::from("-"))
+    } else {
+        value.printable(repo)
+    }
+}
+
+fn print_symbol_list(
+    repo: &Repository,
+    label: &str,
+    values: &arche_core::StringRefList,
+) -> Result<()> {
+    let values = values
+        .as_slice()
+        .iter()
+        .map(|value| repo.resolve(*value))
+        .collect::<Result<Vec<_>>>()?
+        .join(", ");
+    println!("{label}: {values}");
+    Ok(())
 }

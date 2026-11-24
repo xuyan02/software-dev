@@ -1,0 +1,20 @@
+[package]
+name = "arche-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Arche object model, store, snapshots and local repository"
+
+[lib]
+name = "arche_core"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+getrandom = "0.2"
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -13,24 +13,25 @@ Initial implementation slice:
 - SHA-256 object/symbol/commit addressing;
 - atomic object store with `.arche/`;
 - technical, requirements, and concepts roots;
-- `TechnicalSystem` and `TechnicalModule` creation;
+- technical roots and system/module/layer/directory/file/namespace objects;
+- class, struct, enum, interface, method, function, mixin and part objects;
 - initial technical object model and `ObjectList`;
 - `DocumentText` position field authoring;
 - commit snapshots mapping qname to object hash;
 - worktree/index snapshots and staged commits;
 - independent comments attached by target qname;
-- concept directories and concept creation under `concepts/domain`,
-  `concepts/requirements`, and `concepts/technical`;
+- concept directories and concept creation under `concept/domain`,
+  `concept/requirement`, and `concept/technical`;
 - requirement user, story, system, module, function, and interaction objects;
 - typed document fields: text, list, topic, Mermaid, and HTML;
 - requirement `flow` and interaction `ui` fields;
 - worktree search and graph checks;
 - source Git fetch, checkout, worktree, and status;
-- concept links (`refines`, `realizes`, `corresponds`) with direction checks;
+- concept relations expressed as a text list;
 - local, HTTP, and SSH remotes: `remote add/show`, `clone`, `push`, `fetch`,
   `pull`;
-- HTTP server (`arche-server`) with optional bearer token;
-- SSH stdio server mode (`arche-server --stdio`);
+- HTTP server library (`arche_server::serve`) and `arche serve`;
+- SSH stdio server library (`arche_server::serve_stdio`) and `arche serve --stdio`;
 - branches and `checkout`;
 - JSON and Markdown `show --format`;
 - requirement `ui` HTML and `flow` Mermaid validation;
@@ -53,11 +54,21 @@ Not yet implemented:
 The detailed implementation status and remaining work are recorded in
 [`docs/design.md` §23](docs/design.md#23-当前实现与剩余工作).
 
+## Crates
+
+- `arche-core` (`arche_core`): object model, codec, store, snapshots, local
+  repository and wire helpers;
+- `arche-client` (`arche_client`): push, fetch, pull and clone over local,
+  HTTP and SSH transports;
+- `arche-server` (`arche_server`): HTTP and stdio server library used by
+  Foundry and by `arche serve`;
+- `arche`: command-line interface.
+
 ## Build
 
 ```bash
 cargo build -p arche
-cargo test -p arche
+cargo test -p arche -p arche-core -p arche-client -p arche-server
 ```
 
 ## Quick start

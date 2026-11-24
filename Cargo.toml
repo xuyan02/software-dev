@@ -26,6 +26,9 @@ members = [
     "projects/graph-agent",
     "projects/design-space/crates/design-space",
     "projects/arche/crates/arche",
+    "projects/arche/crates/arche-core",
+    "projects/arche/crates/arche-client",
+    "projects/arche/crates/arche-server",
     # new projects: insert member below this line
 ]
 
@@ -52,6 +55,9 @@ foundry-shared = { path = "projects/foundry/crates/shared" }
 linux-capsule = { path = "projects/foundry/capsules/linux-capsule" }
 design-space = { path = "projects/design-space/crates/design-space" }
 arche = { path = "projects/arche/crates/arche" }
+arche-core = { path = "projects/arche/crates/arche-core" }
+arche-client = { path = "projects/arche/crates/arche-client" }
+arche-server = { path = "projects/arche/crates/arche-server" }
 graph-agent = { path = "projects/graph-agent" }
 
 serde = { version = "1", features = ["derive"] }

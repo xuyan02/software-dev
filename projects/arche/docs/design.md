@@ -54,16 +54,18 @@ pub struct Hash32([u8; 32]);
 pub struct SymbolHash(Hash32);
 pub struct ObjectHash(Hash32);
 pub struct CommitHash(Hash32);
-pub struct GitOid([u8; 32]);
+pub struct GitCommit(Hash32);
 ```
 
 - `Hash32`：SHA-256 原始 32 字节；
-- `SymbolHash`：名称、路径、字段引用使用的符号 hash；
-- `ObjectHash`：对象内容 hash；
+- `SymbolHash`：名称、路径、依赖和语义链接使用的符号 hash；
+- `ObjectHash`：对象记录 hash，由对象字段计算，不是记录字节的 hash；
 - `CommitHash`：提交 hash；
-- `GitOid`：源码 Git commit，零表示无。
+- `GitCommit`：源码 Git commit，零表示无。
 
-可选 hash 一律使用全零 hash 表示 `None`。全零 hash 永远不是合法内容值。
+可选 hash 一律使用全零 hash 表示 `None`。全零 hash 永远不是合法内容值。所有 hash 类型（`SymbolHash`、`ObjectHash`、`Hash32`、`CommitHash`）自带可空语义，字段、参数和属性值都不再用 `Option<Hash>` 包装；判断是否为空用 `is_zero()`，清除值写 `ZERO`。
+
+所有设计对象都有 `qname`、`name`。除 `Root` 外，所有对象都有 `parent`。字段顺序固定为 `qname`、`name`、`parent`（`Root` 无）、其余字段。下文结构示例中部分公共字段可能省略。
 
 ### 3.2 qname
 
@@ -85,54 +87,55 @@ qname 的生成规则：
 | 情况 | qname |
 |---|---|
 | 命名子对象 | `<parent-qname>/<name>` |
-| 对象字段指向的对象 | `<owner-qname>/<field>` |
-| 列表项 | `<list-qname>.<item-id>` |
-| 方法 | `<parent-qname>/<name>#<signature-hash>` |
-| Part | `<parent-qname>/part#<content-hash>` |
+| 字段容器（字段本身） | `<owner-qname>/<field>` |
+| 无名对象（列表项、Part） | `<parent-qname>/<8 位随机 name>` |
+| 方法 | `<parent-qname>/<name>`，`name` 是规范化 prototype 文本 |
 
-`.` 只用于列表项定位，不是通用 qname 分隔符。文件路径中的点号不受影响。
+object hash 是类型 tag、对象版本、`qname`、`name`、`parent` 和其他字段的 SHA-256；引用位置直接使用字段中的 ObjectHash。object hash 是对象记录的键，不从记录字节推导。
 
-列表项顺序由 `items` 的顺序决定；`item-id` 是稳定 ID，不是序号。插入、删除、移动不重排已有 item-id。
+无名对象在创建时可以传入 name；不传时生成 8 位十六进制随机 name。qname 为 `<parent-qname>/<name>`，不再包含字段前缀和 `#`。name 和 qname 不依赖对象内容，内容变化不会改变它们。不再使用 `.N` 顺序号，也不保存分配计数器。
 
 示例：
 
 ```text
-technical/.../class.Foo                     TechnicalClass
-technical/.../class.Foo/responsibilities    DocumentList
-technical/.../class.Foo/responsibilities.1  DocumentText
-technical/.../class.Foo/usage               DocumentParagraphList
-technical/.../class.Foo/usage.1             DocumentTopic
-technical/.../class.Foo/usage.1/body        DocumentParagraphList
-technical/.../class.Foo/usage.1/body.1      DocumentText
-technical/.../class.Foo/design_points.1     DocumentTopic
+technical/.../class/Foo                        TechnicalClass
+technical/.../class/Foo/responsibilities       DocumentList
+technical/.../class/Foo/a1b2c3d4               DocumentText
+technical/.../class/Foo/usage                  DocumentParagraphList
+technical/.../class/Foo/e5f60718               DocumentTopic
+technical/.../class/Foo/e5f60718/body          DocumentParagraphList
+technical/.../class/Foo/e5f60718/body/9021abcd DocumentText
+technical/.../class/Foo/33445566               DocumentTopic
 ```
+
+列表项顺序仍由 `items` 的顺序决定。
 
 ### 3.3 根
 
 ```text
 technical
-requirements
-concepts
+requirement
+concept
 ```
 
 - `technical`：技术空间根；
-- `requirements`：需求空间根；
-- `concepts`：概念空间根。
+- `requirement`：需求空间根；
+- `concept`：概念空间根。
 
-全局视图对象：
+全局根对象：
 
 ```text
-view
+root
 ```
 
-`View` 不属于技术空间，不加 `Technical` 前缀。
+`Root` 不属于技术空间，不加 `Technical` 前缀。
 
 ## 4. 对象总表
 
 ### 4.1 技术对象
 
 ```text
-Technical
+TechnicalRoot
 TechnicalSystem
 TechnicalModule
 TechnicalLayer
@@ -147,12 +150,19 @@ TechnicalMethod
 TechnicalFunction
 TechnicalMixin
 TechnicalPart
+TechnicalVariable
+TechnicalConstant
+TechnicalMember
+TechnicalProperty
+TechnicalEnumValue
+TechnicalArgument
+TechnicalReturnValue
 ```
 
 ### 4.2 需求对象
 
 ```text
-Requirements
+RequirementRoot
 RequirementUser
 RequirementStory
 RequirementSystem
@@ -171,17 +181,16 @@ Concept
 概念维度由目录区分：
 
 ```text
-concepts/domain/...
-concepts/requirements/...
-concepts/technical/...
+concept/domain/...
+concept/requirement/...
+concept/technical/...
 ```
 
 ### 4.4 共享结构对象
 
 ```text
 ObjectList
-View
-Comment
+Root
 ```
 
 ### 4.5 文档对象
@@ -196,20 +205,7 @@ DocumentMermaid
 DocumentHtml
 ```
 
-`Paragraph` 是联合类型，不是对象：
-
-```rust
-pub enum Paragraph {
-    Text(DocumentTextRef),
-    List(DocumentListRef),
-    Topic(DocumentTopicRef),
-    Code(DocumentCodeRef),
-    Mermaid(DocumentMermaidRef),
-    Html(DocumentHtmlRef),
-}
-```
-
-对象类型总数：技术 15 种、需求 7 种、概念 2 种、共享 3 种、文档 7 种，共 **34 种**；其中 `Comment` 是侧对象。排除 `Comment` 后，设计对象为 **33 种**。
+对象类型总数：技术 22 种、需求 7 种、概念 2 种、共享 2 种、文档 7 种，共 **40 种**，全部是设计对象。评论不是对象类型，见第 11 节。
 
 ## 5. 公共字段
 
@@ -218,12 +214,11 @@ pub enum Paragraph {
 技术代码对象使用：
 
 ```rust
-pub parent: Option<SymbolHash>,
-pub namespace: Option<SymbolHash>,
-pub file: Option<SymbolHash>,
-pub module: Option<SymbolHash>,
-pub source: Option<SpanSource>,
-pub source_hash: Hash32,
+pub parent: SymbolHash,
+pub namespace: SymbolHash,
+pub file: SymbolHash,
+pub module: SymbolHash,
+pub source: SourceSpan,
 pub explicit_dependencies: Vec<SymbolHash>,
 pub implicit_dependencies: Vec<SymbolHash>,
 ```
@@ -231,21 +226,36 @@ pub implicit_dependencies: Vec<SymbolHash>,
 - `parent` 用于内部类型、方法、Part 等；
 - `namespace`、`file`、`module` 用于关联命名空间、文件和模块；
 - 不再有 `Inner*` 类型，内部类型通过 `parent` 表达；
-- `source` 是路径或行范围；
-- `source_hash` 由源码字节计算，不能手填；
-- 依赖只存目标 qname，不存证据和理由。
+- `source` 是值类型，不是对象，也不是 SymbolHash：
+
+```rust
+pub struct SourcePath {
+    pub path: SymbolHash,
+}
+
+pub struct SourceSpan {
+    pub path: SymbolHash,
+    pub start: u32,
+    pub end: u32,
+}
+```
+
+- `TechnicalDirectory`、`TechnicalFile` 使用 `SourcePath`；
+- 代码类型和 Part 使用 `SourceSpan`；
+- 依赖只存目标 qname，不存证据和理由；
+- 字段指向另一个设计对象时保存对方的 `ObjectHash`；依赖、语义链接等按名字解析的引用保存对方 qname（`SymbolHash`）。
 
 ### 5.2 结构对象公共字段
 
 ```rust
 pub name: SymbolHash,
-pub members: Option<SymbolHash>,  // ObjectList
-pub modules: Option<SymbolHash>,  // ObjectList
-pub layers: Option<SymbolHash>,   // ObjectList
+pub members: ObjectHash,  // ObjectList
+pub modules: ObjectHash,  // ObjectList
+pub layers: ObjectHash,   // ObjectList
 ```
 
-- `members`、`modules`、`layers` 都是 `ObjectList`；
-- `ObjectList` 自己存 `owner`、`next_id` 和 `items`，不存字段名；
+- `member`、`module`、`layer` 都是 `ObjectList`；
+- `ObjectList` 自己存 `owner` 和 `items`，不存字段名；
 - 字段名由父对象 schema 决定，qname 为 `<owner>/<field>`。
 
 ### 5.3 ObjectList
@@ -253,46 +263,46 @@ pub layers: Option<SymbolHash>,   // ObjectList
 ```rust
 pub struct ObjectList {
     pub qname: SymbolHash,
-    pub owner: SymbolHash,
-    pub next_id: u64,
-    pub items: Vec<SymbolHash>,
+    pub name: SymbolHash,
+    pub parent: SymbolHash,
+    pub items: Vec<ObjectHash>,
 }
 ```
 
 - 列表有顺序；
-- 每个 item 有 qname；
-- item 可以是命名对象，也可以是自动编号对象；
+- 每个 item 按自身规则有 qname；
+- item 可以是命名对象，也可以是随机 name 的无名对象；
 - 列表本身是对象，有独立文件；
 - `ObjectList` 不存字段名。
 
 ## 6. 技术对象
 
-### 6.1 Technical
+### 6.1 TechnicalRoot
 
 ```rust
-pub struct Technical {
+pub struct TechnicalRoot {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub files: Option<SymbolHash>,       // ObjectList
-    pub namespaces: Option<SymbolHash>,  // ObjectList
-    pub systems: Option<SymbolHash>,     // ObjectList
+    pub file: ObjectHash,       // ObjectList<TechnicalFile>
+    pub directory: ObjectHash,  // ObjectList<TechnicalDirectory>
+    pub namespace: ObjectHash,  // ObjectList<TechnicalNamespace>
+    pub system: ObjectHash,     // ObjectList<TechnicalSystem>
 }
 ```
 
-### 6.2 View
+### 6.2 Root
 
 ```rust
-pub struct View {
+pub struct Root {
     pub qname: SymbolHash,
-    pub source_commit: GitOid,
+    pub source_commit: GitCommit,
     pub technical: ObjectHash,
-    pub requirements: ObjectHash,
-    pub concepts: ObjectHash,
-    pub comments: Option<ObjectHash>, // ObjectList<Comment>
+    pub requirement: ObjectHash,
+    pub concept: ObjectHash,
 }
 ```
 
-`View` 绑定源码 commit 和三个空间根的对象 hash；评论通过独立评论列表引用，不属于任何目标对象。对象字段保存 qname，commit 另外保存 qname → object hash 快照，因此同一个 qname 的历史版本可以被准确定位。
+`Root` 绑定源码 commit 和三个空间根的对象 hash；评论通过独立评论列表引用，不属于任何目标对象。对象字段指向其他对象时保存对方的 `ObjectHash`，qname → object hash 的对应由提交中的快照保存。
 
 ### 6.3 TechnicalSystem / TechnicalModule / TechnicalLayer
 
@@ -301,9 +311,11 @@ pub struct TechnicalSystem {
     pub qname: SymbolHash,
     pub name: SymbolHash,
     pub parent: SymbolHash,             // technical
-    pub members: Option<SymbolHash>,    // ObjectList
-    pub modules: Option<SymbolHash>,    // ObjectList
-    pub layers: Option<SymbolHash>,     // ObjectList
+    pub members: ObjectHash,     // ObjectList
+    pub modules: ObjectHash,     // ObjectList
+    pub layers: ObjectHash,      // ObjectList
+    pub constants: ObjectHash,   // ObjectList
+    pub variables: ObjectHash,   // ObjectList
     // 文档字段见 7.1
 }
 
@@ -311,9 +323,10 @@ pub struct TechnicalModule {
     pub qname: SymbolHash,
     pub name: SymbolHash,
     pub parent: SymbolHash,             // system/module/layer
-    pub members: Option<SymbolHash>,
-    pub modules: Option<SymbolHash>,
-    pub layers: Option<SymbolHash>,
+    pub members: ObjectHash,
+    pub dependencies: Vec<SymbolHash>,
+    pub constants: ObjectHash,   // ObjectList
+    pub variables: ObjectHash,   // ObjectList
     // 文档字段见 7.1
 }
 
@@ -321,14 +334,14 @@ pub struct TechnicalLayer {
     pub qname: SymbolHash,
     pub name: SymbolHash,
     pub parent: SymbolHash,             // system/module
-    pub order: u32,
-    pub members: Option<SymbolHash>,
-    pub position: Option<DocumentTextRef>,
+    pub members: ObjectHash,
+    pub dependencies: Vec<SymbolHash>,
+    pub position: ObjectHash,
 }
 ```
 
 - 层不能嵌套层；
-- 只有相邻层可以依赖；
+- 层的依赖由 `dependencies` 显式记录；
 - 有层的容器，其代码成员和子模块必须归入层；
 - 层顺序从 1 开始，同级唯一。
 
@@ -339,31 +352,37 @@ pub struct TechnicalDirectory {
     pub qname: SymbolHash,
     pub name: SymbolHash,
     pub parent: SymbolHash,
-    pub source: Option<PathSource>,
-    pub children: Option<SymbolHash>, // ObjectList
-    pub position: Option<DocumentTextRef>,
+    pub source: SourcePath,
+    pub children: ObjectHash, // ObjectList
+    pub position: ObjectHash,
 }
 
 pub struct TechnicalFile {
     pub qname: SymbolHash,
     pub name: SymbolHash,
     pub parent: SymbolHash,
-    pub source: Option<PathSource>,
-    pub source_hash: Hash32,
-    pub children: Option<SymbolHash>, // ObjectList
-    pub position: Option<DocumentTextRef>,
+    pub source: SourcePath,
+    pub entities: ObjectHash, // ObjectList
+    pub position: ObjectHash,
 }
 
 pub struct TechnicalNamespace {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: SymbolHash,           // namespace
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
-    pub children: Option<SymbolHash>, // ObjectList
-    pub position: Option<DocumentTextRef>,
+    pub parent: SymbolHash, // namespace
+    pub children: ObjectHash,  // 子 namespace ObjectList
+    pub entities: ObjectHash,  // 直接元素 ObjectList
+    pub constants: ObjectHash, // ObjectList
+    pub variables: ObjectHash, // ObjectList
+    pub position: ObjectHash,
 }
 ```
+
+属性系统里源码位置统一用一个 `source` 属性：
+
+- `TechnicalDirectory`、`TechnicalFile` 用 `SourcePath`；
+- 代码类型（Class、Struct、Enum、Interface、Method、Function、Mixin、Part）用 `SourceSpan`；
+- `TechnicalNamespace` 没有 source。
 
 ### 6.5 TechnicalClass
 
@@ -371,22 +390,24 @@ pub struct TechnicalNamespace {
 pub struct TechnicalClass {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
+    pub parent: SymbolHash,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
 
-    pub superclass: Option<SymbolHash>,
+    pub superclass: SymbolHash,
     pub interfaces: Vec<SymbolHash>,
     pub mixins: Vec<SymbolHash>,
     pub explicit_dependencies: Vec<SymbolHash>,
     pub implicit_dependencies: Vec<SymbolHash>,
 
-    pub methods: Option<SymbolHash>,     // ObjectList
-    pub inner_types: Option<SymbolHash>, // ObjectList
-    pub parts: Option<SymbolHash>,       // ObjectList
+    pub method: ObjectHash,     // ObjectList
+    pub types: ObjectHash, // ObjectList
+    pub parts: ObjectHash,      // ObjectList
+    pub constants: ObjectHash,  // ObjectList
+    pub members: ObjectHash,    // ObjectList
+    pub properties: ObjectHash, // ObjectList
 
     // 文档字段见 7.2
 }
@@ -398,36 +419,42 @@ pub struct TechnicalClass {
 pub struct TechnicalStruct {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
-    pub explicit_dependencies: Vec<SymbolHash>,
-    pub implicit_dependencies: Vec<SymbolHash>,
-    pub methods: Option<SymbolHash>,
-    pub inner_types: Option<SymbolHash>,
-    pub parts: Option<SymbolHash>,
+    pub parent: SymbolHash,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
+    pub dependencies: Vec<SymbolHash>,
+    pub method: ObjectHash,
+    pub types: ObjectHash,
+    pub constants: ObjectHash, // ObjectList
+    pub members: ObjectHash,   // ObjectList
     // 文档字段见 7.2
 }
 
 pub struct TechnicalEnum {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
-    pub explicit_dependencies: Vec<SymbolHash>,
-    pub implicit_dependencies: Vec<SymbolHash>,
-    pub methods: Option<SymbolHash>,
-    pub inner_types: Option<SymbolHash>,
+    pub parent: SymbolHash,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
+    pub dependencies: Vec<SymbolHash>,
+    pub values: ObjectHash, // ObjectList
     // 文档字段见 7.2
 }
+
+pub struct TechnicalEnumValue {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // enum
+    pub source: SourceSpan,
+    pub position: ObjectHash,
+}
 ```
+
+枚举没有 `method`、`types`、`part`；枚举值由 `TechnicalEnumValue` 表示，不记录依赖。
 
 ### 6.7 TechnicalInterface
 
@@ -435,20 +462,16 @@ pub struct TechnicalEnum {
 pub struct TechnicalInterface {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
+    pub parent: SymbolHash,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
 
-    pub extends: Option<SymbolHash>,
-    pub explicit_dependencies: Vec<SymbolHash>,
-    pub implicit_dependencies: Vec<SymbolHash>,
+    pub extends: SymbolHash,
+    pub dependencies: Vec<SymbolHash>,
 
-    pub methods: Option<SymbolHash>,
-    pub inner_types: Option<SymbolHash>,
-    pub parts: Option<SymbolHash>,
+    pub methods: ObjectHash, // ObjectList
 
     // 文档字段见 7.2
 }
@@ -458,33 +481,39 @@ pub struct TechnicalInterface {
 
 ```rust
 pub struct TechnicalMethod {
-    pub qname: SymbolHash,       // parent/name#signature-hash
-    pub name: SymbolHash,
-    pub parent: SymbolHash,      // class/interface/part
-    pub signature: SymbolHash,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
-    pub overrides: Option<SymbolHash>,
+    pub qname: SymbolHash,       // parent/<name#hash8>
+    pub name: SymbolHash,        // <simple-name>#<hash8>
+    pub parent: SymbolHash,      // class/interface/mixin
+    pub source: SourceSpan,
+    pub is_static: bool,
+    pub is_async: bool,
+    pub is_abstract: bool,
+    pub is_const: bool,
+    pub overrides: SymbolHash,
     pub explicit_dependencies: Vec<SymbolHash>,
     pub implicit_dependencies: Vec<SymbolHash>,
+    pub arguments: ObjectHash,     // ObjectList of TechnicalArgument
+    pub return_value: ObjectHash,  // TechnicalReturnValue
     // 文档字段见 7.2
 }
 
 pub struct TechnicalFunction {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
+    pub is_async: bool,
     pub explicit_dependencies: Vec<SymbolHash>,
     pub implicit_dependencies: Vec<SymbolHash>,
+    pub arguments: ObjectHash,     // ObjectList of TechnicalArgument
+    pub return_value: ObjectHash,  // TechnicalReturnValue
     // 文档字段见 7.2
 }
 ```
 
-方法签名不可编辑；改签名就是新方法。函数原型是文档字段，源码签名由 `source` 和 `signature` 关联。
+方法没有 `signature` 和 `prototype` 字段。创建方法时用规范原型文本计算 `name` 和 qname，文本不保存；原型可以从 `arguments`、`return_value` 和修饰符重建。规范原型不包含 `pub`、`public`、`private`、`protected`、`internal` 等可见性修饰符，但保留 `async`、`static` 等修饰符。签名变化就是新方法。
 
 ### 6.9 TechnicalMixin
 
@@ -492,23 +521,21 @@ pub struct TechnicalFunction {
 pub struct TechnicalMixin {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub namespace: Option<SymbolHash>,
-    pub file: Option<SymbolHash>,
-    pub module: Option<SymbolHash>,
-    pub source: Option<SpanSource>,
-    pub source_hash: Hash32,
+    pub parent: SymbolHash,
+    pub namespace: SymbolHash,
+    pub file: SymbolHash,
+    pub module: SymbolHash,
+    pub source: SourceSpan,
 
     pub on: Vec<SymbolHash>,
-    pub superclass: Option<SymbolHash>,
+    pub superclass: SymbolHash,
     pub interfaces: Vec<SymbolHash>,
     pub mixins: Vec<SymbolHash>,
     pub explicit_dependencies: Vec<SymbolHash>,
     pub implicit_dependencies: Vec<SymbolHash>,
 
-    pub methods: Option<SymbolHash>,
-    pub inner_types: Option<SymbolHash>,
-    pub parts: Option<SymbolHash>,
+    pub methods: ObjectHash,
+    pub types: ObjectHash,
 
     // 文档字段见 7.2
 }
@@ -518,38 +545,109 @@ pub struct TechnicalMixin {
 
 ```rust
 pub struct TechnicalPart {
-    pub qname: SymbolHash, // parent/part#content-hash
+    pub qname: SymbolHash, // parent/<8 位随机 name>
     pub name: SymbolHash,
-    pub parent: SymbolHash, // class/interface/...
-    pub source: SpanSource, // 必须有行范围
-    pub source_hash: Hash32,
+    pub parent: SymbolHash, // class
+    pub source: SourceSpan, // 必须有行范围
     pub explicit_dependencies: Vec<SymbolHash>,
     pub implicit_dependencies: Vec<SymbolHash>,
-    pub children: Option<SymbolHash>, // ObjectList
+    pub members: ObjectHash, // ObjectList
+    pub methods: ObjectHash, // ObjectList
+    pub types: ObjectHash,   // ObjectList
 }
 ```
 
 Part 不关联设计文档，不建文档字段。
 
+### 6.11 TechnicalVariable / TechnicalConstant / TechnicalMember / TechnicalProperty
+
+```rust
+pub struct TechnicalVariable {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // system/module/namespace
+    pub source: SourceSpan,
+    pub ty: SymbolHash,
+    pub position: ObjectHash,
+}
+
+pub struct TechnicalConstant {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // system/module/namespace/class/struct
+    pub source: SourceSpan,
+    pub ty: SymbolHash,
+    pub position: ObjectHash,
+}
+
+pub struct TechnicalMember {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // class/struct
+    pub source: SourceSpan,
+    pub ty: SymbolHash,
+    pub is_static: bool,
+    pub is_const: bool,
+    pub position: ObjectHash,
+}
+
+pub struct TechnicalProperty {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // class
+    pub ty: SymbolHash,
+    pub getter: SourceSpan,
+    pub setter: SourceSpan,
+    pub position: ObjectHash,
+}
+```
+
+变量是不属于任何对象的全局变量，成员是类/结构体中的静态或非静态变量。这四类对象不记录依赖。属性没有独立 `source`，getter/setter 各自记录源码范围。
+
+### 6.12 TechnicalArgument / TechnicalReturnValue
+
+```rust
+pub struct TechnicalArgument {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // method/function
+    pub source: SourceSpan,
+    pub ty: SymbolHash,
+    pub position: ObjectHash,
+}
+
+pub struct TechnicalReturnValue {
+    pub qname: SymbolHash,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // method/function
+    pub source: SourceSpan,
+    pub ty: SymbolHash,
+    pub position: ObjectHash,
+}
+```
+
+方法/函数通过 `arguments` 的 `ObjectList` 持有参数，通过 `return_value` 直接引用返回对象。参数和返回值不记录依赖。
+
 ## 7. 技术文档字段
 
-字段仍然是对象的字段，值是对文档对象的 qname 引用。所有引用按 schema 校验目标类型。
+字段仍然是对象的字段，值是对文档对象的 `ObjectHash` 引用。所有引用按 schema 校验目标类型。
 
 ### 7.1 TechnicalSystem / TechnicalModule
 
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `responsibilities` | `DocumentList<DocumentText>` |
-| `non_responsibilities` | `DocumentList<DocumentText>` |
-| `features` | `DocumentList<DocumentText>` |
-| `non_features` | `DocumentList<DocumentText>` |
-| `invariants` | `DocumentList<DocumentText>` |
-| `constraints` | `DocumentList<DocumentText>` |
-| `design_principles` | `DocumentList<DocumentText>` |
-| `external_dependencies` | `DocumentList<DocumentText>` |
+| `responsibilities` | `DocumentList` |
+| `non_responsibilities` | `DocumentList` |
+| `features` | `DocumentList` |
+| `non_features` | `DocumentList` |
+| `invariants` | `DocumentList` |
+| `constraints` | `DocumentList` |
+| `design_principles` | `DocumentList` |
 | `usage` | `DocumentParagraphList` |
-| `design_points` | `DocumentParagraphList<DocumentTopic>` |
+| `design_points` | `DocumentParagraphList` |
+
+`TechnicalSystem` 另有 `external_dependencies: DocumentList`；`TechnicalModule` 用 `dependencies: Vec<SymbolHash>` 表示模块依赖。
 
 ### 7.2 代码类型
 
@@ -558,24 +656,24 @@ TechnicalClass：
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `responsibilities` | `DocumentList<DocumentText>` |
-| `non_responsibilities` | `DocumentList<DocumentText>` |
-| `features` | `DocumentList<DocumentText>` |
-| `non_features` | `DocumentList<DocumentText>` |
-| `invariants` | `DocumentList<DocumentText>` |
-| `constraints` | `DocumentList<DocumentText>` |
-| `design_principles` | `DocumentList<DocumentText>` |
+| `responsibilities` | `DocumentList` |
+| `non_responsibilities` | `DocumentList` |
+| `features` | `DocumentList` |
+| `non_features` | `DocumentList` |
+| `invariants` | `DocumentList` |
+| `constraints` | `DocumentList` |
+| `design_principles` | `DocumentList` |
 | `usage` | `DocumentParagraphList` |
-| `design_points` | `DocumentParagraphList<DocumentTopic>` |
+| `design_points` | `DocumentParagraphList` |
 
 TechnicalStruct：
 
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `invariants` | `DocumentList<DocumentText>` |
+| `invariants` | `DocumentList` |
 
-TechnicalEnum：
+TechnicalEnum / TechnicalEnumValue：
 
 | 字段 | 目标类型 |
 |---|---|
@@ -586,37 +684,34 @@ TechnicalInterface：
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `responsibilities` | `DocumentList<DocumentText>` |
-| `non_responsibilities` | `DocumentList<DocumentText>` |
-| `features` | `DocumentList<DocumentText>` |
-| `non_features` | `DocumentList<DocumentText>` |
-| `invariants` | `DocumentList<DocumentText>` |
+| `responsibilities` | `DocumentList` |
+| `non_responsibilities` | `DocumentList` |
+| `features` | `DocumentList` |
+| `non_features` | `DocumentList` |
+| `invariants` | `DocumentList` |
 | `usage` | `DocumentParagraphList` |
-| `design_points` | `DocumentParagraphList<DocumentTopic>` |
+| `design_points` | `DocumentParagraphList` |
 
 TechnicalMixin：
 
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `responsibilities` | `DocumentList<DocumentText>` |
-| `non_responsibilities` | `DocumentList<DocumentText>` |
-| `features` | `DocumentList<DocumentText>` |
-| `non_features` | `DocumentList<DocumentText>` |
-| `invariants` | `DocumentList<DocumentText>` |
+| `responsibilities` | `DocumentList` |
+| `non_responsibilities` | `DocumentList` |
+| `features` | `DocumentList` |
+| `non_features` | `DocumentList` |
+| `invariants` | `DocumentList` |
 | `usage` | `DocumentParagraphList` |
-| `design_points` | `DocumentParagraphList<DocumentTopic>` |
+| `design_points` | `DocumentParagraphList` |
 
 TechnicalMethod / TechnicalFunction：
 
 | 字段 | 目标类型 |
 |---|---|
 | `position` | `DocumentText` |
-| `prototype` | `DocumentText` |
-| `parameters` | `DocumentList<DocumentText>` |
-| `returns` | `DocumentText` |
 | `usage` | `DocumentParagraphList` |
-| `design_points` | `DocumentParagraphList<DocumentTopic>` |
+| `design_points` | `DocumentParagraphList` |
 
 TechnicalLayer / TechnicalDirectory / TechnicalFile / TechnicalNamespace：
 
@@ -624,7 +719,7 @@ TechnicalLayer / TechnicalDirectory / TechnicalFile / TechnicalNamespace：
 |---|---|
 | `position` | `DocumentText` |
 
-不记录字段列表。Class、Struct、Enum 的字段信息不进入对象文档字段，也不建立 `field_list` 对象。
+不记录字段列表。Class、Struct、Enum 的字段信息不进入对象文档字段；字段由 `TechnicalMember`、`TechnicalProperty` 对象表示。
 
 ## 8. 文档内容模型
 
@@ -633,64 +728,50 @@ TechnicalLayer / TechnicalDirectory / TechnicalFile / TechnicalNamespace：
 ```rust
 pub struct DocumentText {
     pub qname: SymbolHash,
-    pub content: Vec<Inline>,
+    pub content: String,
 }
 ```
 
-一行或多行行内内容，但语义上是一段。多段使用 `DocumentParagraphList`。
+`DocumentText` 是一个段落：内容不含回车/换行，内部没有格式差异。多段使用 `DocumentParagraphList`；代码、Mermaid、HTML 使用各自的块对象。
 
-### 8.2 Inline
+### 8.2 文本规则
 
-```rust
-pub enum Inline {
-    Text(String),
-    Code(String),
-    Strong(Vec<Inline>),
-    Emphasis(Vec<Inline>),
-    Link {
-        text: Vec<Inline>,
-        href: String,
-    },
-    ConceptRef {
-        qname: SymbolHash,
-        label: Vec<Inline>,
-    },
-    Break,
-}
-```
-
-概念引用的 qname 自带目录，因此不需要三种引用变体。
+- 一个 `DocumentText` 只对应一段；
+- `content` 不允许包含 `\n` 或 `\r`；
+- 不支持加粗、斜体、行内代码、链接、概念引用等行内格式；
+- 需要在正文中提及其他概念时，直接写概念的 qname 文本。
 
 ### 8.3 DocumentList
 
 ```rust
 pub struct DocumentList {
     pub qname: SymbolHash,
-    pub next_id: u64,
-    pub ordered: bool,
-    pub items: Vec<Paragraph>,
+    pub name: SymbolHash,
+    pub parent: SymbolHash, // qname 反向链接
+    pub items: Vec<ObjectHash>,
 }
 ```
 
-列表项是 `Paragraph`，可以是 `DocumentText`、嵌套 `DocumentList`、`DocumentTopic`、代码、Mermaid 或 HTML。
+列表项只存对象的 hash，不存对象本身；每项实际是什么 kind 在运行时解析，不在类型系统里约束。
 
 ### 8.4 DocumentTopic
 
 ```rust
 pub struct DocumentTopic {
     pub qname: SymbolHash,
-    pub title: Vec<Inline>,
-    pub body: SymbolHash, // DocumentParagraphList
+    pub title: String,
+    pub body: ObjectHash, // DocumentParagraphList
 }
 ```
+
+`title` 同样是不含换行、无行内格式的一段文本。
 
 ### 8.5 DocumentParagraphList
 
 ```rust
 pub struct DocumentParagraphList {
     pub qname: SymbolHash,
-    pub next_id: u64,
-    pub items: Vec<Paragraph>,
+    pub items: Vec<ObjectHash>, // DocumentText | DocumentList | DocumentTopic | DocumentCode | DocumentMermaid | DocumentHtml
 }
 ```
 
@@ -727,17 +808,16 @@ pub struct DocumentHtml {
 
 ```text
 DocumentText
-DocumentList<DocumentText>
+DocumentList
 DocumentParagraphList
-DocumentParagraphList<DocumentTopic>
-DocumentParagraphList<DocumentHtml>
+DocumentParagraphList
+DocumentParagraphList
 DocumentMermaid
 ObjectList
 ```
 
-- `DocumentList<DocumentText>`：列表项必须是 `DocumentText`；
-- `DocumentParagraphList<DocumentTopic>`：段落项必须是 `DocumentTopic`；
-- `DocumentParagraphList<DocumentHtml>`：UI 图段落必须是 `DocumentHtml`；
+- 字段类型不携带列表项约束，类型系统里没有泛型参数；
+- 列表项的 kind 在运行时解析和校验：`DocumentList` 的项是 `DocumentText`，普通段落列表的项是 `DocumentTopic`，UI 段落列表的项是 `DocumentHtml`；
 - `ObjectList`：设计对象的结构列表，不是文档内容。
 
 ### 8.8 文档投影
@@ -749,9 +829,9 @@ ObjectList
 3. 字段内容按 `DocumentParagraphList`、`DocumentList`、`DocumentTopic` 的顺序渲染；
 4. 结构关系投影为只读段落：
    - 父类 / 父接口 -> `DocumentText`
-   - 接口列表 -> `DocumentList<DocumentText>`
-   - 混入列表 -> `DocumentList<DocumentText>`
-   - 结构依赖 -> `DocumentList<DocumentText>`
+   - 接口列表 -> `DocumentList`
+   - 混入列表 -> `DocumentList`
+   - 结构依赖 -> `DocumentList`
 5. 评论从独立评论索引加载，不进入对象内容。
 
 Markdown 和 JSON 都是投影，不是存储格式。
@@ -770,9 +850,8 @@ Markdown 和 JSON 都是投影，不是存储格式。
     },
     "responsibilities": {
       "type": "DocumentList",
-      "ordered": false,
       "items": [
-        {"type": "text", "content": [{"type": "text", "text": "负责令牌签发。"}]}
+        {"hash": "<object-hash>"}
       ]
     },
     "design_points": {
@@ -808,22 +887,22 @@ Markdown 和 JSON 都是投影，不是存储格式。
 ### 9.1 层级
 
 ```text
-Requirements
-├─ users: ObjectList<RequirementUser>
-├─ stories: ObjectList<RequirementStory>
-└─ systems: ObjectList<RequirementSystem>
-   └─ modules: ObjectList<RequirementModule>
-      └─ functions: ObjectList<RequirementFunction>
-         └─ interactions: ObjectList<RequirementInteraction>
+RequirementRoot
+├─ user: ObjectList
+├─ story: ObjectList
+└─ system: ObjectList
+   └─ modules: ObjectList
+      └─ functions: ObjectList
+         └─ interactions: ObjectList
 ```
 
 ```rust
-pub struct Requirements {
+pub struct RequirementRoot {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub users: Option<SymbolHash>,   // ObjectList<RequirementUser>
-    pub stories: Option<SymbolHash>, // ObjectList<RequirementStory>
-    pub systems: Option<SymbolHash>, // ObjectList<RequirementSystem>
+    pub user: ObjectHash,   // ObjectList
+    pub story: ObjectHash,  // ObjectList
+    pub system: ObjectHash, // ObjectList
 }
 ```
 
@@ -831,17 +910,18 @@ pub struct Requirements {
 
 ### 9.2 RequirementUser
 
-对象名称是用户姓名。
+`RequirementUser` 按无名对象处理：`name` 是自动生成的 8 位十六进制 key，不承载用户姓名；`real_name` 保存真实姓名。
 
 | 字段 | 目标类型 |
 |---|---|
-| `age` | `DocumentText` |
-| `basic_situation` | `DocumentText` |
-| `hobbies` | `DocumentText` |
-| `occupation` | `DocumentText` |
-| `typical_scenario` | `DocumentParagraphList` |
-| `needs` | `DocumentList<DocumentText>` |
-| `priority` | `DocumentText` |
+| `real_name` | `String` |
+| `age` | `String` |
+| `occupation` | `String` |
+| `situations` | `DocumentList` |
+| `hobbies` | `DocumentList` |
+| `needs` | `DocumentList` |
+| `priority` | `u8` |
+| `stories` | `Vec<SymbolHash>`，关联故事 qname 列表 |
 
 ### 9.3 RequirementStory
 
@@ -849,10 +929,12 @@ pub struct Requirements {
 
 | 字段 | 目标类型 |
 |---|---|
-| `preconditions` | `DocumentParagraphList` |
-| `frequency` | `DocumentText` |
+| `preconditions` | `DocumentList` |
+| `frequency` | `u8` |
 | `description` | `DocumentParagraphList` |
-| `related_requirements` | `DocumentList<DocumentText>` |
+| `requirement` | `DocumentList` |
+| `users` | `Vec<SymbolHash>`，关联用户 qname 列表 |
+| `functions` | `Vec<SymbolHash>`，关联功能 qname 列表 |
 
 ### 9.4 RequirementSystem
 
@@ -861,15 +943,15 @@ pub struct Requirements {
 | 字段 | 目标类型 |
 |---|---|
 | `form` | `DocumentText` |
-| `covered_users` | `DocumentList<DocumentText>` |
+| `covered_users` | `DocumentList` |
 | `closed_loop_goal` | `DocumentParagraphList` |
 | `relationships` | `DocumentParagraphList` |
-| `boundary` | `DocumentList<DocumentText>` |
+| `boundary` | `DocumentList` |
 
 结构字段：
 
 ```rust
-pub modules: Option<SymbolHash>, // ObjectList<RequirementModule>
+pub modules: ObjectHash, // ObjectList
 ```
 
 ### 9.5 RequirementModule
@@ -879,16 +961,16 @@ pub modules: Option<SymbolHash>, // ObjectList<RequirementModule>
 | 字段 | 目标类型 |
 |---|---|
 | `core_concept` | `DocumentText` |
-| `included_concepts` | `DocumentList<DocumentText>` |
+| `included_concepts` | `DocumentList` |
 | `concept_relations` | `DocumentParagraphList` |
-| `boundary` | `DocumentList<DocumentText>` |
+| `boundary` | `DocumentList` |
 
-`core_concept` 和 `included_concepts` 中的概念引用必须指向 `concepts/requirements/` 下的概念。
+`core_concept` 和 `included_concepts` 中的概念引用必须指向 `concept/requirement/` 下的概念。
 
 结构字段：
 
 ```rust
-pub functions: Option<SymbolHash>, // ObjectList<RequirementFunction>
+pub functions: ObjectHash, // ObjectList
 ```
 
 ### 9.6 RequirementFunction
@@ -903,7 +985,7 @@ pub functions: Option<SymbolHash>, // ObjectList<RequirementFunction>
 | `feedback` | `DocumentText` |
 | `description` | `DocumentParagraphList` |
 | `flow` | `DocumentMermaid` |
-| `interactions` | `ObjectList<RequirementInteraction>` |
+| `interactions` | `ObjectList` |
 
 - `flow` 是一个 Mermaid 对象，qname 为 `<function>/flow`；
 - 交互是显式对象，不从 Mermaid 解析；
@@ -916,14 +998,14 @@ pub functions: Option<SymbolHash>, // ObjectList<RequirementFunction>
 | 字段 | 目标类型 |
 |---|---|
 | `description` | `DocumentParagraphList` |
-| `ui` | `DocumentParagraphList<DocumentHtml>` |
+| `ui` | `DocumentParagraphList` |
 
 UI 图直接挂在交互下：
 
 ```text
 <interaction>/ui
-<interaction>/ui.1    DocumentHtml
-<interaction>/ui.2    DocumentHtml
+<interaction>/ui#a1b2c3d4    DocumentHtml
+<interaction>/ui#e5f60718    DocumentHtml
 ```
 
 不建 `RequirementUi` 对象。
@@ -933,34 +1015,35 @@ UI 图直接挂在交互下：
 ### 10.1 目录
 
 ```text
-concepts/domain/...
-concepts/requirements/...
-concepts/technical/...
+concept/domain/...
+concept/requirement/...
+concept/technical/...
 ```
 
 三个顶层目录固定：
 
 - `domain`：现实中存在、被公认的事物；
-- `requirements`：为了描述产品需求而发明的概念；
+- `requirement`：为了描述产品需求而发明的概念；
 - `technical`：为了实现而发明的概念。
 
 ```rust
 pub struct ConceptDirectory {
     pub qname: SymbolHash,
     pub name: SymbolHash,
-    pub parent: Option<SymbolHash>,
-    pub children: Option<SymbolHash>, // ObjectList
+    pub parent: SymbolHash,
+    pub directories: ObjectHash, // ObjectList<ConceptDirectory>
+    pub concepts: ObjectHash,    // ObjectList<Concept>
 }
 ```
 
-`concepts` 根本身也是一个 `ConceptDirectory`；`domain`、`requirements`、`technical` 是它下面三个固定目录。
+`concept` 根本身也是一个 `ConceptDirectory`；`domain`、`requirement`、`technical` 是它下面三个固定目录。
 
 同一个概念名可以在三个目录中同时存在：
 
 ```text
-concepts/domain/agent
-concepts/requirements/agent
-concepts/technical/agent
+concept/domain/agent
+concept/requirement/agent
+concept/technical/agent
 ```
 
 它们是三个独立对象，不是别名或继承关系。
@@ -970,83 +1053,74 @@ concepts/technical/agent
 ```rust
 pub struct Concept {
     pub qname: SymbolHash,
-    pub name: SymbolHash,
-    pub summary: Option<DocumentTextRef>,
-    pub explanation: Option<DocumentParagraphListRef>,
-    pub characteristics: Option<DocumentListRef>,
-    pub relations: Option<DocumentListRef>,
-    pub aliases: Option<DocumentListRef>,
-    pub links: Vec<ConceptLink>,
+    pub name: SymbolHash,        // qname 的本地 key
+    pub parent: SymbolHash,      // ConceptDirectory qname
+    pub display_name: String,    // 如“智能体”
+    pub explanation: ObjectHash, // DocumentParagraphList
 }
 ```
 
 - 概念维度由 qname 目录决定；
 - 同一目录内名称受控；不同目录允许同名；
-- `relations` 用文字说明差异和联系；
-- `links` 用结构链接表达跨维度关系。
+- `relations` 是一个 `DocumentList`，用文字说明与其他概念的差异和联系；
+- 不建独立的概念关系对象，也不存结构化的跨维度链接。
 
-### 10.3 ConceptLink
+### 10.3 与其他概念的关系
 
-```rust
-pub struct ConceptLink {
-    pub target: SymbolHash,
-    pub relation: ConceptRelation,
-}
-
-pub enum ConceptRelation {
-    Refines,
-    Realizes,
-    Corresponds,
-}
-```
-
-推荐方向：
+概念之间的关系只用文字表达，挂在 `relations` 列表下：
 
 ```text
-Requirement concept -> Domain concept      Refines
-Technical concept   -> Requirement concept Realizes
+concept/requirement/agent/relations
+concept/requirement/agent/relations#a1b2c3d4
 ```
 
-反向关系由索引推导，不存储重复反向链接。
+每个列表项是一段 `DocumentText`；需要对比、举例或引用其他概念时，直接在文字中写概念 qname，不建立额外的链接对象。
 
 ## 11. 评论
 
-### 11.1 Comment
+评论不是设计对象，不进入对象图、提交、快照、refs 或属性系统，也不做内容寻址和版本控制。评论正文直接存在评论记录里，不是单独的文档对象。
 
-```rust
-pub struct Comment {
-    pub qname: SymbolHash,
-    pub target: SymbolHash,
-    pub target_hash: Option<Hash32>,
-    pub body: Vec<Inline>,
-    pub reply_to: Option<SymbolHash>,
-    pub resolved: bool,
-    pub author: String,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
+### 11.1 存储
+
+评论存放在 `<workspace>/.arche/comments`，独立于 `objects/`、`commits/`、`refs/`：
+
+```text
+CMT1
+version: u8 = 3
+count: u32
+record:
+  id: u64
+  target: text          // 被评论对象的 qname
+  body: text            // 纯文本
+  conclusion: text      // 解决时填写，未解决为空
+  resolved_by: text     // 填写结论的智能体
+  resolved: u8
+  created_by: text
+  created_at: i64
+  updated_at: i64
 ```
+
+- `id` 单调递增，是评论的唯一标识；
+- resolve 时必须提供非空的 `conclusion` 和 `resolved_by`；
+- 每次新增或修改都原子重写整个文件；
+- 评论文件不随 push/pull 同步，不属于任何分支或提交。
 
 ### 11.2 规则
 
-- 评论不是目标对象的子对象；
-- 目标对象不存评论字段；
-- 修改评论不改变目标对象的 content hash；
-- 评论通过 `target` 挂在任意对象上；
-- 评论列表由 `View.comments` 指向的 `ObjectList<Comment>` 维护；
-- 评论 qname 为 `comments.<comment-id>`，它只表示评论在评论列表中的位置，不表示目标对象的子对象；
-- 评论索引可以按 target 重建；
-- 设计 diff 默认不比较评论；评论使用独立命令查看和比较；
-- 目标移动、重命名或删除后，评论保留为孤儿，`arche comment check` 报告。
+- 评论不是目标对象的子对象，目标对象也不存评论字段；
+- 评论通过 `target` 的 qname 挂在任意设计对象上；
+- 修改评论不改变目标对象，也不产生新的对象版本；
+- 评论不参与 `check` 的对象图校验，孤儿评论由评论自己的检查处理；
+- 设计 diff 默认不比较评论；评论使用独立命令查看和更新。
 
 可评论目标示例：
 
 ```text
 TechnicalClass
 TechnicalClass/position
-TechnicalClass/responsibilities.1
-TechnicalClass/usage.1
-RequirementInteraction/ui.1
+TechnicalClass/responsibilities#a1b2c3d4
+TechnicalClass/usage#e5f60718
+RequirementInteraction/ui#9021abcd
 ```
 
 ## 12. 存储格式
@@ -1069,6 +1143,7 @@ RequirementInteraction/ui.1
   symbols/<aa>/<bb>/<symbol-hash>
   commits/<aa>/<bb>/<commit-hash>
   packs/<pack-sha256>.pack
+  comments                  # 独立评论存储，不参与版本控制
   incoming/                 # 服务端 quarantine
   tmp/
 ```
@@ -1090,8 +1165,10 @@ RequirementInteraction/ui.1
 - 集合排序、去重；
 - 列表使用 `u32 count`；
 - 文本使用 `u32 byte_len || UTF-8`；
-- 不存可推导字段；
-- 对象文件包含类型 tag；
+- 除 schema 字段外不存可推导字段；
+- loose 对象文件为 magic、版本号、类型 tag、qname、name、parent（Root 除外）、对象字段；当前版本为 1；
+- magic 属于 loose Store 的文件封装，pack 不在每个对象前重复 magic；
+- object hash 由类型 tag、版本号和对象字段计算，是记录存储键；
 - qname、name 都是 `SymbolHash`。
 
 ### 12.3 CMT2
@@ -1099,13 +1176,13 @@ RequirementInteraction/ui.1
 提交包含：
 
 - 父提交；
-- View 对象 hash；
+- Root 对象 hash；
 - 作者、时间、消息；
 - qname → object hash 快照，覆盖该提交可见的全部对象。
 
-对象字段保存 qname，因此需要快照把 qname 解析到该提交下的具体 object hash。快照是提交的一部分，不写入目标对象；同一 qname 的历史版本由不同提交的快照区分。
+对象字段指向其他对象时保存对方的 `ObjectHash`；依赖和语义链接保存对方 qname（`SymbolHash`），因此允许环和前置引用。qname 到具体版本的解析由提交中的快照完成，快照是提交的一部分，不写入目标对象；同一 qname 的历史版本由不同提交的快照区分。
 
-评论列表通过 View 引用，但修改评论不会修改技术、需求、概念对象。
+评论列表通过 Root 引用，但修改评论不会修改技术、需求、概念对象。
 
 ### 12.4 Symbols
 
@@ -1131,9 +1208,9 @@ PAK2 包含对象、符号和提交记录。读取时优先 loose file，找不�
 
 ### 12.8 GC / repack
 
-- GC 从 refs 和 View 出发计算可达对象；
+- GC 从 refs 和 Root 出发计算可达对象；
 - 删除不可达对象、符号、提交；
-- 评论通过 View.comments 可达；
+- 评论不在对象图中，不参与 GC；
 - repack 把 loose records 收进 pack；
 - 未引用但已校验的上传记录由 GC 回收。
 
@@ -1147,6 +1224,8 @@ PAK2 包含对象、符号和提交记录。读取时优先 loose file，找不�
 - `.arche/worktree` 保存工作区对象图；
 - `.arche/HEAD` 指向当前分支/提交；
 - `.arche/source-head` 指向源码 commit。
+
+对象内容不可变，修改一个对象会产生新的 `ObjectHash`。工作区写入时会把对象图中的 `ObjectHash` 引用归一化到 qname 映射的当前版本，因此列表项和父对象始终指向最新内容；旧版本仍留在对象库中，由提交快照和 GC 管理。
 
 ### 13.2 暂存
 
@@ -1185,8 +1264,6 @@ PAK2 包含对象、符号和提交记录。读取时优先 loose file，找不�
 - Directory/File 只接受 path；
 - Namespace/Class/Struct/Enum/Interface/Method/Function/Mixin 接受 path 或行范围；
 - Part 必须 path:start-end；
-- source 字节计算 source_hash；
-- 无 source 时 source_hash 零；有 source 时非零。
 
 ## 14. 远程与传输
 
@@ -1195,17 +1272,26 @@ PAK2 包含对象、符号和提交记录。读取时优先 loose file，找不�
 | URL | 传输 |
 |---|---|
 | `/path` / `file:///path` | 本地目录 |
-| `http://host:port/<repo>` | `arche-server` HTTP |
+| `http://host:port/<repo>` | `arche_server::serve` HTTP |
 | `https://host[:port]/<repo>` | 同上，TLS |
-| `ssh://[user@]host[:port]/<path>` | SSH 上的 `arche-server --stdio` |
+| `ssh://[user@]host[:port]/<path>` | SSH 上的 `arche_server::serve_stdio` |
 
-### 14.2 arche-server
+### 14.2 服务端库与 CLI
+
+服务端是 Rust 库 `arche_server`，Foundry 可直接链接；`arche` CLI 只提供同一实现的入口：
 
 ```bash
-arche-server --root <repos-root>
-arche-server --root <repos-root> --listen 0.0.0.0:7700
-arche-server --root <repos-root> --token-file <token> --admin-token-file <admin>
-arche-server --stdio --root <repo-dir>
+arche serve --root <repos-root>
+arche serve --root <repos-root> --listen 0.0.0.0:7700
+arche serve --root <repos-root> --token <token>
+arche serve --stdio --root <repo-dir>
+```
+
+库接口：
+
+```rust
+arche_server::serve(&arche_server::ServerOptions::new(root).listen(addr).token(token))?;
+arche_server::serve_stdio(repo_root)?;
 ```
 
 HTTP API 保留：
@@ -1240,7 +1326,7 @@ POST /<repo>/push
 - forced command：
 
 ```text
-/usr/local/bin/foundry-arche-stdio <allowlist> <repos-root> <arche-server>
+/usr/local/bin/foundry-arche-stdio <allowlist> <repos-root>
 ```
 
 - 只允许指定仓库；
@@ -1308,7 +1394,7 @@ arche ls --design
 - 文件、命名空间、模块引用存在；
 - 方法签名不可变；
 - Part 必须有行范围；
-- source 和 source_hash 一致；
+- object hash 与记录键一致；
 - 依赖目标存在，依赖允许循环；
 - 继承、接口、混入、extends、on 不能成环；
 - 结构关系自动计入显式依赖；
@@ -1316,11 +1402,9 @@ arche ls --design
 - `DocumentList` 项类型正确；
 - `DocumentTopic.body` 必须是 `DocumentParagraphList`；
 - 概念引用能解析；
-- 概念链接目标存在，方向合法；
 - 需求层级完整；
 - 交互是显式对象；
 - 流程图是 Mermaid；
-- 评论 target 存在或显式标记孤儿；
 - 文档 HTML/Mermaid 格式合法。
 
 `arche doc lint` 保留参数、返回值、字段格式等规则检查。
@@ -1390,7 +1474,7 @@ arche doc check
 arche batch --file <path>
 ```
 
-参数和返回值仍使用 `DocumentList<DocumentText>`、`DocumentText`。
+参数和返回值仍使用 `DocumentList`、`DocumentText`。
 
 ### 17.4 结构
 
@@ -1427,25 +1511,22 @@ arche requirement check
 ### 17.6 概念
 
 ```bash
-arche concept mkdir concepts/domain/<dir>
-arche concept create concepts/domain/<dir>/<name> --name <term> --summary <text>
-arche concept create concepts/requirements/<dir>/<name> ...
-arche concept create concepts/technical/<dir>/<name> ...
+arche concept mkdir concept/domain/<dir>
+arche concept create concept/domain/<dir>/<name> --name <term> --summary <text>
+arche concept create concept/requirement/<dir>/<name> ...
+arche concept create concept/technical/<dir>/<name> ...
 arche concept set/show/ls/mv/rm
 arche concept feature add/rm
 arche concept relation add/rm
 arche concept alias add/rm
-arche concept link add/rm
 arche concept check
 ```
-
-概念链接命令写入 `ConceptLink`。
 
 ### 17.7 评论
 
 ```bash
-arche comment add <target> --text <text>
-arche comment resolve <qname>
+arche comment add <target> <text>
+arche comment resolve <id> --conclusion <text> --agent <agent>
 arche comment list [<target>] [--open] [--format text|json]
 arche comment clear
 arche comment check
@@ -1476,14 +1557,13 @@ arche repack
 | v1 功能 | v2 对应 |
 |---|---|
 | 设计对象创建/编辑/删除 | `arche create/edit/rm`，类型名带空间前缀 |
-| 源码锚定 | `source`、`source_hash`，Part 强制行范围 |
 | 依赖 | `explicit_dependencies` / `implicit_dependencies`，只存 qname |
 | 内部类型 | 通过 `parent` 表达，不建 `Inner*` |
 | 设计结构 System/Module/Layer | `TechnicalSystem/Module/Layer` + `ObjectList` |
 | 独立文档树 | 删除；文档字段投影 |
 | 文档 text/list/topic/block/mermaid/html | `DocumentText/List/Topic/Code/Mermaid/Html` |
-| 文档评论 | 独立 `Comment`，target 挂接 |
-| 概念空间 | 三个目录 + 一个 `Concept` 类型 + links |
+| 文档评论 | 独立评论存储，按 target 挂接，不进入对象图 |
+| 概念空间 | 三个目录 + 一个 `Concept` 类型 + 文字 relations |
 | 需求锚点文档 | 需求对象树 |
 | `doc import` / JSON / Markdown | 对象字段投影的 JSON / Markdown |
 | `doc grep/lint/check` | `arche search --text` / `arche doc lint` / `arche check` |
@@ -1514,8 +1594,8 @@ arche repack
 ### 19.1 设计空间页面
 
 - 技术树：System/Module/Layer、File/Namespace、Class/Struct/Enum/Interface/Method/Function/Mixin/Part；
-- 需求树：Requirements/User/Story/System/Module/Function/Interaction；
-- 概念树：`concepts/domain`、`concepts/requirements`、`concepts/technical`；
+- 需求树：RequirementRoot/User/Story/System/Module/Function/Interaction；
+- 概念树：`concept/domain`、`concept/requirement`、`concept/technical`；
 - 每项显示类型徽标，不依赖语言标记推断类型；
 - 长文档只加载字段/章节大纲，展开后按需获取内容；
 - Topic 和字段可折叠；
@@ -1595,7 +1675,7 @@ GET  /api/v1/projects/{project}/arche/concepts
 
 - 需求分析、交互设计、UI 设计技能改为写入需求对象；
 - 交互设计使用 `RequirementFunction.flow` Mermaid 和 `RequirementInteraction.ui` HTML；
-- 概念写作技能区分 `concepts/domain`、`concepts/requirements`、`concepts/technical`；
+- 概念写作技能区分 `concept/domain`、`concept/requirement`、`concept/technical`；
 - 同名概念必须建立 link 并写清差异。
 
 ### 20.4 agent runtime
@@ -1607,13 +1687,13 @@ GET  /api/v1/projects/{project}/arche/concepts
 
 ## 21. 实现阶段
 
-1. **对象和存储内核**：DSO2/CMT2、对象仓库、符号、View、refs、pack。
+1. **对象和存储内核**：DSO2/CMT2、对象仓库、符号、Root、refs、pack。
 2. **技术对象和文档字段**：schema、字段校验、投影、CLI 基础。
 3. **暂存和源码**：index/worktree、source、diff、commit。
 4. **远程**：PUSH2、HTTP/SSH、host sshd、ACL。
 5. **需求空间**：需求对象、交互、UI、层级校验。
-6. **概念空间**：三个目录、Concept、links、引用检查。
-7. **评论**：独立 Comment、target 索引、孤儿检查。
+6. **概念空间**：三个目录、Concept、文字 relations、引用检查。
+7. **评论**：独立存储、target 索引、孤儿检查。
 8. **搜索和校验**：search、check、lint、JSON/Markdown 投影。
 9. **Foundry UI/MR**：树、懒加载、字段投影、changes、评论。
 10. **技能和智能体**：设计写作、需求、概念、命令提示。
@@ -1648,14 +1728,13 @@ GET  /api/v1/projects/{project}/arche/concepts
 - 流程图是 Mermaid；
 - UI 图是交互下的 Html；
 - 需求节点可完整文档化；
-- 需求概念引用 `concepts/requirements`。
+- 需求概念引用 `concept/requirement`。
 
 ### 22.4 概念
 
 - 三个顶层目录存在；
 - 同一名称可在三个目录出现；
 - 概念有 qname；
-- 概念链接方向正确；
 - `relations` 说明差异；
 - `arche concept check` 通过。
 
@@ -1683,43 +1762,46 @@ GET  /api/v1/projects/{project}/arche/concepts
 - `.arche/` 对象、符号、提交、快照和临时目录；
 - worktree/index、`add`、`unstage`、`status`、`diff`、`commit`、`reset`；
 - 分支列表、创建、删除和 `checkout`；
-- `TechnicalSystem`、`TechnicalModule`、`TechnicalDirectory`、`TechnicalFile`；
+- `TechnicalSystem`、`TechnicalModule`、`TechnicalLayer`、`TechnicalDirectory`、`TechnicalFile`、`TechnicalNamespace`；
+- `TechnicalClass`、`TechnicalStruct`、`TechnicalEnum`、`TechnicalInterface`、`TechnicalMethod`、`TechnicalFunction`、`TechnicalMixin`、`TechnicalPart`；
+- `TechnicalVariable`、`TechnicalConstant`、`TechnicalMember`、`TechnicalProperty`、`TechnicalEnumValue`、`TechnicalArgument`、`TechnicalReturnValue`；
 - `DocumentText`、`DocumentList`、`DocumentParagraphList`、`DocumentTopic`、`DocumentMermaid`、`DocumentHtml`；
 - 技术、需求和概念的文档字段写入与类型校验；
 - 需求用户、故事、系统、模块、功能、交互对象；
 - `RequirementFunction.flow` 和 `RequirementInteraction.ui`；
-- 独立 `Comment`、按 target 查询、解决和 check；
-- 三个概念目录、同名概念、概念链接；
+- 独立评论存储、按 target 查询、解决和 check；
+- 三个概念目录、同名概念；
 - `search`、`check`、`show --format text|json|md`；
 - `source fetch`、`source checkout`、`source worktree`、`source status`、`source sync`（按 tracked file 建 File 对象）；
 - `add --file`（当前只级联 File、files 列表和 technical root）；
 - 本地路径远程、HTTP 远程、SSH stdio 远程；
-- `arche-server` HTTP 和 `--stdio`；
+- `arche_server` HTTP 和 `--stdio`；
 - HTTP Bearer token 客户端读取和服务端校验。
 
 ### 23.2 剩余工作
 
 #### A. 完整源码对象模型与同步
 
-当前 `source sync` 只创建 `TechnicalFile`，没有完整建立代码对象树。
+对象模型（Layer、Directory、File、Namespace、Class、Struct、Enum、Interface、Method、Function、Mixin、Part）已经存在。
+
+Arche 内部**不提供源码 AST 解析**：
+
+- `source sync` 只建立 `TechnicalDirectory` 和 `TechnicalFile`；
+- Namespace、Class、Struct、Enum、Interface、Method、Function、Mixin、Part 由技能/智能体通过 CLI 创建和维护；
+- 继承、接口、混入、`on`、`overrides`、依赖关系也由调用方写入。
 
 还需要：
 
-- `TechnicalDirectory` 树和父目录 `ObjectList`；
-- `TechnicalNamespace`；
-- `TechnicalClass`、`TechnicalStruct`、`TechnicalEnum`；
-- `TechnicalInterface`、`TechnicalMixin`；
-- `TechnicalMethod`、`TechnicalFunction`；
-- `TechnicalPart`；
-- 源码锚定 `SpanSource`、`source_hash` 和 `content_hash`；
-- 继承、接口、混入、`on`、`overrides`、依赖关系；
-- `source sync` 删除、重命名和移动对象时的 qname 迁移；
-- `add --file` 级联 Directory/Namespace/Class/Method 等对象，而不是只暂存 File 和 files 列表。
+- `source sync` 删除、重命名和移动 File/Directory 时的 qname 迁移；
+- `add --file` 按 File 关联、source 路径和 parent 链级联暂存相关对象，而不是只暂存 File 和 file 列表；
+- `add --file` 同时暂存这些对象的文档字段对象；
+- `arche check` 校验继承、接口、混入、override 和依赖。
 
 验收：
 
-- 一个真实源码仓库 sync 后能在技术空间重建 Directory/File/Namespace/Class/Method 树；
-- 重命名文件和类型时，qname、引用和文档字段正确迁移；
+- 一个真实源码仓库 sync 后得到 Directory/File 树；
+- 智能体创建的 Namespace/Class/Method 能通过 `add --file` 按文件正确暂存；
+- 重命名文件时 File 对象和目录链正确迁移；
 - `arche check` 能校验继承、接口、混入、override 和依赖。
 
 #### B. 远程协议硬化
@@ -1750,7 +1832,7 @@ GET  /api/v1/projects/{project}/arche/concepts
 
 #### C. SSH 部署
 
-当前已有 `arche-server --stdio`，但没有生产部署。
+当前已有 `arche_server::serve_stdio`，但没有生产部署。
 
 还需要：
 
@@ -1799,7 +1881,7 @@ GET  /api/v1/projects/{project}/arche/concepts
 - `design-space` 技能切换到 `arche` 命令；
 - `design-writing` 技能切换到 Arche 对象和字段；
 - 需求分析、交互设计、UI 设计技能切换到需求对象；
-- 概念维护技能切换到三个概念目录和 `concept link`；
+- 概念维护技能切换到三个概念目录和文字 relations；
 - agent runtime 的 design baseline、codesummary 和测试同步更新；
 - 技能中不再使用 `ds`、`documents/`、`field_list` 等 v1 概念。
 
@@ -1807,7 +1889,7 @@ GET  /api/v1/projects/{project}/arche/concepts
 
 - 智能体只读技能就能完成一套 Arche 技术/需求/概念设计；
 - 技能中的命令、qname、字段名和实际 CLI 一致；
-- 技能测试覆盖 `arche search`、需求交互、概念链接和评论。
+- 技能测试覆盖 `arche search`、需求交互和评论。
 
 #### F. 测试和验收
 

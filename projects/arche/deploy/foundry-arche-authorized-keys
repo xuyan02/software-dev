@@ -1,0 +1,40 @@
+#!/bin/sh
+# AuthorizedKeysCommand for Arche SSH access.
+#
+# sshd_config:
+#   AuthorizedKeysCommand /usr/local/bin/foundry-arche-authorized-keys %u %k
+#   AuthorizedKeysCommandUser nobody
+#
+# Mapping file /etc/arche/keys:
+#   ssh-ed25519 AAAAC3... project
+#
+# Each line grants one public key access to one repository. The forced
+# command embeds the repository so the client cannot request another one.
+
+set -eu
+
+user=${1:-}
+key=${2:-}
+mapping=${ARCHE_KEY_MAP:-/etc/arche/keys}
+repos_root=${ARCHE_REPOS_ROOT:-/srv/arche}
+
+if [ "$user" != "foundry-arche" ] || [ -z "$key" ] || [ ! -r "$mapping" ]; then
+    exit 0
+fi
+
+while IFS=' ' read -r allowed_key repo rest; do
+    [ -z "$allowed_key" ] && continue
+    case "$allowed_key" in \#*) continue ;; esac
+    if [ "$allowed_key" = "$key" ]; then
+        case "$repo" in
+            ""|*/*|*..*)
+                continue
+                ;;
+        esac
+        printf 'command="/usr/local/bin/foundry-arche-stdio %s %s",no-port-forwarding,no-agent-forwarding,no-pty %s\n' \
+            "$repos_root" "$repo" "$key"
+        exit 0
+    fi
+done < "$mapping"
+
+exit 0

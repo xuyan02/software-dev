@@ -1,0 +1,38 @@
+#!/bin/sh
+# Forced command for Arche SSH access.
+#
+# The authorized_keys entry embeds the allowed repository:
+#   command="/usr/local/bin/foundry-arche-stdio /srv/arche project",no-port-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA...
+#
+# The client sends:
+#   arche serve --stdio --root <repo-path>
+
+set -eu
+
+repos_root=${1:-}
+allowed_repo=${2:-}
+if [ -z "$repos_root" ] || [ -z "$allowed_repo" ]; then
+    echo "foundry-arche-stdio: missing repos root or repository" >&2
+    exit 64
+fi
+
+original=${SSH_ORIGINAL_COMMAND:-}
+set -- $original
+if [ "$#" -ne 5 ] || [ "$1" != "arche" ] || [ "$2" != "serve" ] || [ "$3" != "--stdio" ] || [ "$4" != "--root" ]; then
+    echo "foundry-arche-stdio: unsupported command" >&2
+    exit 64
+fi
+
+requested=$5
+case "$requested" in
+    "$repos_root"/*) repo=${requested#"$repos_root"/} ;;
+    /*) repo=${requested#/} ;;
+    *) repo=$requested ;;
+esac
+
+if [ "$repo" != "$allowed_repo" ]; then
+    echo "foundry-arche-stdio: repository not allowed" >&2
+    exit 77
+fi
+
+exec arche serve --stdio --root "$repos_root/$allowed_repo"

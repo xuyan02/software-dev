@@ -6,6 +6,12 @@ use sha2::{Digest, Sha256};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Hash32([u8; 32]);
 
+impl Default for Hash32 {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 impl Hash32 {
     pub const ZERO: Self = Self([0; 32]);
 
@@ -65,6 +71,12 @@ impl fmt::Display for Hash32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SymbolHash(pub Hash32);
 
+impl Default for SymbolHash {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 impl SymbolHash {
     pub const ZERO: Self = Self(Hash32::ZERO);
 
@@ -88,7 +100,25 @@ impl SymbolHash {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectHash(pub Hash32);
 
+impl From<ObjectHash> for Hash32 {
+    fn from(value: ObjectHash) -> Self {
+        value.0
+    }
+}
+
+impl Default for ObjectHash {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 impl ObjectHash {
+    pub const ZERO: Self = Self(Hash32::ZERO);
+
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+
     pub fn to_hex(self) -> String {
         self.0.to_hex()
     }
@@ -99,9 +129,46 @@ impl ObjectHash {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GitCommit(pub Hash32);
+
+impl Default for GitCommit {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
+impl GitCommit {
+    pub const ZERO: Self = Self(Hash32::ZERO);
+
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+
+    pub fn to_hex(self) -> String {
+        self.0.to_hex()
+    }
+
+    pub fn from_hex(text: &str) -> anyhow::Result<Self> {
+        Ok(Self(Hash32::from_hex(text)?))
+    }
+}
+
+impl fmt::Display for GitCommit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_hex())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct CommitHash(pub Hash32);
 
 impl CommitHash {
+    pub const ZERO: Self = Self(Hash32::ZERO);
+
+    pub fn is_zero(self) -> bool {
+        self.0.is_zero()
+    }
+
     pub fn to_hex(self) -> String {
         self.0.to_hex()
     }

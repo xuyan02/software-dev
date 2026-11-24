@@ -1,0 +1,16 @@
+[package]
+name = "arche-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Arche remote client: push, fetch, pull and clone"
+
+[lib]
+name = "arche_client"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+reqwest = { workspace = true, features = ["blocking"] }
+arche-core = { workspace = true }

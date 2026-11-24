@@ -55,9 +55,9 @@ pub fn fanout_path(root: &Path, hash: Hash32) -> PathBuf {
 }
 
 pub fn list_files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
+    let mut file = Vec::new();
     if !root.exists() {
-        return Ok(files);
+        return Ok(file);
     }
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
@@ -69,10 +69,10 @@ pub fn list_files(root: &Path) -> Result<Vec<PathBuf>> {
             if entry.file_type()?.is_dir() {
                 stack.push(path);
             } else {
-                files.push(path);
+                file.push(path);
             }
         }
     }
-    files.sort();
-    Ok(files)
+    file.sort();
+    Ok(file)
 }

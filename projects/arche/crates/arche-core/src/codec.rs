@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-use crate::hash::{Hash32, SymbolHash};
+use crate::hash::{Hash32, ObjectHash, SymbolHash};
 
 #[derive(Default)]
 pub struct Writer {
@@ -20,6 +20,10 @@ impl Writer {
         self.bytes.extend_from_slice(bytes);
     }
 
+    pub fn bytes(&mut self, bytes: &[u8]) {
+        self.raw(bytes);
+    }
+
     pub fn u32(&mut self, value: u32) {
         self.bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -32,15 +36,19 @@ impl Writer {
         self.bytes.extend_from_slice(value.as_bytes());
     }
 
-    pub fn symbol(&mut self, value: SymbolHash) {
+    pub fn object(&mut self, value: ObjectHash) {
         self.hash(value.0);
     }
 
-    pub fn opt_symbol(&mut self, value: Option<SymbolHash>) {
-        match value {
-            Some(value) => self.symbol(value),
-            None => self.hash(Hash32::ZERO),
+    pub fn hash_list(&mut self, values: &[ObjectHash]) {
+        self.u32(values.len() as u32);
+        for value in values {
+            self.hash(value.0);
         }
+    }
+
+    pub fn symbol(&mut self, value: SymbolHash) {
+        self.hash(value.0);
     }
 
     pub fn text(&mut self, value: &str) {
@@ -100,13 +108,25 @@ impl<'a> Reader<'a> {
         ))
     }
 
+    pub fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
+        self.take(len)
+    }
+
     pub fn symbol(&mut self) -> Result<SymbolHash> {
         Ok(SymbolHash(self.hash()?))
     }
 
-    pub fn opt_symbol(&mut self) -> Result<Option<SymbolHash>> {
-        let hash = self.hash()?;
-        Ok((!hash.is_zero()).then_some(SymbolHash(hash)))
+    pub fn object(&mut self) -> Result<ObjectHash> {
+        Ok(ObjectHash(self.hash()?))
+    }
+
+    pub fn hash_list(&mut self) -> Result<Vec<ObjectHash>> {
+        let count = self.u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(ObjectHash(self.hash()?));
+        }
+        Ok(values)
     }
 
     pub fn text(&mut self) -> Result<String> {

@@ -9,7 +9,7 @@ const COMMIT_VERSION: u8 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
     pub parent: Option<CommitHash>,
-    pub view: ObjectHash,
+    pub root: ObjectHash,
     pub message: String,
     pub author: String,
     pub timestamp: i64,
@@ -26,7 +26,7 @@ impl Commit {
             Some(parent) => writer.hash(parent.0),
             None => writer.hash(Hash32::ZERO),
         }
-        writer.hash(self.view.0);
+        writer.hash(self.root.0);
         writer.text(&self.message);
         writer.text(&self.author);
         writer.u64(self.timestamp as u64);
@@ -49,7 +49,7 @@ impl Commit {
         }
         let parent_hash = reader.hash()?;
         let parent = (!parent_hash.is_zero()).then_some(CommitHash(parent_hash));
-        let view = ObjectHash(reader.hash()?);
+        let root = ObjectHash(reader.hash()?);
         let message = reader.text()?;
         let author = reader.text()?;
         let timestamp = reader.u64()? as i64;
@@ -61,7 +61,7 @@ impl Commit {
         reader.finish()?;
         Ok(Self {
             parent,
-            view,
+            root,
             message,
             author,
             timestamp,
@@ -82,11 +82,11 @@ mod tests {
     fn commit_round_trip() {
         let commit = Commit {
             parent: None,
-            view: ObjectHash(Hash32::sha256(b"view")),
+            root: ObjectHash(Hash32::sha256(b"root")),
             message: "init".into(),
             author: "arche".into(),
             timestamp: 1,
-            objects: vec![(SymbolHash::of("view"), ObjectHash(Hash32::sha256(b"view")))],
+            objects: vec![(SymbolHash::of("root"), ObjectHash(Hash32::sha256(b"root")))],
         };
         assert_eq!(Commit::decode(&commit.encode()).unwrap(), commit);
     }

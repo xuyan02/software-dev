@@ -1,0 +1,15 @@
+[package]
+name = "arche-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Arche HTTP and stdio server library"
+
+[lib]
+name = "arche_server"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+arche-core = { workspace = true }

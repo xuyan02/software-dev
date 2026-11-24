@@ -102,8 +102,8 @@ mod tests {
                 ObjectHash(crate::hash::Hash32::sha256(b"technical")),
             ),
             (
-                SymbolHash::of("requirements"),
-                ObjectHash(crate::hash::Hash32::sha256(b"requirements")),
+                SymbolHash::of("requirement"),
+                ObjectHash(crate::hash::Hash32::sha256(b"requirement")),
             ),
         ]);
         assert_eq!(Snapshot::decode(&snapshot.encode()).unwrap(), snapshot);
