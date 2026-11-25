@@ -898,6 +898,23 @@ impl MergeRequestService {
             }
         }
 
+        let merged = self.load(project.id, id).await?;
+        if merged.merge_commit.is_some()
+            && !project.is_protected_design_branch(&merged.source_branch)
+        {
+            if let Err(error) = self
+                .design_space
+                .delete_branch(project, &merged.source_branch)
+                .await
+            {
+                tracing::warn!(
+                    branch = %merged.source_branch,
+                    merge_request = %merged.id,
+                    %error,
+                    "merge request merged but its source branch could not be deleted"
+                );
+            }
+        }
         if let Some(operation) = merge_operation {
             self.tasks
                 .send_operation(

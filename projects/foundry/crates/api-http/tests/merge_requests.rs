@@ -24,6 +24,7 @@ struct FakeGateway {
     source: Mutex<String>,
     digest: Mutex<String>,
     comments: AtomicUsize,
+    deleted: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -114,8 +115,9 @@ impl DesignSpaceGateway for FakeGateway {
     async fn delete_branch(
         &self,
         _project: &foundry_domain::Project,
-        _branch: &str,
+        branch: &str,
     ) -> Result<(), DesignSpaceGatewayError> {
+        self.deleted.lock().unwrap().push(branch.to_string());
         Ok(())
     }
 }
@@ -204,6 +206,7 @@ async fn harness_with_skip(skip_human_review: bool) -> Harness {
         source: Mutex::new(SOURCE.to_string()),
         digest: Mutex::new("test-content-digest".to_string()),
         comments: AtomicUsize::new(0),
+        deleted: Mutex::new(Vec::new()),
     });
     project.skip_human_review = skip_human_review;
     let service = MergeRequestService::new(
@@ -260,6 +263,10 @@ async fn skip_human_review_auto_approves_and_merges_a_new_request() {
     assert_eq!(view.task.state, foundry_domain::TaskState::Completed);
     assert_eq!(view.task.result.as_ref().unwrap().as_str(), "merged");
     assert_eq!(harness.gateway.target.lock().unwrap().as_str(), SOURCE);
+    assert_eq!(
+        harness.gateway.deleted.lock().unwrap().as_slice(),
+        ["feature".to_string()]
+    );
 }
 
 #[tokio::test]

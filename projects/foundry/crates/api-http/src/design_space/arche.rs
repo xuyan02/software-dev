@@ -8,7 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use arche_core::{Commit, CommitHash, Object, ObjectHash, Repository, SymbolHash};
+use arche_core::{
+    Commit, CommitHash, Object, ObjectHash, PropertyAccess, PropertyValue, Repository, SymbolHash,
+    priority_display,
+};
 use foundry_domain::{
     MergeRequestChange, MergeRequestChangeStatus, MergeRequestDiff, MergeRequestFieldChange,
 };
@@ -49,6 +52,17 @@ fn local_part(qname: &str) -> String {
 }
 
 fn name_of(repo: &Repository, object: &Object, qname: &str) -> String {
+    if let Ok(PropertyValue::String(display_name)) = object.get_property("display_name")
+        && !display_name.is_empty()
+    {
+        return display_name;
+    }
+    match qname {
+        "requirement/user" => return "用户".to_string(),
+        "requirement/story" => return "故事".to_string(),
+        "requirement/system" => return "系统".to_string(),
+        _ => {}
+    }
     let name = object.name();
     if name.is_zero() {
         local_part(qname)
@@ -280,24 +294,61 @@ fn collect_skeleton(repo: &Repository, commit: &Commit) -> Result<Vec<DesignSpac
 type ChildIndex = BTreeMap<String, Vec<(ObjectHash, String, String, &'static str)>>;
 
 fn children(repo: &Repository, commit: &Commit) -> Result<ChildIndex, String> {
-    let mut index: ChildIndex = BTreeMap::new();
+    let mut entries = Vec::new();
     for (qname, hash) in &commit.objects {
         let object = repo.read(*hash).map_err(|error| error.to_string())?;
         let qname = symbol(repo, *qname);
         if !is_tree_object(&qname, &object) {
             continue;
         }
-        let parent = object.parent();
-        if parent.is_zero() {
+        let name = name_of(repo, &object, &qname);
+        let kind = kind_label(&object);
+        entries.push((qname, *hash, name, kind, object));
+    }
+
+    // Root spaces such as `requirement` own their items through ObjectLists
+    // (`requirement/user`, `requirement/story`, `requirement/system`). The
+    // item's `parent` field points at the root, so using parent alone would
+    // render every user/story/system as a sibling of those list nodes. Use the
+    // list membership for items held by a visible skeleton list instead.
+    let by_qname = entries
+        .iter()
+        .map(|(qname, _, _, _, _)| qname.clone())
+        .collect::<BTreeSet<_>>();
+    let by_hash = entries
+        .iter()
+        .map(|(qname, hash, _, _, _)| (*hash, qname.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut list_parent: BTreeMap<String, String> = BTreeMap::new();
+    for (qname, _, _, _, object) in &entries {
+        if !is_skeleton_qname(qname) || !qname.starts_with("requirement/") {
             continue;
         }
-        let parent = symbol(repo, parent);
-        index.entry(parent).or_default().push((
-            *hash,
-            qname.clone(),
-            name_of(repo, &object, &qname),
-            kind_label(&object),
-        ));
+        let Object::ObjectList(list) = object else {
+            continue;
+        };
+        for item in &list.items() {
+            if let Some(item_qname) = by_hash.get(item)
+                && by_qname.contains(item_qname)
+            {
+                list_parent.insert(item_qname.clone(), qname.clone());
+            }
+        }
+    }
+
+    let mut index: ChildIndex = BTreeMap::new();
+    for (qname, hash, name, kind, object) in entries {
+        let parent = list_parent
+            .get(&qname)
+            .cloned()
+            .unwrap_or_else(|| symbol(repo, object.parent()));
+        if parent.is_empty() {
+            continue;
+        }
+        index
+            .entry(parent)
+            .or_default()
+            .push((hash, qname, name, kind));
     }
     for values in index.values_mut() {
         values.sort_by(|left, right| left.1.cmp(&right.1));
@@ -396,7 +447,7 @@ pub(super) fn detail(path: &Path, hash: &str, branch: &str) -> Result<DesignSpac
     let elements = collect_elements(&repo, &commit)?;
     let found = element(&elements, hash).ok_or_else(|| format!("对象不存在: {hash}"))?;
     let object = repo.read(found.hash).map_err(|error| error.to_string())?;
-    let design = design_markdown(&repo, &object)?;
+    let design = design_markdown(&repo, &object, &elements)?;
     let comments = repo
         .comment_list_on(branch, Some(&found.qname), false)
         .map_err(|error| error.to_string())?
@@ -454,7 +505,7 @@ pub(super) fn section(
         return Err(format!("章节不属于该对象: {qname}"));
     }
     let object = repo.read(found.hash).map_err(|error| error.to_string())?;
-    design_markdown(&repo, &object)?.ok_or_else(|| "对象没有文档字段".to_string())
+    design_markdown(&repo, &object, &elements)?.ok_or_else(|| "对象没有文档字段".to_string())
 }
 
 pub(super) fn source(
@@ -688,14 +739,124 @@ fn field_map(repo: &Repository, hash: ObjectHash) -> Result<BTreeMap<String, Str
     Ok(map)
 }
 
-fn design_markdown(repo: &Repository, object: &Object) -> Result<Option<String>, String> {
+fn attribute_label(object: &Object, name: &str) -> String {
+    match name {
+        "display_name" if matches!(object, Object::RequirementUser(_)) => "姓名".to_string(),
+        "display_name" => "名称".to_string(),
+        "age" => "年龄".to_string(),
+        "occupation" => "职业".to_string(),
+        "priority" => "优先级".to_string(),
+        "stories" => "关联故事".to_string(),
+        "frequency" => "频率".to_string(),
+        "users" => "参与用户".to_string(),
+        "protagonist" => "主角".to_string(),
+        "functions" => "涉及功能".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn doc_field_label(object: &Object, field: &str) -> String {
+    let label = match (object, field) {
+        (Object::RequirementUser(_), "situations") => "处境",
+        (Object::RequirementUser(_), "hobbies") => "爱好",
+        (Object::RequirementUser(_), "needs") => "需求",
+        (Object::RequirementStory(_), "preconditions") => "前置条件",
+        (Object::RequirementStory(_), "description") => "用户旅程",
+        (Object::RequirementStory(_), "requirement") => "需求",
+        (Object::RequirementStory(_), "flow") => "流程图",
+        (Object::RequirementSystem(_), "form") => "形态",
+        (Object::RequirementSystem(_), "covered_users") => "覆盖用户",
+        (Object::RequirementSystem(_), "closed_loop_goal") => "闭环目标",
+        (Object::RequirementSystem(_), "relationships") => "系统关系",
+        (Object::RequirementSystem(_), "boundary") => "边界",
+        (Object::RequirementModule(_), "core_concept") => "核心概念",
+        (Object::RequirementModule(_), "included_concepts") => "包含概念",
+        (Object::RequirementModule(_), "concept_relations") => "概念关系",
+        (Object::RequirementModule(_), "boundary") => "边界",
+        (Object::RequirementFunction(_), "initiator") => "发起者",
+        (Object::RequirementFunction(_), "system_change") => "系统变化",
+        (Object::RequirementFunction(_), "preconditions") => "前置条件",
+        (Object::RequirementFunction(_), "feedback") => "反馈",
+        (Object::RequirementFunction(_), "description") => "描述",
+        (Object::RequirementFunction(_), "flow") => "流程图",
+        (Object::RequirementInteraction(_), "description") => "描述",
+        (Object::RequirementInteraction(_), "ui") => "界面",
+        _ => field,
+    };
+    label.to_string()
+}
+
+fn qname_link(qname: &str, elements: &[Element]) -> String {
+    if let Some(element) = elements.iter().find(|element| element.qname == qname) {
+        let label = if element.name.is_empty() {
+            qname
+        } else {
+            element.name.as_str()
+        };
+        format!("[{label}](#ds-{})", element.hash.to_hex())
+    } else {
+        qname.to_string()
+    }
+}
+
+fn attribute_value(
+    repo: &Repository,
+    object: &Object,
+    name: &str,
+    value: String,
+    elements: &[Element],
+) -> String {
+    if name == "priority" {
+        if let Ok(priority) = value.parse::<u8>() {
+            return priority_display(priority);
+        }
+    }
+    match object.get_property(name) {
+        Ok(PropertyValue::StringRef(hash)) if !hash.is_zero() => repo
+            .resolve(hash)
+            .map(|qname| qname_link(&qname, elements))
+            .unwrap_or(value),
+        Ok(PropertyValue::StringRefList(values)) => values
+            .as_slice()
+            .iter()
+            .map(|hash| {
+                repo.resolve(*hash)
+                    .map(|qname| qname_link(&qname, elements))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(|values| values.join("、"))
+            .unwrap_or(value),
+        _ => value,
+    }
+}
+
+fn design_markdown(
+    repo: &Repository,
+    object: &Object,
+    elements: &[Element],
+) -> Result<Option<String>, String> {
     let mut out = String::new();
+    let attributes = repo
+        .object_attributes(object)
+        .map_err(|error| error.to_string())?;
+    if !attributes.is_empty() {
+        out.push_str("## 属性\n\n");
+        for (name, value) in attributes {
+            let value = attribute_value(repo, object, &name, value, elements);
+            out.push_str(&format!(
+                "- {}：{}\n",
+                attribute_label(object, &name),
+                value
+            ));
+        }
+        out.push('\n');
+    }
     for (field, value) in arche_core::repo::doc_fields(object) {
         if value.is_zero() {
             continue;
         }
         let field_object = repo.read(value).map_err(|error| error.to_string())?;
-        out.push_str(&format!("## {field}\n\n"));
+        out.push_str(&format!("## {}\n\n", doc_field_label(object, field)));
         render_block(repo, &field_object, 3, &mut out)?;
         out.push('\n');
     }
@@ -811,6 +972,71 @@ mod tests {
         assert!(branches(temp.path()).unwrap().contains(&branch));
         assert_eq!(content_digest(temp.path(), &head).unwrap().len(), 64);
         assert_eq!(comment_count(temp.path(), &branch, &head).unwrap(), 0);
+    }
+
+    #[test]
+    fn requirement_items_nest_under_their_list_nodes() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let (user, _) = repo.create_requirement_user("protagonist", "主角").unwrap();
+        let user = repo.resolve(user).unwrap();
+        repo.set_scalar(&user, "age", "35").unwrap();
+        repo.set_scalar(&user, "occupation", "产品设计师").unwrap();
+        repo.set_scalar(&user, "priority", "2").unwrap();
+        let (story, _) = repo.create_requirement_story("journey").unwrap();
+        let story = repo.resolve(story).unwrap();
+        repo.set_refs(&user, "stories", &[story]).unwrap();
+        repo.create_requirement_system("sys").unwrap();
+        repo.add_all().unwrap();
+        repo.commit_index("requirements", true).unwrap();
+        let branch = repo.current_branch().unwrap();
+
+        let overview = overview(temp.path(), &branch).unwrap();
+        let members = |qname: &str| {
+            overview
+                .elements
+                .iter()
+                .find(|element| element.qname == qname)
+                .map(|element| element.members.clone())
+                .unwrap_or_default()
+        };
+        let root = members("requirement");
+        assert!(root.contains(&"requirement/user".to_string()));
+        assert!(root.contains(&"requirement/story".to_string()));
+        assert!(root.contains(&"requirement/system".to_string()));
+        assert!(!root.contains(&user));
+        assert!(!root.contains(&"requirement/story/journey".to_string()));
+        assert!(members("requirement/user").contains(&user));
+        assert!(members("requirement/story").contains(&"requirement/story/journey".to_string()));
+        assert!(members("requirement/system").contains(&"requirement/system/sys".to_string()));
+        for (qname, label) in [
+            ("requirement/user", "用户"),
+            ("requirement/story", "故事"),
+            ("requirement/system", "系统"),
+        ] {
+            let element = overview
+                .elements
+                .iter()
+                .find(|element| element.qname == qname)
+                .expect("skeleton list");
+            assert_eq!(element.name, label);
+        }
+
+        let user_element = overview
+            .elements
+            .iter()
+            .find(|element| element.qname == user)
+            .expect("user element");
+        assert_eq!(user_element.name, "主角");
+        let user_hash = repo.find_by_qname(&user).unwrap();
+        let detail = detail(temp.path(), &user_hash.to_hex(), &branch).unwrap();
+        let design = detail.design.unwrap_or_default();
+        assert!(design.contains("姓名：主角"), "{design}");
+        assert!(design.contains("年龄：35"), "{design}");
+        assert!(design.contains("职业：产品设计师"), "{design}");
+        assert!(design.contains("优先级：主要用户（primary）"), "{design}");
+        assert!(design.contains("[journey](#ds-"), "{design}");
+        assert!(!design.contains("[requirement/story/journey]"), "{design}");
     }
 
     #[test]

@@ -1052,8 +1052,8 @@ impl RequirementUser {
     pub fn parent(&self) -> StringRef {
         StringRef(self.parent)
     }
-    pub fn real_name(&self) -> &str {
-        &self.real_name
+    pub fn display_name(&self) -> &str {
+        &self.display_name
     }
     pub fn age(&self) -> &str {
         &self.age
@@ -1105,6 +1105,12 @@ impl RequirementStory {
     }
     pub fn functions(&self) -> StringRefList {
         StringRefList(self.functions.clone())
+    }
+    pub fn protagonist(&self) -> StringRef {
+        StringRef(self.protagonist)
+    }
+    pub fn flow(&self) -> ObjectRef {
+        ObjectRef(self.flow)
     }
 }
 

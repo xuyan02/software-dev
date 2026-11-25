@@ -7,7 +7,7 @@ use foundry_shared::Config;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GitCredential {
@@ -56,18 +56,53 @@ impl GitHubApp {
             .map_err(|error| format!("read GitHub App private key {}: {error}", path.display()))?;
         let key = EncodingKey::from_rsa_pem(&pem)
             .map_err(|error| format!("parse GitHub App private key: {error}"))?;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|error| format!("build GitHub API client: {error}"))?;
         Ok(Some(Self {
             app_id,
             api_base: config.github_api_base.trim_end_matches('/').to_string(),
             key,
-            client: reqwest::Client::new(),
+            client,
         }))
+    }
+
+    /// GitHub's API occasionally drops connections. Retry transport errors
+    /// and transient server responses so one network hiccup does not fail an
+    /// agent task before it starts.
+    async fn send_retry(
+        &self,
+        request: reqwest::RequestBuilder,
+        label: &str,
+    ) -> Result<reqwest::Response, String> {
+        let mut last = String::new();
+        for attempt in 0..3 {
+            let Some(request) = request.try_clone() else {
+                return Err(format!("{label}: request body cannot be retried"));
+            };
+            match request.send().await {
+                Ok(response)
+                    if response.status().is_server_error()
+                        || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    last = format!("HTTP {}", response.status());
+                }
+                Ok(response) => return Ok(response),
+                Err(error) => last = error.to_string(),
+            }
+            if attempt < 2 {
+                tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+            }
+        }
+        Err(format!("{label}: {last}"))
     }
 
     pub async fn token_for_repo(&self, repo_url: &str) -> Result<GitCredential, String> {
         let coordinates = repo_coordinates(repo_url)?;
         let jwt = self.jwt()?;
-        let installation = self
+        let request = self
             .client
             .get(format!(
                 "{}/repos/{}/{}/installation",
@@ -75,10 +110,10 @@ impl GitHubApp {
             ))
             .header("Authorization", format!("Bearer {jwt}"))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "foundry-control-plane")
-            .send()
-            .await
-            .map_err(|error| format!("GitHub installation lookup: {error}"))?;
+            .header("User-Agent", "foundry-control-plane");
+        let installation = self
+            .send_retry(request, "GitHub installation lookup")
+            .await?;
         if !installation.status().is_success() {
             return Err(format!(
                 "GitHub App is not installed for {}/{}: {}",
@@ -91,7 +126,7 @@ impl GitHubApp {
             .json()
             .await
             .map_err(|error| format!("GitHub installation response: {error}"))?;
-        let response = self
+        let request = self
             .client
             .post(format!(
                 "{}/app/installations/{}/access_tokens",
@@ -100,10 +135,8 @@ impl GitHubApp {
             .header("Authorization", format!("Bearer {jwt}"))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "foundry-control-plane")
-            .json(&serde_json::json!({ "repositories": [coordinates.repo] }))
-            .send()
-            .await
-            .map_err(|error| format!("GitHub access token: {error}"))?;
+            .json(&serde_json::json!({ "repositories": [coordinates.repo] }));
+        let response = self.send_retry(request, "GitHub access token").await?;
         if !response.status().is_success() {
             return Err(format!(
                 "GitHub access token request failed: {}",

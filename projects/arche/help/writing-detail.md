@@ -62,7 +62,7 @@ arche concept create concept/domain/identity/agent \
 - 改名是设计变化：同步更新所有引用、文档内容和概念。
 - 审阅者遇到看不懂、有歧义的名字必须提出质疑。
 
-qname 只能包含字母、数字、`/`、`#`。中文名称放 `display_name` / `real_name`，
+qname 只能包含字母、数字、`/`、`#`。中文名称放 `display_name`，
 不要放进 qname。
 
 ## 2. 如何选择对象类型
@@ -328,29 +328,37 @@ Part 不关联设计文档，不建文档字段。
 
 ### 3.13 Requirement 对象
 
+定位：
+
+- RequirementSystem：用户可感知的一个完整软件，例如“开发系统安卓端”；
+- RequirementModule：围绕一个需求概念的一组功能，完成该概念的功能闭环，例如“账户管理”；
+- RequirementFunction：用户与系统的一次有意义的交互，或系统自身的一次有意义的动作，
+  标准是产生有意义的系统数据变化或信息展示，例如“创建单据”；
+- RequirementInteraction：用户对系统的一次操作或观察、或系统的一次通知，本身可能不产生
+  有意义的系统变化，例如“填写单据名称”；若干交互共同构成一次功能。
+
 RequirementUser：
 
-```text
-real_name      String
-age            String
-occupation     String
-situations     DocumentList
-hobbies        DocumentList
-needs          DocumentList
-priority       u8
-stories        Vec<SymbolHash>
-```
+用户字段、`display_name`、`situations` 和 `needs` 的完整写作规则见
+`arche help requirement-user`。
 
-RequirementStory：
+RequirementStory（v2）：
 
 ```text
-preconditions        DocumentList
-frequency            u8
-description          DocumentParagraphList
-requirement          DocumentList
-users                Vec<SymbolHash>
-functions            Vec<SymbolHash>
+preconditions        DocumentList          前置条件
+frequency            u8                    频率
+users                Vec<SymbolHash>       参与本故事的所有 RequirementUser
+protagonist          SymbolHash            主角，users 中的一个 RequirementUser
+description          DocumentParagraphList 完整用户旅程，普通段落
+flow                 DocumentMermaid       用户旅程流程图
+functions            Vec<SymbolHash>       故事中出现过的 RequirementFunction
+requirement          DocumentList          每项满足用户的什么需求
 ```
+
+故事正文用连续普通段落写完整旅程：主角目标、每一步调用的功能、其他用户如何配合、
+每步结果。`flow` 画同一旅程。`users`、`protagonist`、`functions` 用
+`arche update <story> --ref <field>=<qname>[,<qname>...]` 写入。详见
+`arche help story`。
 
 RequirementSystem：
 
@@ -562,9 +570,17 @@ arche commit -m "initial design"
 arche create requirement-system warehouse
 arche create requirement-module inbound --parent requirement/system/warehouse
 arche create requirement-function receive --parent \
-  requirement/system/warehouse/module/inbound
+  requirement/system/warehouse/inbound
 arche doc text set requirement/system/warehouse form "仓库管理系统"
 arche doc list item add requirement/system/warehouse covered_users "仓管员"
+arche create requirement-story receive-goods
+arche update requirement/story/receive-goods \
+  --ref users=requirement/user/<id>
+arche update requirement/story/receive-goods \
+  --ref protagonist=requirement/user/<id>
+arche update requirement/story/receive-goods \
+  --ref functions=requirement/system/warehouse/inbound/receive
+arche doc mermaid set requirement/story/receive-goods flow "graph TD; A-->B;"
 ```
 
 ### 5.3 概念

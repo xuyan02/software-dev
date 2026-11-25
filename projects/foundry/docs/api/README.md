@@ -446,7 +446,7 @@ POST /api/v1/projects/{project}/merge-requests/{id}/merge
 
 ## Design-space 合并请求
 
-合并请求保存源/目标分支、创建时的 commit 和合并结果；审批状态从关联 Task 派生，审批、评论和操作都走 Task。
+合并请求保存源/目标分支、创建时的 commit 和合并结果；审批状态从关联 Task 派生，审批、评论和操作都走 Task。合并成功后平台自动删除源分支（受保护分支除外）；再次删除已删除的分支是幂等操作。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

@@ -3352,6 +3352,12 @@ fn element_kind_label(kind: &str) -> &str {
         "document-block" => "代码块",
         "document-mermaid" => "流程图",
         "document-html" => "HTML 预览",
+        "requirement-user" => "需求用户",
+        "requirement-story" => "需求故事",
+        "requirement-system" => "需求系统",
+        "requirement-module" => "需求模块",
+        "requirement-function" => "需求功能",
+        "requirement-interaction" => "交互",
         other => other,
     }
 }
@@ -3504,6 +3510,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
             r#"<span class="ds-chip">{}</span>"#,
             escape(document_chip(&detail.kind))
         )
+    } else if detail.kind.starts_with("requirement-") {
+        r#"<span class="ds-chip">需求</span>"#.to_string()
     } else if detail.lang.is_empty() {
         r#"<span class="ds-chip">概念</span>"#.to_string()
     } else {
@@ -3516,6 +3524,8 @@ pub fn design_space_element(detail: &DesignSpaceDetail, source_url: &str) -> Str
         "目录规则".to_string()
     } else if is_document {
         "文档".to_string()
+    } else if detail.kind.starts_with("requirement-") {
+        "需求对象".to_string()
     } else if detail.path.is_empty() {
         "无源码锚点".to_string()
     } else if detail.start_line == 0 {
@@ -4598,11 +4608,24 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
       if (!response.ok) throw new Error('HTTP ' + response.status);
       detailEl.innerHTML = await response.text();
       bindTabs();
+      bindElementLinks();
       bindLazySections();
       renderMermaid(detailEl).catch(() => {});
       renderHtmlPreviews(detailEl);
     } catch (error) {
       detailEl.replaceChildren(el('div', 'ds-source-error', '无法加载元素：' + error.message));
+    }
+  }
+
+  function bindElementLinks() {
+    for (const link of detailEl.querySelectorAll('a[href^="#ds-"]')) {
+      link.addEventListener('click', (event) => {
+        const hash = link.getAttribute('href').slice(4);
+        const target = (data.elements || []).find((item) => String(item.hash) === hash);
+        if (!target) return;
+        event.preventDefault();
+        select(target);
+      });
     }
   }
 

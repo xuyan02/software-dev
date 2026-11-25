@@ -137,7 +137,7 @@ impl Object {
     }
 
     pub fn save(&mut self, store: &dyn Store) -> Result<ObjectHash> {
-        let mut output = store.create_object(OBJECT_VERSION, self.kind())?;
+        let mut output = store.create_object(object_version(self.kind()), self.kind())?;
         let object_hash = match self {
             Self::TechnicalRoot(value) => value.save(output.as_mut())?,
             Self::RequirementRoot(value) => value.save(output.as_mut())?,
@@ -187,6 +187,16 @@ impl Object {
         Ok(hash)
     }
 
+    /// Compute the canonical hash at a stored object-format version. Only the
+    /// object kinds with multiple versions differ from the current version.
+    pub(crate) fn compute_object_hash_for_version(&self, version: u8) -> Hash32 {
+        match self {
+            Self::RequirementUser(value) => value.compute_object_hash(version),
+            Self::RequirementStory(value) => value.compute_object_hash(version),
+            _ => self.compute_object_hash(),
+        }
+    }
+
     pub fn compute_object_hash(&self) -> Hash32 {
         match self {
             Self::TechnicalRoot(value) => value.compute_object_hash(OBJECT_VERSION),
@@ -204,8 +214,12 @@ impl Object {
             Self::DocumentMermaid(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::DocumentHtml(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::Concept(value) => value.compute_object_hash(OBJECT_VERSION),
-            Self::RequirementUser(value) => value.compute_object_hash(OBJECT_VERSION),
-            Self::RequirementStory(value) => value.compute_object_hash(OBJECT_VERSION),
+            Self::RequirementUser(value) => {
+                value.compute_object_hash(object_version(ObjectKind::RequirementUser))
+            }
+            Self::RequirementStory(value) => {
+                value.compute_object_hash(object_version(ObjectKind::RequirementStory))
+            }
             Self::RequirementSystem(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::RequirementModule(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::RequirementFunction(value) => value.compute_object_hash(OBJECT_VERSION),
@@ -984,7 +998,7 @@ impl Concept {
 impl ObjectCodec for RequirementUser {
     fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
         match input.version() {
-            1 => self.load_v1(input),
+            1 | 2 => self.load_v1(input),
             version => bail!("unsupported RequirementUser version {version}"),
         }
     }
@@ -994,7 +1008,7 @@ impl ObjectCodec for RequirementUser {
         output.symbol(self.qname);
         output.symbol(self.name);
         output.symbol(self.parent);
-        output.text(&self.real_name);
+        output.text(&self.display_name);
         output.text(&self.age);
         output.text(&self.occupation);
         output.object(self.situations);
@@ -1011,7 +1025,8 @@ impl RequirementUser {
         self.qname = input.symbol()?;
         self.name = input.symbol()?;
         self.parent = input.symbol()?;
-        self.real_name = input.text()?;
+        // v1 named this field real_name; v2 renamed it to display_name.
+        self.display_name = input.text()?;
         self.age = input.text()?;
         self.occupation = input.text()?;
         self.situations = input.object()?;
@@ -1027,7 +1042,7 @@ impl RequirementUser {
         object.symbol(self.qname);
         object.symbol(self.name);
         object.symbol(self.parent);
-        object.text(&self.real_name);
+        object.text(&self.display_name);
         object.text(&self.age);
         object.text(&self.occupation);
         object.hash(self.situations);
@@ -1043,6 +1058,7 @@ impl ObjectCodec for RequirementStory {
     fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
         match input.version() {
             1 => self.load_v1(input),
+            2 => self.load_v2(input),
             version => bail!("unsupported RequirementStory version {version}"),
         }
     }
@@ -1058,6 +1074,10 @@ impl ObjectCodec for RequirementStory {
         output.object(self.requirement);
         output.symbols(&self.users);
         output.symbols(&self.functions);
+        if output.version() >= 2 {
+            output.symbol(self.protagonist);
+            output.object(self.flow);
+        }
         Ok(object_hash)
     }
 }
@@ -1073,6 +1093,16 @@ impl RequirementStory {
         self.requirement = input.object()?;
         self.users = input.symbols()?;
         self.functions = input.symbols()?;
+        // v1 had no protagonist or flow field.
+        self.protagonist = SymbolHash::ZERO;
+        self.flow = ObjectHash::ZERO;
+        Ok(())
+    }
+
+    fn load_v2(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.load_v1(input)?;
+        self.protagonist = input.symbol()?;
+        self.flow = input.object()?;
         Ok(())
     }
 
@@ -1087,6 +1117,10 @@ impl RequirementStory {
         object.hash(self.requirement);
         object.symbols(&self.users);
         object.symbols(&self.functions);
+        if version >= 2 {
+            object.symbol(self.protagonist);
+            object.hash(self.flow);
+        }
         object.finish()
     }
 }
@@ -2557,7 +2591,7 @@ mod tests {
                 qname: sym("requirement/user/u"),
                 name: sym("u"),
                 parent: sym("requirement"),
-                real_name: "Alice".to_owned(),
+                display_name: "Alice".to_owned(),
                 age: "30".to_owned(),
                 occupation: "engineer".to_owned(),
                 situations: b,
@@ -2576,6 +2610,8 @@ mod tests {
                 requirement: d,
                 users: Vec::new(),
                 functions: Vec::new(),
+                protagonist: sym("requirement/user/u"),
+                flow: a,
             }),
             Object::RequirementSystem(RequirementSystem {
                 qname: sym("requirement/system/sys"),

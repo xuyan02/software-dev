@@ -420,7 +420,7 @@ impl Object {
         qname: SymbolHash,
         name: SymbolHash,
         parent: SymbolHash,
-        real_name: String,
+        display_name: String,
         age: String,
         occupation: String,
         situations: ObjectHash,
@@ -433,7 +433,7 @@ impl Object {
             qname,
             name,
             parent,
-            real_name,
+            display_name,
             age,
             occupation,
             situations,
@@ -454,6 +454,8 @@ impl Object {
         requirement: ObjectHash,
         users: Vec<SymbolHash>,
         functions: Vec<SymbolHash>,
+        protagonist: SymbolHash,
+        flow: ObjectHash,
     ) -> Self {
         Self::RequirementStory(RequirementStory {
             qname,
@@ -465,6 +467,8 @@ impl Object {
             requirement,
             users,
             functions,
+            protagonist,
+            flow,
         })
     }
 

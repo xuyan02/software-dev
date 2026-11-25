@@ -30,7 +30,7 @@
 <parent-qname>/<name>#<hash8>
 ```
 
-qname 只能包含字母、数字、`/`、`#`。中文名称放在 `display_name` / `real_name` 等字段，不放进 qname。
+qname 只能包含字母、数字、`/`、`#`。中文名称放在 `display_name` 等字段，不放进 qname。
 
 ## 3. 技术对象
 
@@ -184,12 +184,16 @@ arche source changes
 ## 8. 需求和概念
 
 ```bash
-arche create requirement-user <real-name>
+arche create requirement-user <role-id> --display-name <假想角色姓名>
+# 用户是假想角色，不是真实人物；字段和写作规则见 arche help requirement-user。
 arche create requirement-story <name>
 arche create requirement-system <name>
 arche create requirement-module <name> --parent <system>
 arche create requirement-function <name> --parent <module>
 arche create requirement-interaction <name> --parent <function>
+
+arche update <qname> [与 create 相同的字段参数]
+arche update <qname> --field <字段>=<值> --ref <引用字段>=<目标>[,<目标>...]
 
 arche concept mkdir <qname>
 arche concept create <qname> --name <display-name> --explanation "说明"

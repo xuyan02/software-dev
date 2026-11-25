@@ -12,7 +12,8 @@ impl PostgresStore {
         &self,
     ) -> Result<Vec<(Uuid, Uuid, String, Uuid)>, RepoError> {
         sqlx::query_as(
-            "select t.id, t.project_id, t.workflow, min(a.account_id) \
+            "select t.id, t.project_id, t.workflow, \
+                    (array_agg(a.account_id order by a.account_id))[1] \
              from tasks t \
              join task_actors a on a.task_id = t.id and a.active and a.role_key = 'acceptor' \
              where t.state = 'in_progress' \

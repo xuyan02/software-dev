@@ -163,6 +163,56 @@ fn built_in_help_covers_objects_and_fields() {
     let text = String::from_utf8(fields.stdout).unwrap();
     assert!(text.contains("TechnicalClass"));
     assert!(text.contains("DocumentParagraphList"));
+
+    let story = arche().args(["help", "story"]).output().unwrap();
+    assert!(story.status.success(), "{story:?}");
+    let text = String::from_utf8(story.stdout).unwrap();
+    assert!(text.contains("RequirementStory"));
+    assert!(text.contains("arche create requirement-story"));
+    assert!(text.contains("protagonist"));
+    assert!(text.contains("用户旅程"));
+    assert!(text.contains("arche update"));
+    assert!(text.contains("--ref users="));
+
+    let requirement = arche().args(["help", "requirement"]).output().unwrap();
+    let requirement = String::from_utf8(requirement.stdout).unwrap();
+    assert!(requirement.contains("用户划分原则"));
+    assert!(requirement.contains("公司职员"));
+    assert!(requirement.contains("需求完整性原则"));
+    assert!(requirement.contains("一组故事完备覆盖"));
+    assert!(requirement.contains("退货"));
+    assert!(requirement.contains("每个功能都必须至少被一个故事覆盖"));
+    assert!(requirement.contains("功能必须闭环"));
+    assert!(requirement.contains("arche help requirement-user"));
+
+    let user = arche().args(["help", "requirement-user"]).output().unwrap();
+    assert!(user.status.success(), "{user:?}");
+    let user = String::from_utf8(user.stdout).unwrap();
+    assert!(user.contains("字段写作说明（统一格式）"));
+    assert!(user.contains("用户设计原则"));
+    assert!(user.contains("学生"));
+    assert!(user.contains("公司职员"));
+    assert!(user.contains("操作路径"));
+    assert!(user.contains("arche update <user-qname>"));
+    assert!(user.contains("假想使用者"));
+    assert!(user.contains("不是真实人物"));
+    assert!(user.contains("禁止使用真实人物"));
+    assert!(user.contains("situations  DocumentList"));
+    assert!(user.contains("罗大虎"));
+    assert!(user.contains("needs  DocumentList"));
+    assert!(user.contains("自己专心负责设计环节"));
+
+    for (topic, expected) in [
+        ("requirement-system", "用户可感知的一个完整软件"),
+        ("requirement-module", "完成与该概念相关的功能闭环"),
+        ("requirement-function", "有意义的系统数据变化或信息展示"),
+        ("requirement-interaction", "若干次交互共同构成一次功能"),
+    ] {
+        let output = arche().args(["help", topic]).output().unwrap();
+        assert!(output.status.success(), "{topic}: {output:?}");
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(expected), "{topic}: {text}");
+    }
 }
 
 fn arche() -> Command {
@@ -359,6 +409,215 @@ fn init_create_show() {
         .expect("run arche requirement create module");
     assert!(module.status.success(), "{:?}", module);
 
+    let user = arche()
+        .current_dir(temp.path())
+        .args([
+            "create",
+            "requirement-user",
+            "project-sponsor",
+            "--display-name",
+            "李明",
+            "--age",
+            "35",
+            "--occupation",
+            "管理员",
+            "--priority",
+            "primary",
+            "--situation",
+            "负责首次部署",
+            "--need",
+            "能够初始化平台",
+        ])
+        .output()
+        .expect("run arche create requirement-user");
+    assert!(user.status.success(), "{:?}", user);
+    let stdout = String::from_utf8(user.stdout).unwrap();
+    assert!(stdout.contains("requirement/user/"));
+    let user_qname = stdout.lines().next().expect("user qname").to_string();
+    let shown_user = arche()
+        .current_dir(temp.path())
+        .args(["show", &user_qname])
+        .output()
+        .expect("run arche show user");
+    let shown_text = String::from_utf8(shown_user.stdout).unwrap();
+    assert!(shown_text.contains("occupation: 管理员"), "{shown_text}");
+    assert!(shown_text.contains("age: 35"), "{shown_text}");
+    assert!(
+        shown_text.contains("priority: 主要用户（primary）"),
+        "{shown_text}"
+    );
+    let shown_json = arche()
+        .current_dir(temp.path())
+        .args(["show", &user_qname, "--format", "json"])
+        .output()
+        .expect("run arche show user JSON");
+    let shown_json = String::from_utf8(shown_json.stdout).unwrap();
+    assert!(shown_json.contains("\"display_name\":\"李明\""));
+    assert!(shown_json.contains("\"priority\":\"primary\""));
+    assert!(shown_json.contains("\"occupation\":\"管理员\""));
+    assert!(shown_json.contains("负责首次部署"));
+    assert!(shown_json.contains("能够初始化平台"));
+
+    let updated = arche()
+        .current_dir(temp.path())
+        .args([
+            "update",
+            &user_qname,
+            "--display-name",
+            "王强",
+            "--age",
+            "36",
+            "--occupation",
+            "平台负责人",
+            "--priority",
+            "core",
+            "--situation",
+            "平台首次上线缺少初始化流程",
+            "--need",
+            "希望快速完成平台初始化",
+        ])
+        .output()
+        .expect("run arche update requirement-user");
+    assert!(updated.status.success(), "{updated:?}");
+    let shown_json = arche()
+        .current_dir(temp.path())
+        .args(["show", &user_qname, "--format", "json"])
+        .output()
+        .expect("run arche show updated user JSON");
+    let shown_json = String::from_utf8(shown_json.stdout).unwrap();
+    assert!(
+        shown_json.contains("\"display_name\":\"王强\""),
+        "{shown_json}"
+    );
+    assert!(shown_json.contains("\"age\":\"36\""), "{shown_json}");
+    assert!(
+        shown_json.contains("\"occupation\":\"平台负责人\""),
+        "{shown_json}"
+    );
+    assert!(shown_json.contains("\"priority\":\"core\""), "{shown_json}");
+    assert!(
+        shown_json.contains("平台首次上线缺少初始化流程"),
+        "{shown_json}"
+    );
+    assert!(shown_json.contains("负责首次部署"), "{shown_json}");
+    assert!(
+        shown_json.contains("希望快速完成平台初始化"),
+        "{shown_json}"
+    );
+
+    let plan = temp.path().join("users.json");
+    fs::write(
+        &plan,
+        r#"{
+          "objects": [
+            {
+              "kind": "requirement-user",
+              "name": "warehouse-admin",
+              "display_name": "张三",
+              "age": "30",
+              "occupation": "仓管员",
+              "priority": "primary",
+              "situations": ["负责仓库日常收货"],
+              "needs": ["希望快速完成收货登记"]
+            }
+          ]
+        }"#,
+    )
+    .unwrap();
+    let batch = arche()
+        .current_dir(temp.path())
+        .args(["batch", plan.to_str().unwrap()])
+        .output()
+        .expect("run arche batch users");
+    assert!(batch.status.success(), "{batch:?}");
+    let batched = arche()
+        .current_dir(temp.path())
+        .args([
+            "show",
+            "requirement/user/warehouse-admin",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("run arche show batched user");
+    let batched = String::from_utf8(batched.stdout).unwrap();
+    assert!(batched.contains("\"display_name\":\"张三\""), "{batched}");
+    assert!(batched.contains("\"priority\":\"primary\""), "{batched}");
+    assert!(batched.contains("负责仓库日常收货"), "{batched}");
+    assert!(batched.contains("希望快速完成收货登记"), "{batched}");
+
+    let function = arche()
+        .current_dir(temp.path())
+        .args([
+            "requirement",
+            "create",
+            "function",
+            "创建订单",
+            "--parent",
+            "requirement/system/仓库系统/订单管理",
+        ])
+        .output()
+        .expect("run arche requirement create function");
+    assert!(function.status.success(), "{:?}", function);
+    let function_qname = String::from_utf8(function.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+
+    let story = arche()
+        .current_dir(temp.path())
+        .args(["requirement", "create", "story", "create-order"])
+        .output()
+        .expect("run arche requirement create story");
+    assert!(story.status.success(), "{:?}", story);
+    let story_qname = String::from_utf8(story.stdout)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+
+    for (field, target) in [
+        ("users", user_qname.as_str()),
+        ("protagonist", user_qname.as_str()),
+        ("functions", function_qname.as_str()),
+    ] {
+        let assignment = format!("{field}={target}");
+        let set = arche()
+            .current_dir(temp.path())
+            .args(["update", &story_qname, "--ref", &assignment])
+            .output()
+            .expect("run arche update --ref");
+        assert!(set.status.success(), "{field}: {set:?}");
+    }
+    let flow = arche()
+        .current_dir(temp.path())
+        .args([
+            "doc",
+            "mermaid",
+            "set",
+            &story_qname,
+            "flow",
+            "graph TD; A-->B;",
+        ])
+        .output()
+        .expect("run arche doc mermaid set");
+    assert!(flow.status.success(), "{flow:?}");
+
+    let shown = arche()
+        .current_dir(temp.path())
+        .args(["show", &story_qname])
+        .output()
+        .expect("run arche show story");
+    assert!(shown.status.success(), "{shown:?}");
+    let shown = String::from_utf8(shown.stdout).unwrap();
+    assert!(shown.contains("protagonist"), "{shown}");
+    assert!(shown.contains(&user_qname), "{shown}");
+    assert!(shown.contains(&function_qname), "{shown}");
+    assert!(shown.contains("flow"), "{shown}");
+
     let list = arche()
         .current_dir(temp.path())
         .arg("requirement")
@@ -368,6 +627,8 @@ fn init_create_show() {
     let stdout = String::from_utf8(list.stdout).unwrap();
     assert!(stdout.contains("RequirementSystem"));
     assert!(stdout.contains("RequirementModule"));
+    assert!(stdout.contains("RequirementUser"));
+    assert!(stdout.contains("RequirementStory"));
 }
 
 #[test]

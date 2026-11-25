@@ -5,7 +5,9 @@ use std::io::Read;
 
 use anyhow::{Context, Result, bail};
 use arche_core::snapshot::Snapshot;
-use arche_core::{Object, ObjectHash, Repository, SymbolHash};
+use arche_core::{
+    Object, ObjectHash, Repository, SymbolHash, parse_priority, priority_display, priority_slug,
+};
 use arche_server::{ServerOptions, serve, serve_stdio};
 use clap::{Parser, Subcommand};
 
@@ -26,6 +28,62 @@ source, remote, examples.",
 struct Cli {
     #[command(subcommand)]
     command: Command,
+}
+
+/// Field arguments shared by `create` and `update`.
+///
+/// `arche update` accepts the same field flags as `arche create`, plus generic
+/// `--field NAME=VALUE` and `--ref FIELD=TARGET[,TARGET...]` escape hatches.
+#[derive(Debug, clap::Args)]
+struct ObjectFieldArgs {
+    /// Parent qname for nested objects.
+    #[arg(long)]
+    parent: Option<String>,
+    /// Namespace qname for a code type or function.
+    #[arg(long)]
+    namespace: Option<String>,
+    /// Canonical prototype text; required for technical-method.
+    #[arg(long)]
+    prototype: Option<String>,
+    /// Source span (`path:start-end`) for a code element or Part.
+    #[arg(long)]
+    source: Option<String>,
+    /// Source file qname for a code type or function.
+    #[arg(long)]
+    file: Option<String>,
+    /// Module qname for a code type or function.
+    #[arg(long)]
+    module: Option<String>,
+    /// Fictional requirement persona name; required for requirement-user.
+    #[arg(long)]
+    display_name: Option<String>,
+    /// Requirement user age.
+    #[arg(long)]
+    age: Option<String>,
+    /// Requirement user occupation or role.
+    #[arg(long, visible_alias = "role-name")]
+    occupation: Option<String>,
+    /// Requirement user priority: core, primary, secondary, or peripheral.
+    #[arg(long)]
+    priority: Option<String>,
+    /// Requirement user situation; repeatable.
+    #[arg(long = "situation")]
+    situations: Vec<String>,
+    /// Requirement user hobby; repeatable.
+    #[arg(long = "hobby")]
+    hobbies: Vec<String>,
+    /// Requirement user need; repeatable.
+    #[arg(long = "need")]
+    needs: Vec<String>,
+    /// Requirement story qname for the user's stories; repeatable.
+    #[arg(long = "story")]
+    stories: Vec<String>,
+    /// Set one scalar field: NAME=VALUE. Repeatable.
+    #[arg(long = "field", value_name = "NAME=VALUE")]
+    fields: Vec<String>,
+    /// Replace one reference field: FIELD=TARGET[,TARGET...]. Repeatable.
+    #[arg(long = "ref", value_name = "FIELD=TARGET")]
+    refs: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -116,33 +174,31 @@ enum Command {
     #[command(
         after_help = "Kinds: technical-system, technical-module, technical-layer, \
 technical-namespace, technical-class, technical-struct, technical-enum, technical-interface, \
-technical-mixin, technical-function, technical-method, technical-part. \
-Run `arche help technical` for qnames and fields."
+technical-mixin, technical-function, technical-method, technical-part, requirement-user, \
+requirement-story, requirement-system, requirement-module, requirement-function, \
+requirement-interaction. Run `arche help technical` or `arche help requirement` for qnames \
+and fields."
     )]
     Create {
-        /// Object kind, for example technical-system.
+        /// Object kind, for example technical-system or requirement-user.
         kind: String,
-        /// Local object name; for requirement-user this is the real name.
-        /// Not used for technical-method.
+        /// Local object name / requirement role id. Not used for technical-method.
         name: Option<String>,
-        /// Parent qname for nested objects.
-        #[arg(long)]
-        parent: Option<String>,
-        /// Namespace qname for a code type or function.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Canonical prototype text; required for technical-method.
-        #[arg(long)]
-        prototype: Option<String>,
-        /// Source span (`path:start-end`) for a code element or Part.
-        #[arg(long)]
-        source: Option<String>,
-        /// Source file qname for a code type or function.
-        #[arg(long)]
-        file: Option<String>,
-        /// Module qname for a code type or function.
-        #[arg(long)]
-        module: Option<String>,
+        #[command(flatten)]
+        fields: ObjectFieldArgs,
+    },
+    /// Update fields of an existing design object.
+    #[command(
+        after_help = "Accepts the same field flags as `arche create`. Scalars are \
+replaced; --situation/--hobby/--need add list items; --story replaces the stories list. \
+Use --field NAME=VALUE for any scalar and --ref FIELD=TARGET[,TARGET...] for any reference \
+list. Parent and prototype are part of object identity and cannot be updated."
+    )]
+    Update {
+        /// Existing object qname.
+        qname: String,
+        #[command(flatten)]
+        fields: ObjectFieldArgs,
     },
     /// Structure membership operations.
     Structure {
@@ -163,6 +219,18 @@ JSON format."
     Comment {
         #[command(subcommand)]
         command: CommentCommand,
+    },
+    /// Reference field operations (legacy; prefer `arche update --ref`).
+    #[command(hide = true)]
+    Ref {
+        #[command(subcommand)]
+        command: RefCommand,
+    },
+    /// Scalar field operations (legacy; prefer `arche update --field`).
+    #[command(hide = true)]
+    Field {
+        #[command(subcommand)]
+        command: FieldCommand,
     },
     /// Concept operations.
     Concept {
@@ -498,6 +566,32 @@ enum CommentCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum FieldCommand {
+    /// Set one scalar field: String, bool or integer.
+    Set {
+        /// Object qname.
+        qname: String,
+        /// Field name, for example display_name, age or priority.
+        field: String,
+        /// Field value.
+        value: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RefCommand {
+    /// Replace a reference field with one or more qnames.
+    Set {
+        /// Object qname.
+        qname: String,
+        /// Reference field, for example users, protagonist or functions.
+        field: String,
+        /// Target qnames. Omit to clear the field.
+        targets: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ConceptCommand {
     /// Create a concept directory.
     Mkdir {
@@ -521,7 +615,8 @@ enum ConceptCommand {
 
 #[derive(Debug, Subcommand)]
 enum RequirementCommand {
-    /// Create a requirement object.
+    /// Legacy requirement creation; use `arche create requirement-*`.
+    #[command(hide = true)]
     Create {
         #[command(subcommand)]
         command: RequirementCreateCommand,
@@ -537,7 +632,11 @@ enum RequirementCommand {
 #[derive(Debug, Subcommand)]
 enum RequirementCreateCommand {
     User {
+        /// Role-representative local id, for example project-sponsor.
         name: String,
+        /// The fictional persona's name for display.
+        #[arg(long)]
+        display_name: String,
     },
     Story {
         name: String,
@@ -738,29 +837,44 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Command::Create {
-            kind,
-            name,
-            parent,
-            namespace,
-            prototype,
-            source,
-            file,
-            module,
-        } => {
+        Command::Create { kind, name, fields } => {
             let repo = Repository::open(".")?;
-            let (qname, hash) = create_object(
-                &repo,
-                &kind,
-                name.as_deref(),
-                parent.as_deref(),
-                namespace.as_deref(),
-                prototype.as_deref(),
-                source.as_deref(),
-                file.as_deref(),
-                module.as_deref(),
-            )?;
-            println!("{}", repo.resolve(qname)?);
+            let qname = if kind == "requirement-user" {
+                let name = name
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("requirement-user requires <role-id>"))?;
+                let display_name = fields.display_name.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("requirement-user requires --display-name <假想角色姓名>")
+                })?;
+                let (qname, _) = repo.create_requirement_user(name, display_name)?;
+                let qname_text = repo.resolve(qname)?;
+                apply_user_fields(&repo, &qname_text, &fields)?;
+                qname
+            } else {
+                create_object(
+                    &repo,
+                    &kind,
+                    name.as_deref(),
+                    fields.parent.as_deref(),
+                    fields.namespace.as_deref(),
+                    fields.prototype.as_deref(),
+                    fields.source.as_deref(),
+                    fields.file.as_deref(),
+                    fields.module.as_deref(),
+                )?
+                .0
+            };
+            let qname_text = repo.resolve(qname)?;
+            apply_generic_assignments(&repo, &qname_text, &fields)?;
+            let hash = repo.find_by_qname(&qname_text)?;
+            println!("{qname_text}");
+            println!("object {}", hash.to_hex());
+        }
+        Command::Update { qname, fields } => {
+            let repo = Repository::open(".")?;
+            update_object(&repo, &qname, &fields)?;
+            let (hash, _) = repo.show_qname(&qname)?;
+            println!("{qname}");
             println!("object {}", hash.to_hex());
         }
         Command::Structure { command } => {
@@ -907,6 +1021,33 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Command::Field { command } => {
+            let repo = Repository::open(".")?;
+            match command {
+                FieldCommand::Set {
+                    qname,
+                    field,
+                    value,
+                } => {
+                    let value = normalize_scalar_value(&field, &value)?;
+                    repo.set_scalar(&qname, &field, &value)?;
+                    println!("updated {qname}.{field}");
+                }
+            }
+        }
+        Command::Ref { command } => {
+            let repo = Repository::open(".")?;
+            match command {
+                RefCommand::Set {
+                    qname,
+                    field,
+                    targets,
+                } => {
+                    repo.set_refs(&qname, &field, &targets)?;
+                    println!("updated {qname}.{field}");
+                }
+            }
+        }
         Command::Comment { command } => {
             let repo = Repository::open(".")?;
             match command {
@@ -986,8 +1127,8 @@ fn main() -> Result<()> {
             match command {
                 RequirementCommand::Create { command } => {
                     let (qname, hash) = match command {
-                        RequirementCreateCommand::User { name } => {
-                            repo.create_requirement_user(&name)?
+                        RequirementCreateCommand::User { name, display_name } => {
+                            repo.create_requirement_user(&name, &display_name)?
                         }
                         RequirementCreateCommand::Story { name } => {
                             repo.create_requirement_story(&name)?
@@ -1478,7 +1619,7 @@ fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object)
             println!("types: {}", optional_symbol(repo, value.types())?);
         }
         Object::RequirementUser(value) => {
-            println!("real_name: {}", value.real_name());
+            println!("display_name: {}", value.display_name());
             println!("age: {}", value.age());
             println!("occupation: {}", value.occupation());
             print_design_fields(
@@ -1489,7 +1630,7 @@ fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object)
                     ("needs", value.needs()),
                 ],
             )?;
-            println!("priority: {}", value.priority());
+            println!("priority: {}", priority_display(value.priority()));
             print_symbol_list(repo, "stories", &value.stories())?;
         }
         Object::RequirementStory(value) => {
@@ -1498,10 +1639,15 @@ fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object)
                 &[
                     ("preconditions", value.preconditions()),
                     ("description", value.description()),
+                    ("flow", value.flow()),
                     ("requirement", value.requirement()),
                 ],
             )?;
             println!("frequency: {}", value.frequency());
+            println!(
+                "protagonist: {}",
+                optional_symbol(repo, value.protagonist())?
+            );
             print_symbol_list(repo, "users", &value.users())?;
             print_symbol_list(repo, "functions", &value.functions())?;
         }
@@ -1673,7 +1819,28 @@ fn show_json(repo: &Repository, hash: ObjectHash, object: &Object) -> Result<()>
             json_block(repo, &field_object)?
         );
     }
-    println!("}}}}");
+    print!("}}");
+    let attributes = repo.object_attributes(object)?;
+    if !attributes.is_empty() {
+        print!(",\"attributes\":{{");
+        for (index, (name, value)) in attributes.iter().enumerate() {
+            if index > 0 {
+                print!(",");
+            }
+            let value = if name == "priority" {
+                value
+                    .parse::<u8>()
+                    .ok()
+                    .and_then(priority_slug)
+                    .unwrap_or(value.as_str())
+            } else {
+                value.as_str()
+            };
+            print!("\"{}\":\"{}\"", json_escape(name), json_escape(value));
+        }
+        print!("}}");
+    }
+    println!("}}");
     Ok(())
 }
 
@@ -1915,6 +2082,135 @@ fn object_source_path(repo: &Repository, object: &Object) -> Result<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn normalize_scalar_value(field: &str, value: &str) -> Result<String> {
+    if field != "priority" {
+        return Ok(value.to_owned());
+    }
+    parse_priority(value)
+        .map(|priority| priority.to_string())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid priority {value:?}; use core, primary, secondary, or peripheral"
+            )
+        })
+}
+
+fn apply_generic_assignments(
+    repo: &Repository,
+    qname: &str,
+    fields: &ObjectFieldArgs,
+) -> Result<()> {
+    for assignment in &fields.fields {
+        let (field, value) = assignment
+            .split_once('=')
+            .with_context(|| format!("--field expects NAME=VALUE, got {assignment:?}"))?;
+        let field = field.trim();
+        let value = normalize_scalar_value(field, value)?;
+        repo.set_scalar(qname, field, &value)?;
+    }
+    for assignment in &fields.refs {
+        let (field, targets) = assignment.split_once('=').with_context(|| {
+            format!("--ref expects FIELD=TARGET[,TARGET...], got {assignment:?}")
+        })?;
+        let targets = targets
+            .split(',')
+            .map(str::trim)
+            .filter(|target| !target.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        repo.set_refs(qname, field.trim(), &targets)?;
+    }
+    Ok(())
+}
+
+fn apply_user_fields(repo: &Repository, qname: &str, fields: &ObjectFieldArgs) -> Result<()> {
+    for (field, value) in [
+        ("display_name", fields.display_name.as_deref()),
+        ("age", fields.age.as_deref()),
+        ("occupation", fields.occupation.as_deref()),
+    ] {
+        if let Some(value) = value {
+            repo.set_scalar(qname, field, value)?;
+        }
+    }
+    if let Some(priority) = fields.priority.as_deref() {
+        let value = normalize_scalar_value("priority", priority)?;
+        repo.set_scalar(qname, "priority", &value)?;
+    }
+    for (field, values) in [
+        ("situations", &fields.situations),
+        ("hobbies", &fields.hobbies),
+        ("needs", &fields.needs),
+    ] {
+        for value in values {
+            repo.doc_list_item_add(qname, field, value)?;
+        }
+    }
+    if !fields.stories.is_empty() {
+        repo.set_refs(qname, "stories", &fields.stories)?;
+    }
+    Ok(())
+}
+
+fn update_object(repo: &Repository, qname: &str, fields: &ObjectFieldArgs) -> Result<()> {
+    if fields.parent.is_some() {
+        bail!(
+            "cannot update --parent; the parent is part of the object qname. Recreate the object under the new parent instead"
+        );
+    }
+    if fields.prototype.is_some() {
+        bail!(
+            "cannot update --prototype; the prototype is part of the technical-method identity. Recreate the method instead"
+        );
+    }
+
+    let (_, object) = repo.show_qname(qname)?;
+    let is_user = matches!(object, Object::RequirementUser(_));
+    let user_only = fields.age.is_some()
+        || fields.occupation.is_some()
+        || fields.priority.is_some()
+        || !fields.situations.is_empty()
+        || !fields.hobbies.is_empty()
+        || !fields.needs.is_empty()
+        || !fields.stories.is_empty();
+    if user_only && !is_user {
+        bail!(
+            "--age/--occupation/--priority/--situation/--hobby/--need/--story only apply to requirement-user"
+        );
+    }
+
+    let mut changed = false;
+    if is_user {
+        apply_user_fields(repo, qname, fields)?;
+        changed |= fields.display_name.is_some() || user_only;
+    } else if let Some(display_name) = fields.display_name.as_deref() {
+        repo.set_scalar(qname, "display_name", display_name)?;
+        changed = true;
+    }
+    for (field, value) in [
+        ("namespace", fields.namespace.as_deref()),
+        ("file", fields.file.as_deref()),
+        ("module", fields.module.as_deref()),
+    ] {
+        if let Some(value) = value {
+            repo.set_string_ref(qname, field, value)?;
+            changed = true;
+        }
+    }
+    if let Some(source) = fields.source.as_deref() {
+        repo.set_source(qname, source)?;
+        changed = true;
+    }
+    if !fields.fields.is_empty() || !fields.refs.is_empty() {
+        apply_generic_assignments(repo, qname, fields)?;
+        changed = true;
+    }
+    if !changed {
+        bail!("nothing to update; pass at least one field flag");
+    }
+    Ok(())
+}
+
 fn create_object(
     repo: &Repository,
     kind: &str,
@@ -1959,11 +2255,25 @@ fn create_object(
                 .ok_or_else(|| anyhow::anyhow!("technical-part requires --source <path:lines>"))?;
             repo.create_technical_part(require_parent()?, source)
         }
+        "requirement-user" => {
+            bail!("requirement-user requires --display-name; use `arche create requirement-user`")
+        }
+        "requirement-story" => repo.create_requirement_story(require_name()?),
+        "requirement-system" => repo.create_requirement_system(require_name()?),
+        "requirement-module" => repo.create_requirement_module(require_parent()?, require_name()?),
+        "requirement-function" => {
+            repo.create_requirement_function(require_parent()?, require_name()?)
+        }
+        "requirement-interaction" => {
+            repo.create_requirement_interaction(require_parent()?, require_name()?)
+        }
         other => bail!(
             "unsupported object kind {other}; supported: technical-system, \
              technical-module, technical-layer, technical-namespace, technical-class, \
              technical-struct, technical-enum, technical-interface, technical-method, \
-             technical-function, technical-mixin, technical-part"
+             technical-function, technical-mixin, technical-part, requirement-user, \
+             requirement-story, requirement-system, requirement-module, \
+             requirement-function, requirement-interaction"
         ),
     }?;
     let qname_text = repo.resolve(qname)?;
@@ -1996,17 +2306,28 @@ fn batch(repo: &Repository, file: &str) -> Result<()> {
         for object in objects {
             let field = |name: &str| object.get(name).and_then(|value| value.as_str());
             let kind = field("kind").context("batch object requires kind")?;
-            let (qname, hash) = create_object(
-                repo,
-                kind,
-                field("name"),
-                field("parent"),
-                field("namespace"),
-                field("prototype"),
-                field("source"),
-                field("file"),
-                field("module"),
-            )?;
+            let (qname, hash) = if kind == "requirement-user" {
+                let name = field("name").context("requirement-user requires name")?;
+                let display_name =
+                    field("display_name").context("requirement-user requires display_name")?;
+                let (qname, _) = repo.create_requirement_user(name, display_name)?;
+                let qname_text = repo.resolve(qname)?;
+                apply_batch_user_fields(repo, &qname_text, &object)?;
+                let hash = repo.find_by_qname(&qname_text)?;
+                (qname, hash)
+            } else {
+                create_object(
+                    repo,
+                    kind,
+                    field("name"),
+                    field("parent"),
+                    field("namespace"),
+                    field("prototype"),
+                    field("source"),
+                    field("file"),
+                    field("module"),
+                )?
+            };
             println!("{}", repo.resolve(qname)?);
             println!("object {}", hash.to_hex());
             created += 1;
@@ -2028,6 +2349,46 @@ fn batch(repo: &Repository, file: &str) -> Result<()> {
         }
     }
     println!("applied {created} batch entries");
+    Ok(())
+}
+
+fn apply_batch_user_fields(
+    repo: &Repository,
+    qname: &str,
+    object: &serde_json::Value,
+) -> Result<()> {
+    for field in ["age", "occupation"] {
+        if let Some(value) = object.get(field).and_then(|value| value.as_str()) {
+            repo.set_scalar(qname, field, value)?;
+        }
+    }
+    if let Some(priority) = object.get("priority") {
+        let priority = priority
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| priority.as_u64().map(|value| value.to_string()))
+            .context("batch priority must be a name or number")?;
+        let value = normalize_scalar_value("priority", &priority)?;
+        repo.set_scalar(qname, "priority", &value)?;
+    }
+    for field in ["situations", "hobbies", "needs"] {
+        if let Some(values) = object.get(field).and_then(|value| value.as_array()) {
+            for value in values {
+                if let Some(value) = value.as_str() {
+                    repo.doc_list_item_add(qname, field, value)?;
+                }
+            }
+        }
+    }
+    if let Some(stories) = object.get("stories").and_then(|value| value.as_array()) {
+        let stories = stories
+            .iter()
+            .filter_map(|value| value.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        if !stories.is_empty() {
+            repo.set_refs(qname, "stories", &stories)?;
+        }
+    }
     Ok(())
 }
 

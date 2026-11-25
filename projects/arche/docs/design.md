@@ -910,11 +910,15 @@ pub struct RequirementRoot {
 
 ### 9.2 RequirementUser
 
-`RequirementUser` 按无名对象处理：`name` 是自动生成的 8 位十六进制 key，不承载用户姓名；`real_name` 保存真实姓名。
+格式版本为 2。需求用户是为了产品设计研究而设定的假想使用者（persona），不是
+真实人物，也不是系统账号；禁止使用真实人物的姓名、年龄、身份或其他可识别信息。
+`name` 由智能体按用户角色命名，例如 `project-sponsor`、`warehouse-admin`，不再是
+随机 key；qname 为 `requirement/user/<name>`。`display_name` 保存假想角色的姓名
+或代称，不是角色描述，也不得指向真实人物；角色、职位写 `occupation`。
 
 | 字段 | 目标类型 |
 |---|---|
-| `real_name` | `String` |
+| `display_name` | `String` |
 | `age` | `String` |
 | `occupation` | `String` |
 | `situations` | `DocumentList` |
@@ -923,22 +927,47 @@ pub struct RequirementRoot {
 | `priority` | `u8` |
 | `stories` | `Vec<SymbolHash>`，关联故事 qname 列表 |
 
+用户划分遵循两条原则：产品中角色不同的人是不同用户；同一角色下因偏好或状况不同
+而产生对产品有意义的差异化行为的人，也是不同用户。每一种用户类型设计一个用户，
+根据类型特征设计人物，并按产品定位为每个用户标定 `priority`（`core`、`primary`、
+`secondary`、`peripheral`）。优先级用于指导故事和交互设计：核心用户的需求优先
+满足，核心用户的操作路径尽量短。
+
+每条 `needs` 必须被该用户参与的一组故事完备覆盖，而不是只被一个故事覆盖；故事
+集合要解决需求前、进行中和完成后的各种问题并形成闭环。
+
+用户字段的完整写作规则见 `projects/arche/help/requirement-user.md`
+（`arche help requirement-user`）。
+
 ### 9.3 RequirementStory
 
-对象名称是故事名称。
+对象名称是故事名称。格式版本为 2。
 
-| 字段 | 目标类型 |
-|---|---|
-| `preconditions` | `DocumentList` |
-| `frequency` | `u8` |
-| `description` | `DocumentParagraphList` |
-| `requirement` | `DocumentList` |
-| `users` | `Vec<SymbolHash>`，关联用户 qname 列表 |
-| `functions` | `Vec<SymbolHash>`，关联功能 qname 列表 |
+| 字段 | 目标类型 | 说明 |
+|---|---|---|
+| `preconditions` | `DocumentList` | 前置条件 |
+| `frequency` | `u8` | 频率 |
+| `users` | `Vec<SymbolHash>` | 参与本故事的所有用户 qname |
+| `protagonist` | `SymbolHash` | 主角，`users` 中的一个用户 qname |
+| `description` | `DocumentParagraphList` | 完整用户旅程，普通段落而不是 topic |
+| `flow` | `DocumentMermaid` | 用户旅程流程图 |
+| `functions` | `Vec<SymbolHash>` | 故事中出现过的所有功能 qname |
+| `requirement` | `DocumentList` | 每一项写满足用户的什么需求 |
+
+`description` 必须按时间顺序写清主角如何用一系列功能完成旅程、其他用户如何配合、
+每一步的结果；`flow` 是同一旅程的流程图；`functions` 必须覆盖旅程里用到的全部功能。
+`users`、`protagonist`、`functions` 用 `arche update --ref` 写入，`flow` 用
+`arche doc mermaid set` 写入。
+
+一条用户需求通常由一组故事共同满足，而不是一个故事对应一条需求。覆盖同一需求的
+故事集合必须形成闭环，覆盖正常路径、需求前问题、进行中问题和完成后问题，并为每个
+问题写出结果和恢复方式。例如“购物”需求需要“购买商品”“浏览商品/与卖家沟通”
+“预购/缺货登记”“退货/退款”等故事联合覆盖，“购买商品”单独不能满足“购物”
+需求。
 
 ### 9.4 RequirementSystem
 
-对象名称是软件名称。
+用户可感知的一个完整软件，例如“开发系统安卓端”。对象名称是软件名称。
 
 | 字段 | 目标类型 |
 |---|---|
@@ -956,6 +985,7 @@ pub modules: ObjectHash, // ObjectList
 
 ### 9.5 RequirementModule
 
+围绕一个需求概念的一组功能，完成与该概念相关的功能闭环，例如“账户管理”。
 对象名称是模块名称。
 
 | 字段 | 目标类型 |
@@ -975,7 +1005,8 @@ pub functions: ObjectHash, // ObjectList
 
 ### 9.6 RequirementFunction
 
-对象名称是功能名称。
+用户与系统的一次有意义的交互，或系统自身的一次有意义的动作；标准是产生有意义的
+系统数据变化或信息展示，例如“创建单据”。对象名称是功能名称。
 
 | 字段 | 目标类型 |
 |---|---|
@@ -993,7 +1024,8 @@ pub functions: ObjectHash, // ObjectList
 
 ### 9.7 RequirementInteraction
 
-对象名称是交互名称。
+用户对系统的一次操作或观察、或系统的一次通知，本身可能不产生有意义的系统变化，
+例如“填写单据名称”；若干次交互共同构成一次功能。对象名称是交互名称。
 
 | 字段 | 目标类型 |
 |---|---|
@@ -1436,7 +1468,7 @@ arche show
 
 ```bash
 arche create <kind> <name> [options]
-arche edit <qname> [options]
+arche update <qname> [与 create 相同的字段选项]
 arche rm <qname> [--force] [--recursive]
 arche dep add/rm/list
 arche show <qname> [--source] [--staged] [--format text|json|md]
@@ -1559,7 +1591,7 @@ arche repack
 
 | v1 功能 | v2 对应 |
 |---|---|
-| 设计对象创建/编辑/删除 | `arche create/edit/rm`，类型名带空间前缀 |
+| 设计对象创建/编辑/删除 | `arche create/update/rm`，类型名带空间前缀 |
 | 依赖 | `explicit_dependencies` / `implicit_dependencies`，只存 qname |
 | 内部类型 | 通过 `parent` 表达，不建 `Inner*` |
 | 设计结构 System/Module/Layer | `TechnicalSystem/Module/Layer` + `ObjectList` |

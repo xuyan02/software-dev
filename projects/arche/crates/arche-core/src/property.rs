@@ -448,7 +448,7 @@ impl_properties!(Concept {
 });
 
 impl_properties!(RequirementUser {
-    "real_name" => real_name : String,
+    "display_name" => display_name : String,
     "age" => age : String,
     "occupation" => occupation : String,
     "situations" => situations : ObjectRef,
@@ -465,6 +465,8 @@ impl_properties!(RequirementStory {
     "requirement" => requirement : ObjectRef,
     "users" => users : StringRefList,
     "functions" => functions : StringRefList,
+    "protagonist" => protagonist : StringRef,
+    "flow" => flow : ObjectRef,
 });
 
 impl_properties!(RequirementSystem {

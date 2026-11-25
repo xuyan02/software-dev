@@ -5,6 +5,7 @@ pub mod data;
 pub mod hash;
 pub mod object;
 pub mod pack;
+pub mod priority;
 pub mod protocol;
 pub mod refs;
 
@@ -26,6 +27,9 @@ pub use object::{
     RequirementFunction, RequirementInteraction, RequirementModule, RequirementRoot,
     RequirementStory, RequirementSystem, RequirementUser, Root, TechnicalDirectory, TechnicalFile,
     TechnicalModule, TechnicalRoot, TechnicalSystem,
+};
+pub use priority::{
+    PRIORITY_LEVELS, parse_priority, priority_display, priority_label, priority_slug,
 };
 pub use property::{PropertyAccess, PropertyError, PropertySpec, PropertyValue, ValueKind};
 pub use protocol::{read_ref_file, record_files, valid_record_path, write_ref_file};

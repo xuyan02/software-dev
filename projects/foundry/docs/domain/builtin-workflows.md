@@ -96,7 +96,7 @@ RFC 0008 的完整生命周期还包括需求基线、变更请求、事故响�
 | `review` | `reviewer`（human） | `review_approved` 写 `decision = 'approved'` → `merge`；`review_rejected` 写 `decision = 'rejected'`，完成并设置 `result = 'rejected'` |
 | `merge` | `reviewer`（human） | `merge` 写 `merged = true`，完成并设置 `result = 'merged'`；`close` 写 `result = 'closed'`，完成 |
 
-创建合并请求时，Foundry 同时创建这个 Task，并把项目里的一位真人成员绑定到 `reviewer` 角色；通常优先选择不是创建者的成员。合并请求没有独立的审批状态或审批人表，页面和 API 都从 Task 读取 `allowed_operations`。快进合并由 Foundry 执行，成功后发送 `merge` operation 完成任务。
+创建合并请求时，Foundry 同时创建这个 Task，并把项目里的一位真人成员绑定到 `reviewer` 角色；通常优先选择不是创建者的成员。合并请求没有独立的审批状态或审批人表，页面和 API 都从 Task 读取 `allowed_operations`。快进合并由 Foundry 执行，成功后自动删除源分支（受保护分支除外），再发送 `merge` operation 完成任务。清理阶段再次删除同一分支是幂等操作。
 
 ## Project lifecycle
 

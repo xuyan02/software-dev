@@ -127,7 +127,7 @@
           "display_name": "批准并合并",
           "description": "Approve the design-space merge request and complete the task.",
           "roles": ["acceptor"],
-          "action": "decision = 'approved'\ncreate_issue(kind = 'task_request', title = 'Requirements analysis: {task.title}', description = '根据项目说明书 project/document 和澄清记录进行需求分析。先读取设计空间 source 分支的 project/document；需求文档必须覆盖项目定位、背景、目标、非目标、分期计划、约束和风险，并把它们展开为可验证的需求。', relation = 'related', pool = 'requirements')"
+          "action": "decision = 'approved'\ncreate_issue(kind = 'task_request', title = 'Requirements analysis: {task.title}', description = '根据项目说明书 project/document 和澄清记录进行需求分析。读取设计空间 requirements/<task-id> 分支上的 project/document，用 RequirementUser、RequirementStory、RequirementSystem、RequirementModule、RequirementFunction、RequirementInteraction 建立结构化需求。用户按两原则划分：产品角色不同 → 不同用户；同一角色下偏好或状况不同且产生对产品有意义的差异化行为 → 不同用户；每种类型设计一个用户并按产品定位标定 priority（core/primary/secondary/peripheral），优先级用于指导故事和交互设计：核心用户的需求优先满足，核心用户的操作路径尽量短。必须满足需求完整性原则：每个用户需求都被一组故事完备覆盖，而不是只被一个故事覆盖；故事集合要解决需求前、进行中和完成后的各种问题并形成闭环；故事中与系统直接交互的人是 users，交互媒介是 functions；每个功能至少被一个故事覆盖并闭环；每个故事覆盖自身涉及的异常情况，单个故事不足时必须补配套故事。', relation = 'related', pool = 'requirements')"
         },
         {
           "name": "rejected",

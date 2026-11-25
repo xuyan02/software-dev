@@ -16,6 +16,15 @@ pub mod repo;
 
 pub(crate) const OBJECT_VERSION: u8 = 1;
 
+/// Per-kind object format version. Only RequirementStory has a v2 so far;
+/// every other kind keeps the original version.
+pub(crate) fn object_version(kind: ObjectKind) -> u8 {
+    match kind {
+        ObjectKind::RequirementUser | ObjectKind::RequirementStory => 2,
+        _ => OBJECT_VERSION,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectKind {
     TechnicalRoot,
@@ -390,7 +399,7 @@ pub struct RequirementUser {
     qname: SymbolHash,
     name: SymbolHash,
     parent: SymbolHash, // RequirementRoot qname
-    real_name: String,
+    display_name: String,
     age: String,
     occupation: String,
     situations: ObjectHash, // DocumentList
@@ -407,10 +416,12 @@ pub struct RequirementStory {
     parent: SymbolHash,        // RequirementRoot qname
     preconditions: ObjectHash, // DocumentList
     frequency: u8,
-    description: ObjectHash,    // DocumentParagraphList
-    requirement: ObjectHash,    // DocumentList
-    users: Vec<SymbolHash>,     // Vec<RequirementUser qname>
-    functions: Vec<SymbolHash>, // Vec<RequirementFunction qname>
+    description: ObjectHash, // DocumentParagraphList: one continuous user journey
+    requirement: ObjectHash, // DocumentList: each item names the user need it satisfies
+    users: Vec<SymbolHash>,  // Vec<RequirementUser qname>: every user in the story
+    functions: Vec<SymbolHash>, // Vec<RequirementFunction qname>: every function used
+    protagonist: SymbolHash, // RequirementUser qname: whose need the story serves
+    flow: ObjectHash,        // DocumentMermaid: the story flow chart
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -951,6 +962,7 @@ impl Object {
                 opt_ref(f, &mut value.preconditions);
                 opt_ref(f, &mut value.description);
                 opt_ref(f, &mut value.requirement);
+                opt_ref(f, &mut value.flow);
             }
             Self::RequirementSystem(value) => {
                 opt_ref(f, &mut value.modules);

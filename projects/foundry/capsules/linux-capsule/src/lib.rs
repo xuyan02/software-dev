@@ -413,6 +413,9 @@ impl LinuxCapsule {
         let token = uuid::Uuid::new_v4().simple().to_string();
         let session_dir = std::env::temp_dir().join(format!("linux-capsule-{id}"));
         tokio::fs::create_dir_all(&session_dir).await?;
+        // /tmp is disk-backed per session. A 64 MB tmpfs is too small for
+        // cloning design spaces or running builds there.
+        tokio::fs::create_dir_all(session_dir.join("tmp")).await?;
 
         for file in &spec.files {
             let destination = session_dir.join(&file.path);
@@ -627,8 +630,6 @@ fn build_create_args(
         "--cpus".to_string(),
         "2".to_string(),
         "--tmpfs".to_string(),
-        "/tmp:rw,size=64m".to_string(),
-        "--tmpfs".to_string(),
         "/run:rw,size=64m".to_string(),
         "-e".to_string(),
         format!("LINUX_CAPSULE_MODE={}", spec.mode.as_str()),
@@ -667,6 +668,8 @@ fn build_create_args(
         args.push("-p".to_string());
         args.push(format!("127.0.0.1:{}:{}", port.host, port.container));
     }
+    args.push("-v".to_string());
+    args.push(format!("{}/tmp:/tmp:rw", session_dir.display()));
     if !spec.files.is_empty() {
         args.push("-v".to_string());
         args.push(format!("{}:/config:ro", session_dir.display()));
@@ -770,6 +773,8 @@ mod tests {
         assert!(joined.contains("--pids-limit 512"));
         assert!(joined.contains("--memory 2048m"));
         assert!(joined.contains("--cpus 2"));
+        assert!(joined.contains("-v /tmp/session/tmp:/tmp:rw"));
+        assert!(!joined.contains("/tmp:rw,size=64m"));
         assert!(joined.contains("127.0.0.1:1234:8099"));
         assert!(joined.contains("host.containers.internal:10.89.0.1"));
         assert!(joined.contains("LINUX_CAPSULE_TOKEN=token"));

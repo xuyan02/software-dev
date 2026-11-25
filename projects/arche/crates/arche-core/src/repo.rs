@@ -24,8 +24,9 @@ use crate::object::{
     TechnicalStruct, TechnicalSystem,
 };
 use crate::pack::{PackKind, PackRecord};
-use crate::property::{PropertyAccess, PropertyValue};
+use crate::property::{PropertyAccess, PropertyValue, ValueKind};
 use crate::protocol::{read_ref_file, refs_under, valid_record_path, write_ref_file};
+use crate::refs::StringRefList;
 use crate::snapshot::Snapshot;
 use crate::source::{SourcePath, SourceSpan};
 use crate::store::{CommitStore, LooseObjectStore, Store};
@@ -344,6 +345,7 @@ fn doc_field_kind(object: &Object, field: &str) -> Result<DocFieldKind> {
         Object::RequirementStory(_) => match field {
             "preconditions" | "requirement" => DocFieldKind::List,
             "description" => DocFieldKind::ParagraphList,
+            "flow" => DocFieldKind::Mermaid,
             _ => bail!("RequirementStory has no field {field}"),
         },
         Object::RequirementSystem(_) => match field {
@@ -493,6 +495,7 @@ fn set_doc_field(object: &mut Object, field: &str, value: ObjectHash) -> Result<
             "preconditions" => object.preconditions = value,
             "description" => object.description = value,
             "requirement" => object.requirement = value,
+            "flow" => object.flow = value,
             _ => bail!("RequirementStory has no field {field}"),
         },
         Object::RequirementSystem(object) => match field {
@@ -624,6 +627,7 @@ pub fn doc_fields(object: &Object) -> Vec<(&'static str, ObjectHash)> {
             ("preconditions", value.preconditions),
             ("description", value.description),
             ("requirement", value.requirement),
+            ("flow", value.flow),
         ],
         Object::RequirementSystem(value) => vec![
             ("form", value.form),
@@ -923,18 +927,10 @@ impl Repository {
     }
 
     pub fn branch_list(&self) -> Result<Vec<String>> {
-        let mut branches = Vec::new();
-        let dir = self.dir.join("refs/heads");
-        if dir.is_dir() {
-            for entry in fs::read_dir(dir)? {
-                let entry = entry?;
-                if entry.file_type()?.is_file() {
-                    branches.push(entry.file_name().to_string_lossy().to_string());
-                }
-            }
-        }
-        branches.sort();
-        Ok(branches)
+        Ok(refs_under(&self.dir, "refs/heads")?
+            .into_iter()
+            .map(|(branch, _)| branch)
+            .collect())
     }
 
     pub fn incoming_path(&self, id: &str) -> Result<PathBuf> {
@@ -1228,7 +1224,9 @@ impl Repository {
         }
         let path = self.dir.join("refs/heads").join(name);
         if !path.exists() {
-            bail!("branch {name} does not exist");
+            // Deleting an already-removed branch is idempotent: merge cleanup
+            // may run after the merge itself removed the source branch.
+            return Ok(());
         }
         fs::remove_file(path)?;
         Ok(())
@@ -3087,18 +3085,28 @@ impl Repository {
         Ok((qname, hash))
     }
 
-    pub fn create_requirement_user(&self, real_name: &str) -> Result<(SymbolHash, ObjectHash)> {
-        validate_requirement_name(real_name)?;
-        let (qname, name, parent) = crate::construct::new_identity(self, "requirement/user", None)?;
+    /// Create a requirement persona with a role-representative local id and a
+    /// display name. The id is the qname key (`requirement/user/<id>`);
+    /// display_name carries the fictional persona's personal name.
+    pub fn create_requirement_user(
+        &self,
+        name_text: &str,
+        display_name: &str,
+    ) -> Result<(SymbolHash, ObjectHash)> {
+        validate_local_name(name_text)?;
+        let qname_text = format!("requirement/user/{name_text}");
+        let qname = self.intern(&qname_text)?;
+        let name = self.intern(name_text)?;
+        let parent = self.intern("requirement")?;
         let mut snapshot = self.worktree_snapshot()?;
         if snapshot.get(qname).is_some() {
-            bail!("object {} already exists", self.resolve(qname)?);
+            bail!("object {qname_text} already exists");
         }
         let object = Object::RequirementUser(RequirementUser {
             qname,
             name,
             parent,
-            real_name: real_name.to_owned(),
+            display_name: display_name.to_owned(),
             age: String::new(),
             occupation: String::new(),
             situations: ObjectHash::ZERO,
@@ -3133,6 +3141,8 @@ impl Repository {
             requirement: ObjectHash::ZERO,
             users: Vec::new(),
             functions: Vec::new(),
+            protagonist: SymbolHash::ZERO,
+            flow: ObjectHash::ZERO,
         });
         let hash = self.save_object(&object)?;
         self.append_child(&mut snapshot, parent, ListField::Stories, hash)?;
@@ -3361,6 +3371,40 @@ impl Repository {
     }
 
     #[allow(clippy::collapsible_if)]
+    /// Set one scalar property (String, bool or integer) from a CLI string.
+    pub fn set_scalar(&self, qname_text: &str, field: &str, text: &str) -> Result<()> {
+        let mut snapshot = self.worktree_snapshot()?;
+        let qname = self.intern(qname_text)?;
+        let hash = snapshot
+            .get(qname)
+            .with_context(|| format!("{qname_text} not found"))?;
+        let mut object = self.read(hash)?;
+        let kind = object
+            .get_property(field)
+            .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?
+            .kind();
+        let value = match kind {
+            ValueKind::String => PropertyValue::String(text.to_owned()),
+            ValueKind::Bool => PropertyValue::Bool(match text {
+                "true" => true,
+                "false" => false,
+                _ => bail!("{qname_text}.{field} expects true or false"),
+            }),
+            ValueKind::Int => PropertyValue::Int(
+                text.parse()
+                    .with_context(|| format!("{qname_text}.{field} expects an integer"))?,
+            ),
+            other => bail!("{qname_text}.{field} is {other:?}, not a scalar property"),
+        };
+        object
+            .set_property(field, value)
+            .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?;
+        let hash = self.save_object(&object)?;
+        snapshot.insert(qname, hash);
+        self.write_snapshot("worktree", &snapshot)?;
+        Ok(())
+    }
+
     pub fn import_doc_json(&self, owner_qname: &str, text: &str) -> Result<usize> {
         let value: Value = serde_json::from_str(text).context("parse document JSON")?;
         let Some(fields) = value
@@ -3375,10 +3419,37 @@ impl Repository {
         let owner_hash = snapshot
             .get(owner_symbol)
             .with_context(|| format!("{owner_qname} not found"))?;
-        let owner = self.read(owner_hash)?;
+        let mut owner = self.read(owner_hash)?;
         let mut count = 0;
+        // Scalar properties (display_name, priority, ...) are not document
+        // fields, but batch/import callers expect to set them in the same
+        // fields object. Apply them first so the later document writes see a
+        // fresh owner with both scalar and document fields.
+        let mut documents = Vec::new();
+        let mut scalar_changed = false;
         for (field, spec) in fields {
-            let kind = doc_field_kind(&owner, field)?;
+            let kind = match doc_field_kind(&owner, field) {
+                Ok(kind) => kind,
+                Err(document_error) => {
+                    let property = owner.get_property(field).map_err(|_| document_error)?;
+                    let value = Self::scalar_property_value(field, spec, property.kind())?;
+                    owner
+                        .set_property(field, value)
+                        .map_err(|error| anyhow::anyhow!("{owner_qname}.{field}: {error}"))?;
+                    scalar_changed = true;
+                    count += 1;
+                    continue;
+                }
+            };
+            documents.push((field.clone(), spec.clone(), kind));
+        }
+        if scalar_changed {
+            let hash = self.save_object(&owner)?;
+            snapshot.insert(owner_symbol, hash);
+        }
+        for (field, spec, kind) in documents {
+            let field = field.as_str();
+            let spec = &spec;
             match kind {
                 DocFieldKind::Text => {
                     let text = document_text(spec)?;
@@ -3421,6 +3492,25 @@ impl Repository {
         }
         self.write_snapshot("worktree", &snapshot)?;
         Ok(count)
+    }
+
+    fn scalar_property_value(field: &str, spec: &Value, kind: ValueKind) -> Result<PropertyValue> {
+        Ok(match kind {
+            ValueKind::String => PropertyValue::String(
+                spec.as_str()
+                    .with_context(|| format!("{field} expects a string"))?
+                    .to_owned(),
+            ),
+            ValueKind::Bool => PropertyValue::Bool(
+                spec.as_bool()
+                    .with_context(|| format!("{field} expects true or false"))?,
+            ),
+            ValueKind::Int => PropertyValue::Int(
+                spec.as_i64()
+                    .with_context(|| format!("{field} expects an integer"))?,
+            ),
+            other => bail!("{field} is {other:?}, not a scalar property"),
+        })
     }
 
     fn import_list_items(
@@ -3576,7 +3666,8 @@ impl Repository {
         for (_, hash) in snapshot.entries() {
             let object = self.read(*hash)?;
             let qname = self.resolve(object.qname())?;
-            if object.compute_object_hash() != hash.0 {
+            let version = self.open_object(*hash)?.version();
+            if object.compute_object_hash_for_version(version) != hash.0 {
                 errors.push(format!("{qname}: object hash mismatch"));
             }
             for (field, value) in doc_fields(&object) {
@@ -3634,6 +3725,55 @@ impl Repository {
                             } else {
                                 errors.push(format!("{qname}: ui item must be DocumentHtml"));
                             }
+                        }
+                    }
+                }
+                Object::RequirementStory(value) => {
+                    for user in &value.users {
+                        let Ok(user_qname) = self.resolve(*user) else {
+                            errors.push(format!("{qname}: user {} is missing", user.to_hex()));
+                            continue;
+                        };
+                        match self.find_by_qname(&user_qname) {
+                            Ok(hash) if matches!(self.read(hash)?, Object::RequirementUser(_)) => {}
+                            Ok(_) => errors
+                                .push(format!("{qname}: {user_qname} is not a RequirementUser")),
+                            Err(_) => errors.push(format!("{qname}: {user_qname} is missing")),
+                        }
+                    }
+                    for function in &value.functions {
+                        let Ok(function_qname) = self.resolve(*function) else {
+                            errors.push(format!(
+                                "{qname}: function {} is missing",
+                                function.to_hex()
+                            ));
+                            continue;
+                        };
+                        match self.find_by_qname(&function_qname) {
+                            Ok(hash)
+                                if matches!(self.read(hash)?, Object::RequirementFunction(_)) => {}
+                            Ok(_) => errors.push(format!(
+                                "{qname}: {function_qname} is not a RequirementFunction"
+                            )),
+                            Err(_) => errors.push(format!("{qname}: {function_qname} is missing")),
+                        }
+                    }
+                    if !value.protagonist.is_zero() {
+                        match self.find_by_qname(&self.resolve(value.protagonist)?) {
+                            Ok(hash) if matches!(self.read(hash)?, Object::RequirementUser(_)) => {
+                                if !value.users.contains(&value.protagonist) {
+                                    errors
+                                        .push(format!("{qname}: protagonist must be one of users"));
+                                }
+                            }
+                            Ok(_) => errors.push(format!(
+                                "{qname}: protagonist {} is not a RequirementUser",
+                                value.protagonist.to_hex()
+                            )),
+                            Err(_) => errors.push(format!(
+                                "{qname}: protagonist {} is missing",
+                                value.protagonist.to_hex()
+                            )),
                         }
                     }
                 }
@@ -3698,6 +3838,81 @@ impl Repository {
         let target = self.intern(target_qname)?;
         object
             .set_property(field, PropertyValue::StringRef(target))
+            .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?;
+        let hash = self.save_object(&object)?;
+        snapshot.insert(qname, hash);
+        self.write_snapshot("worktree", &snapshot)?;
+        Ok(())
+    }
+
+    /// Project non-document attributes (String, integer, bool, name/qname
+    /// references and reference lists) for display. Document fields and
+    /// object references are rendered separately by their field renderer.
+    pub fn object_attributes(&self, object: &Object) -> Result<Vec<(String, String)>> {
+        let mut attributes = Vec::new();
+        for spec in object.properties() {
+            if matches!(spec.name.as_str(), "qname" | "name" | "parent") {
+                continue;
+            }
+            let value = match object.get_property(&spec.name) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            let rendered = match value {
+                PropertyValue::String(value) if !value.is_empty() => value,
+                PropertyValue::Bool(value) => value.to_string(),
+                PropertyValue::Int(value) if value != 0 => value.to_string(),
+                PropertyValue::GitCommit(value) => value.to_hex(),
+                PropertyValue::StringRef(value) if !value.is_zero() => self.resolve(value)?,
+                PropertyValue::StringRefList(values) if !values.is_empty() => values
+                    .as_slice()
+                    .iter()
+                    .map(|value| self.resolve(*value))
+                    .collect::<Result<Vec<_>>>()?
+                    .join("、"),
+                _ => continue,
+            };
+            attributes.push((spec.name, rendered));
+        }
+        Ok(attributes)
+    }
+
+    /// Replace a string-reference field with one or more qnames. Single
+    /// references accept at most one target; list references accept any
+    /// number, including zero to clear the list.
+    pub fn set_refs(&self, qname_text: &str, field: &str, targets: &[String]) -> Result<()> {
+        let mut snapshot = self.worktree_snapshot()?;
+        let qname = self.intern(qname_text)?;
+        let hash = snapshot
+            .get(qname)
+            .with_context(|| format!("{qname_text} not found"))?;
+        let mut object = self.read(hash)?;
+        let kind = object
+            .get_property(field)
+            .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?
+            .kind();
+        let value = match kind {
+            ValueKind::StringRef => {
+                if targets.len() > 1 {
+                    bail!("{qname_text}.{field} is a single reference");
+                }
+                let target = match targets.first() {
+                    Some(target) => self.intern(target)?,
+                    None => SymbolHash::ZERO,
+                };
+                PropertyValue::StringRef(target)
+            }
+            ValueKind::StringRefList => {
+                let mut values = Vec::with_capacity(targets.len());
+                for target in targets {
+                    values.push(self.intern(target)?);
+                }
+                PropertyValue::StringRefList(StringRefList(values))
+            }
+            other => bail!("{qname_text}.{field} is {other:?}, not a reference"),
+        };
+        object
+            .set_property(field, value)
             .map_err(|error| anyhow::anyhow!("{qname_text}.{field}: {error}"))?;
         let hash = self.save_object(&object)?;
         snapshot.insert(qname, hash);
@@ -4560,9 +4775,14 @@ fn validate_concept_path(path: &str, _directory: bool) -> Result<()> {
 fn validate_branch_name(name: &str) -> Result<()> {
     if name.is_empty()
         || name.starts_with('-')
+        || name.starts_with('/')
+        || name.ends_with('/')
         || name.contains("..")
-        || name.contains('/')
+        || name.contains('\\')
         || name.chars().any(char::is_whitespace)
+        || name
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         bail!("invalid branch name {name}");
     }
@@ -4897,6 +5117,117 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["智能体", "智能体", "智能体"]);
         assert!(repo.check().unwrap().is_empty());
+    }
+
+    #[test]
+    fn slash_separated_branches_are_created_listed_and_deleted() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        repo.branch_create("requirements/abc").unwrap();
+        repo.checkout("requirements/abc", false).unwrap();
+        assert_eq!(repo.current_branch().unwrap(), "requirements/abc");
+        assert!(
+            repo.branch_list()
+                .unwrap()
+                .contains(&"requirements/abc".to_string())
+        );
+        repo.checkout("main", false).unwrap();
+        repo.branch_delete("requirements/abc").unwrap();
+        assert!(
+            !repo
+                .branch_list()
+                .unwrap()
+                .contains(&"requirements/abc".to_string())
+        );
+        repo.branch_delete("requirements/abc").unwrap();
+    }
+
+    #[test]
+    fn requirement_story_v2_links_users_functions_protagonist_and_flow() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let (user, _) = repo.create_requirement_user("protagonist", "主角").unwrap();
+        let user = repo.resolve(user).unwrap();
+        repo.create_requirement_system("系统").unwrap();
+        repo.create_requirement_module("requirement/system/系统", "模块")
+            .unwrap();
+        let (function, _) = repo
+            .create_requirement_function("requirement/system/系统/模块", "功能")
+            .unwrap();
+        let function = repo.resolve(function).unwrap();
+        let (story, _) = repo.create_requirement_story("旅程").unwrap();
+        let story = repo.resolve(story).unwrap();
+
+        repo.set_refs(&story, "users", &[user.clone()]).unwrap();
+        repo.set_refs(&story, "protagonist", &[user]).unwrap();
+        repo.set_refs(&story, "functions", &[function]).unwrap();
+        repo.doc_mermaid_set(&story, "flow", "graph TD; A-->B;")
+            .unwrap();
+        repo.import_doc_json(
+            &story,
+            r#"{"fields":{
+                "description":{"type":"DocumentParagraphList","items":[
+                    {"type":"DocumentText","content":[{"type":"text","text":"主角打开列表，选择一项并完成操作。"}]},
+                    {"type":"DocumentText","content":[{"type":"text","text":"其他用户收到结果并确认。"}]}
+                ]},
+                "requirement":{"type":"DocumentList","items":[
+                    {"type":"text","text":"满足主角快速完成操作的需求。"}
+                ]}
+            }}"#,
+        )
+        .unwrap();
+
+        let hash = repo.find_by_qname(&story).unwrap();
+        let Object::RequirementStory(story) = repo.read(hash).unwrap() else {
+            panic!("not a story");
+        };
+        assert_eq!(story.users().len(), 1);
+        assert_eq!(story.functions().len(), 1);
+        assert!(!story.protagonist().is_zero());
+        assert!(!story.flow().is_zero());
+        assert!(story.description().get() != ObjectHash::ZERO);
+        assert!(story.requirement().get() != ObjectHash::ZERO);
+    }
+
+    #[test]
+    fn requirement_users_are_appended_to_the_root_user_list() {
+        let temp = TempDir::new().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        let (user, hash) = repo
+            .create_requirement_user("project-sponsor", "项目发起人")
+            .unwrap();
+        let qname = repo.resolve(user).unwrap();
+        assert!(qname.starts_with("requirement/user/"), "{qname}");
+        let root = repo.find_by_qname("requirement").unwrap();
+        let root = repo.read(root).unwrap();
+        let Object::RequirementRoot(root) = root else {
+            panic!("requirement is not a root");
+        };
+        let list = repo.read(root.user).unwrap();
+        let Object::ObjectList(list) = list else {
+            panic!("requirement/user is not a list");
+        };
+        assert_eq!(list.items, vec![hash]);
+        assert!(repo.find_by_qname(&qname).is_ok());
+
+        repo.import_doc_json(
+            &qname,
+            r#"{"fields":{
+                "display_name":"修改后的发起人",
+                "priority":2,
+                "needs":{"type":"DocumentList","items":[{"type":"text","text":"能够初始化平台"}]}
+            }}"#,
+        )
+        .unwrap();
+        repo.set_scalar(&qname, "occupation", "管理员").unwrap();
+        let hash = repo.find_by_qname(&qname).unwrap();
+        let Object::RequirementUser(user) = repo.read(hash).unwrap() else {
+            panic!("not a user");
+        };
+        assert_eq!(user.display_name(), "修改后的发起人");
+        assert_eq!(user.occupation(), "管理员");
+        assert_eq!(user.priority(), 2);
+        assert!(!user.needs().is_zero());
     }
 
     #[test]
