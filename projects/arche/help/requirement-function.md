@@ -19,7 +19,7 @@
 
 创建：
 
-  arche create requirement-function <name> --parent <module>
+  arche create requirement-function --name <name> --parent <module>
 
 修改：
 
@@ -38,14 +38,6 @@
   preconditions
   feedback
   description
-
-字段写作说明（统一格式）：
-
-  含义  这个字段回答什么问题。
-  写法  内容粒度、顺序、语气和格式要求。
-  正例  可以直接对照采用的例子。
-  反例  常见错误，出现即应改写。
-  约束  与其他字段、对象或检查的关系。
 
 flow  DocumentMermaid
   含义：功能内部从触发到系统变化和信息反馈的流程。
@@ -67,22 +59,22 @@ flow  DocumentMermaid
 
 interactions  ObjectList<RequirementInteraction>（自动）
   含义：组成这个功能的交互。
-  写法：用 `arche create requirement-interaction --parent <function>` 创建，不手工
+  写法：用 `arche create requirement-interaction --name <name> --parent <function>` 创建，不手工
         写这个字段；按执行顺序排列。
   正例：
-    arche create requirement-interaction fill-document-name \
+    arche create requirement-interaction --name fill-document-name \
       --parent requirement/system/warehouse-android/account-management/create-document
   反例：把整个功能拆成一次交互；把交互建在模块下；交互之间没有顺序关系。
   约束：若干交互共同构成一次功能；交互合起来应产生 system_change 描述的结果。
 
 initiator  DocumentText
   含义：谁或什么触发这个功能。
-  写法：一句话，写用户名称、系统任务或外部系统；与故事 users 和系统关系保持一致。
+  写法：一句话，写用户名称、系统任务或外部系统；与故事 users 和系统定位保持一致。
   正例：仓管员。系统定时任务。ERP 回调。
   反例：用户（太泛）；系统（不知道是哪个系统）；管理员点击按钮（这是操作，不是
         触发者）。
   约束：如果触发者是人，必须是 RequirementUser 并在相关故事 users 中；外部系统
-        应在系统的 relationships 中出现。
+        应在相关故事或功能描述中写清来源。
 
 system_change  DocumentParagraphList
   含义：这个功能产生的有意义的系统数据变化或信息展示。
@@ -135,7 +127,7 @@ description  DocumentParagraphList
 
 示例：
 
-  arche create requirement-function create-document \
+  arche create requirement-function --name create-document \
     --parent requirement/system/warehouse-android/account-management
   arche doc text set requirement/system/warehouse-android/account-management/create-document \
     initiator "仓管员"

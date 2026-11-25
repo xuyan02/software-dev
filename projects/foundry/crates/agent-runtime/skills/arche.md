@@ -49,18 +49,18 @@ technical/namespace/<name>
 常用类型：
 
 ```bash
-arche create technical-system <name>
-arche create technical-module <name> --parent technical/<system>
-arche create technical-layer <name> --parent technical/<system>
-arche create technical-namespace <name> --parent technical
-arche create technical-class <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
-arche create technical-struct <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
-arche create technical-enum <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
-arche create technical-interface <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
-arche create technical-mixin <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
-arche create technical-function <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-system --name <name>
+arche create technical-module --name <name> --parent technical/<system>
+arche create technical-layer --name <name> --parent technical/<system>
+arche create technical-namespace --name <name> --parent technical
+arche create technical-class --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-struct --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-enum --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-interface --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-mixin --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
+arche create technical-function --name <name> --namespace <ns> --file technical/file/<path> --module technical/<system>/<module> --source <path:start-end>
 arche create technical-method --parent <type> --prototype "<name>(<types>) -> <return>" --source <path:start-end>
-arche create technical-part <name> --parent <type> --source <path:start-end>
+arche create technical-part --name <name> --parent <type> --source <path:start-end>
 ```
 
 对象类型：
@@ -184,13 +184,13 @@ arche source changes
 ## 8. 需求和概念
 
 ```bash
-arche create requirement-user <role-id> --display-name <假想角色姓名>
+arche create requirement-user --name <role-id> --display-name <假想角色姓名>
 # 用户是假想角色，不是真实人物；字段和写作规则见 arche help requirement-user。
-arche create requirement-story <name>
-arche create requirement-system <name>
-arche create requirement-module <name> --parent <system>
-arche create requirement-function <name> --parent <module>
-arche create requirement-interaction <name> --parent <function>
+arche create requirement-story --name <name>
+arche create requirement-system --name <name>
+arche create requirement-module --name <name> --parent <system> --display-name <模块名称>
+arche create requirement-function --name <name> --parent <module>
+arche create requirement-interaction --name <name> --parent <function>
 
 arche update <qname> [与 create 相同的字段参数]
 arche update <qname> --field <字段>=<值> --ref <引用字段>=<目标>[,<目标>...]

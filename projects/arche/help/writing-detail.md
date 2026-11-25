@@ -330,7 +330,7 @@ Part 不关联设计文档，不建文档字段。
 
 定位：
 
-- RequirementSystem：用户可感知的一个完整软件，例如“开发系统安卓端”；
+- RequirementSystem：用户能够单独感知、识别和使用的一个应用；同一产品的不同形态是不同系统；
 - RequirementModule：围绕一个需求概念的一组功能，完成该概念的功能闭环，例如“账户管理”；
 - RequirementFunction：用户与系统的一次有意义的交互，或系统自身的一次有意义的动作，
   标准是产生有意义的系统数据变化或信息展示，例如“创建单据”；
@@ -363,22 +363,19 @@ requirement          DocumentList          每项满足用户的什么需求
 RequirementSystem：
 
 ```text
+display_name         String
+position             DocumentText
+app_form             DocumentText
+users                Vec<SymbolHash>
 modules              ObjectList<RequirementModule>
-form                 DocumentText
-covered_users        DocumentList
-closed_loop_goal     DocumentParagraphList
-relationships        DocumentParagraphList
-boundary             DocumentList
 ```
 
 RequirementModule：
 
 ```text
+display_name         String
+position             DocumentText
 functions            ObjectList<RequirementFunction>
-core_concept         DocumentText
-included_concepts    DocumentList
-concept_relations    DocumentParagraphList
-boundary             DocumentList
 ```
 
 RequirementFunction：
@@ -551,11 +548,11 @@ arche doc html add <qname> <field> "<b>preview</b>"
 
 ```bash
 arche init
-arche create technical-system app
+arche create technical-system --name app
 arche doc text set technical/app position "认证与授权服务。"
 arche doc list item add technical/app responsibilities "签发令牌"
-arche create technical-namespace core --parent technical
-arche create technical-class Login --namespace technical/namespace/core
+arche create technical-namespace --name core --parent technical
+arche create technical-class --name Login --namespace technical/namespace/core
 arche doc text set technical/namespace/core/Login position "登录入口。"
 arche doc list item add technical/namespace/core/Login responsibilities "校验凭据"
 arche create technical-method --parent technical/namespace/core/Login \
@@ -567,13 +564,17 @@ arche commit -m "initial design"
 ### 5.2 需求设计
 
 ```bash
-arche create requirement-system warehouse
-arche create requirement-module inbound --parent requirement/system/warehouse
-arche create requirement-function receive --parent \
+arche create requirement-system --name warehouse \
+  --display-name "仓库管理系统" --position "仓库管理平台"
+arche create requirement-module --name inbound \
+  --parent requirement/system/warehouse \
+  --display-name "入库管理" --position "围绕入库概念，完成收货到上架的管理"
+arche create requirement-function --name receive --parent \
   requirement/system/warehouse/inbound
-arche doc text set requirement/system/warehouse form "仓库管理系统"
-arche doc list item add requirement/system/warehouse covered_users "仓管员"
-arche create requirement-story receive-goods
+arche doc text set requirement/system/warehouse app_form "Web 应用"
+arche update requirement/system/warehouse \
+  --ref users=requirement/user/warehouse-admin
+arche create requirement-story --name receive-goods
 arche update requirement/story/receive-goods \
   --ref users=requirement/user/<id>
 arche update requirement/story/receive-goods \

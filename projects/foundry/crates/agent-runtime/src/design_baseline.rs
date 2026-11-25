@@ -40,10 +40,10 @@ const BASELINE_STAGE_PROMPT: &str = r#"你是 Foundry 的设计基线智能体�
 
 执行顺序：
 1. 读运行时代码生成的 inventory，判断是否需要顶层系统。简单仓库可以只有一个 system；复杂时按复杂度分治建 module，不要按文件数、目录或技术角色机械拆分。
-2. 建 System/Module/Layer：arche create technical-system <name>；arche create technical-module <name> --parent technical/<system>；arche create technical-layer <name> --parent technical/<system>。为它们写 position 等字段。
-3. 建 Namespace：arche create technical-namespace <name> --parent technical；为每个 Namespace 写 position 单句。
+2. 建 System/Module/Layer：arche create technical-system --name <name>；arche create technical-module --name <name> --parent technical/<system>；arche create technical-layer --name <name> --parent technical/<system>。为它们写 position 等字段。
+3. 建 Namespace：arche create technical-namespace --name <name> --parent technical；为每个 Namespace 写 position 单句。
 4. Directory/File 已由运行时的 source sync 创建为 technical/directory/<path> 和 technical/file/<path>；为每个目录和文件写 position 单句，覆盖整个子树或文件角色，不枚举子项。
-5. 代码元素：逐文件读源码，用 arche create technical-class/struct/enum/interface/mixin/function/method/part 创建对象，并传 --namespace、--file、--module、--source；方法用 --prototype 写函数原型；Part 必须传 --source。分类规则：同时有数据和方法→Class；只有常量变体→Enum；变体携带数据的 enum→Class（优先于 Struct）；只有数据→Struct；只有抽象方法→Interface；可复用行为片段→Mixin；类型内部的方法→Method；其他代码片段→Part。
+5. 代码元素：逐文件读源码，用 arche create technical-class/struct/enum/interface/mixin/function/part --name <name> 创建对象，并传 --namespace、--file、--module、--source；方法不传 --name，用 --prototype 写函数原型；Part 必须传 --source。分类规则：同时有数据和方法→Class；只有常量变体→Enum；变体携带数据的 enum→Class（优先于 Struct）；只有数据→Struct；只有抽象方法→Interface；可复用行为片段→Mixin；类型内部的方法→Method；其他代码片段→Part。
 6. 写设计字段：优先写 position（单句定位），再按对象类型写 responsibilities、features、invariants、usage、design_points 等字段；Function/Method 写清参数和返回值语义。设计要覆盖无法从代码自然推定的内容，使读者只凭文档就能理解设计并决定怎么写代码。
 7. 归属：每个顶层 Class/Struct/Enum/Interface/Function/Mixin 用 arche structure assign <qname> --parent <system|module|layer> 加入恰好一个所有者；不要重复归属、遗留未归属元素或建立空系统/空模块。
 8. 自检：arche structure unassigned 为空，arche structure check、arche doc check、arche check 通过；缺什么继续补。

@@ -119,16 +119,16 @@ arche structure unassigned
 1. 对每个系统，先创建/复用系统对象；只有复杂度需要时才创建模块：
 
 ```bash
-arche create technical-system <system>
-arche create technical-module <module> --parent technical/<system>
+arche create technical-system --name <system>
+arche create technical-module --name <module> --parent technical/<system>
 ```
 
 2. 只有容器足够复杂且存在明显层次结构时才创建层；一个容器有层后，它的所有成员和子模块都必须放进层里，不能直接挂在容器下：
 
 ```bash
-arche create technical-layer <layer> --parent technical/<system>
-arche create technical-layer <layer> --parent technical/<system>
-arche create technical-module <module> --parent technical/<system>
+arche create technical-layer --name <layer> --parent technical/<system>
+arche create technical-layer --name <layer> --parent technical/<system>
+arche create technical-module --name <module> --parent technical/<system>
 ```
 
 3. 用 `arche structure assign <element> --parent <system-or-module-or-layer>` 加入成员。一个顶层元素恰好属于一个系统、模块或层；跨容器共用关系用依赖表达，不要重复归属。简单系统可以把元素直接挂在系统下；程序入口不是模块。

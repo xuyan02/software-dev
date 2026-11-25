@@ -471,21 +471,18 @@ impl_properties!(RequirementStory {
 
 impl_properties!(RequirementSystem {
     "parent" => parent : StringRef,
+    "display_name" => display_name : String,
+    "position" => position : ObjectRef,
+    "app_form" => app_form : ObjectRef,
+    "users" => users : StringRefList,
     "modules" => modules : ObjectRef,
-    "form" => form : ObjectRef,
-    "covered_users" => covered_users : ObjectRef,
-    "closed_loop_goal" => closed_loop_goal : ObjectRef,
-    "relationships" => relationships : ObjectRef,
-    "boundary" => boundary : ObjectRef,
 });
 
 impl_properties!(RequirementModule {
     "parent" => parent : StringRef,
+    "display_name" => display_name : String,
+    "position" => position : ObjectRef,
     "functions" => functions : ObjectRef,
-    "core_concept" => core_concept : ObjectRef,
-    "included_concepts" => included_concepts : ObjectRef,
-    "concept_relations" => concept_relations : ObjectRef,
-    "boundary" => boundary : ObjectRef,
 });
 
 impl_properties!(RequirementFunction {

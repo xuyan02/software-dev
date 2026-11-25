@@ -967,15 +967,20 @@ pub struct RequirementRoot {
 
 ### 9.4 RequirementSystem
 
-用户可感知的一个完整软件，例如“开发系统安卓端”。对象名称是软件名称。
+格式版本为 3。需求系统是用户能够单独感知、识别和使用的一个应用。系统边界由用户
+是否把它当成独立应用决定，不由代码仓库、部署单元、服务拆分或技术架构决定。同一
+产品以用户可区分的不同形态出现时（例如手机应用和网页版），应分别建模为需求系统。
+`name` 是 qname 的本地 key，`display_name` 是用户可见的系统名称。
 
 | 字段 | 目标类型 |
 |---|---|
-| `form` | `DocumentText` |
-| `covered_users` | `DocumentList` |
-| `closed_loop_goal` | `DocumentParagraphList` |
-| `relationships` | `DocumentParagraphList` |
-| `boundary` | `DocumentList` |
+| `display_name` | `String` |
+| `position` | `DocumentText` |
+| `app_form` | `DocumentText` |
+| `users` | `Vec<SymbolHash>`，RequirementUser qname 列表 |
+
+v1/v2 的 `covered_users`、`closed_loop_goal`、`relationships`、`boundary` 在读取
+时被消费并丢弃；v3 不再包含这些字段。当前 `arche check` 暂不校验对象哈希。
 
 结构字段：
 
@@ -985,23 +990,17 @@ pub modules: ObjectHash, // ObjectList
 
 ### 9.5 RequirementModule
 
-围绕一个需求概念的一组功能，完成与该概念相关的功能闭环，例如“账户管理”。
-对象名称是模块名称。
+格式版本为 2。围绕一个需求概念的一组功能，完成与该概念相关的功能闭环，例如
+“账户管理”。`name` 是 qname 的本地 key，`display_name` 是用户可见的模块名称。
 
 | 字段 | 目标类型 |
 |---|---|
-| `core_concept` | `DocumentText` |
-| `included_concepts` | `DocumentList` |
-| `concept_relations` | `DocumentParagraphList` |
-| `boundary` | `DocumentList` |
+| `display_name` | `String` |
+| `position` | `DocumentText` |
+| `functions` | `ObjectList` |
 
-`core_concept` 和 `included_concepts` 中的概念引用必须指向 `concept/requirement/` 下的概念。
-
-结构字段：
-
-```rust
-pub functions: ObjectHash, // ObjectList
-```
+v1 的 `core_concept`、`included_concepts`、`concept_relations`、`boundary` 在
+读取时被消费并丢弃。
 
 ### 9.6 RequirementFunction
 
@@ -1348,7 +1347,8 @@ POST /<repo>/push
 - bundle 先进入 `incoming/` quarantine；
 - 校验 hash、路径、对象闭包、ref expected-old；
 - 在 `flock` 保护的 ref 临界区发布并原子更新 ref；
-- 失败不改变可见分支；
+- 失败不改变可见分支；SSH 返回 `ERR <原因>`，客户端显示原因；
+- ref CAS 失败（远端分支已变化）时提示先 `arche pull` 再重试；
 - 非 force 要求 fast-forward；
 - 管理员可移动受保护分支；
 - `repo.toml` 不进入 push。
@@ -1467,7 +1467,7 @@ arche show
 ### 17.2 对象
 
 ```bash
-arche create <kind> <name> [options]
+arche create <kind> --name <name> [options]
 arche update <qname> [与 create 相同的字段选项]
 arche rm <qname> [--force] [--recursive]
 arche dep add/rm/list

@@ -15,7 +15,7 @@
 
 创建：
 
-  arche create requirement-story <name>
+  arche create requirement-story --name <name>
 
 qname 为 requirement/story/<name>，name 使用 kebab-case，例如
 first-time-setup、decision-traceability。
@@ -40,14 +40,6 @@ first-time-setup、decision-traceability。
   requirement
 
 按此顺序填写。空字段直接省略，不要写占位内容；不要调换顺序。
-
-字段写作说明（统一格式）：
-
-  含义  这个字段回答什么问题。
-  写法  内容粒度、顺序、语气和格式要求。
-  正例  可以直接对照采用的例子。
-  反例  常见错误，出现即应改写。
-  约束  与其他字段、对象或检查的关系。
 
 preconditions  DocumentList
   含义：故事开始前已经成立、可以核对的条件或状态。
@@ -152,15 +144,16 @@ requirement  DocumentList
 
 完整示例：
 
-  arche create requirement-user platform-admin --display-name 张伟 --occupation 平台管理员
-  arche create requirement-user invited-admin --display-name 李娜 --occupation 受邀管理员
-  arche create requirement-system 治理
-  arche create requirement-module 初始化 --parent requirement/system/治理
-  arche create requirement-function 创建首个账户 --parent \
+  arche create requirement-user --name platform-admin --display-name 张伟 --occupation 平台管理员
+  arche create requirement-user --name invited-admin --display-name 李娜 --occupation 受邀管理员
+  arche create requirement-system --name 治理
+  arche create requirement-module --name 初始化 \
+    --parent requirement/system/治理 --display-name "初始化"
+  arche create requirement-function --name 创建首个账户 --parent \
     requirement/system/治理/初始化
-  arche create requirement-function 邀请管理员 --parent \
+  arche create requirement-function --name 邀请管理员 --parent \
     requirement/system/治理/初始化
-  arche create requirement-story first-time-setup
+  arche create requirement-story --name first-time-setup
 
   arche update requirement/story/first-time-setup \
     --ref users=requirement/user/<管理员-id>,requirement/user/<受邀管理员-id>

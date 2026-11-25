@@ -13,7 +13,7 @@
 
 文档字段目标类型：
 
-  position, prototype, returns, form          DocumentText
+  position, prototype, returns, app_form      DocumentText
   responsibilities, features, needs, ...      DocumentList
   usage, design_points, scenarios, ...        DocumentParagraphList
   flow                                        DocumentMermaid

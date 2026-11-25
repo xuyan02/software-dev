@@ -10,88 +10,77 @@
 
 反例：把“utils”“服务层”或一个孤立功能当作需求模块。
 
-创建：
+创建（一次传入全部字段）：
 
-  arche create requirement-module <name> --parent <system>
+  arche create requirement-module --name <name> --parent <system> \
+    --display-name "<模块名称>" \
+    --position "<模块定位>"
 
 修改：
+
+  arche update <qname> \
+    --display-name "<新模块名称>" \
+    --position "<新模块定位>"
+
+通用修改：
 
   arche update <qname> --field <字段>=<值>
   arche update <qname> --ref <引用字段>=<目标>[,<目标>...]
 
-`arche update` 只修改传入的字段，create 支持的字段参数同样适用；文档字段的正文
-仍用 `arche doc` 命令修改。
+JSON 创建和更新：
+
+  arche create requirement-module --name <name> --parent <system> --json module.json
+  arche update <qname> --json module.json
+
+  {
+    "display_name": "账户管理",
+    "position": "围绕账户概念，完成账户创建、授权、停用和删除的管理"
+  }
+
+`--json` 可以传文件路径、`-`（stdin）或直接传 JSON 对象；JSON 最后应用，优先于
+普通参数。
 
 字段顺序：
 
+  display_name
+  position
   functions
-  core_concept
-  included_concepts
-  concept_relations
-  boundary
 
-字段写作说明（统一格式）：
+display_name  String
+  含义：模块的用户可见名称，例如“账户管理”“库存管理”。
+  写法：智能体必须为模块起一个简短、稳定的业务名称；用用户能理解的名称，不用
+        qname key、技术模块名或“模块1”这类占位名。
+  正例：账户管理；库存管理；订单履约。
+  反例：account-management；RequirementModule；模块1；核心模块。
+  约束：name 是 qname 的本地 key；display_name 用于目录树和页面展示，同一系统
+        内保持唯一和稳定。
 
-  含义  这个字段回答什么问题。
-  写法  内容粒度、顺序、语气和格式要求。
-  正例  可以直接对照采用的例子。
-  反例  常见错误，出现即应改写。
-  约束  与其他字段、对象或检查的关系。
+position  DocumentText
+  含义：模块的简要定位，说明它围绕什么概念、完成什么闭环。
+  写法：一句话写清“围绕<概念>，完成<生命周期或闭环>”；让人立刻明白这个模块
+        负责什么、边界在哪里。不写功能清单、接口、数据库或实现方式。
+  正例：围绕账户概念，完成账户创建、授权、停用和删除的管理。
+        围绕订单概念，完成订单从创建到完成或取消的全过程。
+  反例：包含创建账户、授权、停用三个功能。调用 AccountService。account 表管理。
+  约束：functions 必须围绕 position 描述的概念和闭环；跨模块交接要与相关模块的
+        position 一致。
 
 functions  ObjectList<RequirementFunction>（自动）
   含义：这个模块包含的需求功能。
-  写法：用 `arche create requirement-function --parent <module>` 创建，不手工写
-        这个字段；按功能在概念闭环中的先后或重要性排列。
+  写法：用 `arche create requirement-function --name <name> --parent <module>`
+        创建，不手工写这个字段；按功能在概念闭环中的先后或重要性排列。
   正例：
-    arche create requirement-function create-account \
+    arche create requirement-function --name create-account \
       --parent requirement/system/warehouse-android/account-management
   反例：手工把功能 qname 写进字段；把交互建在模块下；一个功能横跨多个模块。
   约束：每个功能必须属于一个模块，并至少被一个故事覆盖；模块的功能合起来应能
-        完成 core_concept 描述的概念闭环。
-
-core_concept  DocumentText
-  含义：一句话定义模块中心的概念及其管理范围。
-  写法：一句话，写成“<概念>从<起点>到<终点>的管理”；名称必须是用户能理解的领域
-        概念，不用技术模块名。
-  正例：账户从创建、授权、停用到删除的管理。订单从创建到完成或取消的全过程。
-  反例：账户服务。用户中心后端。调用 AccountService 的增删改查。
-  约束：included_concepts 和 functions 都必须围绕这个概念；concept_relations 要
-        说明它的状态如何流转。
-
-included_concepts  DocumentList
-  含义：模块涉及的从属概念。
-  写法：每条写一个概念名称，例如“账户”“角色”“权限”“审计记录”；只列本模块
-        功能真正创建、修改或消费的概念。
-  正例：账户；角色；权限；审计记录。
-  反例：数据库；表；缓存；消息队列。
-  约束：每个从属概念应能在 concept_relations 中找到关系，或被某个功能使用；
-        没有用到的概念删除。
-
-concept_relations  DocumentParagraphList
-  含义：模块内概念之间的关系和闭环。
-  写法：用段落写清谁创建谁、什么状态转换、哪些信息在概念之间流动、闭环在哪里
-        结束；不写接口、数据库表或代码调用。
-  正例：账户创建后授予角色，角色聚合权限；账户停用后保留审计记录，审计记录可
-        按账户查询。角色删除前必须确认没有启用中的账户引用它。
-  反例：account 表通过 role_id 关联 role 表。调用 RoleService 查询权限。
-  约束：关系应覆盖 core_concept 的生命周期，并解释 functions 产生的系统变化如何
-        被其他功能消费；异常状态转换也要写明。
-
-boundary  DocumentList
-  含义：这个模块的能力边界。
-  写法：每条写“包含哪些功能、明确不包含什么、由哪个模块或系统承接”；用业务能力
-        描述，不按代码目录划分。
-  正例：包含账户创建、授权和停用；不包含登录认证，登录认证属于身份模块。
-  反例：包含 account 目录。不包含 common 模块。
-  约束：与系统的 boundary 不冲突；跨模块交接要与相关模块的 boundary 对应。
+        完成 position 描述的概念闭环。
 
 示例：
 
-  arche create requirement-module account-management \
-    --parent requirement/system/warehouse-android
-  arche doc text set requirement/system/warehouse-android/account-management core_concept \
-    "账户从创建、授权、停用到删除的管理。"
-  arche doc list item add requirement/system/warehouse-android/account-management \
-    included_concepts "账户"
-  arche doc list item add requirement/system/warehouse-android/account-management \
-    boundary "包含账户创建、授权和停用；不包含登录认证。"
+  arche create requirement-module --name account-management \
+    --parent requirement/system/warehouse-android \
+    --display-name "账户管理" \
+    --position "围绕账户概念，完成账户创建、授权、停用和删除的管理"
+  arche create requirement-function --name create-account \
+    --parent requirement/system/warehouse-android/account-management

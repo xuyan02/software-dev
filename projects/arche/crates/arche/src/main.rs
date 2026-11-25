@@ -6,7 +6,8 @@ use std::io::Read;
 use anyhow::{Context, Result, bail};
 use arche_core::snapshot::Snapshot;
 use arche_core::{
-    Object, ObjectHash, Repository, SymbolHash, parse_priority, priority_display, priority_slug,
+    DocFieldKind, Object, ObjectHash, PropertyAccess, PropertyValue, Repository, SymbolHash,
+    parse_priority, priority_display, priority_slug,
 };
 use arche_server::{ServerOptions, serve, serve_stdio};
 use clap::{Parser, Subcommand};
@@ -54,7 +55,16 @@ struct ObjectFieldArgs {
     /// Module qname for a code type or function.
     #[arg(long)]
     module: Option<String>,
-    /// Fictional requirement persona name; required for requirement-user.
+    /// Positioning text for `position` fields, for example `requirement-system`.
+    #[arg(long)]
+    position: Option<String>,
+    /// Application form text for `requirement-system`, for example `Web 应用`.
+    #[arg(long)]
+    app_form: Option<String>,
+    /// Using-user qname for `requirement-system`/`requirement-story`; repeatable.
+    #[arg(long = "user")]
+    users: Vec<String>,
+    /// Display name for requirement-user or requirement-system.
     #[arg(long)]
     display_name: Option<String>,
     /// Requirement user age.
@@ -84,6 +94,9 @@ struct ObjectFieldArgs {
     /// Replace one reference field: FIELD=TARGET[,TARGET...]. Repeatable.
     #[arg(long = "ref", value_name = "FIELD=TARGET")]
     refs: Vec<String>,
+    /// Apply a JSON object, path, or `-` for stdin. JSON wins over other flags.
+    #[arg(long, value_name = "FILE|JSON")]
+    json: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -177,12 +190,14 @@ technical-namespace, technical-class, technical-struct, technical-enum, technica
 technical-mixin, technical-function, technical-method, technical-part, requirement-user, \
 requirement-story, requirement-system, requirement-module, requirement-function, \
 requirement-interaction. Run `arche help technical` or `arche help requirement` for qnames \
-and fields."
+and fields. All named objects take --name <name>; technical-method is unnamed. Use --json \
+FILE to pass all fields at once."
     )]
     Create {
         /// Object kind, for example technical-system or requirement-user.
         kind: String,
-        /// Local object name / requirement role id. Not used for technical-method.
+        /// Local object name / requirement role id. Required for all named objects.
+        #[arg(long)]
         name: Option<String>,
         #[command(flatten)]
         fields: ObjectFieldArgs,
@@ -192,7 +207,8 @@ and fields."
         after_help = "Accepts the same field flags as `arche create`. Scalars are \
 replaced; --situation/--hobby/--need add list items; --story replaces the stories list. \
 Use --field NAME=VALUE for any scalar and --ref FIELD=TARGET[,TARGET...] for any reference \
-list. Parent and prototype are part of object identity and cannot be updated."
+list. Use --json FILE|JSON to update all fields at once; JSON wins over flags. Parent and \
+prototype are part of object identity and cannot be updated."
     )]
     Update {
         /// Existing object qname.
@@ -714,7 +730,20 @@ enum SourceCommand {
     },
 }
 
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // Match normal Unix CLI behaviour: a closed `head`/`tail` pipe terminates
+    // the process instead of panicking inside `println!`.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
+
 fn main() -> Result<()> {
+    reset_sigpipe();
     let cli = Cli::parse();
     match cli.command {
         Command::Help { topic } => {
@@ -839,12 +868,17 @@ fn main() -> Result<()> {
         }
         Command::Create { kind, name, fields } => {
             let repo = Repository::open(".")?;
+            let json = fields.json.as_deref().map(read_json_value).transpose()?;
+            let json_display_name = json.as_ref().and_then(json_display_name);
+            let display_name = fields.display_name.as_deref().or(json_display_name);
             let qname = if kind == "requirement-user" {
                 let name = name
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("requirement-user requires <role-id>"))?;
-                let display_name = fields.display_name.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("requirement-user requires --display-name <假想角色姓名>")
+                    .ok_or_else(|| anyhow::anyhow!("requirement-user requires --name <role-id>"))?;
+                let display_name = display_name.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "requirement-user requires --display-name <假想角色姓名> or JSON display_name"
+                    )
                 })?;
                 let (qname, _) = repo.create_requirement_user(name, display_name)?;
                 let qname_text = repo.resolve(qname)?;
@@ -861,11 +895,18 @@ fn main() -> Result<()> {
                     fields.source.as_deref(),
                     fields.file.as_deref(),
                     fields.module.as_deref(),
+                    display_name,
                 )?
                 .0
             };
             let qname_text = repo.resolve(qname)?;
+            if let Some(position) = fields.position.as_deref() {
+                repo.set_document_text(&qname_text, "position", position)?;
+            }
             apply_generic_assignments(&repo, &qname_text, &fields)?;
+            if let Some(json) = &json {
+                apply_json_fields(&repo, &qname_text, json)?;
+            }
             let hash = repo.find_by_qname(&qname_text)?;
             println!("{qname_text}");
             println!("object {}", hash.to_hex());
@@ -1653,30 +1694,22 @@ fn show_object(repo: &Repository, hash: arche_core::ObjectHash, object: &Object)
         }
         Object::RequirementSystem(value) => {
             println!("parent: {}", repo.resolve(value.parent())?);
-            println!("modules: {}", optional_symbol(repo, value.modules())?);
+            println!("display_name: {}", value.display_name());
+            print_symbol_list(repo, "users", &value.users())?;
             print_design_fields(
                 repo,
                 &[
-                    ("form", value.form()),
-                    ("covered_users", value.covered_users()),
-                    ("closed_loop_goal", value.closed_loop_goal()),
-                    ("relationships", value.relationships()),
-                    ("boundary", value.boundary()),
+                    ("position", value.position()),
+                    ("app_form", value.app_form()),
                 ],
             )?;
+            println!("modules: {}", optional_symbol(repo, value.modules())?);
         }
         Object::RequirementModule(value) => {
             println!("parent: {}", repo.resolve(value.parent())?);
+            println!("display_name: {}", value.display_name());
+            print_design_fields(repo, &[("position", value.position())])?;
             println!("functions: {}", optional_symbol(repo, value.functions())?);
-            print_design_fields(
-                repo,
-                &[
-                    ("core_concept", value.core_concept()),
-                    ("included_concepts", value.included_concepts()),
-                    ("concept_relations", value.concept_relations()),
-                    ("boundary", value.boundary()),
-                ],
-            )?;
         }
         Object::RequirementFunction(value) => {
             println!("parent: {}", repo.resolve(value.parent())?);
@@ -2082,6 +2115,181 @@ fn object_source_path(repo: &Repository, object: &Object) -> Result<String> {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn read_json_value(source: &str) -> Result<serde_json::Value> {
+    let text = if source == "-" {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        text
+    } else if source.trim_start().starts_with('{') {
+        source.to_owned()
+    } else {
+        std::fs::read_to_string(source).with_context(|| format!("read JSON file {source}"))?
+    };
+    serde_json::from_str(&text).context("parse JSON")
+}
+
+fn json_display_name(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("display_name")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            value
+                .get("attributes")
+                .and_then(|value| value.get("display_name"))
+                .and_then(|value| value.as_str())
+        })
+}
+
+fn json_document_value(kind: DocFieldKind, value: &serde_json::Value) -> Result<serde_json::Value> {
+    if value.get("type").is_some() {
+        return Ok(value.clone());
+    }
+    match kind {
+        DocFieldKind::Text => {
+            let text = value.as_str().context("text field requires a string")?;
+            Ok(serde_json::json!({
+                "type": "DocumentText",
+                "content": [{"type": "text", "text": text}]
+            }))
+        }
+        DocFieldKind::List => {
+            let items = match value {
+                serde_json::Value::String(text) => {
+                    vec![serde_json::json!({"type": "text", "text": text})]
+                }
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map(|text| serde_json::json!({"type": "text", "text": text}))
+                            .unwrap_or_else(|| item.clone())
+                    })
+                    .collect(),
+                _ => bail!("list field requires a string or an array"),
+            };
+            Ok(serde_json::json!({"type": "DocumentList", "items": items}))
+        }
+        DocFieldKind::ParagraphList => {
+            let items = match value {
+                serde_json::Value::String(text) => vec![serde_json::json!({
+                    "type": "DocumentText",
+                    "content": [{"type": "text", "text": text}]
+                })],
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .map(|item| {
+                        item.as_str()
+                            .map(|text| {
+                                serde_json::json!({
+                                    "type": "DocumentText",
+                                    "content": [{"type": "text", "text": text}]
+                                })
+                            })
+                            .unwrap_or_else(|| item.clone())
+                    })
+                    .collect(),
+                _ => bail!("paragraph list field requires a string or an array"),
+            };
+            Ok(serde_json::json!({
+                "type": "DocumentParagraphList",
+                "items": items
+            }))
+        }
+        DocFieldKind::Mermaid => {
+            let source = value.as_str().context("mermaid field requires a string")?;
+            Ok(serde_json::json!({"type": "mermaid", "source": source}))
+        }
+    }
+}
+
+fn json_scalar_text(value: &serde_json::Value) -> Result<String> {
+    match value {
+        serde_json::Value::String(text) => Ok(text.clone()),
+        serde_json::Value::Number(number) => Ok(number.to_string()),
+        serde_json::Value::Bool(flag) => Ok(flag.to_string()),
+        _ => bail!("scalar field requires a string, number, or bool"),
+    }
+}
+
+fn json_string_list(value: &serde_json::Value) -> Result<Vec<String>> {
+    match value {
+        serde_json::Value::String(text) => Ok(vec![text.clone()]),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .context("reference list requires strings")
+            })
+            .collect(),
+        serde_json::Value::Null => Ok(Vec::new()),
+        _ => bail!("reference field requires a string or an array of strings"),
+    }
+}
+
+fn apply_json_field(
+    repo: &Repository,
+    qname: &str,
+    field: &str,
+    value: &serde_json::Value,
+) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    if let Ok(kind) = repo.document_field_kind(qname, field) {
+        let document = json_document_value(kind, value)?;
+        let projection = serde_json::json!({"fields": {field: document}});
+        repo.import_doc_json(qname, &projection.to_string())?;
+        return Ok(());
+    }
+
+    let (_, object) = repo.show_qname(qname)?;
+    match object.get_property(field) {
+        Ok(PropertyValue::String(_)) | Ok(PropertyValue::Int(_)) | Ok(PropertyValue::Bool(_)) => {
+            let value = json_scalar_text(value)?;
+            let value = normalize_scalar_value(field, &value)?;
+            repo.set_scalar(qname, field, &value)?;
+        }
+        Ok(PropertyValue::StringRef(_)) | Ok(PropertyValue::StringRefList(_)) => {
+            let targets = json_string_list(value)?;
+            if matches!(object.get_property(field), Ok(PropertyValue::StringRef(_)))
+                && targets.len() > 1
+            {
+                bail!("{field} accepts only one qname");
+            }
+            repo.set_refs(qname, field, &targets)?;
+        }
+        Ok(PropertyValue::ObjectRef(_)) => {
+            bail!("{field} is a structured field; create or update its child objects directly")
+        }
+        _ => bail!("{field} cannot be set from JSON"),
+    }
+    Ok(())
+}
+
+fn apply_json_fields(repo: &Repository, qname: &str, value: &serde_json::Value) -> Result<()> {
+    let object = value.as_object().context("JSON must be an object")?;
+    if let Some(fields) = object.get("fields") {
+        let projection = serde_json::json!({ "fields": fields });
+        repo.import_doc_json(qname, &projection.to_string())?;
+    }
+    if let Some(attributes) = object.get("attributes").and_then(|value| value.as_object()) {
+        for (field, value) in attributes {
+            apply_json_field(repo, qname, field, value)?;
+        }
+    }
+    for (field, value) in object {
+        if matches!(
+            field.as_str(),
+            "fields" | "attributes" | "qname" | "name" | "parent" | "kind" | "hash"
+        ) {
+            continue;
+        }
+        apply_json_field(repo, qname, field, value)?;
+    }
+    Ok(())
+}
+
 fn normalize_scalar_value(field: &str, value: &str) -> Result<String> {
     if field != "priority" {
         return Ok(value.to_owned());
@@ -2100,6 +2308,12 @@ fn apply_generic_assignments(
     qname: &str,
     fields: &ObjectFieldArgs,
 ) -> Result<()> {
+    if let Some(app_form) = fields.app_form.as_deref() {
+        repo.set_document_text(qname, "app_form", app_form)?;
+    }
+    if !fields.users.is_empty() {
+        repo.set_refs(qname, "users", &fields.users)?;
+    }
     for assignment in &fields.fields {
         let (field, value) = assignment
             .split_once('=')
@@ -2201,8 +2415,21 @@ fn update_object(repo: &Repository, qname: &str, fields: &ObjectFieldArgs) -> Re
         repo.set_source(qname, source)?;
         changed = true;
     }
-    if !fields.fields.is_empty() || !fields.refs.is_empty() {
+    if let Some(position) = fields.position.as_deref() {
+        repo.set_document_text(qname, "position", position)?;
+        changed = true;
+    }
+    if fields.app_form.is_some()
+        || !fields.users.is_empty()
+        || !fields.fields.is_empty()
+        || !fields.refs.is_empty()
+    {
         apply_generic_assignments(repo, qname, fields)?;
+        changed = true;
+    }
+    if let Some(source) = fields.json.as_deref() {
+        let json = read_json_value(source)?;
+        apply_json_fields(repo, qname, &json)?;
         changed = true;
     }
     if !changed {
@@ -2221,10 +2448,20 @@ fn create_object(
     source: Option<&str>,
     file: Option<&str>,
     module: Option<&str>,
+    display_name: Option<&str>,
 ) -> Result<(SymbolHash, ObjectHash)> {
     let require_parent =
         || parent.ok_or_else(|| anyhow::anyhow!("{kind} requires --parent <qname>"));
-    let require_name = || name.ok_or_else(|| anyhow::anyhow!("{kind} requires <name>"));
+    let require_name = || name.ok_or_else(|| anyhow::anyhow!("{kind} requires --name <name>"));
+    let required_display_name = match kind {
+        "requirement-system" => Some(display_name.ok_or_else(|| {
+            anyhow::anyhow!("requirement-system requires --display-name <系统名称>")
+        })?),
+        "requirement-module" => Some(display_name.ok_or_else(|| {
+            anyhow::anyhow!("requirement-module requires --display-name <模块名称>")
+        })?),
+        _ => None,
+    };
     let (qname, _) = match kind {
         "technical-system" => repo.create_technical_system(require_name()?),
         "technical-module" => repo.create_technical_module(require_parent()?, require_name()?),
@@ -2256,7 +2493,9 @@ fn create_object(
             repo.create_technical_part(require_parent()?, source)
         }
         "requirement-user" => {
-            bail!("requirement-user requires --display-name; use `arche create requirement-user`")
+            bail!(
+                "requirement-user requires --display-name; use `arche create requirement-user --name <role-id>`"
+            )
         }
         "requirement-story" => repo.create_requirement_story(require_name()?),
         "requirement-system" => repo.create_requirement_system(require_name()?),
@@ -2277,6 +2516,9 @@ fn create_object(
         ),
     }?;
     let qname_text = repo.resolve(qname)?;
+    if let Some(display_name) = required_display_name {
+        repo.set_scalar(&qname_text, "display_name", display_name)?;
+    }
     if let Some(file) = file {
         repo.set_string_ref(&qname_text, "file", file)?;
     }
@@ -2326,9 +2568,17 @@ fn batch(repo: &Repository, file: &str) -> Result<()> {
                     field("source"),
                     field("file"),
                     field("module"),
+                    field("display_name"),
                 )?
             };
-            println!("{}", repo.resolve(qname)?);
+            let qname_text = repo.resolve(qname)?;
+            let hash = if let Some(position) = field("position") {
+                repo.set_document_text(&qname_text, "position", position)?;
+                repo.find_by_qname(&qname_text)?
+            } else {
+                hash
+            };
+            println!("{qname_text}");
             println!("object {}", hash.to_hex());
             created += 1;
         }

@@ -16,11 +16,15 @@ pub mod repo;
 
 pub(crate) const OBJECT_VERSION: u8 = 1;
 
-/// Per-kind object format version. Only RequirementStory has a v2 so far;
-/// every other kind keeps the original version.
+/// Per-kind object format version. RequirementUser, RequirementStory and
+/// RequirementModule have a v2, RequirementSystem has a v3; every other kind
+/// keeps the original version.
 pub(crate) fn object_version(kind: ObjectKind) -> u8 {
     match kind {
-        ObjectKind::RequirementUser | ObjectKind::RequirementStory => 2,
+        ObjectKind::RequirementUser
+        | ObjectKind::RequirementStory
+        | ObjectKind::RequirementModule => 2,
+        ObjectKind::RequirementSystem => 3,
         _ => OBJECT_VERSION,
     }
 }
@@ -428,25 +432,22 @@ pub struct RequirementStory {
 pub struct RequirementSystem {
     qname: SymbolHash,
     name: SymbolHash,
-    parent: SymbolHash,           // RequirementRoot qname
-    modules: ObjectHash,          // ObjectList<RequirementModule>
-    form: ObjectHash,             // DocumentText
-    covered_users: ObjectHash,    // DocumentList
-    closed_loop_goal: ObjectHash, // DocumentParagraphList
-    relationships: ObjectHash,    // DocumentParagraphList
-    boundary: ObjectHash,         // DocumentList
+    parent: SymbolHash, // RequirementRoot qname
+    display_name: String,
+    position: ObjectHash,   // DocumentText
+    app_form: ObjectHash,   // DocumentText
+    users: Vec<SymbolHash>, // Vec<RequirementUser qname>
+    modules: ObjectHash,    // ObjectList<RequirementModule>
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RequirementModule {
     qname: SymbolHash,
     name: SymbolHash,
-    parent: SymbolHash,            // RequirementSystem qname
-    functions: ObjectHash,         // ObjectList<RequirementFunction>
-    core_concept: ObjectHash,      // DocumentText
-    included_concepts: ObjectHash, // DocumentList
-    concept_relations: ObjectHash, // DocumentParagraphList
-    boundary: ObjectHash,          // DocumentList
+    parent: SymbolHash, // RequirementSystem qname
+    display_name: String,
+    position: ObjectHash,  // DocumentText
+    functions: ObjectHash, // ObjectList<RequirementFunction>
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -966,18 +967,12 @@ impl Object {
             }
             Self::RequirementSystem(value) => {
                 opt_ref(f, &mut value.modules);
-                opt_ref(f, &mut value.form);
-                opt_ref(f, &mut value.covered_users);
-                opt_ref(f, &mut value.closed_loop_goal);
-                opt_ref(f, &mut value.relationships);
-                opt_ref(f, &mut value.boundary);
+                opt_ref(f, &mut value.app_form);
+                opt_ref(f, &mut value.position);
             }
             Self::RequirementModule(value) => {
                 opt_ref(f, &mut value.functions);
-                opt_ref(f, &mut value.core_concept);
-                opt_ref(f, &mut value.included_concepts);
-                opt_ref(f, &mut value.concept_relations);
-                opt_ref(f, &mut value.boundary);
+                opt_ref(f, &mut value.position);
             }
             Self::RequirementFunction(value) => {
                 opt_ref(f, &mut value.flow);

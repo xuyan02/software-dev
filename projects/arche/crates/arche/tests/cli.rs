@@ -23,12 +23,13 @@ fn creates_technical_code_objects() {
         String::from_utf8(output.stdout).unwrap()
     };
 
-    run(&["create", "technical-system", "app"]);
+    run(&["create", "technical-system", "--name", "app"]);
     run(&[
         "create",
         "technical-namespace",
         "--parent",
         "technical",
+        "--name",
         "ns",
     ]);
     let class = run(&[
@@ -36,6 +37,7 @@ fn creates_technical_code_objects() {
         "technical-class",
         "--namespace",
         "technical/namespace/ns",
+        "--name",
         "Foo",
     ]);
     assert!(class.contains("technical/namespace/ns/Foo"));
@@ -51,6 +53,7 @@ fn creates_technical_code_objects() {
     run(&[
         "create",
         "technical-part",
+        "--name",
         "body",
         "--parent",
         "technical/namespace/ns/Foo",
@@ -62,6 +65,7 @@ fn creates_technical_code_objects() {
         "technical-function",
         "--namespace",
         "technical/namespace/ns",
+        "--name",
         "free",
     ]);
 
@@ -95,7 +99,7 @@ fn imports_documents_and_applies_batch() {
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     };
-    run(&["create", "technical-system", "app"]);
+    run(&["create", "technical-system", "--name", "app"]);
 
     let document = temp.path().join("position.json");
     std::fs::write(
@@ -135,7 +139,7 @@ fn repack_keeps_objects_readable() {
         assert!(output.status.success(), "{args:?}: {output:?}");
         String::from_utf8(output.stdout).unwrap()
     };
-    run(&["create", "technical-system", "app"]);
+    run(&["create", "technical-system", "--name", "app"]);
     run(&["repack"]);
     let shown = run(&["show", "technical/app"]);
     assert!(shown.contains("TechnicalSystem"), "{shown}");
@@ -188,7 +192,8 @@ fn built_in_help_covers_objects_and_fields() {
     let user = arche().args(["help", "requirement-user"]).output().unwrap();
     assert!(user.status.success(), "{user:?}");
     let user = String::from_utf8(user.stdout).unwrap();
-    assert!(user.contains("字段写作说明（统一格式）"));
+    assert!(user.contains("display_name  String"));
+    assert!(user.contains("写法："));
     assert!(user.contains("用户设计原则"));
     assert!(user.contains("学生"));
     assert!(user.contains("公司职员"));
@@ -203,7 +208,7 @@ fn built_in_help_covers_objects_and_fields() {
     assert!(user.contains("自己专心负责设计环节"));
 
     for (topic, expected) in [
-        ("requirement-system", "用户可感知的一个完整软件"),
+        ("requirement-system", "用户能够单独感知、识别和使用"),
         ("requirement-module", "完成与该概念相关的功能闭环"),
         ("requirement-function", "有意义的系统数据变化或信息展示"),
         ("requirement-interaction", "若干次交互共同构成一次功能"),
@@ -233,6 +238,7 @@ fn init_create_show() {
         .current_dir(temp.path())
         .arg("create")
         .arg("technical-system")
+        .arg("--name")
         .arg("app")
         .output()
         .expect("run arche create");
@@ -255,6 +261,7 @@ fn init_create_show() {
         .current_dir(temp.path())
         .arg("create")
         .arg("technical-module")
+        .arg("--name")
         .arg("core")
         .arg("--parent")
         .arg("technical/app")
@@ -389,31 +396,71 @@ fn init_create_show() {
 
     let system = arche()
         .current_dir(temp.path())
-        .arg("requirement")
-        .arg("create")
-        .arg("system")
-        .arg("仓库系统")
+        .args([
+            "create",
+            "requirement-system",
+            "--name",
+            "仓库系统",
+            "--display-name",
+            "仓库管理系统",
+            "--position",
+            "仓库管理平台",
+        ])
         .output()
-        .expect("run arche requirement create system");
+        .expect("run arche create requirement-system");
     assert!(system.status.success(), "{:?}", system);
+    let shown_system = arche()
+        .current_dir(temp.path())
+        .args(["show", "requirement/system/仓库系统", "--format", "json"])
+        .output()
+        .expect("run arche show requirement-system");
+    let shown_system = String::from_utf8(shown_system.stdout).unwrap();
+    assert!(shown_system.contains("仓库管理平台"), "{shown_system}");
+    assert!(
+        shown_system.contains("\"display_name\":\"仓库管理系统\""),
+        "{shown_system}"
+    );
 
     let module = arche()
         .current_dir(temp.path())
-        .arg("requirement")
-        .arg("create")
-        .arg("module")
-        .arg("--parent")
-        .arg("requirement/system/仓库系统")
-        .arg("订单管理")
+        .args([
+            "create",
+            "requirement-module",
+            "--name",
+            "订单管理",
+            "--parent",
+            "requirement/system/仓库系统",
+            "--display-name",
+            "订单管理",
+            "--position",
+            "围绕订单概念，完成订单从创建到完成或取消的管理",
+        ])
         .output()
-        .expect("run arche requirement create module");
+        .expect("run arche create requirement-module");
     assert!(module.status.success(), "{:?}", module);
+    let shown_module = arche()
+        .current_dir(temp.path())
+        .args([
+            "show",
+            "requirement/system/仓库系统/订单管理",
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("run arche show requirement-module");
+    let shown_module = String::from_utf8(shown_module.stdout).unwrap();
+    assert!(
+        shown_module.contains("\"display_name\":\"订单管理\""),
+        "{shown_module}"
+    );
+    assert!(shown_module.contains("围绕订单概念"), "{shown_module}");
 
     let user = arche()
         .current_dir(temp.path())
         .args([
             "create",
             "requirement-user",
+            "--name",
             "project-sponsor",
             "--display-name",
             "李明",
@@ -457,6 +504,78 @@ fn init_create_show() {
     assert!(shown_json.contains("\"occupation\":\"管理员\""));
     assert!(shown_json.contains("负责首次部署"));
     assert!(shown_json.contains("能够初始化平台"));
+
+    let system_users = arche()
+        .current_dir(temp.path())
+        .args([
+            "update",
+            "requirement/system/仓库系统",
+            "--ref",
+            &format!("users={user_qname}"),
+        ])
+        .output()
+        .expect("run arche update system users");
+    assert!(system_users.status.success(), "{system_users:?}");
+    let shown_system = arche()
+        .current_dir(temp.path())
+        .args(["show", "requirement/system/仓库系统", "--format", "json"])
+        .output()
+        .expect("run arche show system users");
+    let shown_system = String::from_utf8(shown_system.stdout).unwrap();
+    assert!(
+        shown_system.contains(&format!("\"users\":\"{user_qname}\"")),
+        "{shown_system}"
+    );
+
+    let json_system = format!(
+        r#"{{"display_name":"JSON 系统","position":"JSON 定位","app_form":"Web 应用","users":["{user_qname}"]}}"#
+    );
+    let created = arche()
+        .current_dir(temp.path())
+        .args([
+            "create",
+            "requirement-system",
+            "--name",
+            "json-system",
+            "--json",
+            &json_system,
+        ])
+        .output()
+        .expect("run arche create --json");
+    assert!(created.status.success(), "{created:?}");
+    let shown = arche()
+        .current_dir(temp.path())
+        .args(["show", "requirement/system/json-system", "--format", "json"])
+        .output()
+        .expect("run arche show JSON-created system");
+    let shown = String::from_utf8(shown.stdout).unwrap();
+    assert!(shown.contains("\"display_name\":\"JSON 系统\""), "{shown}");
+    assert!(shown.contains("\"app_form\""), "{shown}");
+    assert!(
+        shown.contains(&format!("\"users\":\"{user_qname}\"")),
+        "{shown}"
+    );
+
+    let updated_json = r#"{"position":"JSON 更新定位","app_form":"桌面应用"}"#;
+    let updated_system = arche()
+        .current_dir(temp.path())
+        .args([
+            "update",
+            "requirement/system/json-system",
+            "--json",
+            updated_json,
+        ])
+        .output()
+        .expect("run arche update --json");
+    assert!(updated_system.status.success(), "{updated_system:?}");
+    let shown = arche()
+        .current_dir(temp.path())
+        .args(["show", "requirement/system/json-system", "--format", "json"])
+        .output()
+        .expect("run arche show JSON-updated system");
+    let shown = String::from_utf8(shown.stdout).unwrap();
+    assert!(shown.contains("JSON 更新定位"), "{shown}");
+    assert!(shown.contains("桌面应用"), "{shown}");
 
     let updated = arche()
         .current_dir(temp.path())
@@ -655,10 +774,11 @@ fn structure_and_doc_checks_cover_authoring_commands() {
         output
     };
 
-    run(&["create", "technical-system", "app"]);
+    run(&["create", "technical-system", "--name", "app"]);
     run(&[
         "create",
         "technical-module",
+        "--name",
         "core",
         "--parent",
         "technical/app",
@@ -666,6 +786,7 @@ fn structure_and_doc_checks_cover_authoring_commands() {
     run(&[
         "create",
         "technical-namespace",
+        "--name",
         "ns",
         "--parent",
         "technical",
@@ -673,6 +794,7 @@ fn structure_and_doc_checks_cover_authoring_commands() {
     run(&[
         "create",
         "technical-class",
+        "--name",
         "Foo",
         "--namespace",
         "technical/namespace/ns",
@@ -778,7 +900,7 @@ fn ssh_pushes_and_fetches_comments() {
             .unwrap();
         assert!(output.status.success(), "{args:?}: {output:?}");
     };
-    server_run(&["create", "technical-system", "app"]);
+    server_run(&["create", "technical-system", "--name", "app"]);
     server_run(&["add", "-A"]);
     server_run(&["commit", "-m", "init"]);
 

@@ -17,6 +17,13 @@ use arche_core::pack::{PackKind, PackRecord, decode_bundle};
 use arche_core::protocol::{record_files, valid_record_path};
 use arche_core::{CommitHash, Repository};
 
+fn write_error(output: &mut dyn Write, error: &anyhow::Error) -> Result<()> {
+    let message = format!("{error:#}").replace(['\r', '\n'], " ");
+    writeln!(output, "ERR {message}")?;
+    output.flush()?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     /// Directory containing Arche repositories.
@@ -456,7 +463,7 @@ fn run_stdio(root: &Path) -> Result<()> {
                 Ok(()) => output.write_all(b"OK\n")?,
                 Err(error) => {
                     eprintln!("{error:#}");
-                    output.write_all(b"ERR\n")?;
+                    write_error(&mut output, &error)?;
                 }
             }
             output.flush()?;
@@ -501,7 +508,7 @@ fn run_stdio(root: &Path) -> Result<()> {
             output.flush()?;
         } else if let Some(relative) = line.strip_prefix("GET ") {
             if !valid_record_path(relative) {
-                output.write_all(b"ERR\n")?;
+                writeln!(output, "ERR invalid record path")?;
                 output.flush()?;
                 continue;
             }
@@ -511,12 +518,12 @@ fn run_stdio(root: &Path) -> Result<()> {
             output.flush()?;
         } else if let Some(rest) = line.strip_prefix("PUT ") {
             let Some((relative, len)) = rest.rsplit_once(' ') else {
-                output.write_all(b"ERR\n")?;
+                writeln!(output, "ERR invalid PUT command")?;
                 output.flush()?;
                 continue;
             };
             if !valid_record_path(relative) {
-                output.write_all(b"ERR\n")?;
+                writeln!(output, "ERR invalid record path")?;
                 output.flush()?;
                 continue;
             }
@@ -573,7 +580,7 @@ fn run_stdio(root: &Path) -> Result<()> {
                 Ok(()) => output.write_all(b"OK\n")?,
                 Err(error) => {
                     eprintln!("{error:#}");
-                    output.write_all(b"ERR\n")?;
+                    write_error(&mut output, &error)?;
                 }
             }
             if let Some(id) = &push {
@@ -582,7 +589,7 @@ fn run_stdio(root: &Path) -> Result<()> {
             push = None;
             output.flush()?;
         } else {
-            output.write_all(b"ERR\n")?;
+            writeln!(output, "ERR unknown command: {line}")?;
             output.flush()?;
         }
     }

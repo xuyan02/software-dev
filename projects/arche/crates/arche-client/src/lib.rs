@@ -134,7 +134,15 @@ fn http_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
         .body(body)
         .send()?;
     if !response.status().is_success() {
-        bail!("push: HTTP {}", response.status());
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        let body = body.trim();
+        if body.contains("ref refs/heads/") && body.contains("changed") {
+            bail!(
+                "push: HTTP {status}: {body}\nremote branch changed; run `arche pull` and push again"
+            );
+        }
+        bail!("push: HTTP {status}: {body}");
     }
     let comments = http_client()
         .put(format!("{base}/comments"))
@@ -264,7 +272,14 @@ fn ssh_push(repo: &Repository, url: &str, force: bool) -> Result<()> {
         bail!("ssh push failed: connection closed before response");
     }
     if line.trim() != "OK" {
-        bail!("ssh push failed: {line}");
+        let error = line.trim();
+        let error = error.strip_prefix("ERR").map(str::trim).unwrap_or(error);
+        if error.contains("ref refs/heads/") && error.contains("changed") {
+            bail!(
+                "ssh push failed: {error}\nremote branch changed; run `arche pull` and push again"
+            );
+        }
+        bail!("ssh push failed: {error}");
     }
     let comments = repo.export_comments()?;
     writeln!(stdin, "COMMENTS {}", comments.len())?;

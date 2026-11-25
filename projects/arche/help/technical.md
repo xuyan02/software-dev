@@ -1,17 +1,17 @@
 创建技术对象：
 
-  arche create technical-system <name>
-  arche create technical-module <name> --parent <system>
-  arche create technical-layer <name> --parent <system|module>
-  arche create technical-namespace <name> --parent technical
-  arche create technical-class <name> --namespace <namespace>
-  arche create technical-struct <name> --namespace <namespace>
-  arche create technical-enum <name> --namespace <namespace>
-  arche create technical-interface <name> --namespace <namespace>
-  arche create technical-mixin <name> --namespace <namespace>
-  arche create technical-function <name> --namespace <namespace>
+  arche create technical-system --name <name>
+  arche create technical-module --name <name> --parent <system>
+  arche create technical-layer --name <name> --parent <system|module>
+  arche create technical-namespace --name <name> --parent technical
+  arche create technical-class --name <name> --namespace <namespace>
+  arche create technical-struct --name <name> --namespace <namespace>
+  arche create technical-enum --name <name> --namespace <namespace>
+  arche create technical-interface --name <name> --namespace <namespace>
+  arche create technical-mixin --name <name> --namespace <namespace>
+  arche create technical-function --name <name> --namespace <namespace>
   arche create technical-method --parent <type> --prototype "<name>(<types>) -> <return>"
-  arche create technical-part <name> --parent <type> --source <path:start-end>
+  arche create technical-part --name <name> --parent <type> --source <path:start-end>
 
 修改技术对象：
 

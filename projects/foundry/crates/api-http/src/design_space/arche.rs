@@ -460,20 +460,25 @@ pub(super) fn detail(path: &Path, hash: &str, branch: &str) -> Result<DesignSpac
         })
         .collect();
     let index = children(&repo, &commit)?;
-    let members = index
-        .get(&found.qname)
-        .map(|values| {
-            values
-                .iter()
-                .map(|(hash, qname, name, kind)| DesignSpaceMember {
-                    hash: hash.to_hex(),
-                    qname: qname.clone(),
-                    name: name.clone(),
-                    kind: kind.to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let members = if matches!(object, Object::RequirementSystem(_)) {
+        // Modules stay in the tree, not in the system detail pane.
+        Vec::new()
+    } else {
+        index
+            .get(&found.qname)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|(hash, qname, name, kind)| DesignSpaceMember {
+                        hash: hash.to_hex(),
+                        qname: qname.clone(),
+                        name: name.clone(),
+                        kind: kind.to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     Ok(DesignSpaceDetail {
         hash: found.hash.to_hex(),
         name: found.name.clone(),
@@ -764,15 +769,9 @@ fn doc_field_label(object: &Object, field: &str) -> String {
         (Object::RequirementStory(_), "description") => "用户旅程",
         (Object::RequirementStory(_), "requirement") => "需求",
         (Object::RequirementStory(_), "flow") => "流程图",
-        (Object::RequirementSystem(_), "form") => "形态",
-        (Object::RequirementSystem(_), "covered_users") => "覆盖用户",
-        (Object::RequirementSystem(_), "closed_loop_goal") => "闭环目标",
-        (Object::RequirementSystem(_), "relationships") => "系统关系",
-        (Object::RequirementSystem(_), "boundary") => "边界",
-        (Object::RequirementModule(_), "core_concept") => "核心概念",
-        (Object::RequirementModule(_), "included_concepts") => "包含概念",
-        (Object::RequirementModule(_), "concept_relations") => "概念关系",
-        (Object::RequirementModule(_), "boundary") => "边界",
+        (Object::RequirementSystem(_), "position") => "定位",
+        (Object::RequirementSystem(_), "app_form") => "应用形态",
+        (Object::RequirementModule(_), "position") => "定位",
         (Object::RequirementFunction(_), "initiator") => "发起者",
         (Object::RequirementFunction(_), "system_change") => "系统变化",
         (Object::RequirementFunction(_), "preconditions") => "前置条件",
@@ -839,7 +838,25 @@ fn design_markdown(
     let attributes = repo
         .object_attributes(object)
         .map_err(|error| error.to_string())?;
-    if !attributes.is_empty() {
+    let is_user = matches!(object, Object::RequirementUser(_));
+    if is_user {
+        let attributes = attributes.iter().cloned().collect::<BTreeMap<_, _>>();
+        for (name, label) in [
+            ("display_name", "姓名"),
+            ("age", "年龄"),
+            ("occupation", "职业"),
+            ("priority", "优先级"),
+        ] {
+            let Some(value) = attributes.get(name) else {
+                continue;
+            };
+            let value = attribute_value(repo, object, name, value.clone(), elements);
+            if value.trim().is_empty() || value == "未标定" {
+                continue;
+            }
+            out.push_str(&format!("## {label}\n\n{value}\n\n"));
+        }
+    } else if !attributes.is_empty() {
         out.push_str("## 属性\n\n");
         for (name, value) in attributes {
             let value = attribute_value(repo, object, &name, value, elements);
@@ -858,6 +875,20 @@ fn design_markdown(
         let field_object = repo.read(value).map_err(|error| error.to_string())?;
         out.push_str(&format!("## {}\n\n", doc_field_label(object, field)));
         render_block(repo, &field_object, 3, &mut out)?;
+        out.push('\n');
+    }
+    if is_user {
+        out.push_str("## 关联故事\n\n");
+        match object.get_property("stories") {
+            Ok(PropertyValue::StringRefList(values)) if !values.as_slice().is_empty() => {
+                for hash in values.as_slice() {
+                    if let Ok(qname) = repo.resolve(*hash) {
+                        out.push_str(&format!("- {}\n", qname_link(&qname, elements)));
+                    }
+                }
+            }
+            _ => out.push_str("- 暂无\n"),
+        }
         out.push('\n');
     }
     if out.trim().is_empty() {
@@ -986,7 +1017,12 @@ mod tests {
         let (story, _) = repo.create_requirement_story("journey").unwrap();
         let story = repo.resolve(story).unwrap();
         repo.set_refs(&user, "stories", &[story]).unwrap();
-        repo.create_requirement_system("sys").unwrap();
+        let (system, _) = repo.create_requirement_system("sys").unwrap();
+        let system = repo.resolve(system).unwrap();
+        repo.set_document_text(&system, "position", "仓库管理平台")
+            .unwrap();
+        repo.set_document_text(&system, "app_form", "Web 应用")
+            .unwrap();
         repo.add_all().unwrap();
         repo.commit_index("requirements", true).unwrap();
         let branch = repo.current_branch().unwrap();
@@ -1029,14 +1065,29 @@ mod tests {
             .expect("user element");
         assert_eq!(user_element.name, "主角");
         let user_hash = repo.find_by_qname(&user).unwrap();
-        let detail = detail(temp.path(), &user_hash.to_hex(), &branch).unwrap();
-        let design = detail.design.unwrap_or_default();
-        assert!(design.contains("姓名：主角"), "{design}");
-        assert!(design.contains("年龄：35"), "{design}");
-        assert!(design.contains("职业：产品设计师"), "{design}");
-        assert!(design.contains("优先级：主要用户（primary）"), "{design}");
+        let user_detail = detail(temp.path(), &user_hash.to_hex(), &branch).unwrap();
+        let design = user_detail.design.unwrap_or_default();
+        assert!(!design.contains("## 属性"), "{design}");
+        assert!(design.contains("## 姓名\n\n主角"), "{design}");
+        assert!(design.contains("## 年龄\n\n35"), "{design}");
+        assert!(design.contains("## 职业\n\n产品设计师"), "{design}");
+        assert!(
+            design.contains("## 优先级\n\n主要用户（primary）"),
+            "{design}"
+        );
         assert!(design.contains("[journey](#ds-"), "{design}");
         assert!(!design.contains("[requirement/story/journey]"), "{design}");
+        let stories = design.find("## 关联故事").expect("stories heading");
+        assert!(stories > design.find("## 优先级").expect("priority heading"));
+        assert_eq!(design.rfind("## "), Some(stories), "{design}");
+        assert!(design[stories..].contains("- [journey](#ds-"), "{design}");
+
+        let system_hash = repo.find_by_qname(&system).unwrap();
+        let system_detail = detail(temp.path(), &system_hash.to_hex(), &branch).unwrap();
+        let design = system_detail.design.unwrap_or_default();
+        assert!(design.contains("## 定位\n\n仓库管理平台"), "{design}");
+        assert!(design.contains("## 应用形态\n\nWeb 应用"), "{design}");
+        assert!(system_detail.members.is_empty());
     }
 
     #[test]

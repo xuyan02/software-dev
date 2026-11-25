@@ -1124,23 +1124,20 @@ impl RequirementSystem {
     pub fn parent(&self) -> StringRef {
         StringRef(self.parent)
     }
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    pub fn position(&self) -> ObjectRef {
+        ObjectRef(self.position)
+    }
     pub fn modules(&self) -> ObjectRef {
         ObjectRef(self.modules)
     }
-    pub fn form(&self) -> ObjectRef {
-        ObjectRef(self.form)
+    pub fn app_form(&self) -> ObjectRef {
+        ObjectRef(self.app_form)
     }
-    pub fn covered_users(&self) -> ObjectRef {
-        ObjectRef(self.covered_users)
-    }
-    pub fn closed_loop_goal(&self) -> ObjectRef {
-        ObjectRef(self.closed_loop_goal)
-    }
-    pub fn relationships(&self) -> ObjectRef {
-        ObjectRef(self.relationships)
-    }
-    pub fn boundary(&self) -> ObjectRef {
-        ObjectRef(self.boundary)
+    pub fn users(&self) -> StringRefList {
+        StringRefList(self.users.clone())
     }
 }
 
@@ -1154,20 +1151,14 @@ impl RequirementModule {
     pub fn parent(&self) -> StringRef {
         StringRef(self.parent)
     }
+    pub fn display_name(&self) -> &str {
+        &self.display_name
+    }
+    pub fn position(&self) -> ObjectRef {
+        ObjectRef(self.position)
+    }
     pub fn functions(&self) -> ObjectRef {
         ObjectRef(self.functions)
-    }
-    pub fn core_concept(&self) -> ObjectRef {
-        ObjectRef(self.core_concept)
-    }
-    pub fn included_concepts(&self) -> ObjectRef {
-        ObjectRef(self.included_concepts)
-    }
-    pub fn concept_relations(&self) -> ObjectRef {
-        ObjectRef(self.concept_relations)
-    }
-    pub fn boundary(&self) -> ObjectRef {
-        ObjectRef(self.boundary)
     }
 }
 

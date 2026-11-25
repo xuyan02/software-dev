@@ -1,11 +1,11 @@
 示例：建立技术设计
 
   arche init
-  arche create technical-system app
+  arche create technical-system --name app
   arche doc text set technical/app position "认证与授权服务。"
   arche doc list item add technical/app responsibilities "签发令牌"
-  arche create technical-namespace core --parent technical
-  arche create technical-class Login --namespace technical/namespace/core
+  arche create technical-namespace --name core --parent technical
+  arche create technical-class --name Login --namespace technical/namespace/core
   arche doc text set technical/namespace/core/Login position "登录入口。"
   arche doc list item add technical/namespace/core/Login responsibilities "校验凭据"
   arche create technical-method --parent technical/namespace/core/Login \

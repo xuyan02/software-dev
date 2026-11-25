@@ -187,16 +187,6 @@ impl Object {
         Ok(hash)
     }
 
-    /// Compute the canonical hash at a stored object-format version. Only the
-    /// object kinds with multiple versions differ from the current version.
-    pub(crate) fn compute_object_hash_for_version(&self, version: u8) -> Hash32 {
-        match self {
-            Self::RequirementUser(value) => value.compute_object_hash(version),
-            Self::RequirementStory(value) => value.compute_object_hash(version),
-            _ => self.compute_object_hash(),
-        }
-    }
-
     pub fn compute_object_hash(&self) -> Hash32 {
         match self {
             Self::TechnicalRoot(value) => value.compute_object_hash(OBJECT_VERSION),
@@ -220,7 +210,9 @@ impl Object {
             Self::RequirementStory(value) => {
                 value.compute_object_hash(object_version(ObjectKind::RequirementStory))
             }
-            Self::RequirementSystem(value) => value.compute_object_hash(OBJECT_VERSION),
+            Self::RequirementSystem(value) => {
+                value.compute_object_hash(object_version(ObjectKind::RequirementSystem))
+            }
             Self::RequirementModule(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::RequirementFunction(value) => value.compute_object_hash(OBJECT_VERSION),
             Self::RequirementInteraction(value) => value.compute_object_hash(OBJECT_VERSION),
@@ -1129,21 +1121,26 @@ impl ObjectCodec for RequirementSystem {
     fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
         match input.version() {
             1 => self.load_v1(input),
+            2 => self.load_v2(input),
+            3 => self.load_v3(input),
             version => bail!("unsupported RequirementSystem version {version}"),
         }
     }
 
     fn save(&mut self, output: &mut dyn OutputObject) -> Result<Hash32> {
-        let object_hash = self.compute_object_hash(output.version());
+        let version = output.version();
+        if version < 3 {
+            bail!("RequirementSystem v{version} is read-only; save it as v3");
+        }
+        let object_hash = self.compute_object_hash(version);
         output.symbol(self.qname);
         output.symbol(self.name);
         output.symbol(self.parent);
+        output.text(&self.display_name);
+        output.object(self.position);
+        output.object(self.app_form);
+        output.symbols(&self.users);
         output.object(self.modules);
-        output.object(self.form);
-        output.object(self.covered_users);
-        output.object(self.closed_loop_goal);
-        output.object(self.relationships);
-        output.object(self.boundary);
         Ok(object_hash)
     }
 }
@@ -1154,11 +1151,38 @@ impl RequirementSystem {
         self.name = input.symbol()?;
         self.parent = input.symbol()?;
         self.modules = input.object()?;
-        self.form = input.object()?;
-        self.covered_users = input.object()?;
-        self.closed_loop_goal = input.object()?;
-        self.relationships = input.object()?;
-        self.boundary = input.object()?;
+        self.app_form = input.object()?;
+        // v1/v2-only fields are dropped; hash checking is disabled.
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        Ok(())
+    }
+
+    fn load_v2(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.qname = input.symbol()?;
+        self.name = input.symbol()?;
+        self.parent = input.symbol()?;
+        self.position = input.object()?;
+        self.modules = input.object()?;
+        self.app_form = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        Ok(())
+    }
+
+    fn load_v3(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.qname = input.symbol()?;
+        self.name = input.symbol()?;
+        self.parent = input.symbol()?;
+        self.display_name = input.text()?;
+        self.position = input.object()?;
+        self.app_form = input.object()?;
+        self.users = input.symbols()?;
+        self.modules = input.object()?;
         Ok(())
     }
 
@@ -1167,12 +1191,11 @@ impl RequirementSystem {
         object.symbol(self.qname);
         object.symbol(self.name);
         object.symbol(self.parent);
+        object.text(&self.display_name);
+        object.hash(self.position);
+        object.hash(self.app_form);
+        object.symbols(&self.users);
         object.hash(self.modules);
-        object.hash(self.form);
-        object.hash(self.covered_users);
-        object.hash(self.closed_loop_goal);
-        object.hash(self.relationships);
-        object.hash(self.boundary);
         object.finish()
     }
 }
@@ -1181,20 +1204,23 @@ impl ObjectCodec for RequirementModule {
     fn load_into(&mut self, input: &mut dyn InputObject) -> Result<()> {
         match input.version() {
             1 => self.load_v1(input),
+            2 => self.load_v2(input),
             version => bail!("unsupported RequirementModule version {version}"),
         }
     }
 
     fn save(&mut self, output: &mut dyn OutputObject) -> Result<Hash32> {
-        let object_hash = self.compute_object_hash(output.version());
+        let version = output.version();
+        if version < 2 {
+            bail!("RequirementModule v{version} is read-only; save it as v2");
+        }
+        let object_hash = self.compute_object_hash(version);
         output.symbol(self.qname);
         output.symbol(self.name);
         output.symbol(self.parent);
+        output.text(&self.display_name);
+        output.object(self.position);
         output.object(self.functions);
-        output.object(self.core_concept);
-        output.object(self.included_concepts);
-        output.object(self.concept_relations);
-        output.object(self.boundary);
         Ok(object_hash)
     }
 }
@@ -1205,10 +1231,21 @@ impl RequirementModule {
         self.name = input.symbol()?;
         self.parent = input.symbol()?;
         self.functions = input.object()?;
-        self.core_concept = input.object()?;
-        self.included_concepts = input.object()?;
-        self.concept_relations = input.object()?;
-        self.boundary = input.object()?;
+        // v1-only fields are dropped; hash checking is disabled.
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        let _ = input.object()?;
+        Ok(())
+    }
+
+    fn load_v2(&mut self, input: &mut dyn InputObject) -> Result<()> {
+        self.qname = input.symbol()?;
+        self.name = input.symbol()?;
+        self.parent = input.symbol()?;
+        self.display_name = input.text()?;
+        self.position = input.object()?;
+        self.functions = input.object()?;
         Ok(())
     }
 
@@ -1217,11 +1254,9 @@ impl RequirementModule {
         object.symbol(self.qname);
         object.symbol(self.name);
         object.symbol(self.parent);
+        object.text(&self.display_name);
+        object.hash(self.position);
         object.hash(self.functions);
-        object.hash(self.core_concept);
-        object.hash(self.included_concepts);
-        object.hash(self.concept_relations);
-        object.hash(self.boundary);
         object.finish()
     }
 }
@@ -2617,22 +2652,20 @@ mod tests {
                 qname: sym("requirement/system/sys"),
                 name: sym("sys"),
                 parent: sym("requirement/system"),
+                display_name: "仓库系统".to_owned(),
+                position: b,
                 modules: a,
-                form: b,
-                covered_users: c,
-                closed_loop_goal: d,
-                relationships: e,
-                boundary: f,
+                app_form: b,
+                users: vec![sym("requirement/user/u")],
+                ..Default::default()
             }),
             Object::RequirementModule(RequirementModule {
                 qname: sym("requirement/system/sys/module"),
                 name: sym("module"),
                 parent: sym("requirement/system/sys"),
+                display_name: "订单管理".to_owned(),
+                position: b,
                 functions: a,
-                core_concept: b,
-                included_concepts: c,
-                concept_relations: d,
-                boundary: e,
             }),
             Object::RequirementFunction(RequirementFunction {
                 qname: sym("requirement/system/sys/module/function"),

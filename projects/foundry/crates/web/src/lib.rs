@@ -4272,6 +4272,14 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     interface: '接口', 'inner-interface': '内部接口',
     method: '方法', function: '函数', mixin: '混入', part: '部件'
   };
+  const requirementKindLabels = {
+    'requirement-user': '用户',
+    'requirement-story': '故事',
+    'requirement-system': '系统',
+    'requirement-module': '模块',
+    'requirement-function': '功能',
+    'requirement-interaction': '交互'
+  };
   const shortName = (name) => { const parts = String(name).split(/::|\//); return parts[parts.length - 1] || String(name); };
   const skeletonQnames = new Set([
     'project',
@@ -4315,6 +4323,7 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     else if (item.kind === 'project-document') label = '说明书';
     else if (item.kind === 'concept') label = '概念';
     else if (item.kind === 'concept-directory') label = '概念目录';
+    else if (requirementKindLabels[item.kind]) label = requirementKindLabels[item.kind];
     else if (item.kind === 'namespace') label = 'NS';
     else label = langLabel(item.lang) || '—';
     const node = el('span', 'ds-chip' + (item.isFile ? ' file' : ''), label);
@@ -4478,10 +4487,13 @@ const DESIGN_SPACE_SCRIPT: &str = r##"<script>
     ];
     const list = el('div', 'ds-list');
     for (const group of groups) {
-      const items = roots.filter((item) => {
-        const qname = String(item.qname);
-        return qname === group.prefix || qname.startsWith(group.prefix + '/');
-      });
+      const root = roots.find((item) => String(item.qname) === group.prefix);
+      const items = root
+        ? (children.get(group.prefix) || [])
+        : roots.filter((item) => {
+            const qname = String(item.qname);
+            return qname !== group.prefix && qname.startsWith(group.prefix + '/');
+          });
       if (!items.length) continue;
       list.appendChild(virtualRow(
         group.key,

@@ -88,6 +88,7 @@ dependencies = [
  "arche-core",
  "arche-server",
  "clap",
+ "libc",
  "serde_json",
  "tempfile",
 ]

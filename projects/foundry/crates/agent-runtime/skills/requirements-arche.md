@@ -11,7 +11,7 @@
 - 领域模型 → `concept/requirement/...` 概念对象
 - 用户 → `RequirementUser`：产品设计研究用的假想角色（persona），不是真实人物，禁止使用真实人物信息
 - 故事 → `RequirementStory`
-- 系统 → `RequirementSystem`：用户可感知的一个完整软件，例如“开发系统安卓端”
+- 系统 → `RequirementSystem`：用户能够单独感知、识别和使用的一个应用；同一产品的手机版和网页版是不同系统；边界按用户理解划分，不按技术实现
 - 模块 → `RequirementModule`：围绕一个需求概念的一组功能，完成该概念的功能闭环，例如“账户管理”
 - 功能 → `RequirementFunction`：用户与系统的一次有意义的交互，或系统自身的一次有意义的动作；必须产生有意义的系统数据变化或信息展示，例如“创建单据”
 - 交互 → `RequirementInteraction`：用户的一次操作/观察或系统的一次通知，本身可能不产生系统变化，例如“填写单据名称”；若干交互组成一次功能
@@ -60,16 +60,17 @@ arche push
 ## 创建对象
 
 ```bash
-arche create requirement-user "<角色 id>" --display-name "<假想角色姓名>"
-arche create requirement-story "<故事名称>"
-arche create requirement-system "<子系统名称>"
-arche create requirement-module "<模块/功能集名称>" --parent <system-qname>
-arche create requirement-function "<功能名称>" --parent <module-qname>
-arche create requirement-interaction "<交互名称>" --parent <function-qname>
+arche create requirement-user --name "<角色 id>" --display-name "<假想角色姓名>"
+arche create requirement-story --name "<故事名称>"
+arche create requirement-system --name "<子系统名称>" --display-name "<系统名称>"
+arche create requirement-module --name "<模块/功能集名称>" --parent <system-qname> --display-name "<模块名称>"
+arche create requirement-function --name "<功能名称>" --parent <module-qname>
+arche create requirement-interaction --name "<交互名称>" --parent <function-qname>
 ```
 
 修改已有对象统一用 `arche update <qname>`，字段参数与 `arche create` 相同；
-任意标量或引用字段用 `--field 字段=值` / `--ref 字段=目标1,目标2`。
+任意标量或引用字段用 `--field 字段=值` / `--ref 字段=目标1,目标2`。创建和更新
+都可以用 `--json 文件|JSON` 一次传入全部字段，JSON 优先于普通参数。
 
 领域概念：
 
@@ -98,8 +99,8 @@ arche update <qname> --ref functions=<function-qname>,<function-qname>
 - User：字段、`display_name`、`situations`、`needs` 的完整写作规则以
   `arche help requirement-user` 为准；写用户前先执行该命令并遵守。
 - Story：`preconditions`, `frequency`, `users`, `protagonist`, `description`, `flow`, `functions`, `requirement`
-- System：`form`, `covered_users`, `closed_loop_goal`, `relationships`, `boundary`
-- Module：`core_concept`, `included_concepts`, `concept_relations`, `boundary`
+- System：`display_name`, `position`, `app_form`, `users`, `modules`
+- Module：`display_name`, `position`, `functions`
 - Function：`initiator`, `system_change`, `preconditions`, `feedback`, `description`, `flow`
 - Interaction：`description`, `ui`
 

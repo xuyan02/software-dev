@@ -7,7 +7,7 @@
 
 创建：
 
-  arche create requirement-user <role-id> --display-name <假想角色姓名>
+  arche create requirement-user --name <role-id> --display-name <假想角色姓名>
 
 修改：
 
@@ -28,7 +28,7 @@
 
 一次写入全部字段：
 
-  arche create requirement-user <role-id> \
+  arche create requirement-user --name <role-id> \
     --display-name <假想角色姓名> \
     --age <年龄> \
     --occupation <角色/职位> \
@@ -41,6 +41,25 @@
     --story <故事-qname>
 
 `--situation`、`--hobby`、`--need`、`--story` 可以重复传入；不需要的字段省略。
+
+JSON 创建和更新：
+
+  arche create requirement-user --name <role-id> --json user.json
+  arche update <user-qname> --json user.json
+
+  {
+    "display_name": "张三",
+    "age": "30",
+    "occupation": "仓管员",
+    "priority": "core",
+    "situations": ["负责仓库日常收货"],
+    "hobbies": ["习惯用手机处理工作"],
+    "needs": ["希望快速完成收货登记", "希望及时看到库存变化"],
+    "stories": ["requirement/story/receive-goods"]
+  }
+
+`--json` 可以传文件路径、`-`（stdin）或直接传 JSON 对象；JSON 在普通参数之后
+应用，优先于普通参数。
 
 批量创建多个用户：
 
@@ -92,14 +111,6 @@ core（核心用户）、primary（主要用户）、secondary（次要用户）
   不要求来自真实资料；
 - 禁止使用真实人物的姓名、年龄、身份、联系方式或其他可识别信息；
 - 一个用户代表一类使用者，不要把差异很大的多类人塞进同一个用户。
-
-字段写作说明（统一格式）：
-
-  含义  这个字段回答什么问题。
-  写法  内容粒度、顺序、语气和格式要求。
-  正例  可以直接对照采用的例子。
-  反例  常见错误，出现即应改写。
-  约束  与其他字段、对象或检查的关系。
 
 display_name  String
   含义：假想角色的姓名或代称，用于页面展示和故事引用。

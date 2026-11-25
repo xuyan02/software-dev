@@ -37,7 +37,7 @@ TechnicalSystem
       问题：离开宿主没有意义；除非有独立用户、独立契约和独立价值。
 
   创建
-    arche create technical-system <name>
+    arche create technical-system --name <name>
 
   字段
     position
@@ -207,7 +207,7 @@ TechnicalModule
       问题：只是结构角色，不是能力边界。
 
   创建
-    arche create technical-module <name> --parent <system|module>
+    arche create technical-module --name <name> --parent <system|module>
 
   字段
     position
@@ -305,7 +305,7 @@ TechnicalLayer
       问题：把职责边界当成了层。
 
   创建
-    arche create technical-layer <name> --parent <system|module>
+    arche create technical-layer --name <name> --parent <system|module>
 
   字段
     position
@@ -418,7 +418,7 @@ TechnicalNamespace
       问题：用 File 当 namespace。
 
   创建
-    arche create technical-namespace <name> --parent technical
+    arche create technical-namespace --name <name> --parent technical
 
   字段
     children
@@ -482,7 +482,7 @@ TechnicalClass
       仍按 TechnicalClass 处理，不是 TechnicalStruct。
 
   创建
-    arche create technical-class <name> --namespace <namespace> \
+    arche create technical-class --name <name> --namespace <namespace> \
       --file technical/file/<path> --module technical/<system>/<module> \
       --source <path:start-end>
 
@@ -596,7 +596,7 @@ TechnicalStruct
       应按 TechnicalClass 处理。
 
   创建
-    arche create technical-struct <name> --namespace <ns>
+    arche create technical-struct --name <name> --namespace <ns>
 
   结构字段
     namespace / file / module / source
@@ -638,7 +638,7 @@ TechnicalEnum
       应改为 TechnicalClass。
 
   创建
-    arche create technical-enum <name> --namespace <ns>
+    arche create technical-enum --name <name> --namespace <ns>
 
   结构字段
     namespace / file / module / source
@@ -674,7 +674,7 @@ TechnicalInterface
       应按 TechnicalNamespace + TechnicalFunction 处理。
 
   创建
-    arche create technical-interface <name> --namespace <ns>
+    arche create technical-interface --name <name> --namespace <ns>
 
   结构字段
     namespace / file / module / source
@@ -717,7 +717,7 @@ TechnicalMixin
       应改为 TechnicalClass。
 
   创建
-    arche create technical-mixin <name> --namespace <ns>
+    arche create technical-mixin --name <name> --namespace <ns>
 
   结构字段
     namespace / file / module / source
@@ -802,7 +802,7 @@ TechnicalFunction
       应改为 TechnicalMethod。
 
   创建
-    arche create technical-function <name> --namespace <ns>
+    arche create technical-function --name <name> --namespace <ns>
 
   结构字段
     namespace / file / module / source
@@ -840,7 +840,7 @@ TechnicalPart
       应改为 TechnicalMember 或 TechnicalProperty。
 
   创建
-    arche create technical-part <name> --parent <class> --source <path:start-end>
+    arche create technical-part --name <name> --parent <class> --source <path:start-end>
 
   结构字段
     source
@@ -915,14 +915,14 @@ RequirementUser
         行为 → 不同用户。每种类型设计一个用户，并按产品定位标定 priority：
         core、primary、secondary、peripheral。优先级用于指导故事和交互设计：
         核心用户的需求优先满足，操作路径尽量短。
-  创建：arche create requirement-user <role-id> --display-name <假想角色姓名>
+  创建：arche create requirement-user --name <role-id> --display-name <假想角色姓名>
   修改：arche update <qname> [与 create 相同的字段参数]
   完整字段、name / display_name / occupation、situations 和 needs 的写法见
   `arche help requirement-user`。
 
 RequirementStory
   定义：用户故事。
-  创建：arche create requirement-story <name>
+  创建：arche create requirement-story --name <name>
   修改：arche update <qname> [与 create 相同的字段参数]
   字段：preconditions, frequency, users, protagonist, description, flow,
         functions, requirement。
@@ -930,11 +930,12 @@ RequirementStory
 
 RequirementSystem / RequirementModule / RequirementFunction / RequirementInteraction
   定义：需求空间的分层：系统 -> 模块 -> 功能 -> 交互。
+  系统：用户能够单独感知、识别和使用的一个应用；边界按用户理解决定，不按技术实现。
   创建：
-    arche create requirement-system <name>
-    arche create requirement-module <name> --parent <system>
-    arche create requirement-function <name> --parent <module>
-    arche create requirement-interaction <name> --parent <function>
+    arche create requirement-system --name <name> --display-name <系统名称>
+    arche create requirement-module --name <name> --parent <system> --display-name <模块名称>
+    arche create requirement-function --name <name> --parent <module>
+    arche create requirement-interaction --name <name> --parent <function>
   修改：arche update <qname> [与 create 相同的字段参数]
   判断：按需求层级归属，不按代码结构。
   写法见 `arche help requirement-system/module/function/interaction`。

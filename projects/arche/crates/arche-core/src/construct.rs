@@ -476,23 +476,22 @@ impl Object {
         qname: SymbolHash,
         name: SymbolHash,
         parent: SymbolHash,
+        display_name: String,
+        position: ObjectHash,
+        app_form: ObjectHash,
+        users: Vec<SymbolHash>,
         modules: ObjectHash,
-        form: ObjectHash,
-        covered_users: ObjectHash,
-        closed_loop_goal: ObjectHash,
-        relationships: ObjectHash,
-        boundary: ObjectHash,
     ) -> Self {
         Self::RequirementSystem(RequirementSystem {
             qname,
             name,
             parent,
+            display_name,
+            position,
+            app_form,
+            users,
             modules,
-            form,
-            covered_users,
-            closed_loop_goal,
-            relationships,
-            boundary,
+            ..Default::default()
         })
     }
 
@@ -500,21 +499,17 @@ impl Object {
         qname: SymbolHash,
         name: SymbolHash,
         parent: SymbolHash,
+        display_name: String,
+        position: ObjectHash,
         functions: ObjectHash,
-        core_concept: ObjectHash,
-        included_concepts: ObjectHash,
-        concept_relations: ObjectHash,
-        boundary: ObjectHash,
     ) -> Self {
         Self::RequirementModule(RequirementModule {
             qname,
             name,
             parent,
+            display_name,
+            position,
             functions,
-            core_concept,
-            included_concepts,
-            concept_relations,
-            boundary,
         })
     }
 

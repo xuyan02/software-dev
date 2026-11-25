@@ -34,6 +34,6 @@ pub use priority::{
 pub use property::{PropertyAccess, PropertyError, PropertySpec, PropertyValue, ValueKind};
 pub use protocol::{read_ref_file, record_files, valid_record_path, write_ref_file};
 pub use refs::{ObjectRef, ObjectRefList, StringRef, StringRefList};
-pub use repo::Repository;
+pub use repo::{DocFieldKind, Repository};
 pub use source::{SourcePath, SourceSpan};
 pub use store::{LooseObjectStore, Store};

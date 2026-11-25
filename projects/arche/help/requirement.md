@@ -25,7 +25,7 @@
 
   用户：为产品设计研究而设定的假想使用者（persona），不是真实人物，也不是账号。
   故事：从主角视角出发的一段完整用户旅程，用一系列功能满足需求。
-  系统：用户可感知的一个完整软件，例如“开发系统安卓端”“仓库管理 Web 端”。
+  系统：用户能够单独感知、识别和使用的一个应用；同一产品的手机版和网页版是不同系统。
   模块：围绕一个需求概念的一组功能，完成该概念相关的功能闭环，例如“账户管理”。
   功能：用户与系统的一次有意义的交互，或系统自身的一次有意义的动作；标准是产生
         一次有意义的系统数据变化或信息展示，例如“创建单据”。
@@ -77,12 +77,12 @@
 
 创建：
 
-  arche create requirement-user <role-id> --display-name <假想角色姓名>
-  arche create requirement-story <name>
-  arche create requirement-system <name>
-  arche create requirement-module <name> --parent <system>
-  arche create requirement-function <name> --parent <module>
-  arche create requirement-interaction <name> --parent <function>
+  arche create requirement-user --name <role-id> --display-name <假想角色姓名>
+  arche create requirement-story --name <name>
+  arche create requirement-system --name <name> --display-name <系统名称>
+  arche create requirement-module --name <name> --parent <system> --display-name <模块名称>
+  arche create requirement-function --name <name> --parent <module>
+  arche create requirement-interaction --name <name> --parent <function>
 
 修改：
 
@@ -91,7 +91,16 @@
 
 `arche update` 只修改传入的字段。需求用户可以直接使用与 create 相同的
 `--display-name`、`--age`、`--occupation`、`--priority`、`--situation`、
-`--hobby`、`--need`、`--story` 参数。
+`--hobby`、`--need`、`--story` 参数。需求系统可以使用 `--display-name`、
+`--position`、`--app-form`、`--user`，一次传入全部系统字段。
+
+创建和更新都支持 JSON：
+
+  arche create <kind> --name <name> ... --json object.json
+  arche update <qname> --json object.json
+
+`--json` 可以传文件路径、`-`（stdin）或直接传 JSON 对象；JSON 最后应用，优先于
+普通参数。
 
 每个字段的写作说明都在各自的下级帮助中，统一按“含义 / 写法 / 正例 / 反例 /
 约束”五项编写。下面是字段速查表；写字段前先执行对应对象的 `arche help`，
@@ -116,19 +125,17 @@ RequirementStory (v2)
   flow: DocumentMermaid
   requirement: DocumentList
 
-RequirementSystem
+RequirementSystem (v3)
+  display_name String
+  position DocumentText
+  app_form DocumentText
+  users Vec<SymbolHash>
   modules ObjectList<RequirementModule>
-  form DocumentText
-  covered_users DocumentList
-  closed_loop_goal, relationships DocumentParagraphList
-  boundary DocumentList
 
-RequirementModule
+RequirementModule (v2)
+  display_name String
+  position DocumentText
   functions ObjectList<RequirementFunction>
-  core_concept DocumentText
-  included_concepts DocumentList
-  concept_relations DocumentParagraphList
-  boundary DocumentList
 
 RequirementFunction
   flow DocumentMermaid

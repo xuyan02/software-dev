@@ -20,7 +20,7 @@
 
 创建：
 
-  arche create requirement-interaction <name> --parent <function>
+  arche create requirement-interaction --name <name> --parent <function>
 
 修改：
 
@@ -34,14 +34,6 @@
 
   description
   ui
-
-字段写作说明（统一格式）：
-
-  含义  这个字段回答什么问题。
-  写法  内容粒度、顺序、语气和格式要求。
-  正例  可以直接对照采用的例子。
-  反例  常见错误，出现即应改写。
-  约束  与其他字段、对象或检查的关系。
 
 description  DocumentParagraphList
   含义：这一次操作、观察或通知的具体过程。
@@ -67,7 +59,7 @@ ui  DocumentParagraphList
 
 示例：
 
-  arche create requirement-interaction fill-document-name \
+  arche create requirement-interaction --name fill-document-name \
     --parent requirement/system/warehouse-android/account-management/create-document
   arche doc import \
     requirement/system/warehouse-android/account-management/create-document/fill-document-name \
